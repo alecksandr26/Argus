@@ -1,0 +1,29 @@
+# Dev loop: `docker compose up --build` builds for your machine's own architecture
+# (amd64 on a laptop, arm64 on the Pi) and bind-mounts src/ (the cv_argus package — see
+# setup.py) so code edits are picked up without rebuilding the image — the same image
+# definition either machine uses.
+#
+# Cross-building an arm64 image *from* an amd64 dev machine (e.g. to push straight to the
+# Pi without building on it) needs `docker buildx build --platform linux/arm64 ...`
+# instead of plain `docker compose build`; compose alone only targets the host arch.
+services:
+  cv-argus:
+    build: .
+    image: argus/cv-argus:dev
+    env_file:
+      - .env
+    environment:
+      - CAMERA_SOURCE=${CAMERA_SOURCE:-0}
+    volumes:
+      - ./src:/app/src
+      - model-cache:/app/models
+      - buffer-data:/app/data
+    devices:
+      # Adjust/remove if your machine's webcam isn't at /dev/video0, or if you're
+      # testing against a video file via CAMERA_SOURCE instead of a real camera.
+      - /dev/video0:/dev/video0
+
+volumes:
+  model-cache:
+  # buffer/'s SQLite file (queued/unsent alerts) — see the BUFFER_DIR note in the Dockerfile.
+  buffer-data:
