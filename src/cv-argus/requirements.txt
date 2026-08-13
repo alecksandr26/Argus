@@ -1,0 +1,16 @@
+# Pinned to major versions known to ship linux_aarch64 (Raspberry Pi 5) manylinux wheels
+# as of writing, so `pip install` doesn't fall back to a source build on-device. If a
+# wheel is ever missing for the Pi's exact Python/arch combo, add
+# `--extra-index-url https://www.piwheels.org/simple` (the Raspberry Pi Foundation's own
+# wheel index) rather than pinning down further.
+mediapipe>=0.10.14,<0.11
+tensorflow>=2.16,<2.17
+opencv-python-headless>=4.9,<5
+numpy>=1.26,<2
+gdown>=5.2,<6
+python-dotenv>=1.0,<2
+
+# Keep in sync with setup.py's install_requires: the Dockerfile installs from this file,
+# then does `pip install -e . --no-deps` for the local package, so setup.py's
+# install_requires is NOT what actually gets installed in the image — this file is.
+picamera2>=0.3.21; platform_machine in 'armv7l aarch64'
