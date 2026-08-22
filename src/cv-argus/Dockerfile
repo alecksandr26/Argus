@@ -40,9 +40,24 @@ RUN pip install --no-cache-dir --no-deps -e .
 COPY docker-entrypoint.sh .
 RUN chmod +x docker-entrypoint.sh
 
-# Downloaded/cached model artifacts live here — mount a volume so a new model version
-# doesn't require rebuilding the image, and so the download is skipped on restart.
+# Model artifacts (trained LSTM/geometric-feature model + MediaPipe Face Landmarker bundle)
+# are baked into the image at BUILD time, not fetched at container start — see
+# model/downloader.py and pipeline/downloader.py. This device has to be able to boot and
+# start monitoring the driver in a moving truck that may have no signal right then; a runtime
+# download dependency is a liability a build-time one isn't. Accepted trade-off: a new trained
+# model needs an image rebuild + redeploy, not just a container restart, and `docker build`
+# itself now needs network access plus a valid MODEL_DRIVE_FILE_ID
+# (`docker compose build --build-arg MODEL_DRIVE_FILE_ID=...`, or set it in `.env` — see
+# docker-compose.yml's `build.args`).
 ENV MODEL_DIR=/app/models
+ARG MODEL_DRIVE_FILE_ID
+ENV MODEL_DRIVE_FILE_ID=${MODEL_DRIVE_FILE_ID}
+RUN python -m cv_argus.model.downloader && python -m cv_argus.pipeline.downloader
+
+# Still a volume even though the image already has the files: an empty named volume is
+# seeded from the image's /app/models contents on first mount (standard Docker behavior), so
+# this doesn't change first-run behavior — it's kept as an escape hatch for dropping a newer
+# model into a running container without a full rebuild, without being the primary path.
 VOLUME ["/app/models"]
 
 # buffer/'s SQLite file lives here — it's not a service, just a file this process opens

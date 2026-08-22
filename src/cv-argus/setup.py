@@ -17,8 +17,8 @@ setup(
     package_dir={"cv_argus": "src"},
     packages=[
         "cv_argus",
-        # "cv_argus.model",
-        # "cv_argus.pipeline",
+        "cv_argus.model",
+        "cv_argus.pipeline",
         # "cv_argus.orchestrator",
         # "cv_argus.buffer",
         # "cv_argus.sender",
