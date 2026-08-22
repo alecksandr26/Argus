@@ -217,3 +217,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 .aider*
+
+# UTA-RLDD extraction script output (large video files, not for git)
+src/cv-argus/scripts/output/

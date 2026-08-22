@@ -8,7 +8,14 @@
 # instead of plain `docker compose build`; compose alone only targets the host arch.
 services:
   cv-argus:
-    build: .
+    build:
+      context: .
+      # Model artifacts are baked in at build time now (see the Dockerfile) — compose reads
+      # `${MODEL_DRIVE_FILE_ID}` from this directory's `.env` (the same file `env_file:`
+      # below loads for runtime) to pass it through as a build arg. `docker compose build`
+      # fails without it set, since there's no local model to fall back to.
+      args:
+        MODEL_DRIVE_FILE_ID: ${MODEL_DRIVE_FILE_ID}
     image: argus/cv-argus:dev
     env_file:
       - .env
