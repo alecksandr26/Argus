@@ -25,8 +25,8 @@ don't duplicate implementation-level edits' rationale here, put it in the root f
 | 03 | `model_training_lstm` | `lstm_windows.csv` | LSTM `.keras` + scaler | ✅ run |
 | 04 | `random_forest_training` | `frame_features.csv`/enriched | RF `.joblib` + scaler | ⚠️ baseline run, tuning/augmentation incomplete |
 | 05 | `dense_nn_training` | `frame_features.csv`/enriched | Dense NN `.keras` + scaler | ✅ run (multiple passes) |
-| 06 | `dataset_creation_face_crops` | raw videos | `face_crops_index.csv` + `.jpg`s | ⬜ not run yet |
-| 07 | `cnn_training` | `face_crops_index.csv` | CNN `.keras` | ⬜ not run yet |
+| 06 | `dataset_creation_face_crops` | raw videos | `face_crops_index.csv` + `.jpg`s | ⚠️ run, but only against the original 6 subjects — not yet rerun against the extracted UTA-RLDD subjects |
+| 07 | `cnn_training` | `face_crops_index.csv` | CNN `.keras` | ⚠️ baseline run, but on a degenerate split — see "What we found" |
 | 08 | `deployment_export_lstm` | LSTM `.keras` + scaler | deployed `LstmGeometricFeatureModel` | ⬜ not re-run since MAX_TIMESTEPS changed to 120 |
 | 09 | `dataset_creation_cnn_lstm` | `face_crops_index.csv` | `cnn_lstm_windows_index.csv` | ⬜ built, not run (needs 06 first) |
 | — | `10_cnn_lstm_training` | `cnn_lstm_windows_index.csv` | CNN+LSTM `.keras` | ❌ does not exist yet |
@@ -43,10 +43,15 @@ Four model families share two dataset-creation notebooks:
 
 ## What we found
 
-**The LSTM (windowed geometric features) is the only model with a working, deployed pipeline**,
-and remains the intended production model — see `03_model_training_lstm.ipynb`'s Design Decision
-cell for the full architectural reasoning (recurrence over a buffered window captures
-duration/velocity of eye closure, which nothing single-frame can see).
+**Update since this was first written: the CNN (below) is now what `src/cv-argus` actually
+focuses on and deploys by default** (`PIPELINE=cnn`, see `src/cv-argus/CLAUDE.md`'s "Current
+status") — the LSTM is no longer the only model family with a working, deployed pipeline. That
+doesn't change the architectural reasoning below, though: **the LSTM (windowed geometric
+features) remains the intended long-term production model** — see
+`03_model_training_lstm.ipynb`'s Design Decision cell for the full reasoning (recurrence over a
+buffered window captures duration/velocity of eye closure, which nothing single-frame can see) —
+and it doesn't resolve the CNN's own accuracy caveats below either. The CNN's current-deployment
+status is a practical decision layered on top of both those facts, not a replacement for either.
 
 **RandomForest and Dense NN, trained on single per-frame features, hit a real ceiling around
 33-41% accuracy** — and we now have direct statistical proof of *why*, not just a suspicion:
@@ -69,6 +74,44 @@ Further RandomForest/Dense NN tuning is paused (see `CLAUDE.md` for the full rec
 why the RF hyperparameter search notebook cell hangs — a `RandomizedSearchCV`/`RandomForestClassifier`
 double `n_jobs=-1` nesting issue, not a logic bug).
 
+**The CNN's first run (`07_cnn_training.ipynb`) produced an 84.75% test accuracy that is not
+trustworthy, and the notebook has since been fixed rather than the number being reported as a
+result:**
+
+- `face_crops_index.csv` (from `06`) only covers **6 subjects** — the original Argus recordings,
+  not yet the extracted UTA-RLDD ones (`subject_07+`). An 80/20 `GroupShuffleSplit(random_state=42)`
+  over 6 subjects put 2 subjects in the test fold, and those 2 happened to have **zero `Alert`
+  crops between them**.
+- Against that degenerate test set, the model scored 84.75% accuracy purely by defaulting to
+  `Low Vigilant` (89% of the test set): 0.00 recall on `Drowsy` (93 test examples, all missed) and
+  `Alert` had no test examples to even score against. Training accuracy also hit >99% within 2
+  epochs on a 28K-param model trained over only 4 subjects — a sign the model was keying on
+  subject identity (skin tone/lighting/background) rather than drowsiness cues, not evidence of a
+  genuinely easy task. Epoch-to-epoch validation accuracy swung between 0.11 and 0.89 for the same
+  reason: with so few held-out subjects, each epoch's decision boundary either happens to favor
+  those 2 subjects' appearance or it doesn't.
+- **Fixed in the notebook** (not yet rerun): the split now uses `StratifiedGroupKFold`, restricted
+  to only choose **test-fold subjects from among subjects that have all 3 classes** — an
+  incomplete subject (missing a class entirely) still contributes its rows to training, it's just
+  never eligible to be picked as a held-out test subject, since a test fold drawn from it could be
+  missing a class no matter how the split algorithm balances things. This is a hard, provable
+  guarantee (test always has every class), not just a lower-probability version of the original
+  bug, and it raises an error if it's somehow still violated. Training now selects/checkpoints on
+  macro-F1 instead of raw accuracy (which is what let the majority-class collapse look good in the
+  first place); augmentation was strengthened (rotation/zoom/contrast on top of the existing
+  flip/brightness) to make the subject-identity shortcut harder to exploit. Both `06` and `07` were
+  also refactored to cut redundant cells (merged setup cells, consolidated the "Index CSV Summary"
+  and "Dataset Sanity Check" sections into one, and the "Recovering an Index" utility in `06`
+  dropped its legacy `_f{frame_idx}`-filename branch — the pipeline has exclusively written
+  `_s{sample_idx}` filenames for a while, so that branch was dead weight for any future recovery).
+  None of this substitutes for more subjects — see the next point.
+- **The real fix is more subjects.** `raw_videos/` on Drive already has folders for `subject_07`
+  onward (UTA-RLDD extraction has been run), but `06`'s own per-subject completeness check (added
+  in response to this) shows only 9 of them actually have crops indexed so far, and 4 of those 9
+  are missing a class — extraction needs to be resumed (rerun `06` in Colab; it's resume-aware and
+  will only process what's missing) until its completeness check reports everything covered, not
+  assumed to already be complete just because the folders exist.
+
 ## Why CNN is the most probable next backbone
 
 The diagnosis above is specific: it's not "RandomForest and Dense NN are weak models," it's "a
@@ -87,16 +130,30 @@ enough signal." That points at two independent levers, both still untried:
    removes both limitations (single-instant *and* hand-engineered-summary) at once, not just one.
 
 **Calibrated expectation, not a promise:** this is also, by a wide margin, the most data-hungry
-architecture in this project — a deep model over raw pixels (or pixel *sequences*), trained on
-~24 subjects. It's the best-reasoned next bet given the evidence above, not a guaranteed win;
-treat it as a real experiment. Neither `06`/`07` nor `09` have been run yet, and the CNN+LSTM
-training notebook (`10`) doesn't exist yet — this is the planned direction, not a result.
+architecture in this project — a deep model over raw pixels (or pixel *sequences*), trained on a
+subject pool that's still only 6 for the CNN path (see "What we found" above) even though ~24 are
+available once `06` is rerun against the extracted UTA-RLDD subjects. It's the best-reasoned next
+bet given the evidence above, not a guaranteed win; treat it as a real experiment. `07`'s only run
+so far was on a degenerate split and isn't a real read on this approach yet; `09` hasn't been run
+at all, and the CNN+LSTM training notebook (`10`) doesn't exist yet — this is still mostly the
+planned direction, not a result.
 
-## Recent implementation decisions in `06`/`07` (not yet run)
+**This "most probable next backbone" reasoning has since become the current focus, not just a
+recommendation**: `src/cv-argus` now actually deploys `07`'s single-frame CNN by default (see
+"What we found" above and `src/cv-argus/CLAUDE.md`'s "Current status"). That's a statement about
+what's *running*, though, not about what's *validated* — every caveat in this section and in
+"What we found" (the degenerate 6-subject split, the incomplete extraction, the untrustworthy
+84.75% figure) still applies exactly as written; being deployed didn't retroactively fix any of
+it. Getting `06` rerun to full completeness and `07` re-evaluated on a trustworthy split remains
+the actual next step, now with more urgency since it's no longer just a baseline being compared
+against, but the model this project's edge device runs.
 
-Before either notebook's first real run, three changes landed to address near-duplicate crops
-and add training-time augmentation — worth knowing so you don't re-propose them as open
-problems:
+## Recent implementation decisions in `06`/`07`
+
+Three changes landed in these notebooks to address near-duplicate crops and add training-time
+augmentation, worth knowing so you don't re-propose them as open problems. (A fourth, larger
+round of changes to `07` — the split/metric/augmentation fixes in response to the degenerate
+first run — is covered in "What we found" above rather than here.)
 
 - **`06` now samples much more sparsely.** `sampling_fps` dropped from 10 to 1, plus a new
   `MAX_FRAMES_PER_CLIP` cap (20), specifically because consecutive face crops at a high sampling
@@ -108,11 +165,12 @@ problems:
   (the previous granularity) or once at the end. Since extraction runs across parallel worker
   processes, this is guarded by a `multiprocessing.Manager().Lock()` shared across workers to
   avoid interleaved rows or duplicate header writes.
-- **`07` now augments with Albumentations, not just plain `tf.image` ops.** The `training=True`
-  branch of `make_dataset()` still flips left/right via `tf.image`, but brightness jitter is now
-  a mild Albumentations `Compose` (`RandomBrightnessContrast`, `RandomGamma`,
-  `HueSaturationValue`) applied online per epoch via `tf.numpy_function`, rather than baked into
-  extra stored files in `06`.
+- **Correction:** an earlier version of this note claimed `07` augments via Albumentations
+  (`RandomBrightnessContrast`/`RandomGamma`/`HueSaturationValue` through `tf.numpy_function`).
+  That was never actually in the notebook — the code has only ever used plain `tf.image` ops
+  (flip + brightness), now joined by `tf.keras.layers.RandomRotation`/`RandomZoom`/`RandomContrast`
+  (see "What we found" above). No Albumentations dependency exists in this notebook; don't assume
+  one when reading `07`.
 - **MediaPipe's Face Detector (`BlazeFace`) was evaluated against a YOLO-based face detector and
   kept** (this comparison was originally written up as a "Design Decision" markdown cell in `06`
   itself; it was removed from the notebook and lives only here now). Short version: YOLO's
@@ -124,19 +182,31 @@ problems:
 
 ## One more thing worth knowing before touching `08` or `cv-argus/`
 
-`03_model_training_lstm.ipynb`'s `MAX_TIMESTEPS` changed from 60 to 120 partway through this
-project's history (see `CLAUDE.md`). `src/cv-argus/src/model/lstm_model.py` still has
-`max_timesteps: int = 60` as its Python-level default. This likely isn't broken for a model
-*loaded* from a `.keras` file (Keras restores `max_timesteps` from the saved config, not the
-class default), but it's stale as documentation and worth checking before trusting it blindly if
-`08_deployment_export_lstm.ipynb` is re-run and re-exported. Not fixed here — flagged for
-whoever picks that up next.
+**Correction to an earlier version of this note:** it previously claimed `MAX_TIMESTEPS` changed
+from 60 to 120 partway through this project's history, and that `src/cv-argus/src/model/
+lstm_model.py`'s `max_timesteps: int = 60` default was stale as a result. That had the direction
+backwards — checked directly against notebooks 01/03/08's actual cells and `lstm_model.py`:
+`MAX_TIMESTEPS`/`max_timesteps` is **60 everywhere, consistently**. It went **120 → 60**
+(removing unused headroom, after a full extraction run at 120 OOM-crashed the Colab kernel) — the
+same account the root `CLAUDE.md` already gives. There's no live `MAX_TIMESTEPS` inconsistency to
+fix here.
+
+There is a real, smaller mismatch worth flagging instead: `lstm_model.py`'s
+`LstmGeometricFeatureModel.__init__` defaults `num_features` to **59**, but
+`03_model_training_lstm.ipynb` *derives* `num_features` from the actual CSV column count and gets
+**58** (`GeometricRatioFeatureLayer.blendshape_names` has 51 entries, not the documented 52 —
+missing `_neutral` — so 7 geometric features + 51 blendshapes = 58, not 59). Same caveat as the
+retracted claim above still applies here, though: a model *loaded* from a saved `.keras` file
+gets its real `num_features` from the saved config, not this class default, so this likely isn't
+live-broken either. Not fixed here — flagged for whoever picks that up next.
 
 ## Working in this directory
 
-- Check the Pipeline map's Status column before assuming a notebook has been run — "⬜ not run
-  yet" and "❌ does not exist yet" are load-bearing distinctions, not filler; don't report
-  06/07/09/10 results as if they exist.
+- Check the Pipeline map's Status column before assuming a notebook has been run or trustworthy —
+  "⬜ not run yet", "⚠️", and "❌ does not exist yet" are load-bearing distinctions, not filler.
+  `06`/`07` have been run, but `07`'s only result so far came from a degenerate 6-subject split
+  (see "What we found") — don't report its 84.75% accuracy as a real number, and don't report
+  `09`/`10` results as if they exist at all.
 - When asked to improve accuracy on the flat dataset (RandomForest/Dense NN), don't propose
   hyperparameter tuning or generic regularization as a first move — re-read "What we found"
   above first. The ceiling is diagnosed as a single-frame information limit (Spearman |r| ≤
