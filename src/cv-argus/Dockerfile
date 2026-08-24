@@ -11,6 +11,12 @@ FROM python:3.11-slim-bookworm
 #   libgl1          - OpenCV's video/image codec paths link against GL
 #   libglib2.0-0    - glib, used by OpenCV's plugin loading
 #   libsm6/libxext6/libxrender1 - legacy X11 libs some OpenCV builds still probe for
+#   libgles2/libegl1 - MediaPipe Tasks' native C bindings (mediapipe_c_bindings) dlopen
+#                      libGLESv2.so.2/libEGL.so.1 for their GPU tensor-op path even when the
+#                      pipeline never touches a display — missing these fails with
+#                      "OSError: libGLESv2.so.2: cannot open shared object file" the first time
+#                      any FaceDetector/FaceLandmarker is actually constructed (not at import
+#                      time, so `pip install` and the download step both succeed regardless).
 #   ffmpeg          - video container/codec support for cv2.VideoCapture (camera + files)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \
@@ -18,6 +24,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libsm6 \
         libxext6 \
         libxrender1 \
+        libgles2 \
+        libegl1 \
         ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
@@ -32,24 +40,29 @@ RUN pip install --no-cache-dir -r requirements.txt
 # why). `-e` (editable) registers it as a path reference back to /app/src rather than
 # copying it into site-packages, so the docker-compose dev bind-mount of ./src:/app/src
 # keeps working without rerunning pip install after every source edit. --no-deps because
-# requirements.txt already installed everything in install_requires.
-COPY setup.py .
+# requirements.txt already installed everything in install_requires. pyproject.toml has to be
+# copied in too (see that file) -- without it pip falls back to a legacy editable-install mode
+# that ignores setup.py's package_dir remap entirely and `import cv_argus` fails at runtime.
+COPY pyproject.toml setup.py .
 COPY src ./src
 RUN pip install --no-cache-dir --no-deps -e .
 
 COPY docker-entrypoint.sh .
 RUN chmod +x docker-entrypoint.sh
 
-# Model artifacts (trained LSTM/geometric-feature model + MediaPipe Face Landmarker bundle)
-# are baked into the image at BUILD time, not fetched at container start — see
-# model/downloader.py and pipeline/downloader.py. This device has to be able to boot and
-# start monitoring the driver in a moving truck that may have no signal right then; a runtime
-# download dependency is a liability a build-time one isn't. Accepted trade-off: a new trained
-# model needs an image rebuild + redeploy, not just a container restart, and `docker build`
-# itself now needs network access plus a valid MODEL_DRIVE_FILE_ID
-# (`docker compose build --build-arg MODEL_DRIVE_FILE_ID=...`, or set it in `.env` — see
-# docker-compose.yml's `build.args`).
+# Model artifacts (the trained CNN face-crop classifier + the MediaPipe Face Landmarker bundle
+# needed by the still-present-but-optional LSTM path) are baked into the image at BUILD time,
+# not fetched at container start — see model/downloader.py and pipeline/downloader.py. This
+# device has to be able to boot and start monitoring the driver in a moving truck that may have
+# no signal right then; a runtime download dependency is a liability a build-time one isn't.
+# Accepted trade-off: a new trained CNN model needs an image rebuild + redeploy, not just a
+# container restart. Unlike before, `docker build` now succeeds with no ARG/`.env` at all — the
+# CNN model's Drive file id has a checked-in default in constants.py; only the (now optional)
+# LSTM model still needs MODEL_DRIVE_FILE_ID set to be included (see src/cv-argus/CLAUDE.md's
+# "Current status").
 ENV MODEL_DIR=/app/models
+ARG CNN_MODEL_DRIVE_FILE_ID
+ENV CNN_MODEL_DRIVE_FILE_ID=${CNN_MODEL_DRIVE_FILE_ID}
 ARG MODEL_DRIVE_FILE_ID
 ENV MODEL_DRIVE_FILE_ID=${MODEL_DRIVE_FILE_ID}
 RUN python -m cv_argus.model.downloader && python -m cv_argus.pipeline.downloader
