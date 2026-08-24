@@ -1,0 +1,36 @@
+# Raspberry Pi 5 deployment overlay — merge on top of the base compose file, don't run alone:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.pi.yml up --build
+#
+# Compose merges list-valued keys (like `devices:` below) by *replacing* the base file's list,
+# not appending to it — so this file lists the full Pi-specific device set, not just additions.
+#
+# **Device passthrough here is a best effort, not verified against real Pi 5 hardware in this
+# repo** — see `CLAUDE.md`'s "Open decisions": `picamera2` inside a container typically needs
+# `/dev/video*` plus `/dev/dma_heap/*`, but the exact node names/count depend on the kernel's
+# camera/ISP driver config and haven't been confirmed here. Deliberately not `privileged: true`
+# or a blanket `/dev` mount — the root `CLAUDE.md` calls for specific device passthrough, not
+# `--privileged`, for the Pi's AI-orchestrator container. Test this early against the actual
+# device (see `CLAUDE.md`'s demo run procedure) and adjust the device list below to match
+# whatever `ls /dev/video*` and `ls /dev/dma_heap/` actually show on the real hardware — don't
+# assume this list is exhaustive or correct as a first try.
+services:
+  cv-argus:
+    environment:
+      - SOURCE=picamera
+    devices:
+      # picamera2/libcamera commonly exposes more than one /dev/videoN node per camera (ISP
+      # output, raw sensor stream, metadata, ...) -- passing a small range rather than just
+      # /dev/video0 to cover that, not because all of these are confirmed to exist/be needed.
+      - /dev/video0:/dev/video0
+      - /dev/video1:/dev/video1
+      - /dev/video2:/dev/video2
+      - /dev/video3:/dev/video3
+      # DMA heap allocator nodes libcamera/picamera2 use for zero-copy buffers on Bookworm --
+      # names vary by kernel config; these are the commonly-seen ones, not a guarantee.
+      - /dev/dma_heap/linux,cma:/dev/dma_heap/linux,cma
+      - /dev/dma_heap/system:/dev/dma_heap/system
+    # The Pi needs to come back up on its own after a power cycle in the truck; deliberately
+    # left off the base/dev compose file so a laptop container doesn't restart forever while
+    # iterating on it (see the root README's "Why a Docker-first workflow").
+    restart: unless-stopped

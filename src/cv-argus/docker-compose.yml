@@ -11,23 +11,38 @@ services:
     build:
       context: .
       # Model artifacts are baked in at build time now (see the Dockerfile) — compose reads
-      # `${MODEL_DRIVE_FILE_ID}` from this directory's `.env` (the same file `env_file:`
-      # below loads for runtime) to pass it through as a build arg. `docker compose build`
-      # fails without it set, since there's no local model to fall back to.
+      # these from this directory's `.env` (the same file `env_file:` below loads for runtime)
+      # to pass them through as build args. CNN_MODEL_DRIVE_FILE_ID has a checked-in default
+      # (see src/constants.py), so `docker compose build` succeeds even with no `.env` at all;
+      # MODEL_DRIVE_FILE_ID (the LSTM model) is optional the same way.
       args:
-        MODEL_DRIVE_FILE_ID: ${MODEL_DRIVE_FILE_ID}
+        CNN_MODEL_DRIVE_FILE_ID: ${CNN_MODEL_DRIVE_FILE_ID:-}
+        MODEL_DRIVE_FILE_ID: ${MODEL_DRIVE_FILE_ID:-}
     image: argus/cv-argus:dev
     env_file:
       - .env
     environment:
       - CAMERA_SOURCE=${CAMERA_SOURCE:-0}
+      - PIPELINE=${PIPELINE:-cnn}
+      - SOURCE=${SOURCE:-video_capture}
+      - OUTPUTS=${OUTPUTS:-logging}
+      - DEMO_STREAM_HOST=${DEMO_STREAM_HOST:-0.0.0.0}
+      - DEMO_STREAM_PORT=${DEMO_STREAM_PORT:-8080}
+    # Only actually listened on when OUTPUTS includes "mjpeg" (see src/main.py,
+    # pipeline/mjpeg_output_stage.py) — harmless to always publish otherwise, nothing binds the
+    # container-side port if that output stage was never built. No authentication on that
+    # stream once it's on: demo-only, don't leave OUTPUTS=...,mjpeg set in a real deployment.
+    ports:
+      - "${DEMO_STREAM_PORT:-8080}:8080"
     volumes:
       - ./src:/app/src
       - model-cache:/app/models
       - buffer-data:/app/data
     devices:
       # Adjust/remove if your machine's webcam isn't at /dev/video0, or if you're
-      # testing against a video file via CAMERA_SOURCE instead of a real camera.
+      # testing against a video file via CAMERA_SOURCE instead of a real camera. The Pi's CSI
+      # camera (SOURCE=picamera) needs different device passthrough entirely — see
+      # docker-compose.pi.yml, not this file.
       - /dev/video0:/dev/video0
 
 volumes:

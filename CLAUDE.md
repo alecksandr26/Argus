@@ -30,9 +30,17 @@ at `docs/designs/semantic-design`) has two halves. Only the ML piece (below) exi
 far; the rest is design work to be implemented.
 
 **Truck cabin (edge, hard real-time / safety-critical):**
-- A camera captures frames, read by the **Raspberry Pi 5 ("AI Orchestrator")**, which runs the
-  MediaPipe FaceLandmarker + geometric-ratio-layer + sequence-model pipeline from the notebook
-  and produces a drowsiness class (`Alert` / `Low Vigilant` / `Drowsy`). The sequence model is an **LSTM**; this had briefly
+- A camera captures frames, read by the **Raspberry Pi 5 ("AI Orchestrator")**, which — per the
+  design this section describes — runs the MediaPipe FaceLandmarker + geometric-ratio-layer +
+  sequence-model pipeline from the notebook and produces a drowsiness class (`Alert` /
+  `Low Vigilant` / `Drowsy`). **That's the long-term intended architecture, not what's currently
+  deployed**: `src/cv-argus` currently focuses on and downloads/runs the CNN face-crop model by
+  default instead (MediaPipe Face Detector/BlazeFace crop → CNN, not FaceLandmarker → LSTM) — a
+  current implementation decision, not a reversal of the design reasoning below. See
+  `src/cv-argus/CLAUDE.md`'s "Current status" for the deployed default and
+  `notebook/CLAUDE.md`'s "Why CNN is the most probable next backbone" for why. Keep this
+  distinction — *intended long-term design* vs. *what's actually deployed right now* — straight
+  when reading the rest of this bullet. The sequence model is an **LSTM**; this had briefly
   been under evaluation against a plain feedforward deep neural network over the same windowed
   features, but a detailed review confirmed the LSTM is the right choice and settled it, not
   the DNN — a plain (non-`stateful`) `tf.keras.layers.LSTM` already performs genuine recurrence
@@ -101,11 +109,23 @@ firmware described in "Planned end-to-end system architecture" don't exist yet.
   executing them, running them inside Colab (or a Jupyter environment with `mediapipe`,
   `opencv-python`, `tensorflow`, `scikit-learn`, `pandas`, `joblib` installed) rather than assuming
   a local CLI workflow exists.
-- `src/cv-argus/` — the Raspberry Pi 5 edge module: loads the trained model from the notebook
-  and runs live inference against camera frames. Docker-first (see its own `README.md` for
-  why and how); read that file before working in this module, it has the architecture details
-  and notebook-fidelity notes (exact model input/output shapes, why the model classes must be
-  ported verbatim, etc.) that would otherwise need re-deriving from the notebook each session.
+- `src/cv-argus/` — the Raspberry Pi 5 edge module: loads a trained model from the notebook and
+  runs live inference against camera frames, end to end (camera/video-file source → MediaPipe →
+  model inference → an output sink), not just the model-loading piece. **Currently focused on
+  and deploying the CNN face-crop model by default** (`PIPELINE=cnn`), not the LSTM described
+  above as the long-term intended design — the LSTM path is kept and fully functional
+  (`PIPELINE=lstm`), just not the default. Built as a threaded, queue-connected `Stage`/
+  `Pipeline` abstraction (see its `CLAUDE.md`'s "`pipeline/` — done") specifically so both model
+  families — and any future one — share the same camera-loop/threading/shutdown plumbing rather
+  than each reimplementing it; also has a demo mode (a browser-viewable live video stream with
+  the drowsiness classification overlaid, see that file's "Demo" section) for actually watching
+  it work on a laptop or the Pi. Docker-first (own `Dockerfile`/`docker-compose.yml`, plus a
+  `docker-compose.pi.yml` overlay for the Pi's CSI camera). Has both a `README.md` (practical
+  "how do I run this" — quick start, the demo, a config-variable table, troubleshooting) and a
+  `CLAUDE.md` (architecture, why things are built the way they are, notebook-fidelity
+  requirements); read the `CLAUDE.md` before *changing* anything in this module, not just
+  running it — it has the details (exact model input/output shapes, why the model classes must
+  be ported verbatim, etc.) that would otherwise need re-deriving from the notebook each session.
 - `docs/argus-descripción-proyecto.pdf` — project description/proposal.
 - `docs/criterios/` — academic thesis/grading-criteria documents (this is a school "trabajo de
   grado" project); `Formato_Proyecto_Modular V2.docx` is the report template being filled in.
@@ -146,31 +166,38 @@ as deployment candidates with their own export path yet.
    tri-partition of the Karolinska Sleepiness Scale (KSS 1–3 / 6–7 / 8–9) rather than an
    invented scheme, precisely so that dataset's labels can be adopted directly instead of
    re-mapped through a second, harder-to-justify boundary. This project originally used a finer
-   6-level scale (1 = alert → 6 = entering microsleep); Argus's own raw clips still keep their
-   original `level_<1-6>_clip_<N>.mp4` filenames un-renamed and get mapped down
-   (1–2→Alert, 3–4→Low Vigilant, 5–6→Drowsy) at extraction time via a `map_level` helper defined
-   in each dataset-creation notebook's Pipeline Configuration Constants cell (identical across
-   all three dataset-creation notebooks — keep them in sync). Also defines the candidate
-   per-frame feature set: manual EAR/MAR ratios, MediaPipe blendshape scores (eye/mouth/eyebrow),
-   gaze, head pose (pitch/yaw/roll), and detector confidence. A "speech confound" flag
-   (mouth-smile blendshapes) is tracked separately so talking/singing isn't mistaken for
-   yawning. A "Data Collection Methodology" cell right after the levels table documents how the
-   labels were actually grounded: Argus's own pre-mapping levels 1–5 are self-recorded under
-   genuine fatigue (late-night/sleep-deprived recording sessions, not staged), while level 6 was
-   acted — performed while already at a genuine level-5 state, not from a fully alert baseline,
-   since safely capturing a real microsleep episode on camera isn't practical. UTA-RLDD ingestion
-   (60 subjects, 180 ~10-minute videos, one constant label per video) is a **local script**, not
-   a notebook cell — `src/cv-argus/scripts/extract_uta_rldd_clips.py` cuts each source video into
+   6-level scale for Argus's own raw clips (1 = alert → 6 = entering microsleep) with a
+   `level_<1-6>_clip_<N>.mp4` filename convention, distinct from the external UTA-RLDD subjects'
+   already-final-class `level_<1-3>_clip_<N>.mp4` convention (see below) — this originally
+   required a `map_level` helper (defined in each dataset-creation notebook's Pipeline
+   Configuration Constants cell) to disambiguate the two conventions by **subject number**
+   (`subject_<N>` with `N >= EXTERNAL_SUBJECT_START` treated as already-final-class,
+   `subject_01`–`subject_06` mapped down via a 1–6→3-class table) since both conventions shared
+   the same `level_` filename prefix. **Argus's own raw clips have since been renamed** to the
+   same already-final `level_<1-3>` convention as the external subjects, so that
+   subject-number-based disambiguation no longer applies: `map_level` (still defined identically
+   across all three dataset-creation notebooks — keep them in sync) is now a simple validating
+   pass-through (raise if a level outside 1–3 is ever encountered) rather than a per-subject
+   lookup. Also defines the candidate per-frame feature set: manual EAR/MAR ratios, MediaPipe
+   blendshape scores (eye/mouth/eyebrow), gaze, head pose (pitch/yaw/roll), and detector
+   confidence. A "speech confound" flag (mouth-smile blendshapes) is tracked separately so
+   talking/singing isn't mistaken for yawning. A "Data Collection Methodology" cell right after
+   the levels table documents how the labels were actually grounded: Argus's own pre-mapping
+   levels 1–5 are self-recorded under genuine fatigue (late-night/sleep-deprived recording
+   sessions, not staged), while level 6 (now renamed to final class 3/Drowsy) was acted —
+   performed while already at a genuine level-5 state, not from a fully alert baseline, since
+   safely capturing a real microsleep episode on camera isn't practical. UTA-RLDD ingestion (60
+   subjects, 180 ~10-minute videos, one constant label per video) is a **local script**, not a
+   notebook cell — `src/cv-argus/scripts/extract_uta_rldd_clips.py` cuts each source video into
    several short, non-overlapping random sub-clips via `ffmpeg`, writing them as
    `level_<1-3>_clip_<N>.mp4` into new `subject_<N>` folders continuing after Argus's own
    (`subject_07` onward by default) — deliberately reusing the `level_` word (1=Alert,
-   2=Low Vigilant, 3=Drowsy, the *final* class) rather than a separate `class_` prefix. Because
-   both conventions share the same filename prefix, `map_level` disambiguates by **subject
-   number**, not filename: `subject_<N>` with `N >= EXTERNAL_SUBJECT_START` (7) is treated as
-   already-final-class; `subject_01`–`subject_06` still gets the original 1–6→3-class mapping.
-   Keep that constant in sync with the script's `--start-subject` if it's ever run non-default.
-   State the acted-level-6 and cross-dataset-labeling-method caveats plainly in the titulación
-   report rather than leaving them implicit.
+   2=Low Vigilant, 3=Drowsy, the *final* class) rather than a separate `class_` prefix; this is
+   the convention Argus's own clips were renamed to match. The script's `--start-subject` default
+   (7, i.e. `subject_07` onward) is no longer read by `map_level` for anything — it now only
+   matters for not colliding with Argus's own `subject_01`–`subject_06` folders when the script
+   is run. State the acted-level-6 (now Drowsy) and cross-dataset-labeling-method caveats plainly
+   in the titulación report rather than leaving them implicit.
 
 2. **Google Drive project setup** — mounts Drive and validates/creates the expected folder
    layout under `/content/drive/MyDrive/Argus/`:
@@ -368,14 +395,27 @@ the flat per-frame dataset**, not a tuning shortfall:
   the enrichment experiments that underperformed) as the honest record of what was tried.
 
 **Next direction: CNN on face crops, possibly combined with the LSTM's windowing.** Two paths
-exist in the repo, at different stages of readiness — neither has been run yet:
+exist in the repo, at different stages of readiness:
 
 - `06_dataset_creation_face_crops.ipynb` + `07_cnn_training.ipynb` — single face-crop image → single
-  label (see "Notebook architecture" above). Built, not yet run. Expected to face the same
-  single-instant-in-time ceiling as RF/Dense NN in principle, tempered by the fact that raw pixels
-  carry visual cues (skin texture, redness, micro-expression detail) the hand-engineered
-  EAR/MAR/blendshape features don't capture at all — plausibly better than 40%, not guaranteed to
-  be dramatically better, since it's still one frame.
+  label (see "Notebook architecture" above). Both have been run, but the result isn't trustworthy
+  yet and shouldn't be quoted as this model family's accuracy: `face_crops_index.csv` currently
+  covers only the original **6 subjects** (the extracted UTA-RLDD subjects exist on Drive but `06`
+  hasn't been rerun against them), and an 80/20 `GroupShuffleSplit` over 6 subjects put 2 subjects
+  — with zero `Alert` crops between them — in the test fold. The reported 84.75% test accuracy was
+  the model defaulting to the majority class (`Low Vigilant`), with 0.00 recall on `Drowsy` and no
+  `Alert` examples to even score against; training also hit >99% accuracy within 2 epochs on a
+  28K-param model over just 4 training subjects, consistent with the model keying on subject
+  identity rather than drowsiness cues. `07_cnn_training.ipynb` has since been fixed (split
+  switched to `StratifiedGroupKFold` with a hard failure if a class is still missing from the test
+  fold, checkpointing switched from raw accuracy to macro-F1, augmentation strengthened with
+  rotation/zoom/contrast) but not yet rerun, and doing so on only 6 subjects still wouldn't be a
+  reliable read — rerunning `06` against the full subject set is the higher-priority next step.
+  Once measured properly, still expected to face the same single-instant-in-time ceiling as
+  RF/Dense NN in principle, tempered by the fact that raw pixels carry visual cues (skin texture,
+  redness, micro-expression detail) the hand-engineered EAR/MAR/blendshape features don't capture
+  at all — plausibly better than 40%, not guaranteed to be dramatically better, since it's still
+  one frame.
 - `09_dataset_creation_cnn_lstm.ipynb` — a fifth model family: `TimeDistributed(CNN) → LSTM` over
   an actual **windowed sequence** of face-crop images (same 1-6s/1s-stride multi-duration scheme as
   the geometric LSTM), rather than a single image. This is the most complete fix for the
@@ -392,6 +432,17 @@ exist in the repo, at different stages of readiness — neither has been run yet
   flagging plainly: this would be by far the most data-hungry model in the project (a deep model
   over raw pixel *sequences*, ~24 subjects) — a real architecture upgrade, but not a guaranteed
   win on a dataset this size, and should be evaluated with that expectation going in.
+
+**Current deployment status, stated plainly since it's easy to lose track of amid the caveats
+above: `src/cv-argus` is currently focused on and deploys the single-frame CNN
+(`07_cnn_training.ipynb`'s model) by default** (`PIPELINE=cnn`) — not the LSTM, despite the LSTM
+remaining the architecturally-intended long-term model per the reasoning in "Planned end-to-end
+system architecture" above. This is a current decision, not a claim that the accuracy caveats
+just described are resolved — the 84.75% figure is still the untrustworthy, majority-class-
+collapse number from a degenerate 6-subject split, not a validated result. The LSTM path is kept
+in `src/cv-argus` and fully functional (`PIPELINE=lstm`), just not the default. See
+`src/cv-argus/CLAUDE.md`'s "Current status" for the deployment-side detail and
+`notebook/CLAUDE.md`'s "Why CNN is the most probable next backbone" for the reasoning.
 
 ## Working in this repo
 

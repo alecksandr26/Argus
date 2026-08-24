@@ -1,0 +1,13 @@
+# Without this file, `pip install -e .` (see Dockerfile) has no declared build backend and
+# falls back to the legacy `setup.py develop` editable-install path. That legacy path adds only
+# the project root (the directory setup.py lives in, /app in the image) to sys.path via an
+# .egg-link/easy-install.pth -- it does NOT honor setup.py's `package_dir={"cv_argus": "src"}`
+# remap, so Python looks for /app/cv_argus/__init__.py (which doesn't exist -- the code is at
+# /app/src/__init__.py) and `import cv_argus` fails with ModuleNotFoundError even though `pip
+# show cv_argus` reports it as installed. Declaring the setuptools backend here makes pip use
+# the modern PEP 660 editable-wheel install instead, which builds a proper per-package finder
+# that does respect package_dir -- keep this file even though setup.py still holds the actual
+# package metadata/config.
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
