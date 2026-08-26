@@ -1,6 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
 <mxfile host="app.diagrams.net">
   <diagram name="Page-1" id="Ipsv3hOLn9E0JpxtmtIR">
-    <mxGraphModel grid="1" page="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="3572" dy="1927" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -20,7 +21,7 @@
             <mxPoint as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="_WwSA5oW7d1dnz6dA88P-1" parent="pXhSqTwXFIf6c49v25fU-19" style="swimlane;whiteSpace=wrap;html=1;" value="&lt;font style=&quot;font-size: 14px;&quot;&gt;Rasberry PI 5 (AI Orchestrator)&lt;/font&gt;" vertex="1">
+        <mxCell id="_WwSA5oW7d1dnz6dA88P-1" parent="pXhSqTwXFIf6c49v25fU-19" style="swimlane;whiteSpace=wrap;html=1;" value="&lt;font style=&quot;font-size: 14px;&quot;&gt;Rasberry PI 5 (AI+Main Orchestrator)&lt;/font&gt;" vertex="1">
           <mxGeometry height="430" width="580" x="10" y="40" as="geometry" />
         </mxCell>
         <mxCell id="_WwSA5oW7d1dnz6dA88P-8" parent="_WwSA5oW7d1dnz6dA88P-1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#F8CECC;" value="Queue Message Local Buffer (SQLite)" vertex="1">
@@ -52,10 +53,10 @@
             <mxPoint x="45" y="-1" as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="_WwSA5oW7d1dnz6dA88P-13" parent="_WwSA5oW7d1dnz6dA88P-9" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;div&gt;Detector&lt;/div&gt;&lt;div&gt;(Runs CNN)&lt;/div&gt;" vertex="1">
+        <mxCell id="_WwSA5oW7d1dnz6dA88P-13" parent="_WwSA5oW7d1dnz6dA88P-9" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;div&gt;Detector&lt;/div&gt;&lt;div&gt;(Runs)&lt;/div&gt;" vertex="1">
           <mxGeometry height="60" width="120" x="220" y="110" as="geometry" />
         </mxCell>
-        <mxCell id="_WwSA5oW7d1dnz6dA88P-23" parent="_WwSA5oW7d1dnz6dA88P-9" style="rounded=0;whiteSpace=wrap;html=1;" value="CNN Model (Disk Memory)" vertex="1">
+        <mxCell id="_WwSA5oW7d1dnz6dA88P-23" parent="_WwSA5oW7d1dnz6dA88P-9" style="rounded=0;whiteSpace=wrap;html=1;" value="MediaPipe +LSTM Model&amp;nbsp; (Disk Memory)" vertex="1">
           <mxGeometry height="60" width="120" x="22.5" y="30" as="geometry" />
         </mxCell>
         <mxCell id="_WwSA5oW7d1dnz6dA88P-22" edge="1" parent="_WwSA5oW7d1dnz6dA88P-1" source="_WwSA5oW7d1dnz6dA88P-15" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;exitX=0.25;exitY=0;exitDx=0;exitDy=0;endArrow=open;endFill=0;" target="_WwSA5oW7d1dnz6dA88P-8">
@@ -103,7 +104,7 @@
           </mxGeometry>
         </mxCell>
         <mxCell id="WyMtwclHnM4sVk-KYhAm-9" parent="pXhSqTwXFIf6c49v25fU-19" style="image;html=1;image=img/lib/clip_art/general/Ships_Wheel_128x128.png;textShadow=0;labelBorderColor=#b85450;labelBackgroundColor=#f8cecc;" value="Steering Wheel&lt;br&gt;(for sensor)" vertex="1">
-          <mxGeometry height="80" width="80" x="210" y="500" as="geometry" />
+          <mxGeometry height="80" width="80" x="220" y="500" as="geometry" />
         </mxCell>
         <mxCell id="pXhSqTwXFIf6c49v25fU-13" parent="pXhSqTwXFIf6c49v25fU-19" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" value="sensor GRIP" vertex="1">
           <mxGeometry height="60" width="120" x="460" y="510" as="geometry" />
@@ -229,7 +230,7 @@
         <mxCell id="_WwSA5oW7d1dnz6dA88P-43" parent="_WwSA5oW7d1dnz6dA88P-40" style="rounded=0;whiteSpace=wrap;html=1;" value="Driver" vertex="1">
           <mxGeometry height="60" width="120" x="75" y="170" as="geometry" />
         </mxCell>
-        <mxCell id="_WwSA5oW7d1dnz6dA88P-44" parent="_WwSA5oW7d1dnz6dA88P-40" style="rounded=0;whiteSpace=wrap;html=1;" value="Alerta" vertex="1">
+        <mxCell id="_WwSA5oW7d1dnz6dA88P-44" parent="_WwSA5oW7d1dnz6dA88P-40" style="rounded=0;whiteSpace=wrap;html=1;" value="Alert" vertex="1">
           <mxGeometry height="60" width="120" x="75" y="240" as="geometry" />
         </mxCell>
         <mxCell id="_WwSA5oW7d1dnz6dA88P-72" parent="_WwSA5oW7d1dnz6dA88P-40" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" value="Route" vertex="1">
@@ -283,13 +284,13 @@
         <mxCell id="_WwSA5oW7d1dnz6dA88P-75" edge="1" parent="pXhSqTwXFIf6c49v25fU-20" source="_WwSA5oW7d1dnz6dA88P-73" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;dashed=1;" target="_WwSA5oW7d1dnz6dA88P-39">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="_WwSA5oW7d1dnz6dA88P-82" parent="pXhSqTwXFIf6c49v25fU-20" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="&lt;font style=&quot;font-size: 14px;&quot;&gt;&lt;b&gt;OSRM&lt;/b&gt;&lt;br&gt;(Docker Container)&lt;/font&gt;" vertex="1">
+        <mxCell id="_WwSA5oW7d1dnz6dA88P-82" parent="pXhSqTwXFIf6c49v25fU-20" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="&lt;font style=&quot;font-size: 14px;&quot;&gt;&lt;a href=&quot;https://github.com/Project-OSRM/osrm-backend&quot;&gt;&lt;b&gt;OSRM&lt;/b&gt;&lt;/a&gt;&lt;br&gt;(Docker Container)&lt;/font&gt;" vertex="1">
           <mxGeometry height="70" width="150" x="450" y="710" as="geometry" />
         </mxCell>
         <mxCell id="_WwSA5oW7d1dnz6dA88P-83" parent="pXhSqTwXFIf6c49v25fU-20" style="swimlane;whiteSpace=wrap;html=1;" value="UI (React)" vertex="1">
           <mxGeometry height="447" width="590" x="30" y="850" as="geometry" />
         </mxCell>
-        <mxCell id="_WwSA5oW7d1dnz6dA88P-90" parent="_WwSA5oW7d1dnz6dA88P-83" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" value="&lt;b&gt;Leaflet Library&lt;/b&gt;" vertex="1">
+        <mxCell id="_WwSA5oW7d1dnz6dA88P-90" parent="_WwSA5oW7d1dnz6dA88P-83" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" value="&lt;a href=&quot;https://react-leaflet.js.org/&quot;&gt;&lt;b&gt;Leaflet Library&lt;/b&gt;&lt;/a&gt;" vertex="1">
           <mxGeometry height="60" width="120" x="440" y="230" as="geometry" />
         </mxCell>
         <mxCell id="_WwSA5oW7d1dnz6dA88P-91" parent="_WwSA5oW7d1dnz6dA88P-83" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;div&gt;&lt;b&gt;Login&lt;/b&gt;&lt;/div&gt;/api/auth" vertex="1">
@@ -413,7 +414,7 @@
             <mxPoint x="-1" as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="_WwSA5oW7d1dnz6dA88P-34" parent="1" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;" value="Root/Admin" vertex="1">
+        <mxCell id="_WwSA5oW7d1dnz6dA88P-34" parent="1" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;" value="Root/Admin/Operator" vertex="1">
           <mxGeometry height="60" width="30" x="820" y="1370" as="geometry" />
         </mxCell>
         <mxCell id="_WwSA5oW7d1dnz6dA88P-106" edge="1" parent="1" source="_WwSA5oW7d1dnz6dA88P-36" style="edgeStyle=none;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;dashed=1;endArrow=open;endFill=0;" target="_WwSA5oW7d1dnz6dA88P-95">
@@ -432,11 +433,8 @@
             <mxPoint as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="_WwSA5oW7d1dnz6dA88P-36" parent="1" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;" value="Guardian" vertex="1">
+        <mxCell id="_WwSA5oW7d1dnz6dA88P-36" parent="1" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;" value="&lt;div&gt;Guardian/Monitor&lt;/div&gt;" vertex="1">
           <mxGeometry height="60" width="30" x="820" y="1170" as="geometry" />
-        </mxCell>
-        <mxCell id="_WwSA5oW7d1dnz6dA88P-35" parent="1" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;fillColor=#f8cecc;strokeColor=#b85450;" value="Truck Driver" vertex="1">
-          <mxGeometry height="60" width="30" x="820" y="1030" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
