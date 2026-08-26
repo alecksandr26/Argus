@@ -13,9 +13,19 @@ Run this locally against a downloaded zip -- it never extracts the whole archive
 CLIPS_PER_SOURCE_VIDEO random non-overlapping sub-clips per source video, and writes them
 to --output organized by subject, using Argus's own subject_<NN> folder convention -- numbered
 to CONTINUE your existing subject_01..subject_06, not a separate namespace, so the output
-mixes into raw_videos/ cleanly (--start-subject controls where the numbering picks up; default
-7, i.e. immediately after subject_06). Nothing gets uploaded anywhere automatically -- review
-the output, then upload it into Drive's raw_videos/ yourself.
+mixes into raw_videos/ cleanly.
+
+Resumable across runs, with no manual bookkeeping required: --output/subject_assignments.json
+persists which (zip, participant) pair got which subject_<NN> number, so re-running later --
+with the same zips, extra zips, or a mix -- reuses the same numbers for participants already
+seen and only assigns fresh numbers (continuing after the highest one used so far, checking
+both the assignment file and any subject_<NN> folders already sitting in --output) to newly
+seen ones. A video whose subject folder already has a full set of clips for its class is
+skipped outright, without re-streaming it out of the zip. --start-subject overrides the
+auto-detected next number for any newly-seen participant in this run (e.g. to force a
+specific starting point); it never renumbers a participant that's already been assigned.
+Nothing gets uploaded anywhere automatically -- review the output, then upload it into
+Drive's raw_videos/ yourself.
 
 Clip files use "level_<1-3>_clip_<N>.mp4" -- 1=Alert, 2=Low Vigilant, 3=Drowsy, the FINAL class
 number, not Argus's own original 1-6 scale. This deliberately reuses the "level_" word but NOT
@@ -31,13 +41,18 @@ Extensions are mixed-case in practice (.mp4, .mov, .MOV all appear in the same a
 
 Usage (run from src/cv-argus/):
     python3 scripts/extract_uta_rldd_clips.py ~/Downloads/Fold1_part1.zip
-    python3 scripts/extract_uta_rldd_clips.py ~/Downloads/Fold1_part1.zip ~/Downloads/Fold1_part2.zip --start-subject 7
+    # later, resuming -- already-assigned participants keep their numbers, new ones continue on:
+    python3 scripts/extract_uta_rldd_clips.py ~/Downloads/Fold1_part1.zip ~/Downloads/Fold1_part2.zip
+    # force a specific starting point for newly-seen participants instead of auto-detecting one:
+    python3 scripts/extract_uta_rldd_clips.py ~/Downloads/Fold2_part1.zip --start-subject 20
 
 Requires ffmpeg/ffprobe on PATH.
 """
 import argparse
+import json
 import os
 import random
+import re
 import subprocess
 import tempfile
 import zipfile
@@ -71,10 +86,62 @@ def guess_class_and_participant(zip_member_name: str):
     return cls, participant
 
 
-def assign_subject_numbers(zip_paths, start_subject: int):
-    """First pass: collect every (zip_path, participant) pair across all archives, and assign
-    each a stable subject_<NN> number starting at start_subject, sorted by (zip, participant) so
-    numbering doesn't depend on zip member iteration order."""
+DEFAULT_FIRST_SUBJECT = 7  # continuing after Argus's own subject_01..subject_06
+SUBJECT_MAP_FILENAME = "subject_assignments.json"
+
+
+def _subject_map_path(output_dir: Path) -> Path:
+    return output_dir / SUBJECT_MAP_FILENAME
+
+
+def load_subject_map(output_dir: Path) -> dict:
+    """Loads the persisted '<zip basename>::<participant>' -> subject number mapping from a
+    previous run, if any. Keyed by zip basename (not full path) so resuming works even if the
+    zip was re-downloaded to a different directory between runs."""
+    path = _subject_map_path(output_dir)
+    if not path.exists():
+        return {}
+    with open(path) as f:
+        return json.load(f)
+
+
+def save_subject_map(output_dir: Path, mapping: dict) -> None:
+    with open(_subject_map_path(output_dir), "w") as f:
+        json.dump(mapping, f, indent=2, sort_keys=True)
+
+
+def find_existing_max_subject(output_dir: Path):
+    """Scans --output for subject_<NN> folders already on disk (e.g. from a run whose
+    subject_assignments.json got lost/deleted, or Argus's own subject_01..subject_06 living in
+    the same tree) and returns the highest NN found, or None if there aren't any."""
+    if not output_dir.exists():
+        return None
+    nums = []
+    for p in output_dir.iterdir():
+        m = p.is_dir() and re.match(r"subject_(\d+)$", p.name)
+        if m:
+            nums.append(int(m.group(1)))
+    return max(nums) if nums else None
+
+
+def assign_subject_numbers(zip_paths, output_dir: Path, start_subject):
+    """Collects every (zip_path, participant) pair across all archives and assigns each a
+    stable subject_<NN> number, reusing whatever subject_assignments.json already has for a
+    pair seen in a previous run so re-running with the same/extra zips never renumbers existing
+    subjects. Newly-seen pairs get fresh numbers starting at start_subject if given, else
+    auto-continuing after the highest number already assigned or already present as a
+    subject_<NN> folder in --output (falling back to DEFAULT_FIRST_SUBJECT on a first run)."""
+    mapping = load_subject_map(output_dir)
+
+    existing_nums = list(mapping.values())
+    existing_dir_max = find_existing_max_subject(output_dir)
+    if existing_dir_max is not None:
+        existing_nums.append(existing_dir_max)
+    auto_next = max(existing_nums) + 1 if existing_nums else DEFAULT_FIRST_SUBJECT
+    next_subject = start_subject if start_subject is not None else auto_next
+    print(f"Next subject number for newly-seen participants: {next_subject} "
+          f"({'explicit --start-subject' if start_subject is not None else 'auto-detected'})")
+
     pairs = []
     for zip_path in zip_paths:
         with zipfile.ZipFile(zip_path) as zf:
@@ -88,7 +155,18 @@ def assign_subject_numbers(zip_paths, start_subject: int):
         for p in sorted(participants):
             pairs.append((zip_path, p))
 
-    return {pair: start_subject + i for i, pair in enumerate(pairs)}
+    result = {}
+    for zip_path, participant in pairs:
+        key = f"{Path(zip_path).name}::{participant}"
+        if key in mapping:
+            result[(zip_path, participant)] = mapping[key]
+        else:
+            result[(zip_path, participant)] = next_subject
+            mapping[key] = next_subject
+            next_subject += 1
+
+    save_subject_map(output_dir, mapping)
+    return result
 
 
 def ffprobe_duration_sec(video_path: str) -> float:
@@ -143,6 +221,12 @@ def process_zip(zip_path: str, output_dir: Path, rng: random.Random, subject_num
             subject_dir = output_dir / f"subject_{subject_num:02d}"
             subject_dir.mkdir(parents=True, exist_ok=True)
 
+            existing_clips = list(subject_dir.glob(f"level_{cls}_clip_*.mp4"))
+            if len(existing_clips) >= CLIPS_PER_SOURCE_VIDEO:
+                print(f"  {member} -> subject_{subject_num:02d} ({CLASS_NAMES[cls]}) already has "
+                      f"{len(existing_clips)} clips, skipping (resume)")
+                continue
+
             with tempfile.TemporaryDirectory() as tmp:
                 tmp_video = os.path.join(tmp, Path(member).name)
                 with zf.open(member) as src, open(tmp_video, "wb") as dst:
@@ -159,19 +243,38 @@ def process_zip(zip_path: str, output_dir: Path, rng: random.Random, subject_num
                 picks = pick_nonoverlapping_starts(
                     duration, CLIPS_PER_SOURCE_VIDEO, CLIP_DURATION_RANGE_SEC, MIN_GAP_SEC, rng
                 )
+                clips_written = 0
                 for clip_n, (start, dur) in enumerate(picks, start=1):
                     out_name = f"level_{cls}_clip_{clip_n:02d}.mp4"
                     out_path = subject_dir / out_name
                     if out_path.exists():
+                        clips_written += 1
                         continue
-                    subprocess.run(
-                        ["ffmpeg", "-y", "-ss", str(start), "-i", tmp_video, "-t", str(dur),
-                         "-c:v", "libx264", "-c:a", "aac", "-loglevel", "error", str(out_path)],
-                        check=True,
-                    )
+                    try:
+                        subprocess.run(
+                            # "scale=trunc(iw/2)*2:trunc(ih/2)*2" rounds width/height down to
+                            # even -- libx264 requires both dimensions divisible by 2 for 4:2:0
+                            # chroma subsampling, and some UTA-RLDD source videos (e.g. a
+                            # 480x853 portrait recording) have an odd height and would otherwise
+                            # hard-crash the encoder mid-run.
+                            ["ffmpeg", "-y", "-ss", str(start), "-i", tmp_video, "-t", str(dur),
+                             "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                             "-c:v", "libx264", "-c:a", "aac", "-loglevel", "error", str(out_path)],
+                            check=True,
+                        )
+                    except subprocess.CalledProcessError as e:
+                        # ffmpeg can leave a truncated/empty file at out_path before failing
+                        # (seen with "-y" on an encoder-open error) -- remove it rather than
+                        # leaving a corrupt clip that a later resume run would then treat as
+                        # already-done via the out_path.exists() check above.
+                        out_path.unlink(missing_ok=True)
+                        skipped.append((f"{member} clip {clip_n} ({CLASS_NAMES[cls]})",
+                                         f"ffmpeg failed: {e}"))
+                        continue
                     ingested += 1
+                    clips_written += 1
                 print(f"  {member} -> subject_{subject_num:02d} "
-                      f"({CLASS_NAMES[cls]}, {duration/60:.1f} min) -> {len(picks)} clips")
+                      f"({CLASS_NAMES[cls]}, {duration/60:.1f} min) -> {clips_written}/{len(picks)} clips")
 
     return ingested, skipped
 
@@ -186,9 +289,13 @@ def main():
         help="Output directory (default: scripts/output/uta_rldd_clips)",
     )
     parser.add_argument(
-        "--start-subject", type=int, default=7,
-        help="First subject_<NN> number to assign (default: 7, continuing after your existing "
-             "subject_01..subject_06)",
+        "--start-subject", type=int, default=None,
+        help="First subject_<NN> number to assign to any newly-seen participant in this run. "
+             "Default: auto -- continue after the highest subject_<NN> already recorded in "
+             "--output's subject_assignments.json or already present as a folder there, "
+             "falling back to 7 (after your existing subject_01..subject_06) on a first run. "
+             "A participant already assigned a number in a previous run keeps it regardless of "
+             "this flag.",
     )
     args = parser.parse_args()
 
@@ -196,7 +303,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     rng = random.Random(RANDOM_SEED)
 
-    subject_numbers = assign_subject_numbers(args.zips, args.start_subject)
+    subject_numbers = assign_subject_numbers(args.zips, output_dir, args.start_subject)
     print("Subject numbering for this run:")
     for (zip_path, participant), num in subject_numbers.items():
         print(f"  {zip_path} participant {participant} -> subject_{num:02d}")

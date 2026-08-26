@@ -1,0 +1,22 @@
+# Dev loop: `docker compose up --build` builds the "dev" target (see Dockerfile) and
+# bind-mounts the project directory so source edits are picked up by Vite's dev server
+# without rebuilding the image — mirrors src/cv-argus's docker-compose.yml dev-loop
+# pattern. There's no docker-compose.prod.yml yet: the "prod" nginx target in the
+# Dockerfile is meant to be composed alongside the FastAPI backend once that exists (see
+# the top-level CLAUDE.md's "Planned end-to-end system architecture"), not run standalone.
+services:
+  ui-argus:
+    build:
+      context: .
+      target: dev
+    image: argus/ui-argus:dev
+    env_file:
+      - .env
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./:/app
+      # Anonymous volume over node_modules: without this, the bind mount above would
+      # shadow the image's already-`npm install`ed node_modules with whatever (or
+      # nothing) exists at ./node_modules on the host.
+      - /app/node_modules

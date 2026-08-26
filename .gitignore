@@ -220,3 +220,11 @@ __marimo__/
 
 # UTA-RLDD extraction script output (large video files, not for git)
 src/cv-argus/scripts/output/
+
+# Node / React (src/ui-argus) — dist/ is already covered by the Python "Distribution /
+# packaging" section above
+node_modules/
+dist-ssr/
+*.local
+npm-debug.log*
+.vite/

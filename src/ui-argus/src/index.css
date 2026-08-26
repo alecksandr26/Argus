@@ -1,0 +1,56 @@
+/*
+ * Design tokens carried over verbatim from the approved UI mockups
+ * (see the "Argus — Mockups de UI" design canvas) so real components stay
+ * visually identical to what was reviewed, instead of drifting from a
+ * second, independently-guessed palette.
+ */
+:root {
+  --bg: oklch(0.14 0.018 258);
+  --surface: oklch(0.19 0.02 258);
+  --surface-2: oklch(0.235 0.02 258);
+  --surface-3: oklch(0.28 0.02 258);
+  --border: oklch(0.32 0.02 258 / 0.7);
+  --border-soft: oklch(0.32 0.02 258 / 0.35);
+  --text: oklch(0.95 0.01 258);
+  --text-soft: oklch(0.72 0.02 258);
+  --text-faint: oklch(0.52 0.02 258);
+  --accent: oklch(0.78 0.13 215);
+  --accent-strong: oklch(0.85 0.12 215);
+  --accent-soft: oklch(0.78 0.13 215 / 0.14);
+  --good: oklch(0.75 0.15 150);
+  --good-soft: oklch(0.75 0.15 150 / 0.14);
+  --warn: oklch(0.8 0.15 80);
+  --warn-soft: oklch(0.8 0.15 80 / 0.16);
+  --bad: oklch(0.68 0.19 25);
+  --bad-soft: oklch(0.68 0.19 25 / 0.16);
+
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  --font-body: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+}
+
+a {
+  color: var(--accent);
+}
+a:hover {
+  color: var(--accent-strong);
+}

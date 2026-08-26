@@ -47,10 +47,15 @@ mirrors `DrowsinessDetector`'s shape but needs no `custom_objects` to load — t
 built-in Keras layers (`Sequential`/`Rescaling`/`Conv2D`/etc.), not a custom `Layer`/`Model`
 subclass — and has no internal buffering/state, since it classifies one crop at a time rather
 than a sliding window. **Caveat carried over from the notebook docs, not resolved by adding
-this download plumbing:** the CNN's ~0.8 (84.75%) reported accuracy is flagged in
-`notebook/CLAUDE.md`/the root `CLAUDE.md` as an unreliable majority-class-collapse artifact from
-a degenerate 6-subject test split (0.00 recall on `Drowsy`) — not yet revalidated on the full
-subject set. `model/`'s LSTM code (`layers.py`/`lstm_model.py`/`detector.py`) is untouched and
+this download plumbing:** the old ~0.8 (84.75%) figure was a majority-class-collapse artifact
+from a degenerate 6-subject test split (0.00 recall on `Drowsy`) — that run has since been
+superseded by a real subject-grouped rerun (24 subjects, 20 complete-class), and the honest
+number is much lower: **31.53% test accuracy, 0.33 macro-F1** (see `notebook/CLAUDE.md`'s "What
+we found" and the root `CLAUDE.md`'s "Model results and current status" for the full detail,
+including per-class recall and why it's a generalization-gap problem, not an undertuned one).
+Still not a validated production number — it's what the container currently deploys, not what
+the container should be judged as ready on. `model/`'s LSTM code (`layers.py`/`lstm_model.py`/
+`detector.py`) is untouched and
 still fully functional; it's just no longer what the Dockerfile requires at build time.
 `predict_crop()`'s input (an RGB, not-yet-resized face crop) is now produced by `pipeline/`'s
 `FaceDetectorCropStage` — see "`pipeline/` — done" below.
@@ -449,10 +454,17 @@ downloaded [UTA-RLDD](https://sites.google.com/view/utarldd/home) zip archive (e
 `Fold1_part1.zip`) directly (never extracts the whole ~13GB archive at once — pulls one
 ~10-minute source video to a temp file, processes it, discards it, moves on), cuts a few short
 random non-overlapping sub-clips per source video via `ffmpeg`/`ffprobe`, and writes them as
-`level_<1-3>_clip_<N>.mp4` into new `subject_<N>` folders (continuing after
-`notebook/01_dataset_creation_lstm.ipynb`'s existing `subject_01`..`subject_06`, `subject_07` onward
-by default via `--start-subject`) under `scripts/output/` — gitignored, since it's large binary
-video output, not something to commit.
+`level_<1-3>_clip_<N>.mp4` into new `subject_<N>` folders under `scripts/output/` — gitignored,
+since it's large binary video output, not something to commit. Numbering continues after
+`notebook/01_dataset_creation_lstm.ipynb`'s existing `subject_01`..`subject_06` and is resumable
+across runs, not something requiring a manually-tracked `--start-subject` each time: a
+`subject_assignments.json` written into the output folder persists which (zip, participant) pair
+got which subject number, so re-running against the same or additional zips reuses existing
+numbers and auto-continues numbering for newly-seen ones — `--start-subject` is now only an
+explicit override, not a required argument. See the root `CLAUDE.md`'s "01_dataset_creation_lstm.
+ipynb" section (first bullet) for the current raw dataset ingestion status — as of the last run,
+`subject_01`–`subject_54` (54 subjects, 48 of them external) are extracted, with two known
+intentionally-incomplete subjects (`subject_38`, `subject_52`) flagged there rather than fixed.
 
 Deliberately reuses the `level_` filename prefix rather than a separate `class_` one (1=Alert,
 2=Low Vigilant, 3=Drowsy — the *final* class, not a sub-graded 1-6 value UTA-RLDD doesn't
@@ -523,9 +535,11 @@ file rather than re-deriving the plan from scratch.
   rebuilding does **not** refresh an existing `model-cache` volume's contents (see "Model
   download strategy" → "Gotcha this creates") — flag that rather than assuming a rebuild alone
   picks up a newly trained model.
-- The CNN's reported ~0.8 (84.75%) accuracy is not a validated number (see "Current status" and
-  `notebook/CLAUDE.md`) — don't describe it as such in code comments, docs, or the titulación
-  report; state it with the same caveat this file does.
+- The CNN's real measured number is 31.53% test accuracy / 0.33 macro-F1 (see "Current status"
+  and `notebook/CLAUDE.md`) — the old ~0.8 (84.75%) figure was a degenerate-split artifact and is
+  no longer current. Neither number is a validated production result; don't describe either one
+  as such in code comments, docs, or the titulación report — state it with the same caveat this
+  file does.
 - Don't suggest enabling `OUTPUTS=...,mjpeg` (or otherwise wiring `MjpegStreamOutputStage` in)
   for anything other than a demo. It has no authentication, and this project's own stated
   cargo-theft/security risk model (root `CLAUDE.md`) makes an open, unauthenticated camera
