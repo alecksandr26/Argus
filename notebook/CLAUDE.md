@@ -25,11 +25,11 @@ don't duplicate implementation-level edits' rationale here, put it in the root f
 | 03 | `model_training_lstm` | `lstm_windows.csv` | LSTM `.keras` + scaler | ✅ run |
 | 04 | `random_forest_training` | `frame_features.csv`/enriched | RF `.joblib` + scaler | ⚠️ baseline run, tuning/augmentation incomplete |
 | 05 | `dense_nn_training` | `frame_features.csv`/enriched | Dense NN `.keras` + scaler | ✅ run (multiple passes) |
-| 06 | `dataset_creation_face_crops` | raw videos | `face_crops_index.csv` + `.jpg`s | ⚠️ run, but only against the original 6 subjects — not yet rerun against the extracted UTA-RLDD subjects |
-| 07 | `cnn_training` | `face_crops_index.csv` | CNN `.keras` | ⚠️ baseline run, but on a degenerate split — see "What we found" |
+| 06 | `dataset_creation_face_crops` | raw videos | `face_crops_index.csv` + `.jpg`s | ⚠️ run against 24 subjects (20 complete-class); more UTA-RLDD subjects still not extracted — see "What we found" |
+| 07 | `cnn_training` | `face_crops_index.csv` | CNN `.keras` | ⚠️ from-scratch CNN: 36.67% acc / 0.3614 macro-F1 (35.93% ± 9.07% over 3-fold CV) — low, not a bug; MobileNetV2 backbone rerun too and regressed hard (16.81% acc, collapsed to 0 recall on Low Vigilant) — see "What we found" |
 | 08 | `deployment_export_lstm` | LSTM `.keras` + scaler | deployed `LstmGeometricFeatureModel` | ⬜ not re-run since MAX_TIMESTEPS changed to 120 |
 | 09 | `dataset_creation_cnn_lstm` | `face_crops_index.csv` | `cnn_lstm_windows_index.csv` | ⬜ built, not run (needs 06 first) |
-| — | `10_cnn_lstm_training` | `cnn_lstm_windows_index.csv` | CNN+LSTM `.keras` | ❌ does not exist yet |
+| 10 | `cnn_lstm_training` | `cnn_lstm_windows_index.csv` | CNN+LSTM `.keras` (from-scratch + MobileNetV2) | ⚠️ run once against the stale 24-subject window index (pre-refresh) — see "What we found"; needs a rerun against the ~54-subject index before its numbers mean anything |
 
 Four model families share two dataset-creation notebooks:
 
@@ -38,7 +38,7 @@ Four model families share two dataset-creation notebooks:
 02 dataset_creation_flat  ──► frame_features.csv ──► 04 random_forest_training
                                                   └─► 05 dense_nn_training
 06 dataset_creation_face_crops ──► face_crops_index.csv ──► 07 cnn_training
-                                                         └─► 09 dataset_creation_cnn_lstm ──► (10, not built)
+                                                         └─► 09 dataset_creation_cnn_lstm ──► 10 cnn_lstm_training
 ```
 
 ## What we found
@@ -74,43 +74,103 @@ Further RandomForest/Dense NN tuning is paused (see `CLAUDE.md` for the full rec
 why the RF hyperparameter search notebook cell hangs — a `RandomizedSearchCV`/`RandomForestClassifier`
 double `n_jobs=-1` nesting issue, not a logic bug).
 
-**The CNN's first run (`07_cnn_training.ipynb`) produced an 84.75% test accuracy that is not
-trustworthy, and the notebook has since been fixed rather than the number being reported as a
-result:**
+**The CNN's first run produced an 84.75% test accuracy that was never trustworthy — a degenerate-
+split, majority-class-collapse artifact, not a real result. That run has since been superseded by
+a real one, and the honest number is much lower:**
 
-- `face_crops_index.csv` (from `06`) only covers **6 subjects** — the original Argus recordings,
-  not yet the extracted UTA-RLDD ones (`subject_07+`). An 80/20 `GroupShuffleSplit(random_state=42)`
-  over 6 subjects put 2 subjects in the test fold, and those 2 happened to have **zero `Alert`
-  crops between them**.
-- Against that degenerate test set, the model scored 84.75% accuracy purely by defaulting to
-  `Low Vigilant` (89% of the test set): 0.00 recall on `Drowsy` (93 test examples, all missed) and
-  `Alert` had no test examples to even score against. Training accuracy also hit >99% within 2
-  epochs on a 28K-param model trained over only 4 subjects — a sign the model was keying on
-  subject identity (skin tone/lighting/background) rather than drowsiness cues, not evidence of a
-  genuinely easy task. Epoch-to-epoch validation accuracy swung between 0.11 and 0.89 for the same
-  reason: with so few held-out subjects, each epoch's decision boundary either happens to favor
-  those 2 subjects' appearance or it doesn't.
-- **Fixed in the notebook** (not yet rerun): the split now uses `StratifiedGroupKFold`, restricted
-  to only choose **test-fold subjects from among subjects that have all 3 classes** — an
-  incomplete subject (missing a class entirely) still contributes its rows to training, it's just
-  never eligible to be picked as a held-out test subject, since a test fold drawn from it could be
-  missing a class no matter how the split algorithm balances things. This is a hard, provable
-  guarantee (test always has every class), not just a lower-probability version of the original
-  bug, and it raises an error if it's somehow still violated. Training now selects/checkpoints on
-  macro-F1 instead of raw accuracy (which is what let the majority-class collapse look good in the
-  first place); augmentation was strengthened (rotation/zoom/contrast on top of the existing
-  flip/brightness) to make the subject-identity shortcut harder to exploit. Both `06` and `07` were
-  also refactored to cut redundant cells (merged setup cells, consolidated the "Index CSV Summary"
-  and "Dataset Sanity Check" sections into one, and the "Recovering an Index" utility in `06`
-  dropped its legacy `_f{frame_idx}`-filename branch — the pipeline has exclusively written
-  `_s{sample_idx}` filenames for a while, so that branch was dead weight for any future recovery).
-  None of this substitutes for more subjects — see the next point.
-- **The real fix is more subjects.** `raw_videos/` on Drive already has folders for `subject_07`
-  onward (UTA-RLDD extraction has been run), but `06`'s own per-subject completeness check (added
-  in response to this) shows only 9 of them actually have crops indexed so far, and 4 of those 9
-  are missing a class — extraction needs to be resumed (rerun `06` in Colab; it's resume-aware and
-  will only process what's missing) until its completeness check reports everything covered, not
-  assumed to already be complete just because the folders exist.
+- `face_crops_index.csv` (from `06`) originally covered only **6 subjects** — the original Argus
+  recordings, not yet the extracted UTA-RLDD ones (`subject_07+`). An 80/20
+  `GroupShuffleSplit(random_state=42)` over 6 subjects put 2 subjects in the test fold, and those 2
+  happened to have **zero `Alert` crops between them**. Against that degenerate test set, the model
+  scored 84.75% accuracy purely by defaulting to `Low Vigilant` (89% of the test set): 0.00 recall
+  on `Drowsy` (93 test examples, all missed) and `Alert` had no test examples to even score
+  against. Training accuracy also hit >99% within 2 epochs on a 28K-param model trained over only
+  4 subjects — a sign the model was keying on subject identity (skin tone/lighting/background)
+  rather than drowsiness cues, not evidence of a genuinely easy task.
+- **The split/metric/augmentation fixes proposed in response to that run** (`StratifiedGroupKFold`
+  restricted to choosing test-fold subjects only from among subjects with all 3 classes present,
+  macro-F1-based checkpointing instead of raw accuracy, strengthened rotation/zoom/contrast
+  augmentation) have since actually been rerun, against the fuller extracted subject set (24
+  subjects, 3751 crops, 20 of them complete-class): **31.53% test accuracy, 0.33 macro-F1**
+  (`Alert` recall 0.28, `Low Vigilant` 0.25, `Drowsy` 0.42). This is real signal, not a bug in the
+  eval code, and it's a generalization-gap problem specifically, not underfitting: train accuracy
+  reaches 99%+ by epoch 22, but test loss (5.81) runs nearly 4x the best logged validation loss —
+  the val-based guardrails above are real improvements, but with only 20 complete-class subjects
+  (16 train / 4 val / 4 test) a single fold's number also carries real sampling variance from
+  which specific subjects land in the test split.
+- **Further changes added to `07_cnn_training.ipynb` in response to this real result** — a
+  MobileNetV2 frozen-ImageNet-backbone variant — previously defined in the notebook but never
+  actually trained — now trained and evaluated side by side with the from-scratch CNN, with an
+  optional fine-tuning phase (unfreeze the backbone's last ~30 layers, much lower LR); a
+  `USE_FOCAL_LOSS` toggle (on by default) as an alternative to plain class-weighted cross-entropy;
+  stronger regularization (`l2` now on all three conv layers, not just the head; dropout raised
+  0.4 → 0.5); and a subject-fold cross-validation diagnostic (`RUN_CROSS_VALIDATION`) to measure
+  how much the reported number moves across different held-out-subject draws rather than trusting
+  one fold's number as the ceiling — **these have now been rerun, with real numbers:**
+  - The **from-scratch CNN**, with the regularization/focal-loss changes, improved to **36.67%
+    test accuracy, 0.3614 macro-F1** on the same single fold (`Alert` recall 0.33, `Low Vigilant`
+    0.27, `Drowsy` 0.50) — a real gain over the 31.53%/0.33 figure above. The **3-fold subject-CV
+    diagnostic** puts this at **35.93% ± 9.07% test accuracy** (macro-F1 0.3422 ± 0.1085) across
+    folds ranging 25.45%-41.23% — confirming real fold-to-fold variance at this subject count, but
+    the mean lands close to the single-fold number rather than far from it.
+  - The **MobileNetV2 transfer-learning variant was a clear regression, not an improvement**:
+    **16.81% test accuracy, 0.1428 macro-F1 frozen**, and fine-tuning the last ~30 backbone layers
+    didn't fix it (**16.81% accuracy, 0.1447 macro-F1**) — both variants collapsed to **zero
+    recall on `Low Vigilant`**, never predicting that class at all. That specific failure shape (a
+    clean 2-of-3-class collapse, not just lower accuracy) points more at a config/architecture
+    mismatch than a real "pretraining doesn't help" verdict: `alpha=0.35` (the thinnest MobileNetV2
+    variant) at a 96×96 input downsamples to roughly a 3×3 feature map before global-average-
+    pooling, which may be discarding most of the spatial detail the eye/mouth region needs. Before
+    treating MobileNetV2 as ruled out, a higher input resolution or larger `alpha` is worth trying
+    — this hasn't been done yet.
+- Both `06` and `07` were also refactored to cut redundant cells (merged setup cells, consolidated
+  the "Index CSV Summary" and "Dataset Sanity Check" sections into one, and the "Recovering an
+  Index" utility in `06` dropped its legacy `_f{frame_idx}`-filename branch — the pipeline has
+  exclusively written `_s{sample_idx}` filenames for a while, so that branch was dead weight for
+  any future recovery).
+- **The real fix is still more subjects — and this has now moved forward again.** `raw_videos/`
+  on Drive has continued growing via `extract_uta_rldd_clips.py`, up to roughly **54 subjects**
+  as of this writing — well past the 24 subjects (20 complete-class) `06`/`07`/the first `10` run
+  below actually indexed. `06` has **not been rerun** against this larger pool yet (it also needs
+  a `reset_dataset=True` rebuild regardless, not just a resume — see `06`'s
+  `MAX_FRAMES_PER_CLIP` change above), so `face_crops_index.csv`/`cnn_lstm_windows_index.csv`
+  are both still stale relative to what's actually on Drive. Rerunning `06` (reset) → `09` → `10`
+  against the full subject pool is the next concrete step, not a hypothetical one.
+
+**`10_cnn_lstm_training.ipynb`'s first real run — against the stale 24-subject window index, not
+yet the 54-subject one, so treat this as a pipeline-correctness smoke test more than a verdict:**
+
+| Variant | Test Acc | Macro-F1 | Alert R | Low Vigilant R | Drowsy R |
+|---|---|---|---|---|---|
+| CNN+LSTM (from-scratch) | 34.19% | 0.1936 | 0.99 | 0.03 | 0.01 |
+| CNN+LSTM (MobileNetV2, frozen) | 46.79% | 0.4090 | 0.83 | 0.00 | 0.57 |
+| CNN+LSTM (MobileNetV2, fine-tuned) | 43.38% | 0.3827 | 0.81 | 0.00 | 0.49 |
+
+- **The MobileNetV2 resolution/alpha fix (`alpha=1.0`, `IMG_SIZE_MOBILENET=128`, vs. 07's
+  `alpha=0.35`/96×96) looks like it worked** — 46.79% accuracy / 0.4090 macro-F1 (frozen) is a
+  real jump over 07's single-frame MobileNetV2 (16.81%) and over every other model tried so far,
+  including this notebook's own from-scratch variant. Real, useful evidence for the diagnosis in
+  "Cheaper options" above, not yet a validated production number.
+- **The from-scratch backbone got *worse*, not better, than 07's single-frame CNN** (0.1936
+  macro-F1 vs. 07's 0.3614) — it collapsed toward predicting `Alert` almost exclusively (0.99
+  recall there, ~0 on the other two classes). Its saved checkpoint was also picked at a
+  `val_macro_f1` of 0.48, but scored 0.19 macro-F1 on the actual test set — a large val/test gap
+  driven by a tiny (117-window, 4-subject) validation pool, a genuine reliability problem at this
+  subject count, not just a modeling one.
+- **`Low Vigilant` recall is exactly 0.0000 for *both* MobileNetV2 variants** — never predicted
+  once. Same failure shape as 07's MobileNetV2 collapse, just landing on a different class this
+  time, which looks less like a fixed bug and more like `Low Vigilant` (the ambiguous middle
+  class) being structurally the hardest for every backbone tried so far. Worth watching closely
+  on the 54-subject rerun — if it persists there too, that's a stronger signal than "not enough
+  data."
+- **Fine-tuning made MobileNetV2 worse, not better** (46.79%→43.38% accuracy, 0.4090→0.3827
+  macro-F1) — its best epoch was epoch 1 of fine-tuning; every epoch after degraded further.
+  Worth reconsidering whether the fine-tune phase helps at all at this dataset size before
+  assuming it just needs a longer run.
+- **No evidence yet that the extra temporal context helps** — the whole premise of building this
+  model. Per-duration accuracy is flat for MobileNetV2 frozen (46.8/46.5/47.2/47.2% across
+  3s→20s) and trends slightly *down* with longer windows for the fine-tuned variant. Not a
+  result to read too much into given the subject count, but not a positive signal either.
 
 ## Why CNN is the most probable next backbone
 
@@ -124,29 +184,79 @@ enough signal." That points at two independent levers, both still untried:
    it isn't limited to the same |r| ≤ 0.26 ceiling by construction — it might find signal the
    geometric approach structurally couldn't represent, even from a single frame (`07_cnn_training.ipynb`).
 2. **Real temporal context, combined with that pixel-level view** — `09_dataset_creation_cnn_lstm.ipynb`
-   already builds the dataset index for a `TimeDistributed(CNN) → LSTM` hybrid: the same 1-6s
-   windowed-sequence idea that makes the geometric LSTM work, applied to face-crop *images*
-   instead of feature vectors. This is the most complete answer to the diagnosed problem, since it
-   removes both limitations (single-instant *and* hand-engineered-summary) at once, not just one.
+   already builds the dataset index for a `TimeDistributed(CNN) → LSTM` hybrid: the same
+   windowed-sequence idea that makes the geometric LSTM work (curated 3s/5s/10s/20s durations,
+   tiled non-overlapping within each duration — see the root `CLAUDE.md`'s "Notebook
+   architecture" for why this diverges from the geometric LSTM's own 1-6s/1s-stride scheme),
+   applied to face-crop *images* instead of feature vectors. This is the most complete answer to
+   the diagnosed problem, since it removes both limitations (single-instant *and*
+   hand-engineered-summary) at once, not just one.
 
 **Calibrated expectation, not a promise:** this is also, by a wide margin, the most data-hungry
 architecture in this project — a deep model over raw pixels (or pixel *sequences*), trained on a
-subject pool that's still only 6 for the CNN path (see "What we found" above) even though ~24 are
-available once `06` is rerun against the extracted UTA-RLDD subjects. It's the best-reasoned next
-bet given the evidence above, not a guaranteed win; treat it as a real experiment. `07`'s only run
-so far was on a degenerate split and isn't a real read on this approach yet; `09` hasn't been run
-at all, and the CNN+LSTM training notebook (`10`) doesn't exist yet — this is still mostly the
-planned direction, not a result.
+subject pool that's now 20 complete-class for the CNN path (see "What we found" above), out of up
+to 60 available via UTA-RLDD. The real subject-grouped `07` rerun (36.67% accuracy, 0.3614
+macro-F1 single-fold; 35.93% ± 9.07% across the 3-fold subject-CV diagnostic) confirms this
+direction has real signal but is not yet a clear win — it's now roughly in line with Dense NN's
+38.6-40.8%, and clearly above RandomForest's 32.6%, but still in the same 33-41% band, not a
+decisive break above it. Point 1 above (raw pixels) has now been genuinely tested, not just
+proposed — including the MobileNetV2 pretrained-backbone variant, which underperformed sharply
+(16.81% accuracy, collapsing to zero recall on `Low Vigilant`; see "What we found" for why that
+result looks more like a resolution/architecture mismatch than a genuine verdict against
+pretraining). Point 2 (`09`'s windowed CNN+LSTM) is still untested — `09` hasn't been run at all,
+and the CNN+LSTM training notebook (`10`) doesn't exist yet.
 
 **This "most probable next backbone" reasoning has since become the current focus, not just a
 recommendation**: `src/cv-argus` now actually deploys `07`'s single-frame CNN by default (see
 "What we found" above and `src/cv-argus/CLAUDE.md`'s "Current status"). That's a statement about
-what's *running*, though, not about what's *validated* — every caveat in this section and in
-"What we found" (the degenerate 6-subject split, the incomplete extraction, the untrustworthy
-84.75% figure) still applies exactly as written; being deployed didn't retroactively fix any of
-it. Getting `06` rerun to full completeness and `07` re-evaluated on a trustworthy split remains
-the actual next step, now with more urgency since it's no longer just a baseline being compared
-against, but the model this project's edge device runs.
+what's *running*, though, not about what's *validated* — the CNN's real, measured number (36.67%
+accuracy, 0.3614 macro-F1 single-fold; 35.93% ± 9.07% across the 3-fold CV diagnostic, small-N
+with a real train/test generalization gap) is still a long way from a validated production
+result; being deployed didn't retroactively fix that. Finishing UTA-RLDD extraction toward the
+full 60-subject pool remains the actual next step, now with more urgency since it's no longer
+just a baseline being compared against, but the model this project's edge device runs.
+
+## Cheaper options considered alongside the full CNN+LSTM build
+
+`09`/`10` (`TimeDistributed(CNN) → LSTM`, see "Why CNN is the most probable next backbone" above)
+is the direction actually being pursued as of this writing — both `09_dataset_creation_cnn_lstm.
+ipynb` and `10_cnn_lstm_training.ipynb` are now built (two backbones, from-scratch and
+MobileNetV2, trained side by side), but `10` hasn't been run yet. It's also, by a wide margin,
+the most data-hungry model in the project (see the "Calibrated expectation" note above), so
+before proposing a *different* fresh architecture once `10` is run, if it underperforms or
+overfits — a real risk, not a hypothetical one, given the subject count — check these three
+already-considered options first; they were discussed and deliberately not chosen as the primary
+path, not overlooked:
+
+1. **Diagnose the MobileNetV2 collapse rather than writing pretrained backbones off.** Covered in
+   "What we found" above: both the frozen and fine-tuned MobileNetV2 variants collapsed to zero
+   recall on `Low Vigilant`, which looks like an `alpha=0.35`/96×96-input resolution mismatch
+   (≈3×3 feature map before pooling) rather than a real "transfer learning doesn't help here"
+   result. A higher input resolution or larger `alpha` hasn't been tried yet and is a cheap
+   (no new data, no new architecture) thing to rule out.
+2. **Ensemble the three already-trained single-frame models** (RandomForest, Dense NN, the
+   from-scratch CNN) via late fusion (averaged or stacked softmax outputs on the same frame).
+   Zero new data and zero new architecture — they cap out at similar accuracy individually but
+   draw on genuinely different information (hand-engineered geometric ratios vs. raw pixels), so
+   if their errors are even partially uncorrelated, fusing them could beat any single one. Not
+   yet tried.
+3. **A scaled-down alternative to training a CNN end-to-end inside the recurrent loop:** instead
+   of `TimeDistributed(CNN) → LSTM` learning a CNN backbone from scratch over image sequences
+   (what `09`/`10` does), use the already-trained `07` CNN as a **frozen feature extractor** —
+   run it once per frame, take its penultimate-layer embedding (64-dim, from
+   `GlobalAveragePooling2D` → `Dense(64)`), and concatenate that onto the 58 per-timestep
+   geometric features already flowing through `01`'s windowed LSTM pipeline, reusing `03`'s LSTM
+   architecture largely unchanged (just a wider per-timestep input). This still combines
+   raw-pixel visual cues with genuine temporal context — the same goal as `09`/`10` — but with far
+   fewer new trainable parameters, since the CNN itself isn't being trained inside the recurrent
+   graph. Worth a look specifically if `10`'s full end-to-end version overfits before it
+   generalizes, as a lower-variance fallback rather than a from-scratch redesign. Not yet built.
+
+A fourth, independent lever — worth naming since it's different from "finish extracting UTA-RLDD"
+(the currently in-progress data effort) rather than a substitute for it — is **sourcing subjects
+from datasets other than UTA-RLDD** (e.g. NTHU-DDD, YawDD, DROZY) once UTA-RLDD's own 60-subject
+ceiling is reached. Not evaluated for licensing/label-compatibility yet; a later step, not a
+near-term one.
 
 ## Recent implementation decisions in `06`/`07`
 
@@ -204,9 +314,15 @@ live-broken either. Not fixed here — flagged for whoever picks that up next.
 
 - Check the Pipeline map's Status column before assuming a notebook has been run or trustworthy —
   "⬜ not run yet", "⚠️", and "❌ does not exist yet" are load-bearing distinctions, not filler.
-  `06`/`07` have been run, but `07`'s only result so far came from a degenerate 6-subject split
-  (see "What we found") — don't report its 84.75% accuracy as a real number, and don't report
-  `09`/`10` results as if they exist at all.
+  `06`/`07` have now been run on a real subject-grouped split (24 subjects; from-scratch CNN:
+  36.67% test accuracy / 0.3614 macro-F1, 35.93% ± 9.07% over a 3-fold subject-CV diagnostic —
+  see "What we found") — don't report the old 84.75% or 31.53% figures as current (both were
+  earlier runs since superseded: 84.75% a degenerate-split artifact, 31.53% an earlier real-but-
+  improved-on rerun), and don't report `09`/`10` results as if they exist at all. `07`'s
+  MobileNetV2 backbone variant has also now been rerun and regressed sharply (16.81% accuracy,
+  zero recall on `Low Vigilant`) — treat that as a real result too, not an untested addition, but
+  see "What we found" for why it looks more like a resolution/architecture mismatch than a
+  verdict against pretrained backbones in general.
 - When asked to improve accuracy on the flat dataset (RandomForest/Dense NN), don't propose
   hyperparameter tuning or generic regularization as a first move — re-read "What we found"
   above first. The ceiling is diagnosed as a single-frame information limit (Spearman |r| ≤
@@ -215,9 +331,16 @@ live-broken either. Not fixed here — flagged for whoever picks that up next.
   root cause specifically, not just retry a variant of what's already ruled out.
 - When asked what to build next, default to the CNN direction ("Why CNN is the most probable
   next backbone") rather than proposing a fresh architecture search — it's the reasoned next
-  step given the evidence here, and notebooks 06/07/09 already exist in support of it (09 as a
-  dataset-index step only; its training notebook `10_cnn_lstm_training.ipynb` doesn't exist yet
-  and would need to be created).
+  step given the evidence here, and notebooks 06/07/09/10 now all exist in support of it (09 as a
+  dataset-index step, 10 as the actual training notebook — from-scratch CNN and MobileNetV2
+  backbones trained side by side, ported split/loss/callback conventions from 07). `10` hasn't
+  been run yet as of this writing — don't report results for it that don't exist.
+- If `10`'s full CNN+LSTM underperforms or overfits once it's run, don't reach for a
+  brand-new architecture as the first response — see "Cheaper options considered alongside the
+  full CNN+LSTM build" above. The MobileNetV2 resolution fix, a late-fusion ensemble of the
+  existing RandomForest/Dense NN/CNN models, and a frozen-CNN-embedding-into-the-geometric-LSTM
+  hybrid were all already discussed as lower-data-cost alternatives; treat them as the next
+  things to try, not as ideas that still need to be proposed from scratch.
 - Don't edit `GeometricRatioFeatureLayer` in one of its four copies without checking the other
   three (`01_dataset_creation_lstm.ipynb`, `02_dataset_creation_flat.ipynb`,
   `08_deployment_export_lstm.ipynb`, `src/cv-argus/src/model/layers.py`) — there's no automated
