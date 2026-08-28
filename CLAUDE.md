@@ -135,402 +135,30 @@ firmware described in "Planned end-to-end system architecture" don't exist yet.
 - `docs/references/` — background research papers on drowsiness/microsleep detection that
   inform feature and model choices.
 
-## Notebook architecture
-
-Each notebook is a linear pipeline; later cells depend on variables/objects defined by earlier
-cells *within the same notebook* (Colab-style top-to-bottom state, not a package with imports).
-Handoff *between* notebooks is exclusively via Drive artifacts (CSVs, then `.keras`/`.joblib`
-models), never shared Python state — each notebook re-mounts Drive and redefines its own
-constants/classes in a "Setup" section at the top rather than assuming a prior notebook's
-session is still live.
-
-There are four model families, each trained on one of two datasets built from the same raw
-videos. Two dataset-creation notebooks feed all four model-training notebooks:
-
-```
-01_dataset_creation_lstm.ipynb ──► lstm_windows.csv   ──► 03_model_training_lstm.ipynb ──► 08_deployment_export_lstm.ipynb
-02_dataset_creation_flat.ipynb ──► frame_features.csv ──► 04_random_forest_training.ipynb
-                                                       └─► 05_dense_nn_training.ipynb
-06_dataset_creation_face_crops.ipynb ──► face_crops_index.csv + face_crops/*.jpg ──► 07_cnn_training.ipynb
-```
-
-The LSTM is the only model family with a deployment-export notebook — it's still the model the
-edge pipeline is designed around (see `03_model_training_lstm.ipynb`'s Design Decision cell).
-RandomForest, the Dense NN, and the CNN exist as trained-and-evaluated baselines/comparisons, not
-as deployment candidates with their own export path yet.
-
-**`01_dataset_creation_lstm.ipynb`** — raw video → windowed, padded features for the LSTM:
-
-1. **Labels & feature design (markdown)** — defines the 3 drowsiness classes (`Alert` →
-   `Low Vigilant` → `Drowsy`), aligned to [UTA-RLDD](https://sites.google.com/view/utarldd/home)'s
-   tri-partition of the Karolinska Sleepiness Scale (KSS 1–3 / 6–7 / 8–9) rather than an
-   invented scheme, precisely so that dataset's labels can be adopted directly instead of
-   re-mapped through a second, harder-to-justify boundary. This project originally used a finer
-   6-level scale for Argus's own raw clips (1 = alert → 6 = entering microsleep) with a
-   `level_<1-6>_clip_<N>.mp4` filename convention, distinct from the external UTA-RLDD subjects'
-   already-final-class `level_<1-3>_clip_<N>.mp4` convention (see below) — this originally
-   required a `map_level` helper (defined in each dataset-creation notebook's Pipeline
-   Configuration Constants cell) to disambiguate the two conventions by **subject number**
-   (`subject_<N>` with `N >= EXTERNAL_SUBJECT_START` treated as already-final-class,
-   `subject_01`–`subject_06` mapped down via a 1–6→3-class table) since both conventions shared
-   the same `level_` filename prefix. **Argus's own raw clips have since been renamed** to the
-   same already-final `level_<1-3>` convention as the external subjects, so that
-   subject-number-based disambiguation no longer applies: `map_level` (still defined identically
-   across all three dataset-creation notebooks — keep them in sync) is now a simple validating
-   pass-through (raise if a level outside 1–3 is ever encountered) rather than a per-subject
-   lookup. Also defines the candidate per-frame feature set: manual EAR/MAR ratios, MediaPipe
-   blendshape scores (eye/mouth/eyebrow), gaze, head pose (pitch/yaw/roll), and detector
-   confidence. A "speech confound" flag (mouth-smile blendshapes) is tracked separately so
-   talking/singing isn't mistaken for yawning. A "Data Collection Methodology" cell right after
-   the levels table documents how the labels were actually grounded: Argus's own pre-mapping
-   levels 1–5 are self-recorded under genuine fatigue (late-night/sleep-deprived recording
-   sessions, not staged), while level 6 (now renamed to final class 3/Drowsy) was acted —
-   performed while already at a genuine level-5 state, not from a fully alert baseline, since
-   safely capturing a real microsleep episode on camera isn't practical. UTA-RLDD ingestion (60
-   subjects, 180 ~10-minute videos, one constant label per video) is a **local script**, not a
-   notebook cell — `src/cv-argus/scripts/extract_uta_rldd_clips.py` cuts each source video into
-   several short, non-overlapping random sub-clips via `ffmpeg`, writing them as
-   `level_<1-3>_clip_<N>.mp4` into new `subject_<N>` folders continuing after Argus's own
-   (`subject_07` onward by default) — deliberately reusing the `level_` word (1=Alert,
-   2=Low Vigilant, 3=Drowsy, the *final* class) rather than a separate `class_` prefix; this is
-   the convention Argus's own clips were renamed to match. The script's `--start-subject` isn't
-   read by `map_level` for anything — it now only matters for not colliding with Argus's own
-   `subject_01`–`subject_06` folders when the script is run, and even that's automatic by
-   default: the script persists a `subject_assignments.json` in its output folder and
-   auto-continues numbering after whatever's already there, so `--start-subject` is an optional
-   override for a forced starting point, not something that has to be computed and passed by
-   hand on every run.
-
-   **Raw dataset ingestion is now complete for every UTA-RLDD fold downloaded so far:**
-   `dataset/raw_videos/` holds `subject_01`–`subject_06` (Argus's own) plus `subject_07`–
-   `subject_54` — 48 external UTA-RLDD subjects extracted across all eight fold zips downloaded
-   to date (`Fold1_part1`/`_part2` through `Fold4_part1`/`_part2`), 54 subjects total. Two of
-   the external subjects are intentionally incomplete rather than silently dropped or worked
-   around: `subject_38` has no `Drowsy` clips because that source recording was split across two
-   zip members (`10_1.mp4`/`10_2.mp4`) the extraction script's label parser doesn't recognize as
-   one video, and `subject_52` has only `Drowsy` clips because its `Alert`/`Low Vigilant` source
-   files use a `.m4v` extension outside the script's recognized video extensions — both are
-   known, understood gaps left as-is by explicit choice (not bugs quietly worked around), and
-   worth stating as such rather than glossed over. This is the raw-video ingestion finishing, not
-   a claim that any model has been retrained on the larger set yet — the "Model results and
-   current status" section below still reflects the earlier 24-subject run (20 complete-class);
-   rerunning `01`/`02`/`06_dataset_creation_face_crops.ipynb` against this 54-subject set is the
-   next step, not something already done, and the new complete-class subject count (for
-   `07`–`54`, at least 46 of 48 given the two gaps above; Argus's own `01`–`06` untouched by this
-   script) hasn't been recomputed against the full set yet either. State the acted-level-6 (now
-   Drowsy) and cross-dataset-labeling-method caveats plainly in the titulación report rather than
-   leaving them implicit.
-
-2. **Google Drive project setup** — mounts Drive and validates/creates the expected folder
-   layout under `/content/drive/MyDrive/Argus/`:
-   ```
-   models/                             # pretrained MediaPipe bundles + trained model weights
-   dataset/raw_videos/subject_NN/level_L_clip_NN.mp4
-   dataset_processed/lstm_windows.csv        # from 01_dataset_creation_lstm.ipynb
-   dataset_processed/frame_features.csv      # from 02_dataset_creation_flat.ipynb
-   dataset_processed/face_crops_index.csv    # from 06_dataset_creation_face_crops.ipynb
-   dataset_processed/face_crops/*.jpg        # from 06_dataset_creation_face_crops.ipynb
-   ```
-   Raw video filenames encode subject ID and drowsiness level (`level_<L>_clip_<N>.mp4`), which
-   is parsed via regex throughout the notebooks rather than stored as separate structured data.
-
-3. **Exploratory visualization** — histograms/bar charts of clip counts and durations by
-   drowsiness level and by subject, to check dataset balance.
-
-4. **MediaPipe FaceLandmarker setup** — downloads the pretrained `.task` bundle; includes a
-   (currently disabled/in-progress) quantization step via `ai_edge_quantizer`.
-
-5. **Feature extraction pipeline** — a TensorFlow layer (`GeometricRatioFeatureLayer`) computes
-   EAR, MAR, and head pose from landmarks; this is reused both when building training datasets
-   and inside the deployed model so behavior is identical in both places. This class must stay
-   byte-identical across four places it's redefined: this notebook (source of truth),
-   `02_dataset_creation_flat.ipynb`, `08_deployment_export_lstm.ipynb`, and
-   `src/cv-argus/src/model/layers.py`. Pipeline config constants (`sampling_fps = 10`, window
-   sizes `1.0–6.0s` in 1s steps, `stride_sec = 1.0`, `pose_validity_threshold_deg = 20.0`,
-   `MAX_TIMESTEPS = 60`) live in one cell — see "Pipeline Configuration Constants" — and drive
-   the sliding-window extraction. Windows containing any invalid (face-lost) frame are discarded
-   entirely rather than padded/imputed. Each valid window's `(num_real_frames, 58)` feature
-   matrix (7 base geometric features — `EAR_left`, `EAR_right`, `MAR`, `pitch`, `yaw`, `roll`,
-   `ear_mar_valid` — followed by 51 MediaPipe blendshape scores) is then zero-*pre*-padded up to
-   a fixed `MAX_TIMESTEPS = 60` and flattened into one row of `lstm_windows.csv`, rather than
-   saved as a separate `.npy` file per window — thousands of tiny binary files was slow to
-   generate and sync. `MAX_TIMESTEPS` was originally 120 (double the 6-second/60-frame max window
-   duration, chosen for unused headroom rather than derived from a duration analysis) but was
-   brought down to exactly `max_context_sec * sampling_fps = 60` (zero headroom) after a full
-   extraction run at 120 OOM-crashed the Colab kernel: the "Video Processing Loop" cell
-   accumulates every window's flattened, `MAX_TIMESTEPS * num_features`-wide row from every video
-   into one Python list before a single `pd.DataFrame(rows)` call builds the whole CSV at once, so
-   peak RAM scales directly with `MAX_TIMESTEPS`. This isn't something `04_random_forest_training.
-   ipynb` / `05_dense_nn_training.ipynb` / CNN notebooks need to know about at all — it's purely an
-   LSTM sequence-buffer concept; the other three model families consume single-frame/single-image
-   rows with no timestep dimension whatsoever.
-
-**`02_dataset_creation_flat.ipynb`** — raw video → one row per valid frame, no windowing:
-
-6. Reuses the same MediaPipe setup, `GeometricRatioFeatureLayer`, and label mapping as notebook
-   1, but skips windowing entirely: every valid sampled frame becomes its own row of
-   `frame_features.csv` (58 named feature columns + subject/level/parent_video/frame_idx), tagged
-   with the single label of the clip it came from. This is deliberately the cheapest dataset to
-   generate, for the model families that are structurally incapable of using a sequence anyway.
-7. **Statistical validation** — Spearman correlation (levels are ordinal) and Kruskal-Wallis
-   tests per feature against drowsiness level, run directly on `frame_features.csv` (no
-   window-mean aggregation needed, since each row already is one frame). Used to select
-   `04_random_forest_training.ipynb`'s manually-curated feature subset;
-   `05_dense_nn_training.ipynb` uses all 58 features instead and lets the network learn its own
-   weighting.
-
-**`03_model_training_lstm.ipynb`** — reads `lstm_windows.csv`, doesn't touch video/MediaPipe:
-
-8. **LSTM model** — the primary sequence model. Each CSV row is reshaped straight back into
-   `(MAX_TIMESTEPS, num_features)` — no padding decision happens in this notebook, since the CSV
-   already stores the padded shape. Architecture:
-   `LSTM(128, return_sequences=True) → Dropout → LSTM(64) → Dropout → Dense(3, softmax)`,
-   `stateful=False`, `GroupShuffleSplit` grouped by subject (a fix from the original monolith,
-   which computed a `groups` variable but then actually split with plain
-   `train_test_split(..., stratify=...)`, letting overlapping windows from the same subject leak
-   across train/test and inflating reported accuracy), trained with `class_weight` (computed from
-   the actual training-label distribution) since `Drowsy` — the one level that had to be acted
-   rather than self-recorded, see notebook 1's "Data Collection Methodology" note — is plausibly
-   the rarest class and also the most safety-critical to not neglect. A markdown cell right
-   before the model definition ("Design Decision: Persistent (`stateful=True`) Hidden State")
-   documents why persistent cross-call hidden state was evaluated and deferred rather than
-   adopted — worth reading before proposing that change again, since the trade-offs
-   (training-pipeline restructuring, a cross-driver state-leak safety risk, and no measured
-   latency problem to justify it) were already analyzed there. Padding is zero-*pre*-padded
-   (zeros first, real frames last), not post-padded — this has to match how
-   `LstmGeometricFeatureModel`'s `feature_buffer` actually fills during the real warm-up in
-   deployment (oldest slot dropped, new frame appended at the end); get this backwards and the
-   model trains on a padding shape that never occurs in production. This notebook fits and saves
-   its own `feature_scaler_*.joblib` (58-feature, per-timestep) — it used to silently reuse the
-   RandomForest's differently-shaped scaler of the same name before RandomForest moved out to its
-   own notebook, which would have broken deployment export once that happened.
-
-**`04_random_forest_training.ipynb`** — reads `frame_features.csv`:
-
-9. **RandomForest model** — a tabular baseline trained directly on a manually-curated 7-feature
-   subset (from notebook 2's correlation ranking) of raw per-frame rows, `class_weight='balanced'`,
-   `GroupShuffleSplit` grouped by subject. Saves `rf_classifier_*.joblib` and
-   `rf_feature_scaler_*.joblib` — the `rf_` prefix is deliberate, to avoid colliding with the
-   LSTM's same-shaped-differently `feature_scaler_*.joblib` name.
-
-**`05_dense_nn_training.ipynb`** — reads `frame_features.csv`:
-
-10. **Dense feedforward NN** — a small fully-connected network (`Dense(128) → Dense(64) →
-    Dense(3, softmax)`, `BatchNormalization`/`Dropout` regularization) trained on all 58 raw
-    per-frame features (not the RandomForest's curated subset — a NN can learn its own feature
-    weighting). Same `GroupShuffleSplit`/`class_weight` conventions as the other notebooks. This
-    is *not* a rerun of the deferred windowed-DNN-vs-LSTM comparison described in "Planned
-    end-to-end system architecture" above — it's a non-recurrent baseline on the flat dataset,
-    same task as RandomForest, not a like-for-like challenger to the LSTM.
-
-**`06_dataset_creation_face_crops.ipynb`** — raw video → cropped face images, no geometric
-features at all:
-
-11. Uses a *different*, lighter MediaPipe model bundle than every other notebook — the
-    **Face Detector** (`BlazeFace`, bounding-box-only) task, not `FaceLandmarker` — since only a
-    crop region is needed here, not landmarks/blendshapes. `BlazeFace` was evaluated against a
-    YOLO-based face detector and kept: comparable accuracy for this project's single-frontal-face
-    cabin scenario, a smaller edge footprint, and no AGPL licensing exposure (Ultralytics YOLOv8
-    ships under AGPL-3.0 unless a commercial license is purchased — a real concern for a project
-    meant to become a commercial product) — see `notebook/CLAUDE.md`'s "Recent implementation
-    decisions" section for the full comparison. Label-mapping convention matches notebook 2 exactly, but
-    `sampling_fps` deliberately does not: this notebook samples much more sparsely
-    (`sampling_fps = 1`, capped at `MAX_FRAMES_PER_CLIP` per clip regardless of duration) than the
-    geometric-feature notebooks' ~10 FPS, since a CNN training on raw face crops gains little from
-    near-duplicate images a few frames apart. Each confidently-detected face is expanded by a
-    margin fraction and cropped, written as an individual `.jpg` under
-    `dataset_processed/face_crops/` (flat directory, not one-subfolder-per-class — the label
-    lives in `face_crops_index.csv` alongside subject/parent_video/frame_idx, so subject-grouped
-    splitting stays possible). Each row is appended to that CSV the moment its image is written,
-    guarded by a lock shared across the parallel extraction workers, rather than batched per video
-    or written once at the end.
-
-**`07_cnn_training.ipynb`** — reads `face_crops_index.csv` + the `.jpg` files:
-
-12. **Tiny CNN** — three `Conv2D → BatchNorm → MaxPool` blocks over `96×96` resized crops,
-    `GlobalAveragePooling2D` (not `Flatten`, to keep parameter count down), small dense head.
-    Pixel scaling is a `Rescaling` layer inside the model itself rather than a separate
-    `StandardScaler` artifact, so the saved `.keras` file is fully self-contained. Same
-    `GroupShuffleSplit`/`class_weight` conventions; light augmentation (flip, brightness jitter)
-    only, since crops are already tightly framed and aggressive geometric augmentation risks
-    distorting the drowsiness-relevant eye/mouth region.
-
-**`08_deployment_export_lstm.ipynb`** — reads the trained LSTM + scaler, doesn't touch training
-data:
-
-13. **Deployment model (`LstmGeometricFeatureModel`)** — a custom Keras `Model` subclass that
-    wraps the *entire* inference pipeline (raw landmarks/rotation matrix/blendshapes →
-    `GeometricRatioFeatureLayer` → concatenation → frame accumulation/padding to
-    `max_timesteps` → `Normalization` → trained LSTM → drowsiness level) into one artifact
-    saved via Keras' native format, so production code doesn't need to reimplement
-    preprocessing separately from training. `max_timesteps` here must equal notebook 1's
-    `MAX_TIMESTEPS` (60) — this is the one place outside the LSTM's own two notebooks where that
-    constant matters, because it sizes the deployed rolling `feature_buffer`.
-
-14. **End-to-end live-stream simulation** — replays a raw video frame-by-frame through
-    MediaPipe + `LstmGeometricFeatureModel` to sanity-check the deployed pipeline end to end.
-
-Model artifacts are versioned by timestamp (`VERSION_STR = ...strftime("%Y%m%d_%H%M")`), with a
-`get_latest_model(folder, prefix, extension)` helper (redefined in each notebook's Setup
-section) to locate the most recent one and a `FORCE_RETRAIN` flag to control whether existing
-models are reused or retrained.
-
-## Model results and current status
-
-This section is the actual empirical record — what's been run, what the numbers were, and what
-that implies — as of the latest training runs. Keep it updated as new runs land rather than
-letting it drift stale; per this project's own titulación-report standard, describe only what's
-actually been measured here, not aspirational numbers.
-
-**RandomForest and Dense NN have hit a real, well-evidenced ceiling around ~33-41% accuracy on
-the flat per-frame dataset**, not a tuning shortfall:
-
-- RandomForest baseline (7 curated features, unconstrained trees): **32.6%** accuracy, `Drowsy`
-  recall collapsed to 0.13. A regularized/`GroupKFold`-tuned rerun was started but never
-  completed — `RandomizedSearchCV(n_jobs=-1)` wrapping `RandomForestClassifier(n_jobs=-1)` double-
-  nests parallelism and can thrash instead of finishing; if this is revisited, set only the outer
-  `n_jobs=-1` and leave the inner estimator's `n_jobs` at its default.
-- Dense NN (all 58 flat features): **38.6-40.8%** across several regularization passes (best:
-  heavier dropout/L2 + lower LR). Per-subject feature normalization (z-score within each subject)
-  made no real difference (38.4%) — the subject-level-confound hypothesis was checked directly via
-  a subject×level crosstab and came back weak (only 2/24 subjects >95% skewed to one class, mean
-  max-class share 49%), so that specific explanation is ruled out.
-- **Root cause, measured directly, not inferred:** Spearman correlation between individual
-  per-frame features and drowsiness level tops out at |r| = 0.26 (`eyeWideRight`); `EAR_mean` —
-  the feature the whole geometric pipeline was designed around — sits at |r| = 0.04, essentially
-  zero. A single frame's instantaneous eye-openness value doesn't carry much signal on its own;
-  the actual tell (duration/velocity of eye closure) is a property of a sequence, not a snapshot.
-  This is the same conclusion `03_model_training_lstm.ipynb`'s Design Decision cell already argued
-  architecturally, now confirmed statistically.
-- **Rolling/temporal feature enrichment made results *worse*, not better** — an important negative
-  finding, not just a null result. Adding rolling mean/std (1s and 3s trailing windows) computed
-  from `frame_features.csv` pushed Dense NN's accuracy down to 36.7% (154 features) and 29.8%
-  (SMOTE + noise-jitter on top of that, actually below chance for 3 classes). Likely mechanism: a
-  rolling *mean* over a short single-label clip converges toward that clip's own average value —
-  closer to a per-clip fingerprint than genuine moment-to-moment dynamics — which made the
-  underlying subject/clip-identity overfitting shortcut *easier* to exploit with 154 columns of
-  capacity instead of 58, not harder. The frame-to-frame *delta* (rate-of-change) columns are
-  conceptually sound and weren't isolated from the noisier rolling-mean/std ones in this pass; a
-  delta-only variant is a plausible follow-up but is not currently planned.
-- **Decision:** further RandomForest/Dense NN tuning is paused. `04_random_forest_training.ipynb`
-  and `05_dense_nn_training.ipynb` are left as-is (including the incomplete/hung search cell and
-  the enrichment experiments that underperformed) as the honest record of what was tried.
-
-**Next direction: CNN on face crops, possibly combined with the LSTM's windowing.** Two paths
-exist in the repo, at different stages of readiness:
-
-- `06_dataset_creation_face_crops.ipynb` + `07_cnn_training.ipynb` — single face-crop image → single
-  label (see "Notebook architecture" above). Both have now been rerun against the full extracted
-  subject set (24 subjects, 3751 crops, 20 of them complete-class) with a real subject-grouped
-  `StratifiedGroupKFold` split (test-fold eligibility restricted to complete-class subjects,
-  macro-F1-based checkpointing, strengthened rotation/zoom/contrast augmentation) — this
-  supersedes the earlier 6-subject/84.75% run described below, which was a majority-class-
-  collapse artifact of a degenerate split, not a real measurement. **The real, trustworthy
-  result: 31.53% test accuracy, 0.33 macro-F1**, with per-class recall `Alert` 0.28,
-  `Low Vigilant` 0.25, `Drowsy` 0.42 (`Drowsy`'s class-weight boost appears to be working —
-  it's the best-performing class here, not the worst). The training log shows this is a
-  generalization-gap problem, not an underfitting one: train accuracy reaches 99%+ by epoch 22,
-  but test loss (5.81) runs nearly 4x the best logged validation loss on the checkpoint selected
-  by validation macro-F1 — with only 20 complete-class subjects (16 train / 4 val / 4 test), a
-  single fold's number also carries real variance from which specific subjects land in the test
-  split. `07_cnn_training.ipynb` has since been extended with a MobileNetV2 frozen-backbone (with
-  an optional fine-tuning phase) trained and evaluated side by side with the from-scratch CNN, a
-  `USE_FOCAL_LOSS` toggle, stronger regularization (`l2` now on all conv layers, dropout to 0.5),
-  and an opt-in subject-fold cross-validation diagnostic (`RUN_CROSS_VALIDATION`) to check how
-  much the reported number moves across different held-out-subject draws — **these have now been
-  rerun.** The from-scratch CNN, with these additions, improved to **36.67% test accuracy, 0.3614
-  macro-F1** on the same single fold (recall `Alert` 0.33, `Low Vigilant` 0.27, `Drowsy` 0.50) —
-  a real gain over the 31.53%/0.33 figure above, and now roughly in line with Dense NN's
-  38.6-40.8% rather than below it. The 3-fold subject-CV diagnostic confirms real fold-to-fold
-  variance at this subject count (test accuracy **35.93% ± 9.07%**, macro-F1 0.3422 ± 0.1085
-  across folds, individual folds ranging 25.45%-41.23%), but its mean lands close to the
-  single-fold number, not wildly off it. The MobileNetV2 transfer-learning variant, however, was
-  a clear regression, not an improvement: **16.81% test accuracy, 0.1428 macro-F1 frozen**, and
-  fine-tuning the last ~30 backbone layers didn't fix it (**16.81% accuracy, 0.1447 macro-F1**) —
-  both variants collapsed to **zero recall on `Low Vigilant`**, never predicting that class at
-  all. That specific failure mode (a clean collapse to 2 of 3 classes, not just lower accuracy)
-  is a flag to check before concluding pretrained backbones don't help here: `alpha=0.35` (the
-  thinnest MobileNetV2 variant) at a 96×96 input downsamples to roughly a 3×3 feature map before
-  global-average-pooling, which may be discarding most of the spatial detail the eye/mouth region
-  needs — a resolution/architecture mismatch is a more likely explanation than "transfer learning
-  is a dead end here," and is worth ruling out (larger `alpha`, or a higher input resolution) before
-  writing off pretrained backbones for this task. Even setting MobileNetV2 aside, the from-scratch
-  CNN is still expected to face the same single-instant-in-time ceiling as RF/Dense NN in
-  principle — 36.67% (or the CV mean of 35.93%) is a real improvement over the earlier 31.53%
-  figure, but still in the same 33-41% band as RandomForest/Dense NN, not a decisive break above
-  it — tempered only by the fact that raw pixels carry visual cues (skin texture, redness,
-  micro-expression detail) the hand-engineered EAR/MAR/blendshape features don't capture at all.
-  The single biggest lever left unexploited is more subjects (20 complete-class out of up to 60
-  available via UTA-RLDD) — see `07_cnn_training.ipynb`'s closing markdown cells for the concrete
-  next step.
-- `09_dataset_creation_cnn_lstm.ipynb` — a fifth model family: `TimeDistributed(CNN) → LSTM` over
-  an actual **windowed sequence** of face-crop images, rather than a single image. This is the
-  most complete fix for the single-frame ceiling among the vision-based options, since it
-  combines real temporal context with raw-pixel visual cues. Its windowing scheme is *related to*
-  but deliberately not identical to the geometric LSTM's: a curated set of durations (3s/5s/10s/
-  20s, rather than a dense 1s-step sweep from 1-6s) tiled **non-overlapping** within each duration
-  (`stride == window size`, not a 1s sliding stride) so subject-grouped splitting in the training
-  notebook doesn't have to reason about near-duplicate windows straddling a split boundary — two
-  windows of *different* durations can still cover overlapping real time in the same clip, which
-  is intentional (duration diversity), just not same-duration windows. Sampling rate is `1 FPS`
-  (matching `06_dataset_creation_face_crops.ipynb`'s actual rate — an earlier version of this
-  notebook wrongly assumed 10 FPS here, silently producing wrong-duration windows; fixed). Built
-  as a **dataset-index step only** — it reuses `06`'s already-extracted crops (no re-extraction,
-  and `06`'s per-clip crop cap was raised from 20 to 300 so a clip has enough contiguous frames
-  to tile several non-overlapping windows) and just builds `cnn_lstm_windows_index.csv`,
-  referencing existing crop files by a window's frame range rather than duplicating them. Padded
-  to `MAX_TIMESTEPS_IMG = 20` (`max_context_sec * sampling_fps` = `20 * 1`) — a separately-tunable
-  constant from the geometric LSTM's own `MAX_TIMESTEPS` (currently 60, see "Notebook
-  architecture" above); the two are unrelated numbers for unrelated reasons — this one is small
-  because padding cost scales with tensor size (a full image, not a 58-float row) and the 1 FPS
-  rate keeps even a 20s max window cheap. Windows are tiled per maximal contiguous run of
-  `sample_idx` (not from one global anchor per clip) so a gap in face detection doesn't strand
-  otherwise-usable real frames off-grid — a real, if minor, yield bug fixed after the first
-  version of this notebook. `10_cnn_lstm_training.ipynb` trains two backbones side by side (07's
-  from-scratch conv stack, and a MobileNetV2 variant deliberately reconfigured with `alpha=1.0`/a
-  larger input resolution rather than reusing 07's exact `alpha=0.35`/96×96 config that collapsed
-  there), each `TimeDistributed`-wrapped and feeding a single `LSTM(64)` via an explicit
-  length-derived mask (not a `Masking` layer, which can't correctly detect an all-zero *image*
-  timestep the way it can an all-zero *feature-vector* one). Also worth flagging plainly: this is
-  by far the most data-hungry model in the project (a deep model over raw pixel *sequences*) — a
-  real architecture upgrade, but not a guaranteed win on a small dataset, and should be evaluated
-  with that expectation going in.
-
-  **`10` has now been run once, and — with real caveats — it's currently the best-performing
-  option in the project: CNN+LSTM (MobileNetV2, frozen backbone) reached 46.79% test accuracy,
-  0.4090 macro-F1**, ahead of every single-frame model tried (07's from-scratch CNN at 36.67%/
-  0.3614, Dense NN's 38.6-40.8%, RandomForest's 32.6%) and ahead of this same notebook's
-  from-scratch CNN+LSTM variant (34.19% accuracy, but only **0.1936 macro-F1** — it collapsed to
-  predicting `Alert` almost exclusively, a worse imbalance than 07's from-scratch CNN ever had).
-  Fine-tuning the MobileNetV2 backbone made things *worse*, not better (43.38% accuracy, 0.3827
-  macro-F1). **This run does not settle the "best option" question yet, for one specific reason:
-  it was trained against a stale 24-subject window index** (20 complete-class), not the ~54
-  subjects that have since been extracted into `raw_videos/` via `extract_uta_rldd_clips.py` —
-  `06`/`09` haven't been rerun against the larger pool. Treat this result as a pipeline-
-  correctness smoke test with a genuinely promising number attached, not a validated verdict.
-  Also worth flagging plainly, regardless of subject count: `Low Vigilant` recall was **exactly
-  0.0000 for both MobileNetV2 variants** — the same collapse shape 07's MobileNetV2 had, just
-  landing on a different class — and per-duration accuracy showed no clear trend with window
-  length (46.8/46.5/47.2/47.2% across 3s→20s for the frozen variant), so the core premise of this
-  architecture (more temporal context helps) isn't validated by this run either. See
-  `notebook/CLAUDE.md`'s "What we found" for the full numbers and per-class breakdown. The
-  concrete next step is rerunning `06` (reset) → `09` → `10` against the full subject pool before
-  drawing any conclusion about whether CNN+LSTM is really the way forward.
-
 **Current deployment status, stated plainly since it's easy to lose track of amid the caveats
 above: `src/cv-argus` is currently focused on and deploys the single-frame CNN
 (`07_cnn_training.ipynb`'s model) by default** (`PIPELINE=cnn`) — not the LSTM, despite the LSTM
 remaining the architecturally-intended long-term model per the reasoning in "Planned end-to-end
-system architecture" above, **and not the CNN+LSTM either, despite it now being the best
-*measured* result in the project** (46.79% accuracy / 0.4090 macro-F1, MobileNetV2 frozen — see
-above). That's deliberate, not an oversight: the CNN+LSTM number is from a single run against a
-stale 24-subject dataset with a `Low Vigilant` collapse and no demonstrated duration benefit yet,
-not something to switch production deployment onto before the full-subject-pool rerun confirms
-it holds up. This is a current decision, not a claim that the accuracy caveats
-just described are resolved — the deployed CNN's real, measured number (36.67% accuracy, 0.3614
-macro-F1 single-fold; 35.93% ± 9.07% across the 3-fold subject-CV diagnostic, per the reruns
-above) is itself a low-recall, small-N result with a real train/test generalization gap, not a
-validated production number either. The LSTM path is kept in `src/cv-argus`
+system architecture" above, **and not the CNN+LSTM either.** An earlier stale-24-subject smoke
+test of the CNN+LSTM had briefly looked like the project's best measured result (46.79% accuracy
+/ 0.4090 macro-F1, MobileNetV2 frozen) — that number does **not** hold up: the full-54-subject-
+pool rerun that `notebook/CLAUDE.md`'s "What we found" already called for dropped it to 33.68%
+accuracy / 0.3340 macro-F1, below both Dense NN (38.6–40.8%) and the deployed single-frame CNN
+(36.67%/0.3614) — so the CNN+LSTM was never actually the best measured result on a trustworthy
+run, and staying on the single-frame CNN was the right call for reasons beyond the ones below.
+`09`/`10` were then modified again (geometric feature fusion, `AdamW`/`recurrent_dropout`
+regularization, `class_weight=None`) and have now actually been rerun — the from-scratch backbone
+reached 35.04% accuracy / 0.3296 macro-F1, still just under the deployed single-frame CNN
+(36.67%/0.3614), not a decisive win. MobileNetV2 overfit even more severely on this rerun (95%+
+train accuracy, `val_macro_f1` never above 0.36) than on any prior attempt and has been disabled
+(commented out, not deleted) in `10` as a result — it has never once beaten the from-scratch
+backbone on a trustworthy run in this project. See `notebook/CLAUDE.md`'s "What we found" for the
+full numbers. This is a current decision, not a claim that the accuracy caveats just described are
+resolved — the deployed CNN's real,
+measured number (36.67% accuracy, 0.3614 macro-F1 single-fold; 35.93% ± 9.07% across the 3-fold
+subject-CV diagnostic, per the reruns above, still against the earlier 24-subject pool) is itself
+a low-recall, small-N result with a real train/test generalization gap, not a validated
+production number either. The LSTM path is kept in `src/cv-argus`
 and fully functional (`PIPELINE=lstm`), just not the default. See `src/cv-argus/CLAUDE.md`'s
 "Current status" for the deployment-side detail and `notebook/CLAUDE.md`'s "Why CNN is the most
 probable next backbone" for the reasoning.
@@ -546,13 +174,17 @@ probable next backbone" for the reasoning.
   variables — don't assume one notebook can see another's in-memory state.
 - Paths are hardcoded to Google Drive (`/content/drive/MyDrive/Argus/...`); there is no local
   dataset checked into this repo.
-- `GeometricRatioFeatureLayer` is intentionally redefined verbatim in four places
+- `GeometricRatioFeatureLayer` is intentionally redefined verbatim in five places
   (`01_dataset_creation_lstm.ipynb`, `02_dataset_creation_flat.ipynb`,
-  `08_deployment_export_lstm.ipynb`, `src/cv-argus/src/model/layers.py`) because Keras requires
-  the exact same class to be importable to deserialize a saved model — there's no automated check
-  that all four stay in sync, so a change to one needs manual verification against the other
-  three. `06_dataset_creation_face_crops.ipynb` does *not* use this class — it only needs a face
-  bounding box, via MediaPipe's separate, lighter Face Detector task.
+  `08_deployment_export_lstm.ipynb`, `src/cv-argus/src/model/layers.py`, and now
+  `09_dataset_creation_cnn_lstm.ipynb`, which uses it to compute a 10-feature EAR/MAR/blendshape
+  fusion input for the CNN+LSTM model — see that notebook's "Geometric Features for Fusion"
+  section) because Keras requires the exact same class to be importable to deserialize a saved
+  model — there's no automated check that all five stay in sync, so a change to one needs manual
+  verification against the other four. `06_dataset_creation_face_crops.ipynb` itself does *not*
+  use this class — it only needs a face bounding box, via MediaPipe's separate, lighter Face
+  Detector task; `09` runs `FaceLandmarker` separately, directly on `06`'s saved crop images,
+  specifically so `06` doesn't need to be re-run to get this fusion feature.
 - `MAX_TIMESTEPS` (the LSTM's fixed padded-window length, currently 60) is an LSTM-only concept.
   It has no bearing on RandomForest, the Dense NN, or the CNN — those three consume single-frame
   or single-image rows with no timestep dimension at all, from a dataset (`frame_features.csv` /

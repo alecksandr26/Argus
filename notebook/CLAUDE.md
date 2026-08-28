@@ -25,11 +25,11 @@ don't duplicate implementation-level edits' rationale here, put it in the root f
 | 03 | `model_training_lstm` | `lstm_windows.csv` | LSTM `.keras` + scaler | ✅ run |
 | 04 | `random_forest_training` | `frame_features.csv`/enriched | RF `.joblib` + scaler | ⚠️ baseline run, tuning/augmentation incomplete |
 | 05 | `dense_nn_training` | `frame_features.csv`/enriched | Dense NN `.keras` + scaler | ✅ run (multiple passes) |
-| 06 | `dataset_creation_face_crops` | raw videos | `face_crops_index.csv` + `.jpg`s | ⚠️ run against 24 subjects (20 complete-class); more UTA-RLDD subjects still not extracted — see "What we found" |
-| 07 | `cnn_training` | `face_crops_index.csv` | CNN `.keras` | ⚠️ from-scratch CNN: 36.67% acc / 0.3614 macro-F1 (35.93% ± 9.07% over 3-fold CV) — low, not a bug; MobileNetV2 backbone rerun too and regressed hard (16.81% acc, collapsed to 0 recall on Low Vigilant) — see "What we found" |
+| 06 | `dataset_creation_face_crops` | raw videos | `face_crops_index.csv` + `.jpg`s | ✅ run against the full 54-subject pool (48 complete-class) as of `09`/`10`'s latest rerun — see "What we found"; the 24-subject/20-complete-class figures elsewhere in this file predate that |
+| 07 | `cnn_training` | `face_crops_index.csv` | CNN `.keras` | ⚠️ from-scratch CNN: 36.67% acc / 0.3614 macro-F1 (35.93% ± 9.07% over 3-fold CV), still against the earlier 24-subject pool — low, not a bug; MobileNetV2 backbone rerun too and regressed hard (16.81% acc, collapsed to 0 recall on Low Vigilant) — see "What we found" |
 | 08 | `deployment_export_lstm` | LSTM `.keras` + scaler | deployed `LstmGeometricFeatureModel` | ⬜ not re-run since MAX_TIMESTEPS changed to 120 |
-| 09 | `dataset_creation_cnn_lstm` | `face_crops_index.csv` | `cnn_lstm_windows_index.csv` | ⬜ built, not run (needs 06 first) |
-| 10 | `cnn_lstm_training` | `cnn_lstm_windows_index.csv` | CNN+LSTM `.keras` (from-scratch + MobileNetV2) | ⚠️ run once against the stale 24-subject window index (pre-refresh) — see "What we found"; needs a rerun against the ~54-subject index before its numbers mean anything |
+| 09 | `dataset_creation_cnn_lstm` | `face_crops_index.csv` | `cnn_lstm_windows_index.csv` | ⚠️ run once against the full 54-subject pool (5763 windows); since then extended to also extract a 10-feature `geometric_feature_seq` (EAR/MAR/blendshapes) per crop for fusion into `10`'s model — needs a rerun to populate that column before `10` can consume it |
+| 10 | `cnn_lstm_training` | `cnn_lstm_windows_index.csv` | CNN+LSTM `.keras` (from-scratch only — MobileNetV2 disabled) | ⚠️ latest run (`CosineDecayRestarts`+heavier regularization, geometric fusion): **32.22% test acc, 0.3251 macro-F1 — at random-guess chance** for this balanced 3-class test set, despite a `val_macro_f1` of 0.6799 (epoch 28) that did not hold up on test. Supersedes the 35.04%/0.3296 prior "completed" run as the current number — see "What we found" |
 
 Four model families share two dataset-creation notebooks:
 
@@ -172,6 +172,137 @@ yet the 54-subject one, so treat this as a pipeline-correctness smoke test more 
   3s→20s) and trends slightly *down* with longer windows for the fine-tuned variant. Not a
   result to read too much into given the subject count, but not a positive signal either.
 
+**`10` has since actually been rerun against the full 54-subject window index (48 complete-class
+subjects; Train 4359 / Val 234 / Test 1170 windows) — and the picture changes substantially, not
+in the direction the 24-subject smoke test suggested:**
+
+| Variant | Test Acc | Macro-F1 | Alert R | Low Vigilant R | Drowsy R |
+|---|---|---|---|---|---|
+| CNN+LSTM (from-scratch) | 29.83% | 0.2801 | 0.35 | 0.43 | 0.12 |
+| CNN+LSTM (MobileNetV2, frozen) | 33.68% | 0.3340 | 0.44 | 0.27 | 0.29 |
+| CNN+LSTM (MobileNetV2, fine-tuned) | 33.68% | 0.3130 | 0.31 | 0.56 | 0.14 |
+
+- **The 24-subject run's headline 46.79%/0.4090 (MobileNetV2, frozen) does not hold up** — on the
+  full pool it drops to 33.68%/0.3340, now *below* both Dense NN (38.6–40.8%) and 07's
+  single-frame CNN (36.67%/0.3614), not above them. Treat the 24-subject number as exactly what it
+  was labeled: a pipeline-correctness smoke test, not a real verdict.
+- **One genuine improvement, though: the `Low Vigilant` zero-recall collapse is gone.** Both
+  MobileNetV2 variants now score real (non-zero) `Low Vigilant` recall (0.27 frozen, 0.56
+  fine-tuned) instead of the flat 0.0000 both had at 24 subjects — consistent with "not enough
+  data for this class" being a real contributor, on top of whatever the resolution/alpha fix
+  addressed.
+- Per-duration accuracy is still flat (frozen MobileNetV2: 3s .330 / 5s .344 / 10s .339 / 20s
+  .344) — still no evidence the extra temporal context is paying for itself.
+- **This table is itself now superseded by an architecture change, not just a subject-count
+  change.** `09`/`10` were subsequently modified to (a) fuse a 10-feature EAR/MAR/blendshape
+  vector (extracted via `FaceLandmarker` run directly on `06`'s saved crops, not a `06` re-run —
+  see `09`'s "Geometric Features for Fusion" section) into the per-timestep CNN embedding before
+  the LSTM, (b) lower the initial learning rate (`0.001` → `1e-4`, tightened again from an
+  intermediate `3e-4` pass after that run's log showed clear overfitting -- also
+  `ReduceLROnPlateau`'s `patience` `8` → `4`), and (c) an asymmetric
+  class-weight scheme (`Drowsy` boosted `1.5x`; `Low Vigilant` dampened to `0.5x` of its balanced
+  weight — see `10`'s "CNN+LSTM Training (From-Scratch Backbone)" section for the full
+  rationale). None of the numbers in either table above reflect that architecture — both
+  notebooks' stale outputs from before this change were cleared rather than left attached to code
+  that no longer matches them. Re-running `09` (to populate `geometric_feature_seq`) then `10` is
+  needed before this section can report a real number for the fused model.
+- **Diagnostic finding from two actual training-log reads of the fused model (not yet a full
+  evaluated result): learning rate was ruled out as the cause of its overfitting pattern.** Both
+  the `3e-4` pass and the `1e-4` pass (the latter with `ReduceLROnPlateau` cutting it down to
+  ~1.25e-5 over the run) converged to the *same* shape: `val_macro_f1` peaks early (epoch ~3-5,
+  ~0.40-0.46) then degrades steadily for the rest of the run while train accuracy keeps climbing
+  smoothly through every LR cut. Three very different learning-rate values hitting the same early
+  peak means a smaller LR isn't the lever that raises it. **Correction to an earlier version of
+  this note:** it previously claimed `USE_CLASS_WEIGHTS` already existed as a toggle in `10` —
+  that was wrong; as of that writing the notebook still applied `class_weight` unconditionally in
+  all three `.fit()` calls, with no toggle at all. `USE_CLASS_WEIGHTS` (default `False`, meaning
+  `class_weight=None` — genuinely uniform, not just the asymmetric boost/dampen turned off on top
+  of `'balanced'`) has now actually been added to `10`'s class-weight cell, to isolate whether the
+  asymmetric class-weight skew itself, combined with a small `BATCH_SIZE=8`, is contributing to
+  how noisy `val_macro_f1` is epoch to epoch — untested as of this writing (no rerun yet). Two
+  more changes landed in the same pass, targeting capacity/regularization instead of LR (per the
+  finding above that LR isn't the lever): `AdamW`'s decoupled weight decay (`WEIGHT_DECAY = 1e-4`)
+  replaces plain `Adam` + `l2(0.001)` scattered across every conv/dense layer in both backbones'
+  feature extractors, and the `LSTM`'s `recurrent_dropout=0.3` was added on top of its existing
+  `dropout=0.3` — free here specifically, since `use_cudnn=False` was already forced for an
+  unrelated pre-padding reason, so the usual cuDNN-fast-path cost of `recurrent_dropout` doesn't
+  apply. `learning_rate` itself stays at `1e-4`, deliberately not lowered further — see `10`'s
+  `build_cnn_lstm` docstring for the full reasoning against that. **Worth noting regardless of
+  outcome: the late-run decline in either prior pass never reached the actual saved/evaluated
+  model** — `ModelCheckpoint(save_best_only=True, monitor='val_macro_f1')` keeps only the best
+  epoch, so training past the peak wastes compute but doesn't corrupt the result.
+
+**That change has now actually been run, with real numbers — and MobileNetV2 has been disabled as
+a result, not just deprioritized:**
+
+- **From-scratch backbone: 35.04% test accuracy, 0.3296 macro-F1** (`Alert` recall 0.57,
+  `Low Vigilant` 0.14, `Drowsy` 0.34) — a real improvement over the same backbone's prior run
+  without `AdamW`/`recurrent_dropout`/`class_weight=None` (29.83% / 0.2801), and now close to
+  (though still just under) `07`'s single-frame CNN (36.67% / 0.3614). `val_macro_f1` still
+  peaked early in training (epoch 5, 0.4182) and declined afterward — the same shape as every
+  prior run — but the peak itself and the final test number both moved up, so the regularization
+  changes did something real even though they didn't eliminate the early-peak pattern.
+  **Within this single run, `ReduceLROnPlateau`'s own decay produced direct evidence against a
+  lower learning rate**: as it cut `1e-4` down to `6.25e-6` by epoch 17-20, `val_macro_f1` at that
+  lowest LR was ~0.22-0.23 — worse than at every higher LR earlier in the same run, not better.
+  **In response, `ReduceLROnPlateau` has been replaced with `CosineDecayRestarts` (SGDR) for the
+  from-scratch model**, which decays smoothly within each cycle but jumps the LR back up at each
+  restart instead of only ever shrinking it (`ReduceLROnPlateau` doesn't compose with a
+  `LearningRateSchedule` object, so it's removed rather than combined with the new schedule).
+
+**That schedule has since actually been run once (5-epoch first cycle, `t_mul=2.0`, `m_mul=0.9`,
+`alpha=0.05`), then tuned twice more based on what it showed:**
+
+- **The first run validated the restart idea directly: `val_macro_f1` hit 0.4618 at epoch 6 — the
+  best result across every run of this notebook so far — right at the first restart.** But by
+  ~epoch 10 (4-5 epochs later) it had already re-overfit back to ~0.20-0.29, and the second
+  restart (~epoch 15, that cycle being 10 epochs under `t_mul=2.0`) produced a much weaker bump —
+  by then the model had dug itself into a harder-to-escape region. Restarts help, but needed to
+  happen closer to how fast this model actually re-overfits (~4-5 epochs), not every 5→10→20.
+- **Current schedule (not yet run), deliberately aggressive:** `first_decay_steps` = 2 epochs
+  (down from 5), `t_mul=1.15` (cycles barely grow — restarts stay frequent through the whole run),
+  `m_mul=1.0` (every restart is a full reset to `1e-4`, no cooldown), `alpha=0.02`.
+- **Regularization raised alongside it, same evidence, same request** (twice, culminating in
+  genuinely high values): `WEIGHT_DECAY` `1e-4 → 3e-4 → 6e-4`; `LSTM_DROPOUT`/
+  `RECURRENT_DROPOUT` `0.3 → 0.4 → 0.5`; `HEAD_DROPOUT` (the LSTM's final `Dropout`, now a named
+  constant) `0.5 → 0.6 → 0.7`. **Worth watching on the next run: if train accuracy also stays
+  low/flat this time (not just val), that's a sign this overshot into underfitting** — the fix
+  then is backing these off, not pushing them higher again.
+- **A from-scratch training run with the second-round settings (`WEIGHT_DECAY=3e-4`,
+  `LSTM_DROPOUT`/`RECURRENT_DROPOUT=0.4`, `HEAD_DROPOUT=0.6`, `first_decay_steps`=3 epochs,
+  `t_mul=1.3`) reached `val_macro_f1` **0.6799 at epoch 28** (`val_accuracy` 0.6880) — but that
+  number has now been checked against the test set, and the explicit caveat below is confirmed,
+  not resolved.** **Test result: 32.22% accuracy, 0.3251 macro-F1** (`Alert` P/R 0.42/0.31,
+  `Low Vigilant` 0.26/0.34, `Drowsy` 0.33/0.32) on a perfectly balanced 390/390/390 test set —
+  i.e. at, if not fractionally below, the 33.3% random-guess baseline for 3 balanced classes.
+  Per-duration accuracy is flat and equally uninformative (32.0/31.9/33.3/32.2% at
+  3s/5s/10s/20s). The epoch-28 `val_macro_f1` spike was validation-set luck from a 234-window
+  validation pool, exactly as flagged when it was first observed — it did not survive contact
+  with the untouched 1170-window test set. The training log itself (cell 14) also cuts off
+  mid-epoch 40 without reaching `EarlyStopping`'s patience-15 stop or the 100-epoch cap, so this
+  specific run didn't even run to completion; the picked checkpoint is still the epoch-28 best
+  by `val_macro_f1`, so that doesn't change the test number above. Given that every
+  regularization change tried so far (`AdamW` weight decay `1e-4→3e-4→6e-4`, LSTM
+  dropout/recurrent_dropout `0.3→0.4→0.5`, head dropout `0.5→0.6→0.7`, focal loss,
+  `USE_CLASS_WEIGHTS` toggled off, `ReduceLROnPlateau`→`CosineDecayRestarts`) has left the
+  train/test gap intact — train accuracy still climbs past 70% while test performance sits at
+  chance — this reads as a subject-count ceiling for an end-to-end-trained CNN+LSTM, not an
+  undiscovered hyperparameter. The untested third-round regularization settings
+  (`WEIGHT_DECAY=6e-4`, dropout `0.5`/`0.5`/`0.7`, 2-epoch restart cycles) are deprioritized as a
+  result — see "Working in this directory" for the recommended next step instead of continuing
+  to tune this notebook.
+- **MobileNetV2 (frozen head): severe overfitting, worse than any prior run of it.** 95%+ train
+  accuracy by epoch 6, `val_macro_f1` never exceeding 0.36 and mostly sitting in 0.24-0.33,
+  trending worse rather than converging. The run was stopped before the fine-tune/evaluation
+  cells ran — the frozen-head log alone was conclusive enough not to justify the compute. This is
+  consistent with, and worse than, every previous MobileNetV2 result in this project (07's
+  single-frame MobileNetV2 collapse to 16.81%/zero `Low Vigilant` recall; this notebook's own
+  earlier pre-fusion run putting MobileNetV2 frozen at 33.68%, still below from-scratch's 29.83%
+  in that same run). MobileNetV2 has never once beaten the from-scratch backbone on a trustworthy
+  run in this project. **`10_cnn_lstm_training.ipynb`'s MobileNetV2 cells (frozen training,
+  fine-tune, three-way comparison) are now commented out** — not deleted, kept as a documented,
+  re-enable-able option, but no longer part of the notebook's default run.
+
 ## Why CNN is the most probable next backbone
 
 The diagnosis above is specific: it's not "RandomForest and Dense NN are weak models," it's "a
@@ -224,9 +355,9 @@ ipynb` and `10_cnn_lstm_training.ipynb` are now built (two backbones, from-scrat
 MobileNetV2, trained side by side), but `10` hasn't been run yet. It's also, by a wide margin,
 the most data-hungry model in the project (see the "Calibrated expectation" note above), so
 before proposing a *different* fresh architecture once `10` is run, if it underperforms or
-overfits — a real risk, not a hypothetical one, given the subject count — check these three
-already-considered options first; they were discussed and deliberately not chosen as the primary
-path, not overlooked:
+overfits — a real risk, not a hypothetical one, given the subject count, and has since been
+confirmed (see "What we found") — check these four already-considered options first; they were
+discussed and deliberately not chosen as the primary path, not overlooked:
 
 1. **Diagnose the MobileNetV2 collapse rather than writing pretrained backbones off.** Covered in
    "What we found" above: both the frozen and fine-tuned MobileNetV2 variants collapsed to zero
@@ -240,19 +371,38 @@ path, not overlooked:
    draw on genuinely different information (hand-engineered geometric ratios vs. raw pixels), so
    if their errors are even partially uncorrelated, fusing them could beat any single one. Not
    yet tried.
-3. **A scaled-down alternative to training a CNN end-to-end inside the recurrent loop:** instead
-   of `TimeDistributed(CNN) → LSTM` learning a CNN backbone from scratch over image sequences
-   (what `09`/`10` does), use the already-trained `07` CNN as a **frozen feature extractor** —
-   run it once per frame, take its penultimate-layer embedding (64-dim, from
-   `GlobalAveragePooling2D` → `Dense(64)`), and concatenate that onto the 58 per-timestep
-   geometric features already flowing through `01`'s windowed LSTM pipeline, reusing `03`'s LSTM
-   architecture largely unchanged (just a wider per-timestep input). This still combines
-   raw-pixel visual cues with genuine temporal context — the same goal as `09`/`10` — but with far
-   fewer new trainable parameters, since the CNN itself isn't being trained inside the recurrent
-   graph. Worth a look specifically if `10`'s full end-to-end version overfits before it
-   generalizes, as a lower-variance fallback rather than a from-scratch redesign. Not yet built.
+3. **A scaled-down alternative to training a CNN end-to-end inside the recurrent loop — now
+   actually built, not yet run.** Instead of `TimeDistributed(CNN) → LSTM` learning a CNN
+   backbone from scratch over image sequences (what `10`'s from-scratch/MobileNetV2 variants do),
+   a new "Frozen-CNN-Embedding + LSTM Variant" section in `10_cnn_lstm_training.ipynb` (added
+   after, not replacing, the existing variants) uses the already-trained `07` CNN as a **frozen**
+   feature extractor: its penultimate-layer embedding (64-dim, `GlobalAveragePooling2D` →
+   `Dense(64)`) is precomputed once per crop and concatenated with `09`'s existing 10-dim
+   `geometric_feature_seq`, then only a small `LSTM(64)` + head trains on top. **One deviation
+   from how this option was originally described here worth flagging:** it fuses onto `09`'s
+   10-feature face-crop-window geometric set, not `01`'s 58-feature LSTM-window set as first
+   proposed — reusing `09`/`10`'s already-built windowing/split infrastructure directly rather
+   than building a new `01`-based pipeline from scratch. Still combines raw-pixel visual cues
+   with genuine temporal context at far lower trainable-parameter count than end-to-end training,
+   which is the part of this option that mattered. Not yet run — next session should read its
+   real test result before treating it as validated.
+4. **Collapse the 3-class problem to binary, discussed but deliberately deferred behind option 3
+   above.** Every model family in this project has been stuck in a 33-41% band on the 3-class
+   problem, and `Low Vigilant` (the middle class) has been the single most consistently broken
+   class across every architecture tried — not just low-accuracy but literally 0.0000 recall in
+   two separate MobileNetV2 runs (07's single-frame version and `10`'s first 24-subject smoke
+   test) — which reads as a genuinely hard 3-way discrimination problem, not only a data-count
+   one. Merging classes removes that specific failure mode rather than just raising the
+   random-guess floor from 33.3% to 50%. Two framings were discussed, not yet chosen between:
+   `Alert` vs. `Needs Attention` (merges `Low Vigilant`+`Drowsy`, preserves the early-warning
+   framing central to Argus's "preventive layer" positioning — see the root `CLAUDE.md`) vs.
+   `Drowsy` vs. `Not-Drowsy` (merges `Alert`+`Low Vigilant`, a purer "is this the dangerous state"
+   signal but gives up early warning). **Explicit sequencing decision:** try option 3 above first
+   since it's already built and cheap to run; only pursue binary relabeling if the frozen-
+   embedding variant's real test result is still stuck near chance, since binary reframing
+   touches the label space of every notebook downstream of the raw `level` column, not just `10`.
 
-A fourth, independent lever — worth naming since it's different from "finish extracting UTA-RLDD"
+A fifth, independent lever — worth naming since it's different from "finish extracting UTA-RLDD"
 (the currently in-progress data effort) rather than a substitute for it — is **sourcing subjects
 from datasets other than UTA-RLDD** (e.g. NTHU-DDD, YawDD, DROZY) once UTA-RLDD's own 60-subject
 ceiling is reached. Not evaluated for licensing/label-compatibility yet; a later step, not a
@@ -314,11 +464,15 @@ live-broken either. Not fixed here — flagged for whoever picks that up next.
 
 - Check the Pipeline map's Status column before assuming a notebook has been run or trustworthy —
   "⬜ not run yet", "⚠️", and "❌ does not exist yet" are load-bearing distinctions, not filler.
-  `06`/`07` have now been run on a real subject-grouped split (24 subjects; from-scratch CNN:
-  36.67% test accuracy / 0.3614 macro-F1, 35.93% ± 9.07% over a 3-fold subject-CV diagnostic —
-  see "What we found") — don't report the old 84.75% or 31.53% figures as current (both were
-  earlier runs since superseded: 84.75% a degenerate-split artifact, 31.53% an earlier real-but-
-  improved-on rerun), and don't report `09`/`10` results as if they exist at all. `07`'s
+  `07`'s reported 36.67% test accuracy / 0.3614 macro-F1 (35.93% ± 9.07% over a 3-fold subject-CV
+  diagnostic) is still against the earlier 24-subject pool, even though `06` has since been rerun
+  against the full 54-subject one for `09`/`10` — don't report the old 84.75% or 31.53% `07`
+  figures as current (both were earlier runs since superseded: 84.75% a degenerate-split
+  artifact, 31.53% an earlier real-but-improved-on rerun). `09`/`10` **have** now been run (54
+  subjects; see "What we found" for the numbers) — but `10`'s numbers from that run are
+  themselves now stale relative to the notebook's current code (geometric feature fusion, lower
+  LR, reweighted class weights were added after that run) — don't report either the old
+  24-subject smoke-test numbers or the 54-subject pre-fusion numbers as current for `10`. `07`'s
   MobileNetV2 backbone variant has also now been rerun and regressed sharply (16.81% accuracy,
   zero recall on `Low Vigilant`) — treat that as a real result too, not an untested addition, but
   see "What we found" for why it looks more like a resolution/architecture mismatch than a
@@ -333,14 +487,20 @@ live-broken either. Not fixed here — flagged for whoever picks that up next.
   next backbone") rather than proposing a fresh architecture search — it's the reasoned next
   step given the evidence here, and notebooks 06/07/09/10 now all exist in support of it (09 as a
   dataset-index step, 10 as the actual training notebook — from-scratch CNN and MobileNetV2
-  backbones trained side by side, ported split/loss/callback conventions from 07). `10` hasn't
-  been run yet as of this writing — don't report results for it that don't exist.
-- If `10`'s full CNN+LSTM underperforms or overfits once it's run, don't reach for a
-  brand-new architecture as the first response — see "Cheaper options considered alongside the
-  full CNN+LSTM build" above. The MobileNetV2 resolution fix, a late-fusion ensemble of the
-  existing RandomForest/Dense NN/CNN models, and a frozen-CNN-embedding-into-the-geometric-LSTM
-  hybrid were all already discussed as lower-data-cost alternatives; treat them as the next
-  things to try, not as ideas that still need to be proposed from scratch.
+  backbones trained side by side, ported split/loss/callback conventions from 07). `10` has since
+  been run (see "What we found" for the 54-subject numbers) and then modified again (geometric
+  feature fusion, lower LR, reweighted class weights) — its most recent run's numbers predate
+  that modification, so don't report them as current for the notebook's present code either.
+- `10`'s full CNN+LSTM has now confirmed the underperform/overfit case this bullet used to treat
+  as hypothetical — its latest run tested at 32.22% accuracy / 0.3251 macro-F1, at random-guess
+  chance for the balanced 3-class test set, despite a `val_macro_f1` of 0.6799 mid-training (see
+  "What we found"). Don't reach for a brand-new architecture, and don't propose further
+  regularization/LR tuning on this notebook as the first response — see "Cheaper options
+  considered alongside the full CNN+LSTM build" above. The MobileNetV2 resolution fix, a
+  late-fusion ensemble of the existing RandomForest/Dense NN/CNN models, and a
+  frozen-CNN-embedding-into-the-geometric-LSTM hybrid were all already discussed as lower-data-
+  cost alternatives; treat them as the next things to try, not as ideas that still need to be
+  proposed from scratch.
 - Don't edit `GeometricRatioFeatureLayer` in one of its four copies without checking the other
   three (`01_dataset_creation_lstm.ipynb`, `02_dataset_creation_flat.ipynb`,
   `08_deployment_export_lstm.ipynb`, `src/cv-argus/src/model/layers.py`) — there's no automated
