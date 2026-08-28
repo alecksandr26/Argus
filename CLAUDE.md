@@ -165,6 +165,12 @@ probable next backbone" for the reasoning.
 
 ## Working in this repo
 
+- **The ML pipeline is mid-migration from 3-class to binary (`drowsy_vs_not`: `Not Drowsy` =
+  old Alert + Low Vigilant, `Drowsy` = old Drowsy).** Dataset-creation notebooks `01`/`02`/`06`/
+  `09` and `relabel_binary_raw_videos.ipynb` are done and read a new `dataset/raw_videos_binary/`
+  tree; training notebooks `03`/`04`/`05`/`07`/`08`/`10` and `src/cv-argus` are not migrated
+  yet. See `notebook/CLAUDE.md`'s "Binary migration (in progress)" for the authoritative status,
+  and treat every 3-class result/framing in these files as the pre-migration record.
 - Treat the eight-notebook split as the source of truth for the pipeline; when asked to change
   feature extraction, windowing, or model logic, edit the corresponding cell(s) rather than
   assuming there is equivalent code elsewhere.

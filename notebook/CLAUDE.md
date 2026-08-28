@@ -16,6 +16,49 @@ feature layouts, padding conventions, sync requirements between files, etc.), se
 sections; this file stays at the level of "what happened and why," not implementation detail —
 don't duplicate implementation-level edits' rationale here, put it in the root file instead.
 
+## Binary migration (in progress)
+
+The pipeline is mid-migration from 3-class (`Alert` / `Low Vigilant` / `Drowsy`) to **binary
+`drowsy_vs_not`**: `level_1` = `Not Drowsy` (old Alert + Low Vigilant, merged), `level_2` =
+`Drowsy` (old Drowsy). This is option 4 from "Cheaper options considered alongside the full
+CNN+LSTM build" below, now being acted on — `Low Vigilant` was the single most consistently
+broken class across every 3-class model (0.0000 recall in two separate MobileNetV2 runs), and
+collapsing it removes that failure mode rather than just raising the random-guess floor to 50%.
+
+**Mechanism.** `relabel_binary_raw_videos.ipynb` builds a parallel Drive tree
+`dataset/raw_videos_binary/subject_NN/level_<1-2>_clip_<NN>.mp4` by collapsing the 3-class
+`dataset/raw_videos/` tree (`{1,2}→1, 3→2`); `raw_videos/` is left untouched as the 3-class
+source of truth (so a different binary framing stays a one-line change, and
+`extract_uta_rldd_clips.py` keeps writing 3-class `level_<1-3>` clips). The dataset-creation
+notebooks read `raw_videos_binary/`, not `raw_videos/`.
+
+**Done:** `01` / `02` / `06` / `09` migrated and repointed to `raw_videos_binary/` —
+`CLASS_NAMES = ["Not Drowsy", "Drowsy"]`, `NUM_CLASSES = 2`, `map_level` validates `{1,2}`;
+`relabel_binary_raw_videos.ipynb` and `extract_uta_rldd_clips.py`'s docs. `06` needs a
+`reset_dataset=True` rebuild (its Drive `face_crops_index.csv` is stale 3-class); `09` hard-fails
+if fed a stale 3-class `face_crops_index.csv`.
+
+**Not done:** `03` / `04` / `05` / `07` / `08` / `10` are still hard 3-class and will break once
+the binary CSVs are regenerated (mostly `CLASS_NAMES` literals, `== {1,2,3}` fold guards, and
+`report['Alert']`/`report['Low Vigilant']` dict-key lookups; `10` also needs a decision on its
+now-obsolete `LOW_VIGILANT_WEIGHT_DAMPEN` class-weight scheme). No binary training run has
+happened yet. Per-notebook edit lists for the training side are in
+[`binary-migration-TODO.md`](./binary-migration-TODO.md).
+
+`relabel_binary.py` (the earlier post-hoc-`level_binary`-CSV-column approach) is **superseded
+and must not be run** — its default `BINARY_FRAMING` is `alert_vs_attention` (the *wrong*
+framing) and it rewrites the dataset CSVs in place, so running it as-shipped silently
+mis-collapses every dataset CSV. It's kept only as a record of the rejected approach.
+
+`src/cv-argus/src/model/detector.py`'s `_CLASS_NAMES` still maps `{1,2,3}` → the 3 old names and
+would silently mislabel a binary model (argmax `{0,1}` → `level {1,2}` → `"Alert"`/`"Low
+Vigilant"`); `mjpeg_output_stage.py`'s status-colour map has the same 3-class keys. Not a
+problem until a binary model is actually deployed.
+
+**Everything below this section — "What we found", the results tables, "Why CNN is the most
+probable next backbone" — is the pre-migration 3-class record.** The numbers are real and worth
+keeping, but don't read binary expectations into them.
+
 ## Pipeline map
 
 | # | Notebook | Reads | Writes | Status |
