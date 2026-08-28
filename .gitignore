@@ -3,6 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# WSL / NTFS "downloaded from the internet" alternate-data-stream sidecars
+*:Zone.Identifier
+
 # C extensions
 *.so
 
