@@ -27,13 +27,18 @@ specific starting point); it never renumbers a participant that's already been a
 Nothing gets uploaded anywhere automatically -- review the output, then upload it into
 Drive's raw_videos/ yourself.
 
-Clip files use "level_<1-3>_clip_<N>.mp4" -- 1=Alert, 2=Low Vigilant, 3=Drowsy, the FINAL class
-number, not Argus's own original 1-6 scale. This deliberately reuses the "level_" word but NOT
-the 1-6 numbering, which means the metadata-generation loop can't tell these apart from your own
-level_<1-6> clips by filename alone -- it now also checks the subject number (see
-EXTERNAL_SUBJECT_START in 01_dataset_creation.ipynb): subject_<N> with N >= 7 is treated as
-already-final-class (no 1-6->3 mapping applied), subject_01..subject_06 still gets the original
-mapping. Keep that in sync if --start-subject is ever set to something other than 7.
+Clip files use "level_<1-3>_clip_<N>.mp4" -- 1=Alert, 2=Low Vigilant, 3=Drowsy. These are
+UTA-RLDD's three native label values (0/5/10) kept as-is: dataset/raw_videos/ is Argus's
+3-class source of truth. The model-training pipeline itself is now binary (Not Drowsy vs
+Drowsy) -- notebook/relabel_binary_raw_videos.ipynb collapses this 3-class tree into the
+derived dataset/raw_videos_binary/ tree (levels 1+2 -> 1, level 3 -> 2) that notebooks
+01/02/06/09 actually consume. Producing 3-class clips here keeps that collapse re-derivable
+(and a switch to a different binary framing a one-line edit), so don't fold the binary
+mapping into this script.
+
+Argus's own raw clips use this same already-final 1-3 convention (they were renamed to it a
+while ago), so no per-subject disambiguation is needed -- every clip's filename encodes its
+final class directly.
 
 Verified against the real archive layout (Fold1_part1.zip): "Fold1_part1/<participant>/
 <label>.<ext>", e.g. "Fold1_part1/06/5.mp4" -- participant "06", label "5" (Low Vigilant).
@@ -58,8 +63,9 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-# UTA-RLDD's documented label values: alert=0, low vigilant=5, drowsy=10 -- maps directly to
-# Argus's own 3-class scheme (see notebook/01_dataset_creation.ipynb's "Drowsiness levels").
+# UTA-RLDD's documented label values: alert=0, low vigilant=5, drowsy=10 -- kept as Argus's
+# 3-class raw labels (see notebook/01_dataset_creation_lstm.ipynb's "Drowsiness labels", and
+# notebook/relabel_binary_raw_videos.ipynb for the downstream binary collapse).
 LABEL_TO_CLASS = {"0": 1, "5": 2, "10": 3}
 CLASS_NAMES = {1: "alert", 2: "low_vigilant", 3: "drowsy"}
 VIDEO_EXTS = {".mp4", ".mov"}  # compared case-insensitively below
