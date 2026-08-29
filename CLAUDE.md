@@ -32,8 +32,17 @@ far; the rest is design work to be implemented.
 **Truck cabin (edge, hard real-time / safety-critical):**
 - A camera captures frames, read by the **Raspberry Pi 5 ("AI Orchestrator")**, which — per the
   design this section describes — runs the MediaPipe FaceLandmarker + geometric-ratio-layer +
-  sequence-model pipeline from the notebook and produces a drowsiness class (`Alert` /
-  `Low Vigilant` / `Drowsy`). **That's the long-term intended architecture, not what's currently
+  sequence-model pipeline from the notebook and produces a drowsiness class. **The class scheme
+  is now binary — `Not Drowsy` vs. `Drowsy`** (decided; `Not Drowsy` = the old `Alert` +
+  `Low Vigilant` merged, `Drowsy` = the old `Drowsy`). The earlier 3-class `Alert` /
+  `Low Vigilant` / `Drowsy` scheme is retired: `Low Vigilant`, the ambiguous middle class, was
+  the single most consistently broken class across every model family (0.0000 recall in two
+  separate runs), so merging it away removes a real failure mode rather than just raising the
+  random-guess floor to 50%. All ten notebooks are migrated in code; the Colab reruns that
+  regenerate the datasets/models under the binary labels are still pending, and `src/cv-argus`
+  keeps the 3-class names until a binary model is actually trained and deployed — see the
+  "Working in this repo" section and `notebook/CLAUDE.md`'s "Binary migration" for status.
+  **That sequence-model pipeline is the long-term intended architecture, not what's currently
   deployed**: `src/cv-argus` currently focuses on and downloads/runs the CNN face-crop model by
   default instead (MediaPipe Face Detector/BlazeFace crop → CNN, not FaceLandmarker → LSTM) — a
   current implementation decision, not a reversal of the design reasoning below. See
@@ -165,12 +174,16 @@ probable next backbone" for the reasoning.
 
 ## Working in this repo
 
-- **The ML pipeline is mid-migration from 3-class to binary (`drowsy_vs_not`: `Not Drowsy` =
-  old Alert + Low Vigilant, `Drowsy` = old Drowsy).** Dataset-creation notebooks `01`/`02`/`06`/
-  `09` and `relabel_binary_raw_videos.ipynb` are done and read a new `dataset/raw_videos_binary/`
-  tree; training notebooks `03`/`04`/`05`/`07`/`08`/`10` and `src/cv-argus` are not migrated
-  yet. See `notebook/CLAUDE.md`'s "Binary migration (in progress)" for the authoritative status,
-  and treat every 3-class result/framing in these files as the pre-migration record.
+- **The drowsiness class scheme is binary: `Not Drowsy` vs. `Drowsy`** (`drowsy_vs_not` —
+  `Not Drowsy` = old Alert + Low Vigilant merged, `Drowsy` = old Drowsy). This is the settled
+  decision, not one option among several. The **code** side is complete: all ten notebooks
+  (`01`–`10`, dataset creation + training + export) are migrated — `CLASS_NAMES =
+  ["Not Drowsy", "Drowsy"]`, `NUM_CLASSES = 2`, `== {1, 2}` fold guards — and the
+  dataset-creation ones read a new `dataset/raw_videos_binary/` tree. What has **not** happened is
+  any rerun — every notebook still loads its old 3-class Drive artifacts, so all results and
+  framing in these files are the pre-migration record. `src/cv-argus`'s deploy-time class names
+  are deliberately still 3-class (no binary `.keras` model exists to deploy yet). See
+  `notebook/CLAUDE.md`'s "Binary migration" for the authoritative per-notebook status.
 - Treat the eight-notebook split as the source of truth for the pipeline; when asked to change
   feature extraction, windowing, or model logic, edit the corresponding cell(s) rather than
   assuming there is equivalent code elsewhere.
@@ -191,7 +204,8 @@ probable next backbone" for the reasoning.
   use this class — it only needs a face bounding box, via MediaPipe's separate, lighter Face
   Detector task; `09` runs `FaceLandmarker` separately, directly on `06`'s saved crop images,
   specifically so `06` doesn't need to be re-run to get this fusion feature.
-- `MAX_TIMESTEPS` (the LSTM's fixed padded-window length, currently 60) is an LSTM-only concept.
+- `MAX_TIMESTEPS` (the LSTM's fixed padded-window length, currently 30 — it was 60 until
+  `01`/`02`'s `sampling_fps` dropped from 10 to 5, making a 6s window 30 frames) is an LSTM-only concept.
   It has no bearing on RandomForest, the Dense NN, or the CNN — those three consume single-frame
   or single-image rows with no timestep dimension at all, from a dataset (`frame_features.csv` /
   `face_crops_index.csv`) that was never windowed in the first place.

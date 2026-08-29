@@ -3,6 +3,11 @@
 A map of every point in `ui-argus` where backend code needs to land, for whoever builds the
 FastAPI backend (or comes back to wire this frontend up to it). Nothing described as
 "missing" here exists yet — this is a checklist, not a status report on work in progress.
+
+**As of the screen port:** every screen below is a real component rendering fake data from
+`src/data/fixtures.ts` (shapes in `src/types.ts`, field names copied from the ER model). The
+"Currently" column reflects that. Wiring a screen up = swap its `fixtures` import for an
+`src/api/*` call and delete the local-state mutation; the component structure stays.
 Endpoints referenced are the list already committed in
 `docs/designs/semantic-design.drawio.xml`; nothing here invents new ones except where
 explicitly flagged as a gap in that list.
@@ -27,13 +32,13 @@ exists yet:
 3. **No auth/session state.** No `AuthContext`, no token storage, nothing reads or writes a
    session anywhere. This blocks everything below marked "needs auth" — there is no logged-in
    user object anywhere in the app right now, not even a hardcoded stand-in.
-4. **No route guarding.** `src/App.tsx` currently makes every route public — `/flota` is
+4. **No route guarding.** `src/App.tsx` currently makes every route public — `/fleet` is
    reachable without logging in. Add a `ProtectedRoute` wrapper (redirect to `/login` when
    unauthenticated) once #3 exists, and a role check on top of it once the backend's `role`
    values are known (the ER model's `User.role` field doesn't enumerate its possible values
    anywhere yet — confirm them with whoever builds `/api/users` before hardcoding a role list
    in the frontend).
-5. **No real-time strategy decided.** The Torre de Control dashboard's mockup shows a live
+5. **No real-time strategy decided.** The Control Tower dashboard's mockup shows a live
    alert feed and live truck positions ("EN VIVO"). Polling `GET /api/alerts` on an interval
    is the simplest option; a WebSocket/SSE push is the more genuine real-time fit and the one
    that would actually exercise this project's "Sistemas Distribuidos" grading requirement
@@ -48,14 +53,14 @@ exists yet:
 
 | Screen (file) | Endpoint(s) | Currently | Missing |
 |---|---|---|---|
-| `src/pages/Login.tsx` | `POST /api/auth/login` | Static placeholder text, no form | Form state, submit handler, error display, on success: store session (#3 above) and redirect by role |
-| `src/App.tsx` (routing shell) | — | Every route public, no session read | `ProtectedRoute` wrapper + role-based redirect after login (#4 above) |
-| Sidebar (still only in the mockup canvas, not ported to code yet) | — | N/A | When built: read the real user's name/initials/role from session state instead of the mockup's hardcoded `userName`/`role` props |
-| `src/pages/LiveOps.tsx` | `GET /api/alerts`, `GET /api/routes/:id/status` | Static placeholder text | Fetching + the real-time strategy from gap #5; **also a real gap in the committed API list itself**: there's no endpoint to list *all currently-active* routes/trucks at once, only `/api/routes/:id/status` for one route at a time — the dashboard's fleet-wide map and stat tiles need something like `GET /api/routes?status=active`, which doesn't exist in `semantic-design.drawio.xml` yet and should be raised with the backend, not assumed into existence here |
-| `src/pages/AlertTriage.tsx` | `GET /api/alerts/:id`, `PUT /api/alerts/:id` | Reads `alertId` from the URL already (`useParams`) but never fetches with it | Fetch on mount; the triage panel's "Marcar como revisada" checkbox and notes textarea need to `PUT` `reviwed_by_operator`/`operator_notes` back; **also unresolved**: `Alert.media_url` — how/where captured clips are actually stored and served (S3? the backend directly?) isn't decided anywhere yet, so the mockup's video placeholder has nothing real to point at |
-| `src/pages/Fleet.tsx` | `GET/POST/PUT/DELETE /api/trucks` | Static placeholder text | Table fetch + the add/edit form's submit handlers |
-| `src/pages/Drivers.tsx` | `GET/POST/PUT/DELETE /api/drivers` | Static placeholder text | Same shape as Fleet |
-| `src/pages/TravelManagement.tsx` | `GET/POST/PUT/DELETE /api/routes` | Static placeholder text | Table fetch + create-route form; the mockup's "se calculan con OSRM al confirmar la ruta" note means the create-route submit needs to call the OSRM container (directly, or proxied through the backend — not decided) for distance/ETA before saving |
+| `src/pages/Login.tsx` | `POST /api/auth/login` | Controlled form; submit routes to `/` with no auth | Real submit handler, error display, on success: store session (#3 above) and redirect by role |
+| `src/App.tsx` (routing shell) | — | Every route public, no session read; `AppLayout` layout route wraps the in-app screens | `ProtectedRoute` wrapper + role-based redirect after login (#4 above) |
+| `src/components/Sidebar.tsx` | — | Ported; shows **both** role nav-groups and fills the footer from the `CURRENT_USER` fixture | Read the logged-in user's name/initials/role from session state; hide the nav-group the role can't see |
+| `src/pages/LiveOps.tsx` | `GET /api/alerts`, `GET /api/routes/:id/status` | Stat tiles / map markers / alert feed all computed from fixtures; feed severity filter works; rows link to `/alerts/:id` | Fetching + the real-time strategy from gap #5; **also a real gap in the committed API list itself**: there's no endpoint to list *all currently-active* routes/trucks at once, only `/api/routes/:id/status` for one route at a time — the dashboard's fleet-wide map and stat tiles need something like `GET /api/routes?status=active`, which doesn't exist in `semantic-design.drawio.xml` yet and should be raised with the backend, not assumed into existence here |
+| `src/pages/AlertTriage.tsx` | `GET /api/alerts/:id`, `PUT /api/alerts/:id` | Looks the alert up in fixtures by `:alertId` (`useParams`); "not found" state; review checkbox + notes are local state, "Save" flips a local flag | Fetch on mount; `PUT` `reviwed_by_operator`/`operator_notes` from the checkbox + textarea; **also unresolved**: `Alert.media_url` — how/where captured clips are stored and served (S3? the backend directly?) isn't decided anywhere yet, so the media placeholder has nothing real to point at |
+| `src/pages/Fleet.tsx` | `GET/POST/PUT/DELETE /api/trucks` | Table from fixtures with client-side search; row-select → edit panel; add/edit mutate a local `useState` copy | Swap the fixture import for a fetch; point the panel's submit at `POST`/`PUT`, add a delete affordance |
+| `src/pages/Drivers.tsx` | `GET/POST/PUT/DELETE /api/drivers` | Same shape as Fleet | Same as Fleet |
+| `src/pages/TravelManagement.tsx` | `GET/POST/PUT/DELETE /api/routes` | Route table from fixtures with search; "New route" form creates a `scheduled` row in local state | Fetch + real `POST`; the "computed with OSRM on confirm" note means the create submit calls OSRM (directly or backend-proxied — not decided) for `destination_coordinates`/`estimated_arrival` before saving — currently stubbed to `{lat:0,lon:0}` / `null` |
 
 ## Explicitly not in scope yet
 

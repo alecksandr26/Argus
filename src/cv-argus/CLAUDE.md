@@ -9,8 +9,14 @@ session. When a task touches this directory, treat the details below as binding,
 ## What this module is
 
 The computer-vision / AI module of Argus: the code that will run on the Raspberry Pi 5 in
-the truck cabin, turning camera frames into a drowsiness class (Alert / Low Vigilant / Drowsy) and handing that
-prediction off to whatever decides what to do about it. Historically the production counterpart
+the truck cabin, turning camera frames into a drowsiness class and handing that
+prediction off to whatever decides what to do about it. **The project's class scheme is now
+binary — `Not Drowsy` vs. `Drowsy`** (decided; `Not Drowsy` = old Alert + Low Vigilant). This
+module still runs and labels 3-class (`Alert` / `Low Vigilant` / `Drowsy`) because the deployed
+`.keras` model is still a 3-class one — `detector.py`'s `_CLASS_NAMES` and
+`mjpeg_output_stage.py`'s status-colour map flip to the two binary names only once a binary model
+is trained and deployed (see `notebook/binary-migration-TODO.md`'s "whenever a binary model is
+actually deployed" section). Historically the production counterpart
 of the LSTM training work in `notebook/01_dataset_creation_lstm.ipynb` →
 `03_model_training_lstm.ipynb` → `08_deployment_export_lstm.ipynb` — that LSTM-specific slice of
 the notebook pipeline produces the trained model artifact this module loads and runs live — but
