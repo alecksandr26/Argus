@@ -1,53 +1,52 @@
 # Binary migration — training-notebook checklist
 
-Status as of this file's creation: the **dataset-creation side is done** (`01` / `02` / `06` /
-`09` read `dataset/raw_videos_binary/`, `CLASS_NAMES = ["Not Drowsy", "Drowsy"]`, `NUM_CLASSES =
-2`, `map_level` validates `{1,2}`; `relabel_binary_raw_videos.ipynb` and
-`extract_uta_rldd_clips.py` updated). See `CLAUDE.md`'s "Binary migration (in progress)".
+## ✅ CODE MIGRATION COMPLETE (all ten notebooks) — no rerun has happened yet
 
-The **training notebooks below are not migrated.** They will break the moment the binary CSVs
-are regenerated. This is the deliberate-per-notebook checklist to work from — the model
-definitions are already class-count-parametric (`num_classes = len(...)`, `Dense(num_classes,
-softmax)`, `compute_class_weight('balanced', ...)`, dynamic focal loss), so the breakage is
-concentrated in three idioms:
+Every notebook `01`–`10` is migrated in code. Dataset-creation (`01`/`02`/`06`/`09`) reads
+`dataset/raw_videos_binary/`; training + export (`03`/`04`/`05`/`07`/`08`/`10`) had their
+`CLASS_NAMES` literals, `== {1,2,3}` fold guards, and `report['Alert']`/`report['Low Vigilant']`
+dict-key lookups converted. Model definitions were already class-count-parametric —
+`sparse_categorical_crossentropy` + `Dense(num_classes, softmax)` was kept, not switched to
+`Dense(1)`/`binary_crossentropy`; macro-F1 was kept everywhere for cross-model comparability. The
+per-notebook sections below are the record of what changed in each; the checkboxes are done.
 
-- `CLASS_NAMES = ['Alert', 'Low Vigilant', 'Drowsy']` literals → `['Not Drowsy', 'Drowsy']`
-- `subject_level_sets == {1, 2, 3}` fold guards → `== {1, 2}`
-- `report['Alert'] / report['Low Vigilant']` dict-key lookups in comparison/CV tables
+Two non-mechanical changes: `07` + `10`'s `split_by_subject_fold` now draws its **validation**
+fold from a second `StratifiedGroupKFold` fold instead of the (now-empty under binary) pool of
+class-incomplete subjects; `10`'s `LOW_VIGILANT_*` asymmetric class-weight constants were deleted
+(the `DROWSY_WEIGHT_BOOST` and `USE_CLASS_WEIGHTS` toggle are kept).
 
-`sparse_categorical_crossentropy` + `Dense(2, softmax)` stays valid — no need to switch to
-`binary_crossentropy`/`Dense(1)`. `df['level'].to_numpy(...) - 1` → `{0,1}` is already correct;
-only the adjacent `# 0=Alert, 1=Low Vigilant, 2=Drowsy` comments go stale. No
-`to_categorical` / `get_dummies` / `np.eye(3)` / `_3class` filename tags exist anywhere.
+**Still pending: the reruns.** Order: `relabel_binary_raw_videos.ipynb` (done) → `01`/`02` →
+`03`/`04`/`05`; and → `06` (**`reset_dataset=True`**) → `07`, and → `09` → `10`; then `08` after
+`03` retrains. Until then every notebook loads its old 3-class Drive artifacts and all attached
+outputs are the pre-migration record.
 
-Order the datasets get regenerated: `relabel_binary_raw_videos.ipynb` → `01`/`02` →
-`03`/`04`/`05`; and `relabel_binary_raw_videos.ipynb` → `06` (**`reset_dataset=True`**) → `07`,
-and → `09` → `10`.
+`src/cv-argus`'s `_CLASS_NAMES` / `_STATUS_COLORS` (bottom of this file) stay 3-class until a
+binary `.keras` model actually exists to deploy.
 
 ---
 
-## 03_model_training_lstm.ipynb — 1 blocker, no design questions
+## 03_model_training_lstm.ipynb — DONE
 
-- [ ] **BLOCKER** cell ~18 (LSTM evaluation): `CLASS_NAMES = ['Alert', 'Low Vigilant', 'Drowsy']`
+- [x] **BLOCKER** cell ~18 (LSTM evaluation): `CLASS_NAMES = ['Alert', 'Low Vigilant', 'Drowsy']`
   → `['Not Drowsy', 'Drowsy']`. Feeds `classification_report(target_names=CLASS_NAMES)` and the
   confusion-matrix tick labels — a length-3 `target_names` against 2 classes raises `ValueError`.
-- [ ] cell ~8 comment `# 'level' is already the 3-class label (1=Alert, 2=Low Vigilant, 3=Drowsy)`
+- [x] cell ~8 comment `# 'level' is already the 3-class label (1=Alert, 2=Low Vigilant, 3=Drowsy)`
   — stale (the `- 1` line itself is fine).
-- [ ] cosmetic markdown: cells ~0/6/11 ("3 drowsiness levels", "3-class"), cell ~15 ("level 6,
+- [x] cosmetic markdown: cells ~0/6/11 ("3 drowsiness levels", "3-class"), cell ~15 ("level 6,
   entering microsleep"; "RandomForest baseline above" — RF moved out long ago).
 - SAFE, no change: `num_classes = len(np.unique(y_lstm))`, `Dense(num_classes)`,
   `compute_class_weight('balanced', ...)`, `GroupShuffleSplit` (no all-classes guard).
 - Pre-existing (not binary): cell ~12 markdown says "128 and 64 units", code is `LSTM(64)`→`LSTM(32)`.
 
-## 04_random_forest_training.ipynb — 1 blocker (1 def, 6 use sites)
+## 04_random_forest_training.ipynb — DONE
 
-- [ ] **BLOCKER** cell ~12: `CLASS_NAMES = ['Alert', 'Low Vigilant', 'Drowsy']` → 2 entries.
+- [x] **BLOCKER** cell ~12: `CLASS_NAMES = ['Alert', 'Low Vigilant', 'Drowsy']` → 2 entries.
   Downstream `classification_report`/heatmap use sites to re-check after: cells ~12, ~19 (tuned
   RF), ~21 (per-subject-norm), ~28 (enriched), ~30 (HistGradientBoosting), ~33 (SMOTE).
-- [ ] optional: cell ~18 `scoring='f1_macro'` and cell ~33 `f1_score(average='macro')` still run
+- [x] optional: cell ~18 `scoring='f1_macro'` and cell ~33 `f1_score(average='macro')` still run
   for binary (average over 2 classes) — switch to `'f1'` / `average='binary'` if you want the
   cleaner binary metric. Low priority.
-- [ ] cosmetic / **reporting-sensitive**: cell ~14 "Diagnosing the Low Accuracy" hardcodes
+- [x] cosmetic / **reporting-sensitive**: cell ~14 "Diagnosing the Low Accuracy" hardcodes
   "32.6% overall accuracy (3-class, ... 14307/9901/13416)", "Drowsy recall ... 0.13", "barely
   above chance" (chance is now 50%, not 33.3%). Also cells ~13/17/22/23/34. Re-label or re-run.
 - SAFE, no change: `y = df['level']` raw `{1,2}` (sklearn handles arbitrary labels, no `-1`),
@@ -55,77 +54,79 @@ and → `09` → `10`.
 - Pre-existing (not binary): cell ~18 hyperparameter search hangs — double `n_jobs=-1` nesting
   (already in root `CLAUDE.md`).
 
-## 05_dense_nn_training.ipynb — 2 blockers, no design questions
+## 05_dense_nn_training.ipynb — DONE
 
-- [ ] **BLOCKER** cell ~14: `CLASS_NAMES = ['Alert', 'Low Vigilant', 'Drowsy']` → 2 entries.
+- [x] **BLOCKER** cell ~14: `CLASS_NAMES = ['Alert', 'Low Vigilant', 'Drowsy']` → 2 entries.
   Use sites: cells ~14, ~21 (regularized), ~23 (per-subject-norm), ~31 (enriched), ~34 (SMOTE).
-- [ ] **BLOCKER** cell ~18: inline fallback
+- [x] **BLOCKER** cell ~18: inline fallback
   `xticklabels=CLASS_NAMES if 'CLASS_NAMES' in globals() else ['Alert', 'Low Vigilant', 'Drowsy']`
   — the 3-element fallback must also become 2 (usually dead in a top-to-bottom run, still wrong).
-- [ ] cell ~6 / ~27 comment `# 0-indexed: 0=Alert, 1=Low Vigilant, 2=Drowsy` — stale.
-- [ ] cosmetic / **reporting-sensitive**: cell ~16 "Diagnosing the Overfitting" ("97%+ training
+- [x] cell ~6 / ~27 comment `# 0-indexed: 0=Alert, 1=Low Vigilant, 2=Drowsy` — stale.
+- [x] cosmetic / **reporting-sensitive**: cell ~16 "Diagnosing the Overfitting" ("97%+ training
   accuracy", "~41%", "38.6% test accuracy", "same ~33-40% band"). Also cells ~0/9/15/24/35.
 - SAFE, no change: `num_classes = len(np.unique(y))`, all 4 variants `Dense(num_classes)` +
   `sparse_categorical_crossentropy`, `compute_class_weight('balanced', ...)`.
 
-## 07_cnn_training.ipynb — 4 blockers, 1 minor design question
+## 07_cnn_training.ipynb — DONE (migrated, not yet re-run)
 
-- [ ] **BLOCKER** cell ~4 `split_by_subject_fold`:
-  `complete_subjects = subject_level_sets[subject_level_sets == {1, 2, 3}].index` → `== {1, 2}`.
-  With binary data no subject matches `{1,2,3}` → `complete_subjects` empty →
-  `ValueError("Only 0 subject(s) have all 3 classes")`. Also fix the two `ValueError` message
-  strings ("have all 3 classes" → "both classes").
-- [ ] **BLOCKER** cell ~6: `CLASS_NAMES = ['Alert', 'Low Vigilant', 'Drowsy']` → 2. Drives
-  `num_classes = len(CLASS_NAMES)` (cell ~8) and every report/heatmap.
-- [ ] **BLOCKER** cell ~19 (MobileNetV2 comparison table): rows built from
-  `report['Alert']['recall']`, `report['Low Vigilant']['recall']`, `report['Drowsy']['recall']`
-  → `KeyError` against a binary report dict. Rewrite to the 2 binary keys.
-- [ ] **BLOCKER** cell ~21 (`RUN_CROSS_VALIDATION`, default `True`):
-  `fold_report['Alert']['recall']`, `fold_report['Low Vigilant']['recall']` — same `KeyError`.
-- [ ] **DESIGN (minor)**: cell ~11 `DROWSY_WEIGHT_BOOST = 2.0` on top of balanced weights — still
-  wanted for binary? Drowsy is still the safety-critical minority, so probably yes; low stakes.
-- [ ] cell ~11 comment `DROWSY_LABEL = CLASS_NAMES.index('Drowsy')  # 2` (now 1); long comment
-  block about "Alert (0.28 recall) and Low Vigilant (0.25 recall)".
-- [ ] cosmetic: cell ~3 ("Not every subject currently has all 3 classes" ×2), cell ~2 ("trains
-  two 3-class variants"), cell ~4 `missing_in_val` warning text "labels=[0,1,2]", cells ~20/22/23.
-- SAFE, no change: `SparseCategoricalFocalLoss` reads `tf.shape(y_pred)[1]` dynamically;
-  `build_cnn_scratch` / `build_mobilenet_backbone` both `Dense(num_classes, softmax)`;
-  `MacroF1Callback` `labels=list(range(num_classes))`; `DROWSY_LABEL = CLASS_NAMES.index('Drowsy')`
-  still resolves (to 1) as long as the exact string `'Drowsy'` stays in `CLASS_NAMES`.
+All four blockers fixed plus one design change the checklist hadn't anticipated:
 
-## 08_deployment_export_lstm.ipynb — export path needs nothing; sim cell only
+- [x] cell 4 `split_by_subject_fold`: completeness guard `== {1, 2, 3}` → `== {1, 2}`; `ValueError`
+  strings updated ("both classes"); minimum-subject threshold 2 → 3 (need one test + one val fold).
+- [x] **DESIGN CHANGE (not in the original checklist):** the split derived its **validation** set
+  from the pool of class-incomplete subjects. Under binary labels essentially every UTA-RLDD
+  subject has both classes (an alert clip → level 1, a drowsy clip → level 2), so that pool is
+  empty and `df_val` would be empty → `ValueError`. Rewrote it: `val` is now a second
+  `StratifiedGroupKFold` fold, `(fold_idx + 1) % n_splits`, disjoint from the test fold; any
+  genuinely single-class subject folds into training. The `missing_in_val` warning block at the
+  end of cell 4 is gone (val now always has both classes, guaranteed by the function).
+- [x] cell 6: `CLASS_NAMES` → `['Not Drowsy', 'Drowsy']`; label comment updated.
+- [x] cell 19: MobileNetV2 comparison table → two binary report keys (`Not Drowsy` / `Drowsy`).
+- [x] cell 21: CV-diagnostic per-class recall → two binary keys.
+- [x] cell 11: `DROWSY_WEIGHT_BOOST = 2.0` **kept** (Drowsy is still the safety-critical minority);
+  `DROWSY_LABEL` comment `# 2` → `# 1`; the long 3-class recall commentary rewritten;
+  `MacroF1Callback` docstring and the "incomplete-subject pool" callback comment updated.
+- [x] cosmetic: cell 2 ("two binary variants"), cell 3 (completeness paragraph), cells 20 & 22
+  (dropped stale 3-class numbers; cell 22 also updated for `06`'s 1→5 FPS change).
+- Stale outputs cleared on every code cell that changed (2/4/6/11/19/21).
+- SAFE, unchanged as predicted: focal loss / `Dense(num_classes)` / `num_classes = len(CLASS_NAMES)`
+  are all class-count-parametric. MobileNetV2 stays enabled in `07` (only `10` disables it).
 
-- [ ] **The deployment artifact (`LstmGeometricFeatureModel`, cell ~12) needs ZERO changes** — no
+**Still needs:** `06` rebuilt (binary, `reset_dataset=True`) before `07` can run; no binary run yet.
+
+## 08_deployment_export_lstm.ipynb — DONE (sim cell + dead 6-level machinery removed)
+
+- [x] **The deployment artifact (`LstmGeometricFeatureModel`, cell ~12) needs ZERO changes** — no
   class-count parameter; the output softmax width is inherited from the wrapped LSTM (notebook
   03). `num_features = 58` is a feature-vector dimension, **not** class count — do not touch it.
-- [ ] **BLOCKER** cell ~19 (end-to-end simulation):
+- [x] **BLOCKER** cell ~19 (end-to-end simulation):
   `CLASS_NAMES = {1: "Alert", 2: "Low Vigilant", 3: "Drowsy"}` → `{1: "Not Drowsy", 2: "Drowsy"}`.
-- [ ] cell ~19: `ORIGINAL_LEVEL_TO_CLASS = {1:1, 2:1, 3:2, 4:2, 5:3, 6:3}` + the
+- [x] cell ~19: `ORIGINAL_LEVEL_TO_CLASS = {1:1, 2:1, 3:2, 4:2, 5:3, 6:3}` + the
   `EXTERNAL_SUBJECT_START = 7` / `subject_num >= EXTERNAL_SUBJECT_START` branch — stale 6-level→
   3-class + subject-number machinery (already dead pre-binary; doubly wrong now). Rewrite to just
   parse `level_1` / `level_2` from the filename via `map_level`.
-- [ ] **DESIGN (minor)**: cell ~3 `raw_videos_folder` — point the simulation at
+- [x] **DESIGN (minor)**: cell ~3 `raw_videos_folder` — point the simulation at
   `raw_videos_binary/`, matching the dataset notebooks.
-- [ ] cosmetic: cell ~0 "a 3-class softmax drowsiness class out". (cell ~13 "(batch, 52)" is a
+- [x] cosmetic: cell ~0 "a 3-class softmax drowsiness class out". (cell ~13 "(batch, 52)" is a
   pre-existing off-by-one, should be 51 — not binary-related.)
 
-## 10_cnn_lstm_training.ipynb — 3 blockers + 1 real design decision
+## 10_cnn_lstm_training.ipynb — DONE (split_by_subject_fold ported from 07; LOW_VIGILANT_* removed)
 
-- [ ] **BLOCKER** cell ~4 `split_by_subject_fold`: `subject_level_sets == {1, 2, 3}` → `== {1, 2}`
+- [x] **BLOCKER** cell ~4 `split_by_subject_fold`: `subject_level_sets == {1, 2, 3}` → `== {1, 2}`
   (+ `ValueError` message text). Same failure mode as `07`.
-- [ ] **BLOCKER** cell ~6: `CLASS_NAMES = ['Alert', 'Low Vigilant', 'Drowsy']` → 2.
-- [ ] **BLOCKER** cell ~14: `LOW_VIGILANT_LABEL = CLASS_NAMES.index('Low Vigilant')` runs
+- [x] **BLOCKER** cell ~6: `CLASS_NAMES = ['Alert', 'Low Vigilant', 'Drowsy']` → 2.
+- [x] **BLOCKER** cell ~14: `LOW_VIGILANT_LABEL = CLASS_NAMES.index('Low Vigilant')` runs
   **unconditionally** (it is *not* inside the `if USE_CLASS_WEIGHTS:` block) →
   `ValueError: 'Low Vigilant' is not in list` the moment `CLASS_NAMES` is binary, even with
   `USE_CLASS_WEIGHTS = False`. Delete it or move it inside the guard.
-- [ ] **DESIGN DECISION (real)**: cell ~14 asymmetric class-weight scheme — `DROWSY_WEIGHT_BOOST
+- [x] **DESIGN DECISION (real)**: cell ~14 asymmetric class-weight scheme — `DROWSY_WEIGHT_BOOST
   = 1.5` **and** `LOW_VIGILANT_WEIGHT_DAMPEN = 0.5` (`weight_dict[LOW_VIGILANT_LABEL] *= ...`).
   Low Vigilant is no longer a class, so the "dampen the ambiguous middle class" half is
   meaningless. Currently inert (`USE_CLASS_WEIGHTS = False`). Recommended (fits the standing
   "one committed implementation, no toggles" preference): rip out the asymmetric constants and
   all `LOW_VIGILANT_*`; if weighting is ever re-enabled, use plain `'balanced'`, optionally with
   a Drowsy boost. Alternative: keep the toggle.
-- [ ] cosmetic / **reporting-sensitive**: cells ~0/3/17/27/33 — "all 3 classes", "random-guess
+- [x] cosmetic / **reporting-sensitive**: cells ~0/3/17/27/33 — "all 3 classes", "random-guess
   chance for this balanced 3-class test set" (now 50%), "35.04% / 0.3296 macro-F1", the
   "Low Vigilant" recall discussion.
 - COMMENTED OUT (note only): cells ~28/30/32 (MobileNetV2 frozen/fine-tune/comparison) are

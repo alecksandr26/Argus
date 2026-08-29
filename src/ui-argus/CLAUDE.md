@@ -9,9 +9,14 @@ module fits the rest of Argus (the ER model, the planned FastAPI backend, the tw
 The Argus web frontend: a single React app serving both MVP roles by role-based navigation
 (one login, `role` on the `User` entity decides what's visible) rather than two separate
 portal apps — see the "Argus — Mockups de UI" design canvas for the actual screen designs this
-scaffold's route names mirror, and the conversation that produced it for why Reports, Access
-(Users), and Geofences were cut from the first UI pass (no committed API/table effort yet for
-those).
+scaffold follows, and the conversation that produced it for why Reports, Access (Users), and
+Geofences were cut from the first UI pass (no committed API/table effort yet for those).
+
+**UI copy and route paths are in English** (`/fleet`, `/drivers`, `/routes`, `/alerts/:id`),
+even though the design canvas is in Spanish — translated on request. Domain field names still
+follow the ER model. If the copy ever needs to go back to Spanish, it's all in the
+`src/pages/*` / `src/components/*` JSX and `src/utils/status.ts` (the label map), plus
+`src/data/fixtures.ts` for the fake alert text.
 
 ## Stack choices
 
@@ -23,7 +28,7 @@ those).
 - **TypeScript, not plain JS.** This is a titulación project whose grading criteria
   (`docs/criterios/`) explicitly reward justified language choices; static typing catches
   integration errors against the backend's Pydantic models at compile time rather than at
-  runtime in front of a Torre de Control operator, which matters more here than in a typical
+  runtime in front of a Control Tower operator, which matters more here than in a typical
   internal tool given the safety-monitoring use case.
 - **react-router-dom**, because the app is genuinely multi-page (six+ screens across two
   roles) with URLs worth sharing/bookmarking (e.g. a direct link to one alert's triage view),
@@ -57,29 +62,55 @@ is a plain frontend with no native-wheel/glibc-vs-musl concerns, so it uses Alpi
 
 ## Current status
 
-**Scaffold only, not build-verified.** Neither `npm`/`node_modules` nor a working Docker
-daemon were available in the environment this was authored in (only a bare `node` binary and
-a `docker` CLI with no daemon running), so every file here was hand-authored to match what
-`npm create vite@latest -- --template react-ts` plus `react-router-dom` would produce — it has
-not actually been run through `npm install`, `npm run build`, `npm run dev`, or
-`docker compose up`. Treat the first real run of any of these as a verification step, not a
-formality: something as simple as a version-range conflict in `package.json` could still
-surface there. There is also no `package-lock.json` yet for the same reason — the Dockerfile's
-`deps` stage uses `npm install` rather than `npm ci` until one is generated and committed
-(see the Dockerfile's comment on this).
+**All six mockup screens are ported and render fake data — not build-verified.** No
+`npm`/`node_modules`/`node` and no working Docker daemon have been available in any environment
+this was authored in, so every file is hand-authored to match what the real toolchain would
+produce and has **never** been run through `npm install`, `tsc`, `npm run build`, `npm run
+dev`, or `docker compose up`. Treat the first real run as a verification step, not a formality
+— a version-range conflict in `package.json` or a stray type error could still surface. There
+is also no `package-lock.json` yet for the same reason — the Dockerfile's `deps` stage uses
+`npm install` rather than `npm ci` until one is generated and committed (see the Dockerfile's
+comment on this).
 
-Within that scaffold:
-- `App.tsx` wires a route per mockup screen (`/`, `/alertas/:alertId`, `/flota`,
-  `/conductores`, `/rutas`, `/login`), each rendering `PageStub` — a placeholder, not the real
-  screen. There is no auth, no role-based guarding, and no API calls anywhere yet.
-- `src/index.css` carries the mockups' dark-theme design tokens (colors, font stack) so
-  whichever screen gets built first starts from the same visual baseline already reviewed,
-  rather than a freshly-guessed one.
+What exists now:
+- `App.tsx` mounts `AppLayout` (sidebar + `<Outlet/>`) as a layout route around the five
+  in-app screens; `/login` sits outside it. Every screen is a real component — `PageStub` is
+  deleted.
+- **`src/types.ts`** — TypeScript interfaces for `User`/`Truck`/`Driver`/`Route`/`StatusRoute`/
+  `Alert`, field names copied verbatim from the ER model (`docs/designs/ER-model.drawio.xml`)
+  so they line up 1:1 with the backend's Pydantic models when those exist. The `*_status`
+  string unions are a frontend guess (the ER model doesn't enumerate `operative_status`
+  values) and must be reconciled with the backend.
+- **`src/data/fixtures.ts`** — the fake ("foo") data every screen reads: 8 trucks, 8 drivers,
+  9 routes, 6 live-status rows, 7 alerts, one user, kept name-consistent with the mockups.
+  `MOCK_NOW` is a fixed clock so relative timestamps ("40s ago") don't drift. **Delete this
+  file when the API client lands** — `src/types.ts` stays.
+- **`src/utils/`** — `format.ts` (relative time, clock, dates, all against `MOCK_NOW`) and
+  `status.ts` (status-union → English label + colour "tone", the one place the pill/tile
+  colour language lives). Named `utils/` not `lib/` because the repo-root `.gitignore` (a
+  Python template) ignores `lib/` at any depth.
+- **`src/components/`** — `Sidebar`, `AppLayout`, `Icon` (shared inline-SVG set),
+  `PageHeader`, `SearchBox`, `RecordTable` (the shared Fleet/Drivers/Routes table),
+  `StatusPill`.
+- **`src/pages/`** — `Login` (controlled form, submit just routes to `/`), `LiveOps` (stat
+  tiles + schematic fleet map with lat/lon-projected markers + filterable alert feed linking
+  to triage), `AlertTriage` (looks the alert up by `:alertId`, model-score bars, review
+  checkbox + notes as local state), `Fleet`/`Drivers` (search-filter + row-select → edit
+  panel, add/edit against a local `useState` copy), `TravelManagement` (route table + a
+  working "New route" create form).
+- `src/index.css` carries the mockups' dark-theme design tokens plus the shared component
+  classes (`.pill`, `.btn`, `.data-table`, `.input`, `.panel`, …); screens keep inline styles
+  for one-off layout, matching how the mockups themselves are written.
+
+Still not done: **auth, role-gating, and anything that talks to a backend** — the sidebar
+shows both role nav-groups because there's no session to gate on, `Login` doesn't
+authenticate, and every "Guardar"/"Crear" mutates local state only. All of it is tracked in
+`INTEGRATION.md`.
 
 ## Next steps (not started)
 
-- Port the mockup screens into real components, most usefully starting with the shared
-  `Sidebar` (it appears on 5 of the 6 screens) and `Login`.
+- Run `npm install` + `npm run build` and fix whatever the first real type-check / bundle
+  surfaces.
 - Generate and commit `package-lock.json` on the first real `npm install`, then switch the
   Dockerfile's `deps` stage from `npm install` to `npm ci`.
 - **Everything backend-connectivity-related** — the API client, auth/session, per-screen

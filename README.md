@@ -27,9 +27,9 @@ Computación program, and its architecture is deliberately shaped to cover three
 **Sistemas Inteligentes** (a justified ML/CV pipeline), and **Sistemas Distribuidos** (a
 genuinely decentralized edge/cloud system, not a UI over a monolith).
 
-Two of the planned pieces exist as code so far; the rest — backend, frontend, ESP32 firmware —
-is design work not yet implemented (see `docs/designs/semantic-design*` for the full planned
-architecture):
+Three of the planned pieces exist as code so far; the rest — backend, ESP32 firmware, the cloud
+Docker Compose stack — is design work not yet implemented (see `docs/designs/semantic-design*`
+for the full planned architecture):
 
 - **`notebook/`** — the ML pipeline. Raw drowsiness-labeled video → four candidate model
   families (LSTM, RandomForest, Dense NN, a face-crop CNN) → a deployable artifact. See
@@ -40,16 +40,24 @@ architecture):
   architecturally-intended long-term model, and is still kept, fully functional, and selectable).
   See [`src/cv-argus/CLAUDE.md`](src/cv-argus/CLAUDE.md) for the full picture, including the
   honest caveat that the CNN's own reported accuracy isn't yet a validated number.
+- **`src/ui-argus/`** — the web frontend: a React + TypeScript (Vite) SPA serving the two MVP
+  roles, **Torre de Control** (live monitoring) and **Administración / Logística** (fleet/
+  driver/route management). All six mockup screens are ported and **run on fake data**
+  (`src/data/fixtures.ts`) — filters, row-select edit panels and create forms all work against
+  local state; still missing is auth, role-gating, and any real backend call. Not `npm
+  install`ed or built yet. See [`src/ui-argus/README.md`](src/ui-argus/README.md) for how to
+  run it and [`src/ui-argus/CLAUDE.md`](src/ui-argus/CLAUDE.md) for why it's built this way.
 
 ## Repository layout
 
 ```
 notebook/       ML pipeline (Colab notebooks; Drive-backed, no local dataset in this repo)
 src/cv-argus/   Raspberry Pi 5 edge module (Docker-first)
+src/ui-argus/   Web frontend — React + TypeScript SPA (Vite, Docker-first); scaffold only
 docs/           Project proposal, academic grading criteria, architecture diagrams, references
 ```
 
-Each of `notebook/` and `src/cv-argus/` has its own `CLAUDE.md` with the real technical depth
+Each of `notebook/`, `src/cv-argus/`, and `src/ui-argus/` has its own `CLAUDE.md` with the real technical depth
 (exact feature/model shapes, why certain classes must be byte-identical across files, container
 conventions, what's been measured vs. what's still aspirational) — read those before making
 changes in either directory; this file stays at the overview level on purpose.
@@ -67,6 +75,19 @@ overlaid, viewable from any device's browser on the network — plus the separat
 running it on the Pi 5's own CSI camera, a config-variable reference, and troubleshooting, see
 [`src/cv-argus/README.md`](src/cv-argus/README.md).
 
+## Running the web frontend
+
+```sh
+cd src/ui-argus
+cp .env.example .env
+docker compose up --build
+```
+
+Opens a Vite dev server on http://localhost:5173 with hot reload (source is bind-mounted). For
+the local-Node path (no Docker), the full command table, the production nginx image, and
+troubleshooting, see [`src/ui-argus/README.md`](src/ui-argus/README.md). Every screen renders
+from local fake data (`src/data/fixtures.ts`) — no backend is wired up yet.
+
 ## Documentation
 
 - [`CLAUDE.md`](CLAUDE.md) — the full technical/architectural contract for this repo: system
@@ -77,5 +98,9 @@ running it on the Pi 5's own CSI camera, a config-variable reference, and troubl
   start, the demo, configuration, troubleshooting.
 - [`src/cv-argus/CLAUDE.md`](src/cv-argus/CLAUDE.md) — the edge module's architecture, container
   conventions, and notebook-fidelity requirements.
+- [`src/ui-argus/README.md`](src/ui-argus/README.md) — how to run the web frontend: Docker and
+  local-Node quick starts, command reference, production image, configuration, troubleshooting.
+- [`src/ui-argus/CLAUDE.md`](src/ui-argus/CLAUDE.md) — the frontend's stack choices, Docker
+  architecture, current scaffold status, and next steps.
 - `docs/argus-descripción-proyecto.pdf` — project description/proposal.
 - `docs/designs/semantic-design*` — the planned end-to-end system architecture diagram.

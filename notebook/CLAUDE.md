@@ -16,14 +16,17 @@ feature layouts, padding conventions, sync requirements between files, etc.), se
 sections; this file stays at the level of "what happened and why," not implementation detail —
 don't duplicate implementation-level edits' rationale here, put it in the root file instead.
 
-## Binary migration (in progress)
+## Binary migration (code done, reruns pending)
 
-The pipeline is mid-migration from 3-class (`Alert` / `Low Vigilant` / `Drowsy`) to **binary
-`drowsy_vs_not`**: `level_1` = `Not Drowsy` (old Alert + Low Vigilant, merged), `level_2` =
-`Drowsy` (old Drowsy). This is option 4 from "Cheaper options considered alongside the full
-CNN+LSTM build" below, now being acted on — `Low Vigilant` was the single most consistently
-broken class across every 3-class model (0.0000 recall in two separate MobileNetV2 runs), and
-collapsing it removes that failure mode rather than just raising the random-guess floor to 50%.
+**Decision: the class scheme is binary — `Not Drowsy` vs. `Drowsy`** (`drowsy_vs_not`): `level_1`
+= `Not Drowsy` (old `Alert` + `Low Vigilant`, merged), `level_2` = `Drowsy` (old `Drowsy`). This
+was option 4 from "Cheaper options considered alongside the full CNN+LSTM build" below, now
+chosen and implemented across every notebook — not still under evaluation. Rationale: `Low
+Vigilant`, the ambiguous middle class, was the single most consistently broken class across every
+3-class model (0.0000 recall in two separate MobileNetV2 runs); collapsing it removes that
+failure mode rather than just raising the random-guess floor to 50%. The alternative framing
+(`Alert` vs. `Needs Attention`, merging `Low Vigilant` + `Drowsy`) was considered and not chosen
+— `drowsy_vs_not` gives the purer "is this the dangerous state" signal.
 
 **Mechanism.** `relabel_binary_raw_videos.ipynb` builds a parallel Drive tree
 `dataset/raw_videos_binary/subject_NN/level_<1-2>_clip_<NN>.mp4` by collapsing the 3-class
@@ -32,18 +35,34 @@ source of truth (so a different binary framing stays a one-line change, and
 `extract_uta_rldd_clips.py` keeps writing 3-class `level_<1-3>` clips). The dataset-creation
 notebooks read `raw_videos_binary/`, not `raw_videos/`.
 
-**Done:** `01` / `02` / `06` / `09` migrated and repointed to `raw_videos_binary/` —
-`CLASS_NAMES = ["Not Drowsy", "Drowsy"]`, `NUM_CLASSES = 2`, `map_level` validates `{1,2}`;
-`relabel_binary_raw_videos.ipynb` and `extract_uta_rldd_clips.py`'s docs. `06` needs a
-`reset_dataset=True` rebuild (its Drive `face_crops_index.csv` is stale 3-class); `09` hard-fails
-if fed a stale 3-class `face_crops_index.csv`.
-
-**Not done:** `03` / `04` / `05` / `07` / `08` / `10` are still hard 3-class and will break once
-the binary CSVs are regenerated (mostly `CLASS_NAMES` literals, `== {1,2,3}` fold guards, and
-`report['Alert']`/`report['Low Vigilant']` dict-key lookups; `10` also needs a decision on its
-now-obsolete `LOW_VIGILANT_WEIGHT_DAMPEN` class-weight scheme). No binary training run has
-happened yet. Per-notebook edit lists for the training side are in
+**Code migration: complete across all ten notebooks.** `01` / `02` / `06` / `09` (dataset
+creation) are repointed to `raw_videos_binary/` — `CLASS_NAMES = ["Not Drowsy", "Drowsy"]`,
+`NUM_CLASSES = 2`, `map_level` validates `{1,2}`. `03` / `04` / `05` / `07` / `08` / `10`
+(training + export) had their `CLASS_NAMES` literals, `== {1,2,3}` fold guards, and
+`report['Alert']`/`report['Low Vigilant']` dict-key lookups converted to the two binary classes;
+model definitions were already class-count-parametric (`Dense(num_classes)` +
+`sparse_categorical_crossentropy`, kept — not switched to `Dense(1)`/`binary_crossentropy`), and
+macro-F1 was kept everywhere for cross-model comparability. Per-notebook detail is in
 [`binary-migration-TODO.md`](./binary-migration-TODO.md).
+
+Two changes went beyond the mechanical checklist:
+- **`07` and `10`'s `split_by_subject_fold`**: the split used to draw its **validation** set from
+  the pool of class-*incomplete* subjects, but under binary labels essentially every UTA-RLDD
+  subject has both classes (an alert clip → level 1, a drowsy clip → level 2), so that pool is
+  empty. Validation is now a separate `StratifiedGroupKFold` fold (`(fold_idx + 1) % n_splits`),
+  disjoint from the test fold; genuinely single-class subjects fold into training. `07`'s version
+  was written first and `10`'s is a port of it.
+- **`10`'s class weights**: the old asymmetric `DROWSY_WEIGHT_BOOST` + `LOW_VIGILANT_WEIGHT_DAMPEN`
+  scheme lost its meaning (`Low Vigilant` is gone). All `LOW_VIGILANT_*` were deleted; the
+  `DROWSY_WEIGHT_BOOST` (Drowsy still the safety-critical minority) and the `USE_CLASS_WEIGHTS`
+  diagnostic toggle are kept, matching `07`.
+
+**Not done: any actual rerun.** Every notebook still reads its old 3-class Drive artifacts, so all
+attached outputs and every accuracy number in this file are the pre-migration 3-class record. The
+regeneration order is: `relabel_binary_raw_videos.ipynb` (done) → `01`/`02` → `03`/`04`/`05`; and
+→ `06` (**`reset_dataset=True`**) → `07`, and → `09` → `10`; then `08` after `03` retrains.
+`src/cv-argus`'s `_CLASS_NAMES` / `_STATUS_COLORS` are deliberately left 3-class until a binary
+`.keras` model actually exists to deploy.
 
 `relabel_binary.py` (the earlier post-hoc-`level_binary`-CSV-column approach) is **superseded
 and must not be run** — its default `BINARY_FRAMING` is `alert_vs_attention` (the *wrong*
@@ -63,16 +82,16 @@ keeping, but don't read binary expectations into them.
 
 | # | Notebook | Reads | Writes | Status |
 |---|---|---|---|---|
-| 01 | `dataset_creation_lstm` | raw videos | `lstm_windows.csv` | ✅ run |
-| 02 | `dataset_creation_flat` | raw videos | `frame_features.csv`, `frame_features_enriched.csv` | ✅ run |
-| 03 | `model_training_lstm` | `lstm_windows.csv` | LSTM `.keras` + scaler | ✅ run |
-| 04 | `random_forest_training` | `frame_features.csv`/enriched | RF `.joblib` + scaler | ⚠️ baseline run, tuning/augmentation incomplete |
-| 05 | `dense_nn_training` | `frame_features.csv`/enriched | Dense NN `.keras` + scaler | ✅ run (multiple passes) |
-| 06 | `dataset_creation_face_crops` | raw videos | `face_crops_index.csv` + `.jpg`s | ✅ run against the full 54-subject pool (48 complete-class) as of `09`/`10`'s latest rerun — see "What we found"; the 24-subject/20-complete-class figures elsewhere in this file predate that |
-| 07 | `cnn_training` | `face_crops_index.csv` | CNN `.keras` | ⚠️ from-scratch CNN: 36.67% acc / 0.3614 macro-F1 (35.93% ± 9.07% over 3-fold CV), still against the earlier 24-subject pool — low, not a bug; MobileNetV2 backbone rerun too and regressed hard (16.81% acc, collapsed to 0 recall on Low Vigilant) — see "What we found" |
-| 08 | `deployment_export_lstm` | LSTM `.keras` + scaler | deployed `LstmGeometricFeatureModel` | ⬜ not re-run since MAX_TIMESTEPS changed to 120 |
-| 09 | `dataset_creation_cnn_lstm` | `face_crops_index.csv` | `cnn_lstm_windows_index.csv` | ⚠️ run once against the full 54-subject pool (5763 windows); since then extended to also extract a 10-feature `geometric_feature_seq` (EAR/MAR/blendshapes) per crop for fusion into `10`'s model — needs a rerun to populate that column before `10` can consume it |
-| 10 | `cnn_lstm_training` | `cnn_lstm_windows_index.csv` | CNN+LSTM `.keras` (from-scratch only — MobileNetV2 disabled) | ⚠️ latest run (`CosineDecayRestarts`+heavier regularization, geometric fusion): **32.22% test acc, 0.3251 macro-F1 — at random-guess chance** for this balanced 3-class test set, despite a `val_macro_f1` of 0.6799 (epoch 28) that did not hold up on test. Supersedes the 35.04%/0.3296 prior "completed" run as the current number — see "What we found" |
+| 01 | `dataset_creation_lstm` | raw videos | `lstm_windows.csv` | ⚠️ prior run was at `sampling_fps = 10` / `MAX_TIMESTEPS = 60`; both now 5 / 30 (plus a streaming CSV write) — needs a `reset_dataset=True` rerun to regenerate `lstm_windows.csv` |
+| 02 | `dataset_creation_flat` | raw videos | `frame_features.csv`, `frame_features_enriched.csv` | ⚠️ prior run was at `sampling_fps = 10`; now 5 — needs a rerun to regenerate both CSVs |
+| 03 | `model_training_lstm` | `lstm_windows.csv` | LSTM `.keras` + scaler | ⚠️ migrated to binary; `MAX_TIMESTEPS` now 30 (was 60) to match `01`; needs retraining once `01` is rerun |
+| 04 | `random_forest_training` | `frame_features.csv`/enriched | RF `.joblib` + scaler | ⚠️ migrated to binary; baseline (3-class) run only, tuning/augmentation incomplete; needs a rerun after `02` |
+| 05 | `dense_nn_training` | `frame_features.csv`/enriched | Dense NN `.keras` + scaler | ⚠️ migrated to binary; prior runs were 3-class; needs a rerun after `02` |
+| 06 | `dataset_creation_face_crops` | raw videos | `face_crops_index.csv` + `.jpg`s | ⚠️ last run was at `sampling_fps = 1` / `MAX_FRAMES_PER_CLIP = 20` against the 54-subject pool; both now raised to `5` / `100` — needs a `reset_dataset=True` rerun to regenerate the crop set. Earlier 24-subject/20-complete-class figures elsewhere in this file predate even that 54-subject run |
+| 07 | `cnn_training` | `face_crops_index.csv` | CNN `.keras` | ⚠️ **migrated to binary**; not re-run since — needs `06` rebuilt first. Last (3-class) numbers: from-scratch CNN 36.67% acc / 0.3614 macro-F1 (35.93% ± 9.07% over 3-fold CV) against the 24-subject pool — low, not a bug; MobileNetV2 backbone regressed hard (16.81% acc, 0 recall on Low Vigilant) — see "What we found" |
+| 08 | `deployment_export_lstm` | LSTM `.keras` + scaler | deployed `LstmGeometricFeatureModel` | ⬜ not re-run; migrated to binary (sim cell only — the export artifact needed no class change); `sampling_fps`/`MAX_TIMESTEPS` updated to 5 / 30 to match `01`/`03` — needs a rerun once `03` retrains |
+| 09 | `dataset_creation_cnn_lstm` | `face_crops_index.csv` | `cnn_lstm_windows_index.csv` | ⚠️ run once against the full 54-subject pool (5763 windows); since then (a) extended to also extract a 10-feature `geometric_feature_seq` (EAR/MAR/blendshapes) per crop for fusion into `10`, and (b) `sampling_fps` raised `1` → `5` to match `06`, so `MAX_TIMESTEPS_IMG` is now `20 * 5 = 100` (was `20`) and the four window durations are `15/25/50/100` samples (were `3/5/10/20`) — needs a rerun after `06` |
+| 10 | `cnn_lstm_training` | `cnn_lstm_windows_index.csv` | CNN+LSTM `.keras` (from-scratch only — MobileNetV2 disabled) | ⚠️ migrated to binary (`split_by_subject_fold` ported from `07`; `LOW_VIGILANT_*` weight scheme removed); not re-run since. Last (3-class) run: **32.22% test acc, 0.3251 macro-F1 — at random-guess chance** for that balanced 3-class test set, despite a `val_macro_f1` of 0.6799 (epoch 28) that did not hold up on test — see "What we found" |
 
 Four model families share two dataset-creation notebooks:
 
@@ -458,12 +477,18 @@ augmentation, worth knowing so you don't re-propose them as open problems. (A fo
 round of changes to `07` — the split/metric/augmentation fixes in response to the degenerate
 first run — is covered in "What we found" above rather than here.)
 
-- **`06` now samples much more sparsely.** `sampling_fps` dropped from 10 to 1, plus a new
-  `MAX_FRAMES_PER_CLIP` cap (20), specifically because consecutive face crops at a high sampling
-  rate are near-duplicate images that add little for a CNN to learn from — unlike the
+- **`06`'s sampling rate: 10 → 1 → 5 FPS.** It was first dropped from 10 to 1 (plus a new
+  `MAX_FRAMES_PER_CLIP` cap of 20), on the reasoning that consecutive face crops at a high
+  sampling rate are near-duplicate images that add little for a CNN — unlike the
   geometric-feature notebooks, where each frame's small feature vector still carries distinct
-  signal even at a high rate. No similarity/dedup algorithm was added; this is a deliberately
-  simple fixed-rate-plus-cap approach, not an adaptive sampler.
+  signal even at a high rate. That has since been **partly reversed**: `sampling_fps` is now `5`
+  and `MAX_FRAMES_PER_CLIP` is `100` (≈ the first 20 s of each clip), a deliberate
+  volume-over-redundancy trade — the CNN / CNN+LSTM path was judged data-starved on the small
+  subject pool, and the extra extraction time is absorbed by the parallel worker processes. The
+  near-duplication concern is real and acknowledged, not solved; still no similarity/dedup
+  algorithm, just the higher fixed-rate-plus-cap. `09` follows `06`'s rate (now also `5`, see the
+  pipeline-map rows), so `MAX_TIMESTEPS_IMG` there is `20 * 5 = 100` (was `20`), which multiplies
+  `10`'s per-batch image-sequence tensor size 5× — expect to lower `10`'s `BATCH_SIZE`.
 - **`06` now writes each CSV row the instant its image is captured**, not once per finished video
   (the previous granularity) or once at the end. Since extraction runs across parallel worker
   processes, this is guarded by a `multiprocessing.Manager().Lock()` shared across workers to
@@ -485,14 +510,18 @@ first run — is covered in "What we found" above rather than here.)
 
 ## One more thing worth knowing before touching `08` or `cv-argus/`
 
-**Correction to an earlier version of this note:** it previously claimed `MAX_TIMESTEPS` changed
-from 60 to 120 partway through this project's history, and that `src/cv-argus/src/model/
-lstm_model.py`'s `max_timesteps: int = 60` default was stale as a result. That had the direction
-backwards — checked directly against notebooks 01/03/08's actual cells and `lstm_model.py`:
-`MAX_TIMESTEPS`/`max_timesteps` is **60 everywhere, consistently**. It went **120 → 60**
-(removing unused headroom, after a full extraction run at 120 OOM-crashed the Colab kernel) — the
-same account the root `CLAUDE.md` already gives. There's no live `MAX_TIMESTEPS` inconsistency to
-fix here.
+**History:** `MAX_TIMESTEPS` went **120 → 60** (removing unused headroom, after a full extraction
+run at 120 OOM-crashed the Colab kernel), then **60 → 30** when `sampling_fps` was cut from 10 to
+5 in `01`/`02` (to roughly halve extraction time — a 6s max window is now `6 * 5 = 30` frames).
+In notebooks `01`, `03`, and `08`, `MAX_TIMESTEPS`/`max_timesteps` is now **30** (and `08`'s
+`LstmGeometricFeatureModel.__init__` default was moved 60 → 30 to match). `src/cv-argus/src/
+model/lstm_model.py` still carries a `max_timesteps: int = 60` **default** — not updated here and
+not load-bearing: a model loaded from a saved `.keras` takes its real `max_timesteps` from the
+serialized config, not this class default. An earlier version of this note claimed the value was
+"60 everywhere, consistently"; that was true before the `sampling_fps` change, not after — the
+notebooks (30) and the `cv-argus` default (60) now differ on the number, though not in a way
+that breaks a loaded model. `08` and `src/cv-argus` both need re-validation against a binary
+model retrained on the 5-FPS / 30-timestep data before deployment.
 
 There is a real, smaller mismatch worth flagging instead: `lstm_model.py`'s
 `LstmGeometricFeatureModel.__init__` defaults `num_features` to **59**, but
