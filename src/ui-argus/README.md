@@ -1,15 +1,18 @@
 # ui-argus
 
 The Argus web frontend — a React + TypeScript app (Vite) serving the two MVP roles,
-**Torre de Control** (live monitoring) and **Administración / Logística** (fleet/driver/route
+**Control Tower** (live monitoring) and **Administration / Logistics** (fleet/driver/route
 management). See `CLAUDE.md` in this directory for why it's built this way, and the
 top-level `CLAUDE.md` for how this fits the rest of Argus.
 
-**Current status: scaffold only.** The route skeleton and page stubs exist and build/run, but
-none of the actual screens from the approved mockups are wired up yet — see CLAUDE.md's
-"Current status" for specifics, and **`INTEGRATION.md` for the concrete checklist of what's
-missing and where backend-connectivity code needs to land** (per screen, plus the
-cross-cutting gaps — API client, auth, real-time strategy — that block all of them).
+**Current status: all six mockup screens ported, running on fake data.** Login, the live-ops
+dashboard, alert triage, and the Fleet/Drivers/Routes CRUD screens are real components that
+read from `src/data/fixtures.ts` — search filters, row selection, edit panels and create forms
+all work against local state. UI copy is in English (the design canvas is in Spanish;
+translated on request). What's **not** there: auth, role-gating, and any real backend call.
+None of it has been `npm install`ed or built yet either — see CLAUDE.md's "Current status",
+and **`INTEGRATION.md` for the checklist of where backend-connectivity code needs to land**
+(per screen, plus the cross-cutting gaps — API client, auth, real-time strategy).
 
 ## Quick start (Docker — recommended)
 
