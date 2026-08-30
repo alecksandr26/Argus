@@ -23,7 +23,15 @@ exists yet:
    request wrapper, one file per resource — `src/api/trucks.ts`, `src/api/alerts.ts`, etc.).
    Whether to add a caching/data-fetching layer on top (TanStack Query is the common choice —
    it would materially simplify the loading/error/refetch handling every table screen below
-   needs) is an open decision, not made here.
+   needs) is an open decision, not made here. **Coordinate fields must be normalised at this
+   boundary**: every `Alert.coordinates`, `Status_Route.current_coordinates` and
+   `Route.destination_coordinates` from the API goes through `normalizeCoordinates()` in
+   `src/utils/geo.ts` before it reaches a component. It already handles `{lat,lon}` /
+   `{lat,lng}` / `"lat,lon"` / bare GeoJSON position / GeoJSON `Point` — MongoDB's `2dsphere`
+   index stores points as GeoJSON `{ type:'Point', coordinates:[lng,lat] }` (longitude first),
+   which is neither the `{lat,lon}` shape `src/types.ts` declares nor the `[lat,lng]` order
+   Leaflet wants, so this conversion is not optional. Rationale:
+   `docs/designs/frontend-map-and-coordinates.md`.
 2. **No TypeScript types for the API shapes.** Nothing in `src/` models `User`, `Truck`,
    `Driver`, `Route`, `Status_Route`, or `Alert` yet. These should mirror the backend's Pydantic
    models once they exist (see the top-level `CLAUDE.md`'s ER model reference,
@@ -44,7 +52,12 @@ exists yet:
    that would actually exercise this project's "Sistemas Distribuidos" grading requirement
    (see the top-level `CLAUDE.md`) — but nothing in the committed API list
    (`semantic-design.drawio.xml`) specifies either yet. This needs a decision made with
-   whoever builds the backend, not assumed unilaterally on the frontend side.
+   whoever builds the backend, not assumed unilaterally on the frontend side. The map itself
+   now exists (`src/components/FleetMap.tsx`, `react-leaflet`, fixture-fed) — so the remaining
+   work here is the data source and refresh mechanism, not the map. Note `react-leaflet`'s
+   `MapContainer` `center`/`zoom`/`bounds` are init-only; `Marker` `position` *is* reactive,
+   so live positions move markers for free, but a `useMap()` child effect is needed to re-fit
+   the viewport when the fleet moves.
 6. **CORS isn't the frontend's code, but will silently break this if forgotten**: the FastAPI
    backend will need to allow the Vite dev server's origin (`http://localhost:5173`) once any
    of the fetches below are wired up.
@@ -56,7 +69,7 @@ exists yet:
 | `src/pages/Login.tsx` | `POST /api/auth/login` | Controlled form; submit routes to `/` with no auth | Real submit handler, error display, on success: store session (#3 above) and redirect by role |
 | `src/App.tsx` (routing shell) | — | Every route public, no session read; `AppLayout` layout route wraps the in-app screens | `ProtectedRoute` wrapper + role-based redirect after login (#4 above) |
 | `src/components/Sidebar.tsx` | — | Ported; shows **both** role nav-groups and fills the footer from the `CURRENT_USER` fixture | Read the logged-in user's name/initials/role from session state; hide the nav-group the role can't see |
-| `src/pages/LiveOps.tsx` | `GET /api/alerts`, `GET /api/routes/:id/status` | Stat tiles / map markers / alert feed all computed from fixtures; feed severity filter works; rows link to `/alerts/:id` | Fetching + the real-time strategy from gap #5; **also a real gap in the committed API list itself**: there's no endpoint to list *all currently-active* routes/trucks at once, only `/api/routes/:id/status` for one route at a time — the dashboard's fleet-wide map and stat tiles need something like `GET /api/routes?status=active`, which doesn't exist in `semantic-design.drawio.xml` yet and should be raised with the backend, not assumed into existence here |
+| `src/pages/LiveOps.tsx` | `GET /api/alerts`, `GET /api/routes/:id/status` | Stat tiles / alert feed computed from fixtures; a real `react-leaflet` map (`FleetMap`) with one truck marker per `statusRoutes[]` row, positioned from `current_coordinates`; feed severity filter works; rows link to `/alerts/:id` | Fetching + the real-time strategy from gap #5 (feed `FleetMap` markers from live data; add a `useMap()` child effect to re-fit bounds as the fleet moves); **also a real gap in the committed API list itself**: there's no endpoint to list *all currently-active* routes/trucks at once, only `/api/routes/:id/status` for one route at a time — the dashboard's fleet-wide map and stat tiles need something like `GET /api/routes?status=active`, which doesn't exist in `semantic-design.drawio.xml` yet and should be raised with the backend, not assumed into existence here |
 | `src/pages/AlertTriage.tsx` | `GET /api/alerts/:id`, `PUT /api/alerts/:id` | Looks the alert up in fixtures by `:alertId` (`useParams`); "not found" state; review checkbox + notes are local state, "Save" flips a local flag | Fetch on mount; `PUT` `reviwed_by_operator`/`operator_notes` from the checkbox + textarea; **also unresolved**: `Alert.media_url` — how/where captured clips are stored and served (S3? the backend directly?) isn't decided anywhere yet, so the media placeholder has nothing real to point at |
 | `src/pages/Fleet.tsx` | `GET/POST/PUT/DELETE /api/trucks` | Table from fixtures with client-side search; row-select → edit panel; add/edit mutate a local `useState` copy | Swap the fixture import for a fetch; point the panel's submit at `POST`/`PUT`, add a delete affordance |
 | `src/pages/Drivers.tsx` | `GET/POST/PUT/DELETE /api/drivers` | Same shape as Fleet | Same as Fleet |

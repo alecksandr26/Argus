@@ -277,6 +277,12 @@ def process_zip(zip_path: str, output_dir: Path, rng: random.Random, subject_num
                         skipped.append((f"{member} clip {clip_n} ({CLASS_NAMES[cls]})",
                                          f"ffmpeg failed: {e}"))
                         continue
+                    except KeyboardInterrupt:
+                        # Ctrl-C during an encode leaves a partial file that a resume run would
+                        # otherwise trust. Drop it, then re-raise so the whole run stops; the
+                        # subject_assignments.json + per-clip skip logic makes re-running safe.
+                        out_path.unlink(missing_ok=True)
+                        raise
                     ingested += 1
                     clips_written += 1
                 print(f"  {member} -> subject_{subject_num:02d} "

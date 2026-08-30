@@ -1,0 +1,8 @@
+# Generated data + downloaded models + local venv. None of this belongs in git.
+raw/
+processed/
+models/
+.venv/
+*.egg-info/
+__pycache__/
+.pytest_cache/

@@ -12,9 +12,26 @@ what the results were, and — the reason this file exists — why a CNN-based m
 likely next backbone. Read it before proposing a next step on the pipeline, so the proposal
 builds on what was already tried rather than re-litigating it. For full technical depth (exact
 feature layouts, padding conventions, sync requirements between files, etc.), see the root
-[`CLAUDE.md`](../CLAUDE.md)'s "Notebook architecture" and "Model results and current status"
+[`CLAUDE.md`](../../CLAUDE.md)'s "Notebook architecture" and "Model results and current status"
 sections; this file stays at the level of "what happened and why," not implementation detail —
 don't duplicate implementation-level edits' rationale here, put it in the root file instead.
+
+## Dataset creation now runs locally, not in Colab
+
+The four dataset-creation notebooks — `01_dataset_creation_lstm`, `02_dataset_creation_flat`,
+`06_dataset_creation_face_crops`, `09_dataset_creation_cnn_lstm` — have been reimplemented as
+local CPU-parallel scripts under **`src/dataset/`** (Colab kept interrupting the multi-hour
+runs). Those scripts are the source of truth for dataset creation now; these four notebooks are
+kept as Colab-runnable reference but are no longer the thing to edit. If you change feature
+extraction / windowing / sampling, change it in `src/dataset/argus_dataset/` (constants in
+`config.py`) and mirror the constant back into the notebook. Training notebooks
+(`03`/`04`/`05`/`07`/`08`/`10`) are unaffected and still run on Colab. See
+`src/dataset/README.md`.
+
+The local pipeline has **no relabel step** — it reads `src/dataset/raw/raw_videos/` directly
+and expects clips already labelled `level_1` (Not Drowsy) / `level_2` (Drowsy). The
+`relabel_binary_raw_videos.ipynb` notebook (which derived a `raw_videos_binary/` tree on Drive)
+is only relevant to the Colab flow described in "Binary migration" below.
 
 ## Binary migration (code done, reruns pending)
 

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
+import FleetMap, { type FleetMapMarker } from '../components/FleetMap'
 import {
   alerts as allAlerts,
   driverById,
@@ -11,17 +12,8 @@ import {
 } from '../data/fixtures'
 import { longDay, relativeTime } from '../utils/format'
 import { isActiveRoute, severity, vigilance } from '../utils/status'
-import type { AlertSeverity, Coordinates } from '../types'
-
-/** Linear lat/lon → SVG projection over a central-Mexico bounding box. */
-const BOX = { lonMin: -104, lonMax: -98, latMin: 18.7, latMax: 21.7 }
-const VIEW = { w: 760, h: 460 }
-function project({ lat, lon }: Coordinates) {
-  return {
-    x: ((lon - BOX.lonMin) / (BOX.lonMax - BOX.lonMin)) * VIEW.w,
-    y: ((BOX.latMax - lat) / (BOX.latMax - BOX.latMin)) * VIEW.h,
-  }
-}
+import { toLatLng } from '../utils/geo'
+import type { AlertSeverity } from '../types'
 
 const toneColor = {
   good: 'var(--good)',
@@ -52,16 +44,26 @@ export default function LiveOps() {
     }
   }, [])
 
-  const markers = useMemo(
+  const markers = useMemo<FleetMapMarker[]>(
     () =>
       statusRoutes.map((s) => {
         const route = routeById(s.id_route)
         const truck = route && truckById(route.id_truck)
+        const driver = route && driverById(route.id_driver)
+        const v = vigilance[s.vigilance]
         return {
           id: s.id_status_route,
+          // Fixture data is already `Coordinates`; when this comes from the API
+          // it will have been run through `normalizeCoordinates` at the boundary.
+          position: toLatLng(s.current_coordinates),
           plate: truck?.plate_number ?? '—',
-          tone: vigilance[s.vigilance].tone,
-          ...project(s.current_coordinates),
+          driver: driver ? `${driver.first_name} ${driver.last_name}` : '—',
+          origin: route?.origin_name ?? '—',
+          destination: route?.destination_name ?? '—',
+          speedKmh: s.current_speed,
+          vigilanceLabel: v.label,
+          tone: v.tone,
+          timestamp: s.timestamp,
         }
       }),
     [],
@@ -192,97 +194,26 @@ export default function LiveOps() {
           <div
             style={{
               flex: 1,
+              minHeight: 0,
               position: 'relative',
               borderRadius: 8,
               overflow: 'hidden',
-              background: `
-                linear-gradient(var(--border-soft) 1px, transparent 1px) 0 0/40px 40px,
-                linear-gradient(90deg, var(--border-soft) 1px, transparent 1px) 0 0/40px 40px,
-                oklch(0.165 0.018 258)`,
+              isolation: 'isolate',
+              background: '#e8eaed',
             }}
           >
-            <svg
-              width="100%"
-              height="100%"
-              viewBox={`0 0 ${VIEW.w} ${VIEW.h}`}
-              preserveAspectRatio="none"
-              style={{ position: 'absolute', inset: 0 }}
-            >
-              <path
-                d="M40 380 C 160 340, 220 200, 340 190 S 520 120, 620 60"
-                stroke="oklch(0.4 0.02 258)"
-                strokeWidth={10}
-                fill="none"
-                strokeLinecap="round"
-              />
-              <path
-                d="M40 380 C 160 340, 220 200, 340 190 S 520 120, 620 60"
-                stroke="var(--accent)"
-                strokeWidth={2}
-                fill="none"
-                strokeDasharray="3 7"
-                opacity={0.7}
-              />
-              <path
-                d="M120 420 C 260 430, 380 340, 420 260"
-                stroke="oklch(0.4 0.02 258)"
-                strokeWidth={8}
-                fill="none"
-                strokeLinecap="round"
-              />
-            </svg>
-
-            {markers.map((m) => (
-              <div
-                key={m.id}
-                style={{
-                  position: 'absolute',
-                  left: `${(m.x / VIEW.w) * 100}%`,
-                  top: `${(m.y / VIEW.h) * 100}%`,
-                  transform: 'translate(-50%, -50%)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  gap: 3,
-                }}
-              >
-                <span
-                  style={{
-                    width: m.tone === 'bad' ? 14 : 12,
-                    height: m.tone === 'bad' ? 14 : 12,
-                    borderRadius: '50%',
-                    background: toneColor[m.tone],
-                    border: '2px solid oklch(0.95 0.01 258 / 0.85)',
-                    boxShadow:
-                      m.tone === 'bad' ? '0 0 0 6px var(--bad-soft)' : 'none',
-                  }}
-                />
-                <span
-                  className="mono"
-                  style={{
-                    fontSize: 10,
-                    background:
-                      m.tone === 'bad' ? 'var(--bad)' : 'var(--surface-3)',
-                    color:
-                      m.tone === 'bad' ? 'oklch(0.16 0.02 258)' : 'var(--text)',
-                    fontWeight: m.tone === 'bad' ? 600 : 400,
-                    padding: '1px 5px',
-                    borderRadius: 4,
-                  }}
-                >
-                  {m.plate}
-                </span>
-              </div>
-            ))}
+            <FleetMap markers={markers} />
 
             <div
               style={{
                 position: 'absolute',
-                left: 14,
+                left: 12,
                 bottom: 12,
+                zIndex: 1000,
+                pointerEvents: 'none',
                 display: 'flex',
                 gap: 14,
-                background: 'oklch(0.14 0.018 258 / 0.7)',
+                background: 'oklch(1 0 0 / 0.85)',
                 padding: '7px 12px',
                 borderRadius: 8,
                 border: '1px solid var(--border-soft)',
@@ -296,7 +227,7 @@ export default function LiveOps() {
                     alignItems: 'center',
                     gap: 5,
                     fontSize: 11,
-                    color: 'var(--text-soft)',
+                    color: 'oklch(0.28 0.02 258)',
                   }}
                 >
                   <span

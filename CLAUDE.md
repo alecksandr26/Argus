@@ -85,7 +85,11 @@ far; the rest is design work to be implemented.
   OpenStreetMap extract, queried by the backend/frontend for route + ETA data.
 - A **React** frontend using **react-leaflet** to render the OSRM route and live truck/alert
   status, with panels for login, fleet management, driver/user access, route tracking, alerts,
-  travel management, and reports.
+  travel management, and reports. (The `react-leaflet` map is now implemented in `src/ui-argus`
+  — Live operations screen, standard OpenStreetMap tiles, markers from fixture coordinates;
+  OSRM route-line rendering is still deferred. The map-library choice — react-leaflet over
+  Google Maps / Amazon Location — and how backend coordinates get normalized are written up in
+  `docs/designs/frontend-map-and-coordinates.md`.)
 - Three actor roles: Root/Admin (manage users, trips, reports), Guardian (monitor trips/alerts),
   Truck Driver (receives alerts/status).
 
@@ -104,20 +108,26 @@ Only two parts of the planned architecture exist as code so far: the training no
 the `cv-argus` edge module (below). The backend, frontend, Docker Compose stack, and ESP32
 firmware described in "Planned end-to-end system architecture" don't exist yet.
 
-- `notebook/01_dataset_creation_lstm.ipynb` through `notebook/08_deployment_export_lstm.ipynb` —
-  the ML pipeline, split into eight stage-scoped notebooks across four model families (LSTM,
-  RandomForest, Dense NN, face-crop CNN) that share two dataset-creation notebooks. See "Notebook
-  architecture" below for what each one does and how they hand off to each other. These are the
-  files to read and edit for almost any task involving the model itself. `notebook/ArgusMLModel.ipynb`
-  is the original monolithic notebook this pipeline was split from; it's kept for history but is
-  no longer the one to edit. There is no build system, package manifest, linter, or test suite
-  for any of them — they're designed to run in Google Colab (mounts Google Drive as their storage
-  backend, and each depends on a prior notebook's Drive outputs — CSVs, then `.keras`/`.joblib`
-  models — rather than shared in-memory state, so they can be run as separate Colab sessions), not
-  as local scripts; validate changes by reasoning about the notebook cells or, if actually
-  executing them, running them inside Colab (or a Jupyter environment with `mediapipe`,
-  `opencv-python`, `tensorflow`, `scikit-learn`, `pandas`, `joblib` installed) rather than assuming
-  a local CLI workflow exists.
+- `src/notebook/01_dataset_creation_lstm.ipynb` through `src/notebook/10_cnn_lstm_training.ipynb`
+  (the `notebook/` folder was moved under `src/`) — the ML pipeline, split into ten stage-scoped
+  notebooks across four model families (LSTM, RandomForest, Dense NN, face-crop CNN / CNN+LSTM)
+  that share dataset-creation stages. See `src/notebook/CLAUDE.md` for what each one does and how
+  they hand off. `src/notebook/ArgusMLModel.ipynb` is the retired monolith. The **training**
+  notebooks (`03`/`04`/`05`/`07`/`10`) run in Google Colab (Drive as storage backend, GPU);
+  validate changes by reasoning about the cells or running them in Colab.
+- `src/dataset/` — **local, CPU-parallel, pausable/resumable reimplementation of the four
+  dataset-creation notebooks** (`01`/`02`/`06`/`09`), built to run in WSL2 instead of Colab
+  (which kept interrupting the multi-hour extraction runs). This is now the source of truth for
+  dataset creation; those four notebooks are kept as Colab reference. It reads
+  `src/dataset/raw/raw_videos/` directly (clips expected already binary-labelled `level_1` /
+  `level_2`) — no relabel step, unlike the Colab flow.
+  Standalone module (`mediapipe` + `opencv` + `numpy` + `pandas` + `tqdm`; **no TensorFlow** — the
+  `GeometricRatioFeatureLayer` maths is reimplemented in NumPy in `argus_dataset/geometry.py`,
+  equivalence-tested against the real layer). Constants that must match the notebooks live in
+  `argus_dataset/config.py`, each annotated with its notebook + cell. Has a `README.md`
+  (how to run it) and a `CLAUDE.md` (architecture, the pause/resume design, the
+  notebook-fidelity contract — read it before changing anything here). Artifacts are pushed to
+  Drive via `scripts/publish_to_drive.py` for the Colab training notebooks.
 - `src/cv-argus/` — the Raspberry Pi 5 edge module: loads a trained model from the notebook and
   runs live inference against camera frames, end to end (camera/video-file source → MediaPipe →
   model inference → an output sink), not just the model-loading piece. **Currently focused on
@@ -184,15 +194,17 @@ probable next backbone" for the reasoning.
   framing in these files are the pre-migration record. `src/cv-argus`'s deploy-time class names
   are deliberately still 3-class (no binary `.keras` model exists to deploy yet). See
   `notebook/CLAUDE.md`'s "Binary migration" for the authoritative per-notebook status.
-- Treat the eight-notebook split as the source of truth for the pipeline; when asked to change
-  feature extraction, windowing, or model logic, edit the corresponding cell(s) rather than
-  assuming there is equivalent code elsewhere.
+- For **training** logic (`03`/`04`/`05`/`07`/`08`/`10`) the notebooks are the source of truth;
+  edit the corresponding cell(s). For **dataset creation** (`01`/`02`/`06`/`09`) the source of
+  truth is now `src/dataset/` — edit `argus_dataset/config.py` + the relevant module there, and
+  mirror the constant into the matching notebook (kept as Colab reference).
 - Cell execution order matters *within* a notebook — cells reference variables
   (`project_folder`, `models_folder`, `video_files`, `face_landmarker_options`, etc.) defined
   earlier in the same linear run. Across notebooks, only Drive artifacts carry over, not
   variables — don't assume one notebook can see another's in-memory state.
-- Paths are hardcoded to Google Drive (`/content/drive/MyDrive/Argus/...`); there is no local
-  dataset checked into this repo.
+- In the **notebooks**, paths are hardcoded to Google Drive (`/content/drive/MyDrive/Argus/...`).
+  The **local** `src/dataset/` pipeline uses `$ARGUS_DATASET_ROOT` (default: the `src/dataset/`
+  dir) with `raw/`, `processed/`, `models/` beneath it, all gitignored. No dataset is checked in.
 - `GeometricRatioFeatureLayer` is intentionally redefined verbatim in five places
   (`01_dataset_creation_lstm.ipynb`, `02_dataset_creation_flat.ipynb`,
   `08_deployment_export_lstm.ipynb`, `src/cv-argus/src/model/layers.py`, and now
@@ -203,7 +215,11 @@ probable next backbone" for the reasoning.
   verification against the other four. `06_dataset_creation_face_crops.ipynb` itself does *not*
   use this class — it only needs a face bounding box, via MediaPipe's separate, lighter Face
   Detector task; `09` runs `FaceLandmarker` separately, directly on `06`'s saved crop images,
-  specifically so `06` doesn't need to be re-run to get this fusion feature.
+  specifically so `06` doesn't need to be re-run to get this fusion feature. The local
+  `src/dataset/` pipeline does **not** add a sixth copy: `argus_dataset/geometry.py` is a NumPy
+  reimplementation of the same maths (the layer is only *called*, never deserialized, during
+  dataset creation), kept honest by `src/dataset/tests/test_geometry_equiv.py` which diffs it
+  against `layers.py`'s real layer to `atol=1e-4`.
 - `MAX_TIMESTEPS` (the LSTM's fixed padded-window length, currently 30 — it was 60 until
   `01`/`02`'s `sampling_fps` dropped from 10 to 5, making a 6s window 30 frames) is an LSTM-only concept.
   It has no bearing on RandomForest, the Dense NN, or the CNN — those three consume single-frame
