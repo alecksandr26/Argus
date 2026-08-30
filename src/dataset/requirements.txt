@@ -1,0 +1,15 @@
+# Runtime deps for the local dataset-creation pipeline. Install with:
+#   python3 -m venv .venv && . .venv/bin/activate
+#   pip install -e . -r requirements.txt
+#
+# NO tensorflow: geometry.py is a NumPy port of the notebooks' tf.keras GeometricRatioFeatureLayer
+# (see pyproject.toml's comment). NO cv_argus: this module is standalone.
+mediapipe>=0.10.14,<0.11
+opencv-python-headless>=4.9,<5
+numpy>=1.26,<2
+pandas>=2.2,<3
+tqdm>=4.66,<5
+
+# Optional — `build_cnn_lstm_windows.py` writes its per-crop geometry cache as parquet.
+# pandas can fall back to CSV if pyarrow is missing, so this is a soft dependency.
+pyarrow>=15

@@ -243,3 +243,86 @@ textarea.input {
   resize: vertical;
   line-height: 1.5;
 }
+
+/* ------------------------------------------------------------------ *
+ * Leaflet — used by the Live operations fleet map (src/components/
+ * FleetMap.tsx). The basemap is the standard (light) OpenStreetMap
+ * style, so Leaflet's default control/attribution chrome is left as-is;
+ * only the popup (kept dark, to match the app) and the custom divIcon
+ * truck markers are restyled here. `leaflet/dist/leaflet.css` is
+ * imported first in src/main.tsx so these rules win on source order.
+ * ------------------------------------------------------------------ */
+.leaflet-container {
+  font-family: var(--font-body);
+  background: #e8eaed; /* neutral fill for the moment before tiles paint */
+}
+
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 8px 24px oklch(0 0 0 / 0.45);
+}
+.leaflet-popup-content-wrapper {
+  border: 1px solid var(--border-soft);
+}
+.leaflet-popup-content {
+  margin: 10px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.leaflet-popup-content a {
+  color: var(--accent);
+}
+.leaflet-popup-close-button {
+  color: var(--text-faint) !important;
+}
+
+/* custom truck markers (L.divIcon, class "fleet-marker") */
+.leaflet-div-icon.fleet-marker {
+  background: transparent;
+  border: 0;
+}
+.fleet-marker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.fleet-marker__dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  box-sizing: border-box;
+  border: 2px solid oklch(1 0 0 / 0.9);
+  box-shadow: 0 1px 3px oklch(0 0 0 / 0.4);
+}
+.fleet-marker__dot--good {
+  background: var(--good);
+}
+.fleet-marker__dot--warn {
+  background: var(--warn);
+}
+.fleet-marker__dot--neutral {
+  background: var(--text-faint);
+}
+.fleet-marker__dot--bad {
+  background: var(--bad);
+  width: 14px;
+  height: 14px;
+  box-shadow: 0 0 0 6px oklch(0.68 0.19 25 / 0.25);
+}
+.fleet-marker__plate {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+  background: var(--surface-3);
+  color: var(--text);
+  box-shadow: 0 1px 3px oklch(0 0 0 / 0.35);
+}
+.fleet-marker__plate--bad {
+  background: var(--bad);
+  color: oklch(0.16 0.02 258);
+  font-weight: 600;
+}

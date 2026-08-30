@@ -455,7 +455,17 @@ somewhere to hand off predictions without blocking on that design.
 ## `scripts/` — dataset-prep utilities, not part of the deployed package
 
 Not imported by `cv_argus` at runtime — these are standalone scripts you run locally, by hand,
-before uploading anything to Drive. Currently just `extract_uta_rldd_clips.py`: reads a
+before uploading anything to Drive.
+
+> The rest of dataset creation (the notebook `01`/`02`/`06`/`09` stages) has been reimplemented
+> as local CPU-parallel scripts under **`src/dataset/`** — Colab was unreliable for the
+> multi-hour extraction runs. That pipeline reads `src/dataset/raw/raw_videos/` directly and
+> expects clips already labelled `level_1` / `level_2` (no relabel step). See
+> `src/dataset/README.md`. `extract_uta_rldd_clips.py` here still emits 3-class `level_<1-3>`
+> clips (UTA-RLDD's native scheme) — collapse them to binary before feeding the local builds.
+> It also grew a `KeyboardInterrupt` cleanup so a Ctrl-C mid-encode doesn't leave a partial clip.
+
+`extract_uta_rldd_clips.py`: reads a
 downloaded [UTA-RLDD](https://sites.google.com/view/utarldd/home) zip archive (e.g.
 `Fold1_part1.zip`) directly (never extracts the whole ~13GB archive at once — pulls one
 ~10-minute source video to a temp file, processes it, discards it, moves on), cuts a few short
