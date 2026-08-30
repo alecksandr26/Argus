@@ -224,6 +224,13 @@ __marimo__/
 # UTA-RLDD extraction script output (large video files, not for git)
 src/cv-argus/scripts/output/
 
+# Local dataset-creation pipeline (src/dataset/) — raw videos, generated CSV/JPEG artifacts,
+# downloaded MediaPipe model bundles, and its venv. The scripts/ and argus_dataset/ code IS tracked.
+/src/dataset/raw/
+/src/dataset/processed/
+/src/dataset/models/
+/src/dataset/.venv/
+
 # Node / React (src/ui-argus) — dist/ is already covered by the Python "Distribution /
 # packaging" section above
 node_modules/

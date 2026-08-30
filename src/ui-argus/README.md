@@ -8,8 +8,10 @@ top-level `CLAUDE.md` for how this fits the rest of Argus.
 **Current status: all six mockup screens ported, running on fake data.** Login, the live-ops
 dashboard, alert triage, and the Fleet/Drivers/Routes CRUD screens are real components that
 read from `src/data/fixtures.ts` — search filters, row selection, edit panels and create forms
-all work against local state. UI copy is in English (the design canvas is in Spanish;
-translated on request). What's **not** there: auth, role-gating, and any real backend call.
+all work against local state. The live-ops dashboard has a real interactive map
+(**react-leaflet** + OpenStreetMap tiles, keyless) with a truck marker per live-status row. UI
+copy is in English (the design canvas is in Spanish; translated on request). What's **not**
+there: auth, role-gating, and any real backend call.
 None of it has been `npm install`ed or built yet either — see CLAUDE.md's "Current status",
 and **`INTEGRATION.md` for the checklist of where backend-connectivity code needs to land**
 (per screen, plus the cross-cutting gaps — API client, auth, real-time strategy).

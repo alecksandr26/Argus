@@ -38,6 +38,18 @@ follow the ER model. If the copy ever needs to go back to Spanish, it's all in t
   (colors, fonts) from the approved mockups verbatim so real components stay visually
   consistent with what was reviewed; if/when a styling approach is picked, those tokens are
   the source of truth to carry into it, not something to re-derive from the canvas again.
+- **`react-leaflet` + `leaflet` for the map** (Live operations screen, `src/components/
+  FleetMap.tsx`). This was already the top-level `CLAUDE.md`'s decision ("a React frontend
+  using react-leaflet to render the OSRM route and live truck/alert status"); it's now a real
+  dependency, not just aspirational. `react-leaflet` **5.x** — the 4.x line pins React 18 and
+  won't resolve against this project's React 19. Tiles are the standard (light) OpenStreetMap
+  basemap — keyless, no account, no billing; the map panel is a deliberate light island in the
+  dark UI. Google Maps was considered and rejected: its "free" tier still needs a
+  billing-enabled Google Cloud key shipped in the browser bundle, and it contradicts the
+  design already written down. OSRM route-line rendering stays deferred ("mejora futura") —
+  the map currently just shows live truck positions from fixtures. Full write-up (both this
+  and the coordinate-adapter decision, with the Google Maps / Amazon Location rejection
+  reasoning): `docs/designs/frontend-map-and-coordinates.md`.
 
 ## Docker architecture
 
@@ -85,16 +97,21 @@ What exists now:
   9 routes, 6 live-status rows, 7 alerts, one user, kept name-consistent with the mockups.
   `MOCK_NOW` is a fixed clock so relative timestamps ("40s ago") don't drift. **Delete this
   file when the API client lands** — `src/types.ts` stays.
-- **`src/utils/`** — `format.ts` (relative time, clock, dates, all against `MOCK_NOW`) and
+- **`src/utils/`** — `format.ts` (relative time, clock, dates, all against `MOCK_NOW`),
   `status.ts` (status-union → English label + colour "tone", the one place the pill/tile
-  colour language lives). Named `utils/` not `lib/` because the repo-root `.gitignore` (a
-  Python template) ignores `lib/` at any depth.
+  colour language lives), and `geo.ts` (`toLatLng`: `Coordinates` → Leaflet's `[lat,lng]`
+  tuple; `normalizeCoordinates`: the API-boundary adapter that folds GeoJSON / `{lat,lng}` /
+  string coordinate payloads into the canonical `{lat,lon}` shape). Named `utils/` not `lib/`
+  because the repo-root `.gitignore` (a Python template) ignores `lib/` at any depth.
 - **`src/components/`** — `Sidebar`, `AppLayout`, `Icon` (shared inline-SVG set),
   `PageHeader`, `SearchBox`, `RecordTable` (the shared Fleet/Drivers/Routes table),
-  `StatusPill`.
+  `StatusPill`, `FleetMap` (the `react-leaflet` map on Live operations — OpenStreetMap tiles,
+  one `divIcon` truck marker per live-status row + a detail popup; presentational, `LiveOps`
+  builds the marker array).
 - **`src/pages/`** — `Login` (controlled form, submit just routes to `/`), `LiveOps` (stat
-  tiles + schematic fleet map with lat/lon-projected markers + filterable alert feed linking
-  to triage), `AlertTriage` (looks the alert up by `:alertId`, model-score bars, review
+  tiles + an interactive `react-leaflet` fleet map fed by fixture coordinates + filterable
+  alert feed linking to triage), `AlertTriage` (looks the alert up by `:alertId`, model-score
+  bars, review
   checkbox + notes as local state), `Fleet`/`Drivers` (search-filter + row-select → edit
   panel, add/edit against a local `useState` copy), `TravelManagement` (route table + a
   working "New route" create form).
@@ -111,8 +128,9 @@ authenticate, and every "Guardar"/"Crear" mutates local state only. All of it is
 
 - Run `npm install` + `npm run build` and fix whatever the first real type-check / bundle
   surfaces.
-- Generate and commit `package-lock.json` on the first real `npm install`, then switch the
-  Dockerfile's `deps` stage from `npm install` to `npm ci`.
+- Generate and commit `package-lock.json` on the first real `npm install` (it will also pin
+  `leaflet` / `react-leaflet` / `@types/leaflet`), then switch the Dockerfile's `deps` stage
+  from `npm install` to `npm ci`.
 - **Everything backend-connectivity-related** — the API client, auth/session, per-screen
   fetches, the real-time strategy for the live dashboard, and known gaps in the committed API
   list itself — is tracked in `INTEGRATION.md`, not here, so it doesn't drift out of sync in
