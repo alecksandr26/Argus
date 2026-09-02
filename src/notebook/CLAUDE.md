@@ -74,12 +74,18 @@ Two changes went beyond the mechanical checklist:
   `DROWSY_WEIGHT_BOOST` (Drowsy still the safety-critical minority) and the `USE_CLASS_WEIGHTS`
   diagnostic toggle are kept, matching `07`.
 
-**Not done: any actual rerun.** Every notebook still reads its old 3-class Drive artifacts, so all
-attached outputs and every accuracy number in this file are the pre-migration 3-class record. The
-regeneration order is: `relabel_binary_raw_videos.ipynb` (done) → `01`/`02` → `03`/`04`/`05`; and
-→ `06` (**`reset_dataset=True`**) → `07`, and → `09` → `10`; then `08` after `03` retrains.
-`src/cv-argus`'s `_CLASS_NAMES` / `_STATUS_COLORS` are deliberately left 3-class until a binary
-`.keras` model actually exists to deploy.
+**Rerun status: the `06` → `09` → `10` (face-crop / CNN+LSTM) chain has now actually been rerun
+against binary data — every other notebook still hasn't.** `06` was rebuilt against
+`raw_videos_binary/` (5-FPS/100-frame-cap crops), `09` rerun against that rebuild (5731 windows,
+54 subjects, `geometric_feature_seq` fusion populated), and `10` trained on the result for the
+first time under `Not Drowsy`/`Drowsy` labels — see "What we found" for the real numbers. `01`,
+`02`, `03`, `04`, `05`, `07`, and `08` still read their old 3-class Drive artifacts, so their
+attached outputs and every accuracy number for those notebooks in this file remain the
+pre-migration 3-class record — this includes `07`, whose stale 3-class checkpoint `10`'s
+frozen-embedding variant is currently (and knowingly) reusing as a frozen feature extractor. The
+remaining regeneration order is: `01`/`02` → `03`/`04`/`05`; and `07` (now unblocked, since `06`
+is rebuilt); then `08` after `03` retrains. `src/cv-argus`'s `_CLASS_NAMES` / `_STATUS_COLORS`
+are deliberately left 3-class until a binary `.keras` model actually exists to deploy.
 
 `relabel_binary.py` (the earlier post-hoc-`level_binary`-CSV-column approach) is **superseded
 and must not be run** — its default `BINARY_FRAMING` is `alert_vs_attention` (the *wrong*
@@ -91,9 +97,12 @@ would silently mislabel a binary model (argmax `{0,1}` → `level {1,2}` → `"A
 Vigilant"`); `mjpeg_output_stage.py`'s status-colour map has the same 3-class keys. Not a
 problem until a binary model is actually deployed.
 
-**Everything below this section — "What we found", the results tables, "Why CNN is the most
-probable next backbone" — is the pre-migration 3-class record.** The numbers are real and worth
-keeping, but don't read binary expectations into them.
+**Most of "What we found" and "Why CNN is the most probable next backbone" below is still the
+pre-migration 3-class record** — the numbers are real and worth keeping, but don't read binary
+expectations into them. **One exception: the "`10` has since been run for the first time under
+the actual binary label scheme" subsection near the end of "What we found"** is a genuine binary
+result (the `06`→`09`→`10` chain only — see "Rerun status" above) and should be read as current,
+not historical.
 
 ## Pipeline map
 
@@ -104,11 +113,11 @@ keeping, but don't read binary expectations into them.
 | 03 | `model_training_lstm` | `lstm_windows.csv` | LSTM `.keras` + scaler | ⚠️ migrated to binary; `MAX_TIMESTEPS` now 30 (was 60) to match `01`; needs retraining once `01` is rerun |
 | 04 | `random_forest_training` | `frame_features.csv`/enriched | RF `.joblib` + scaler | ⚠️ migrated to binary; baseline (3-class) run only, tuning/augmentation incomplete; needs a rerun after `02` |
 | 05 | `dense_nn_training` | `frame_features.csv`/enriched | Dense NN `.keras` + scaler | ⚠️ migrated to binary; prior runs were 3-class; needs a rerun after `02` |
-| 06 | `dataset_creation_face_crops` | raw videos | `face_crops_index.csv` + `.jpg`s | ⚠️ last run was at `sampling_fps = 1` / `MAX_FRAMES_PER_CLIP = 20` against the 54-subject pool; both now raised to `5` / `100` — needs a `reset_dataset=True` rerun to regenerate the crop set. Earlier 24-subject/20-complete-class figures elsewhere in this file predate even that 54-subject run |
-| 07 | `cnn_training` | `face_crops_index.csv` | CNN `.keras` | ⚠️ **migrated to binary**; not re-run since — needs `06` rebuilt first. Last (3-class) numbers: from-scratch CNN 36.67% acc / 0.3614 macro-F1 (35.93% ± 9.07% over 3-fold CV) against the 24-subject pool — low, not a bug; MobileNetV2 backbone regressed hard (16.81% acc, 0 recall on Low Vigilant) — see "What we found" |
+| 06 | `dataset_creation_face_crops` | raw videos | `face_crops_index.csv` + `.jpg`s | ✅ rebuilt against `raw_videos_binary/` at `sampling_fps=5`/`MAX_FRAMES_PER_CLIP=100` — inferred from `09`'s binary-labeled, correctly-sized window index below (no direct `06` log captured yet). Earlier 24-subject/20-complete-class figures elsewhere in this file predate this rebuild |
+| 07 | `cnn_training` | `face_crops_index.csv` | CNN `.keras` | ⚠️ **migrated to binary**; still **not re-run** against the rebuilt (binary, 5-FPS) `06` crop set above — `10`'s frozen-embedding variant (see row 10) is currently reusing its old pre-rebuild 3-class checkpoint (`best_cnn_scratch_face_crops.keras`) as a frozen feature extractor, a real staleness caveat on that result, not just a formality. Last (3-class) numbers: from-scratch CNN 36.67% acc / 0.3614 macro-F1 (35.93% ± 9.07% over 3-fold CV) against the 24-subject pool — low, not a bug; MobileNetV2 backbone regressed hard (16.81% acc, 0 recall on Low Vigilant) — see "What we found" |
 | 08 | `deployment_export_lstm` | LSTM `.keras` + scaler | deployed `LstmGeometricFeatureModel` | ⬜ not re-run; migrated to binary (sim cell only — the export artifact needed no class change); `sampling_fps`/`MAX_TIMESTEPS` updated to 5 / 30 to match `01`/`03` — needs a rerun once `03` retrains |
-| 09 | `dataset_creation_cnn_lstm` | `face_crops_index.csv` | `cnn_lstm_windows_index.csv` | ⚠️ run once against the full 54-subject pool (5763 windows); since then (a) extended to also extract a 10-feature `geometric_feature_seq` (EAR/MAR/blendshapes) per crop for fusion into `10`, and (b) `sampling_fps` raised `1` → `5` to match `06`, so `MAX_TIMESTEPS_IMG` is now `20 * 5 = 100` (was `20`) and the four window durations are `15/25/50/100` samples (were `3/5/10/20`) — needs a rerun after `06` |
-| 10 | `cnn_lstm_training` | `cnn_lstm_windows_index.csv` | CNN+LSTM `.keras` (from-scratch only — MobileNetV2 disabled) | ⚠️ migrated to binary (`split_by_subject_fold` ported from `07`; `LOW_VIGILANT_*` weight scheme removed); not re-run since. Last (3-class) run: **32.22% test acc, 0.3251 macro-F1 — at random-guess chance** for that balanced 3-class test set, despite a `val_macro_f1` of 0.6799 (epoch 28) that did not hold up on test — see "What we found" |
+| 09 | `dataset_creation_cnn_lstm` | `face_crops_index.csv` | `cnn_lstm_windows_index.csv` | ✅ **rerun against the rebuilt binary `06` crop set** — 5731 windows, 54 subjects (50 complete-class), `geometric_feature_seq` fusion populated, window sizes `15/25/50/100` samples as designed. Feeds `10`'s first real binary result — see "What we found" |
+| 10 | `cnn_lstm_training` | `cnn_lstm_windows_index.csv` | CNN+LSTM `.keras` (from-scratch + frozen-CNN-embedding variants; MobileNetV2 disabled) | ✅ **first real binary run**, `USE_CLASS_WEIGHTS=False`: from-scratch 69.89% acc / 0.5762 macro-F1 (Drowsy recall 0.24); frozen-CNN-embedding 67.07% acc / **0.6213 macro-F1** (Drowsy recall 0.46), far cheaper and far less overfit — see "What we found" for the full comparison. `USE_CLASS_WEIGHTS` has since been flipped to `True` (`DROWSY_WEIGHT_BOOST=1.5`) in the notebook but **not yet re-run** — treat the numbers above as the uniform-weight baseline, not the current code's expected output |
 
 Four model families share two dataset-creation notebooks:
 
@@ -382,6 +391,50 @@ a result, not just deprioritized:**
   fine-tune, three-way comparison) are now commented out** — not deleted, kept as a documented,
   re-enable-able option, but no longer part of the notebook's default run.
 
+**`10` has since been run for the first time under the actual binary label scheme (`06`
+rebuilt against `raw_videos_binary/` at `sampling_fps=5`; `09` rerun against that rebuild — 5731
+windows, 54 subjects, 50 complete-class, real `geometric_feature_seq` fusion present). This
+supersedes every 3-class number above for this notebook. Trained with `USE_CLASS_WEIGHTS=False`
+(uniform loss — the same isolation test described earlier in this section), against a test set of
+775 Not Drowsy / 394 Drowsy windows (a 66.3%-majority-class baseline, macro-F1 ≈ 0.40 for
+always-predicting-majority):**
+
+| Variant | Test Acc | Macro-F1 | Not Drowsy R | Drowsy R | Trainable params | Time/epoch |
+|---|---|---|---|---|---|---|
+| CNN+LSTM (from-scratch) | 69.89% | 0.5762 | 0.93 | 0.24 | 63,682 | ~206s |
+| CNN+LSTM (frozen CNN embedding + LSTM) | 67.07% | **0.6213** | 0.78 | **0.46** | 35,714 | **~2s** |
+
+- **Both clear the majority-class baseline** (macro-F1 0.40), so there's real signal here, not
+  pure majority-class collapse — but the from-scratch variant's accuracy (69.89%) sits close
+  enough to the 66.3% floor, combined with its lopsided recall (0.93/0.24), that most of its
+  apparent accuracy is coming from leaning on the majority class rather than genuinely
+  discriminating `Drowsy`. Its `val_macro_f1` curve confirms this: peaks at epoch 1 (0.6077),
+  then decays to the 0.40-0.54 range for the next 15 epochs — the same early-peak-then-decline
+  shape as every 3-class run of this backbone, just on new data.
+- **The frozen-CNN-embedding variant (option 3 from "Cheaper options" below) is the better result
+  of the two, not merely the cheaper one.** Higher macro-F1, nearly double the `Drowsy` recall
+  (the safety-critical number — a driver-monitoring system's whole job is not missing this), far
+  less overfitting (`val_macro_f1` peaks at 0.7311 (epoch 2) and stays in 0.70-0.73 through epoch
+  17, instead of collapsing), half the trainable parameters, and roughly 100x cheaper per epoch.
+  This is the first real evidence that option 3's premise — reusing a frozen single-frame CNN's
+  embedding is enough, an end-to-end-trained CNN backbone inside the LSTM loop isn't necessary —
+  actually holds, not just a cost-saving compromise.
+- **Real caveat on the frozen-embedding number: `07` has not been retrained against the rebuilt
+  binary `06` crop set yet** (see the pipeline map's `07` row) — the checkpoint
+  (`best_cnn_scratch_face_crops.keras`) this variant loads as its frozen feature extractor is
+  still `07`'s old, pre-binary-migration one. That the result is this good *despite* a stale,
+  label-space-mismatched feature extractor is if anything a point in its favor — retraining `07`
+  on the current binary data first is likely to raise this further, not a reason to discount the
+  0.6213 macro-F1 already measured.
+- **Per-duration accuracy is still flat in both variants** (from-scratch: 0.697-0.705 across
+  3s/5s/10s/20s; frozen-embedding: 0.669-0.676) — still no evidence the extra temporal context is
+  paying for itself, the same finding as every prior run of this notebook and of `01`'s geometric
+  LSTM.
+- **`USE_CLASS_WEIGHTS` has since been flipped to `True`** (`DROWSY_WEIGHT_BOOST=1.5`, unchanged)
+  in the notebook, specifically to test whether reweighting raises the frozen-embedding variant's
+  0.46 `Drowsy` recall further — **not yet run**. Don't report a weighted number for either
+  variant until that run actually happens; the table above is the uniform-weight baseline.
+
 ## Why CNN is the most probable next backbone
 
 The diagnosis above is specific: it's not "RandomForest and Dense NN are weak models," it's "a
@@ -580,13 +633,19 @@ live-broken either. Not fixed here — flagged for whoever picks that up next.
   been run (see "What we found" for the 54-subject numbers) and then modified again (geometric
   feature fusion, lower LR, reweighted class weights) — its most recent run's numbers predate
   that modification, so don't report them as current for the notebook's present code either.
-- `10`'s full CNN+LSTM has now confirmed the underperform/overfit case this bullet used to treat
-  as hypothetical — its latest run tested at 32.22% accuracy / 0.3251 macro-F1, at random-guess
-  chance for the balanced 3-class test set, despite a `val_macro_f1` of 0.6799 mid-training (see
-  "What we found"). Don't reach for a brand-new architecture, and don't propose further
-  regularization/LR tuning on this notebook as the first response — see "Cheaper options
-  considered alongside the full CNN+LSTM build" above. The MobileNetV2 resolution fix, a
-  late-fusion ensemble of the existing RandomForest/Dense NN/CNN models, and a
+- `10`'s **from-scratch** CNN+LSTM confirmed the underperform/overfit case this bullet used to
+  treat as hypothetical, on both the pre-migration 3-class data (32.22% accuracy, 0.3251
+  macro-F1, at random-guess chance, despite a `val_macro_f1` of 0.6799 mid-training) and now on
+  the real binary rerun too (same early-peak-then-decline `val_macro_f1` shape, this time peaking
+  at epoch 1 — see "What we found"'s binary subsection). Don't reach for a brand-new architecture
+  for that specific backbone, and don't propose further regularization/LR tuning on it as the
+  first response — see "Cheaper options considered alongside the full CNN+LSTM build" above.
+  **That "cheaper option" (option 3, the frozen-CNN-embedding + LSTM variant) has since actually
+  been run under binary labels and is a real, meaningfully better result** (0.6213 macro-F1,
+  0.46 `Drowsy` recall, far less overfitting — see "What we found"), so treat it as the current
+  best CNN+LSTM result, not just a hypothetical alternative, when discussing this notebook. The
+  MobileNetV2 resolution fix, a late-fusion ensemble of the existing RandomForest/Dense NN/CNN
+  models, and a
   frozen-CNN-embedding-into-the-geometric-LSTM hybrid were all already discussed as lower-data-
   cost alternatives; treat them as the next things to try, not as ideas that still need to be
   proposed from scratch.
