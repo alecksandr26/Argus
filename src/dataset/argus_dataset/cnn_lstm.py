@@ -161,19 +161,27 @@ def run(*, workers_n: int | None = None, reset: bool = False, status: bool = Fal
 
     rows, skipped = [], 0
     for (subject, parent_video), clip_df in df_crops.groupby(["subject", "parent_video"], sort=False):
-        wins = windowing.cnn_lstm_windows_for_clip(clip_df, geo_by_path)
+        clip_level = int(clip_df["level"].iloc[0])
+        # Overlap-tile the minority class (Drowsy) to rebalance the window-level ratio; keep the
+        # majority class non-overlapping. See config.CNNLSTM_MINORITY_* and src/dataset/CLAUDE.md.
+        overlap = (config.CNNLSTM_MINORITY_WINDOW_OVERLAP
+                   if clip_level == config.CNNLSTM_MINORITY_LEVEL else 0.0)
+        wins = windowing.cnn_lstm_windows_for_clip(clip_df, geo_by_path, window_overlap=overlap)
         if not wins:
             skipped += 1
             continue
         for w in wins:
-            w.update(subject=subject, parent_video=parent_video, level=int(clip_df["level"].iloc[0]))
+            w.update(subject=subject, parent_video=parent_video, level=clip_level)
             rows.append(w)
 
     df_out = pd.DataFrame(rows, columns=config.CNNLSTM_INDEX_COLS)
     df_out.to_csv(out_csv, index=False)
+    _by_level = df_out["level"].value_counts().sort_index().to_dict()
     print(f"\nDone. {len(df_out)} windows across "
           f"{df_crops.groupby(['subject', 'parent_video']).ngroups - skipped} clips "
           f"-> {out_csv.name}  ({skipped} clips had no gap-free window)")
+    print(f"  window count by level (1=Not Drowsy, 2=Drowsy): {_by_level}  "
+          f"[minority overlap {config.CNNLSTM_MINORITY_WINDOW_OVERLAP}]")
     return 0
 
 
