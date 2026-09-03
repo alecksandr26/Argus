@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from argus_dataset import config, windowing
 
@@ -83,6 +84,49 @@ def test_cnn_lstm_windows_split_on_gap():
     # no window may straddle the gap
     for w in wins:
         assert w["start_sample_idx"] // 20 == w["end_sample_idx"] // 20
+
+
+def test_cnn_lstm_windows_minority_overlap_yields_more_windows():
+    # 40 contiguous samples, 3s (15-frame) config.
+    #   overlap 0.0 -> stride 15 -> starts {0, 15}                 -> 2 windows
+    #   overlap 0.5 -> stride  8 -> starts {0, 8, 16, 24}          -> 4 windows
+    rows = [{"sample_idx": i, "image_path": f"/x/s{i}.jpg", "level": 2} for i in range(40)]
+    clip_df = pd.DataFrame(rows)
+    geo = {r["image_path"]: [0.0] * config.NUM_GEO_FEATURES for r in rows}
+
+    base = [w for w in windowing.cnn_lstm_windows_for_clip(clip_df, geo, window_overlap=0.0)
+            if w["window_duration_sec"] == 3.0]
+    over = [w for w in windowing.cnn_lstm_windows_for_clip(clip_df, geo, window_overlap=0.5)
+            if w["window_duration_sec"] == 3.0]
+
+    assert [w["start_sample_idx"] for w in base] == [0, 15]
+    assert [w["start_sample_idx"] for w in over] == [0, 8, 16, 24]
+    # every overlapped window is still a full, in-bounds, gap-free window
+    for w in over:
+        assert w["n_real_frames"] == 15
+        assert w["end_sample_idx"] - w["start_sample_idx"] == 14
+        assert w["end_sample_idx"] <= 39
+        assert len(w["image_paths"].split(";")) == 15
+    # default is unchanged (non-overlapping)
+    default = [w for w in windowing.cnn_lstm_windows_for_clip(clip_df, geo)
+               if w["window_duration_sec"] == 3.0]
+    assert [w["start_sample_idx"] for w in default] == [0, 15]
+
+
+def test_cnn_lstm_windows_overlap_never_straddles_gap():
+    rows = [{"sample_idx": i, "image_path": f"/x/s{i}.jpg", "level": 2}
+            for i in list(range(30)) + list(range(50, 80))]  # gap 30..49
+    clip_df = pd.DataFrame(rows)
+    geo = {r["image_path"]: [0.0] * config.NUM_GEO_FEATURES for r in rows}
+    wins = windowing.cnn_lstm_windows_for_clip(clip_df, geo, window_overlap=0.5)
+    for w in wins:
+        assert (w["start_sample_idx"] < 30) == (w["end_sample_idx"] < 30)
+
+
+def test_cnn_lstm_windows_overlap_out_of_range_rejected():
+    clip_df = pd.DataFrame([{"sample_idx": 0, "image_path": "/x/s0.jpg", "level": 2}])
+    with pytest.raises(ValueError):
+        windowing.cnn_lstm_windows_for_clip(clip_df, {}, window_overlap=1.0)
 
 
 # --- enrichment (src/notebook/02 cells 106-114) -----------------------------------------

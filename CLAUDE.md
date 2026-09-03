@@ -198,6 +198,14 @@ probable next backbone" for the reasoning.
   edit the corresponding cell(s). For **dataset creation** (`01`/`02`/`06`/`09`) the source of
   truth is now `src/dataset/` — edit `argus_dataset/config.py` + the relevant module there, and
   mirror the constant into the matching notebook (kept as Colab reference).
+- **`07` and `11_cnn_lstm_training_drive_pull` now choose a `Drowsy` decision threshold** (not
+  `argmax`) on the validation set after training and write it to `<checkpoint>.keras.threshold.json`
+  next to the model. When a binary model is deployed, `src/cv-argus` should read that file and
+  threshold `p(Drowsy)` instead of taking the softmax argmax. Selection is safety-first: hit a
+  `Drowsy` recall floor, then maximise precision. `11_drive_pull` also had a learning-rate bug
+  (both models trained at ~1e-8) that made its encouraging in-training `val_macro_f1` a
+  non-training artifact — fixed; see `notebook/CLAUDE.md`. Minority-class window rebalancing
+  (Drowsy windows overlap-tiled in `09`/`src/dataset`) is code-done, rerun pending.
 - Cell execution order matters *within* a notebook — cells reference variables
   (`project_folder`, `models_folder`, `video_files`, `face_landmarker_options`, etc.) defined
   earlier in the same linear run. Across notebooks, only Drive artifacts carry over, not

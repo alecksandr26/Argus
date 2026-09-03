@@ -63,6 +63,26 @@ it reads `raw/raw_videos/subject_NN/level_<1-2>_clip_NN.mp4` directly and expect
 still emits 3-class `level_<1-3>` (UTA-RLDD's native scheme) — collapse those to binary at the
 source before feeding this pipeline.
 
+### 3. `cnn_lstm_windows`: minority-class overlap tiling
+
+src/notebook/09 tiles **non-overlapping** windows for both classes (`stride == win_size`). This
+pipeline keeps that for `level_1` (Not Drowsy) but tiles `level_2` (Drowsy) with overlap —
+`config.CNNLSTM_MINORITY_WINDOW_OVERLAP` (default `0.5` → half stride). The raw clip pool is
+~2:1 Not Drowsy : Drowsy and that ratio otherwise carries straight into the window index;
+overlap-tiling only the minority class lifts its window count toward parity **without new
+video**. `cnn_lstm.py`'s driver passes the per-clip overlap; `windowing.cnn_lstm_windows_for_clip`
+takes it as `window_overlap` and defaults to `0.0` (so the pure function still reproduces 09's
+behaviour when called directly, e.g. in tests). Set `CNNLSTM_MINORITY_WINDOW_OVERLAP = 0.0` to
+disable. Subject-grouped splitting in the training notebook stays leak-safe — the split is by
+*subject*, so all of a subject's windows (overlapping or not) land on the same side of every
+boundary. **To regenerate after changing the overlap, just re-run
+`scripts/build_cnn_lstm_windows.py`** — its step 2 (windowing) is pure and always re-runs over
+the full geometry cache, rewriting the index. **No `--reset`** (that discards the ~44k-crop
+geometry cache and forces the slow step-1 re-extraction). `cnn_lstm.run` uses its own
+completed-log resume, not `RunCheckpoint`/`config_hash`, so the `_HASH_RELEVANT` entries for
+`CNNLSTM_MINORITY_*` are there for completeness, not an active guard on this build. src/notebook/09
+mirrors this (`MINORITY_WINDOW_OVERLAP`, per-class tiling spot-check) — keep the two in sync.
+
 ## Module map (`argus_dataset/`)
 
 | module | responsibility |
@@ -72,7 +92,7 @@ source before feeding this pipeline.
 | `paths.py` | `$ARGUS_DATASET_ROOT` resolution (default: this dir). `raw_dir()`, `processed_dir()`, `models_dir()`, `progress_dir()`, `cache_dir()`, canonical output-file paths. Warns if the root is on `/mnt/` (NTFS kills small-file throughput). |
 | `geometry.py` | NumPy `GeometricRatioFeatureLayer` (see above). `compute_geometric_features` (batch-capable) + `frame_feature_row` (the 58-wide per-frame vector). |
 | `pipelines.py` | MediaPipe wrappers, ports of the notebook classes: `FaceLandmarkerFeatureExtractor` (VIDEO mode, 01 c85 / 02 c73), `FaceCropExtractor` (BlazeFace, 06 c9), `extract_geo_for_crop` (IMAGE mode, 09 c13). `cv2`/`mediapipe` imported lazily so the parent process can ship these objects to workers without loading native libs early. Each instance holds only picklable primitives — never a live MediaPipe handle. |
-| `windowing.py` | Pure functions, no I/O. `lstm_windows_for_clip` (01 c94 — slide, drop windows with an invalid-pose frame, zero-**pre**-pad to 30, flatten timestep-outer). `contiguous_runs` + `cnn_lstm_windows_for_clip` (09 c14 — non-overlapping tiling per contiguous `sample_idx` run, `geometric_feature_seq` string format). `enrich_frame_features` (02 c106-114 — `EAR_mean` + causal rolling mean/std + `_delta1`). |
+| `windowing.py` | Pure functions, no I/O. `lstm_windows_for_clip` (01 c94 — slide, drop windows with an invalid-pose frame, zero-**pre**-pad to 30, flatten timestep-outer). `contiguous_runs` + `cnn_lstm_windows_for_clip` (09 c14 — per-contiguous-`sample_idx`-run tiling, `geometric_feature_seq` string format; `window_overlap` arg — `0.0`/non-overlapping default, driver passes `CNNLSTM_MINORITY_WINDOW_OVERLAP` for `level_2`, see departure 3). `enrich_frame_features` (02 c106-114 — `EAR_mean` + causal rolling mean/std + `_delta1`). |
 | `workers.py` | The `spawn` pool, per-worker thread pinning + SIGINT-ignore, the atomic `Committer`, the three per-clip task functions (`lstm_task` / `flat_task` / `crops_task`), and `run_video_build` — the resumable driver shared by builds 01/02/06. |
 | `checkpoint.py` | `RunCheckpoint`: `<artifact>.completed.jsonl` (authority for "what's done"), `<artifact>.json` (progress summary), `reconcile` (drop orphan rows), `check_config_or_die` (the `config_hash` guard), `reset`. |
 | `cnn_lstm.py` | Build 09's own driver (not a "video build"): parallel per-crop geometry → `.cache/geo_per_crop.parquet` (resumable), then windowing. |

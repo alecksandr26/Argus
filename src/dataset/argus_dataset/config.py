@@ -159,6 +159,16 @@ FACE_CROPS_INDEX_COLS: list[str] = [
 CNNLSTM_WINDOW_CONFIGS: list[float] = [3.0, 5.0, 10.0, 20.0]
 CNNLSTM_MAX_TIMESTEPS_IMG: int = int(max(CNNLSTM_WINDOW_CONFIGS) * SAMPLING_FPS)  # 100
 
+# Minority-class window rebalancing. The raw clip pool is ~2:1 Not Drowsy : Drowsy, which
+# carries straight through to the window index under the historical non-overlapping tiling
+# (stride == window). To lift the window-level Drowsy share toward ~1:1 without sourcing new
+# video, Drowsy (``level_2``) clips are tiled with overlap while Not Drowsy (``level_1``) clips
+# stay non-overlapping. ``CNNLSTM_MINORITY_WINDOW_OVERLAP = 0.0`` restores the old
+# both-classes-equal behaviour. Deliberate departure from src/notebook/09's original tiling —
+# see src/dataset/CLAUDE.md. Affects ``cnn_lstm_windows`` row count only, never its schema.
+CNNLSTM_MINORITY_LEVEL: int = 2                 # Drowsy
+CNNLSTM_MINORITY_WINDOW_OVERLAP: float = 0.5    # 0.0 = non-overlapping (historical)
+
 # The 10-feature fusion set — EAR/MAR plus the top-ranked blendshapes from 02's Spearman cell.
 GEO_FEATURE_NAMES: list[str] = [
     "EAR_left", "EAR_right", "MAR",
@@ -213,6 +223,8 @@ _HASH_RELEVANT = {
     "CROP_BBOX_MARGIN_FRAC": CROP_BBOX_MARGIN_FRAC,
     "CROP_JPEG_QUALITY": CROP_JPEG_QUALITY,
     "CNNLSTM_WINDOW_CONFIGS": CNNLSTM_WINDOW_CONFIGS,
+    "CNNLSTM_MINORITY_LEVEL": CNNLSTM_MINORITY_LEVEL,
+    "CNNLSTM_MINORITY_WINDOW_OVERLAP": CNNLSTM_MINORITY_WINDOW_OVERLAP,
     "GEO_FEATURE_NAMES": GEO_FEATURE_NAMES,
 }
 
