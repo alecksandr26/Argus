@@ -116,8 +116,9 @@ not historical.
 | 06 | `dataset_creation_face_crops` | raw videos | `face_crops_index.csv` + `.jpg`s | ✅ rebuilt against `raw_videos_binary/` at `sampling_fps=5`/`MAX_FRAMES_PER_CLIP=100` — inferred from `09`'s binary-labeled, correctly-sized window index below (no direct `06` log captured yet). Earlier 24-subject/20-complete-class figures elsewhere in this file predate this rebuild |
 | 07 | `cnn_training` | `face_crops_index.csv` | CNN `.keras` | ⚠️ **migrated to binary**; still **not re-run** against the rebuilt (binary, 5-FPS) `06` crop set above — `10`'s frozen-embedding variant (see row 10) is currently reusing its old pre-rebuild 3-class checkpoint (`best_cnn_scratch_face_crops.keras`) as a frozen feature extractor, a real staleness caveat on that result, not just a formality. Last (3-class) numbers: from-scratch CNN 36.67% acc / 0.3614 macro-F1 (35.93% ± 9.07% over 3-fold CV) against the 24-subject pool — low, not a bug; MobileNetV2 backbone regressed hard (16.81% acc, 0 recall on Low Vigilant) — see "What we found" |
 | 08 | `deployment_export_lstm` | LSTM `.keras` + scaler | deployed `LstmGeometricFeatureModel` | ⬜ not re-run; migrated to binary (sim cell only — the export artifact needed no class change); `sampling_fps`/`MAX_TIMESTEPS` updated to 5 / 30 to match `01`/`03` — needs a rerun once `03` retrains |
-| 09 | `dataset_creation_cnn_lstm` | `face_crops_index.csv` | `cnn_lstm_windows_index.csv` | ✅ **rerun against the rebuilt binary `06` crop set** — 5731 windows, 54 subjects (50 complete-class), `geometric_feature_seq` fusion populated, window sizes `15/25/50/100` samples as designed. Feeds `10`'s first real binary result — see "What we found" |
+| 09 | `dataset_creation_cnn_lstm` | `face_crops_index.csv` | `cnn_lstm_windows_index.csv` | ⚠️ last rerun (5731 windows, 54 subjects, 50 complete-class, fusion populated) predates the **minority-class overlap-tiling** change — `level_2` clips are now tiled with `CNNLSTM_MINORITY_WINDOW_OVERLAP=0.5` (via `src/dataset/`, mirrored here) to rebalance the ~2:1 window ratio; re-run `scripts/build_cnn_lstm_windows.py` (step 2 always rewrites the index — no `--reset`, that discards the geometry cache). See "What we found" |
 | 10 | `cnn_lstm_training` | `cnn_lstm_windows_index.csv` | CNN+LSTM `.keras` (from-scratch + frozen-CNN-embedding variants; MobileNetV2 disabled) | ✅ **first real binary run**, `USE_CLASS_WEIGHTS=False`: from-scratch 69.89% acc / 0.5762 macro-F1 (Drowsy recall 0.24); frozen-CNN-embedding 67.07% acc / **0.6213 macro-F1** (Drowsy recall 0.46), far cheaper and far less overfit — see "What we found" for the full comparison. `USE_CLASS_WEIGHTS` has since been flipped to `True` (`DROWSY_WEIGHT_BOOST=1.5`) in the notebook but **not yet re-run** — treat the numbers above as the uniform-weight baseline, not the current code's expected output |
+| 11 | `cnn_lstm_training_{upload,drive_pull}` | `cnn_lstm_windows_index[_forcolab].csv` + `face_crops.zip` | same as `10` | Drive-I/O-workaround siblings of `10` (see the "`11_…`" section below). `upload` = source of the genuine 0.6213 binary frozen-embedding number. `drive_pull` had a learning-rate bug (both models trained at ~1e-8, "0.7151" was an untrained-init artifact) — **now fixed** and given operating-point / balanced-resampling / ensemble cells; **no trustworthy numbers yet, needs a rerun** |
 
 Four model families share two dataset-creation notebooks:
 
@@ -435,6 +436,63 @@ always-predicting-majority):**
   0.46 `Drowsy` recall further — **not yet run**. Don't report a weighted number for either
   variant until that run actually happens; the table above is the uniform-weight baseline.
 
+## `11_cnn_lstm_training_{upload,drive_pull}.ipynb` — Drive-I/O variants of `10`, and a push on Drowsy P/R
+
+`10`'s `tf.data` image pipeline reading thousands of small crop JPEGs over Drive's FUSE mount is
+what threw `Input/output error` / `A Google Drive timeout has occurred`. `11_cnn_lstm_training_upload.ipynb`
+and `11_cnn_lstm_training_drive_pull.ipynb` are siblings of `10` that fix only *how the crops
+reach the Colab VM* — `upload` via a hand `files.upload()` of a zip each session, `drive_pull`
+by copying one `face_crops.zip` off Drive and unzipping to local disk. Everything downstream (the
+split, both model variants, training, eval) is meant to be identical to `10`. **The genuine
+binary frozen-embedding result recorded above (0.6213 macro-F1, 0.46 `Drowsy` recall) came from
+the `upload` variant**, which carries the correct config.
+
+**A learning-rate bug was found in `drive_pull` (now fixed).** It had `lr_schedule_scratch`'s
+`CosineDecayRestarts(initial_learning_rate=1e-8, …)` (that argument is the schedule's *peak* LR)
+and `build_frozen_embedding_lstm(learning_rate=1e-8)` called with no override — so **both models
+trained at ~1e-8 and did not learn**: the from-scratch model's train accuracy sat flat at ~0.50
+for every epoch, and the frozen-embedding model's `val_accuracy` / `val_macro_f1` were frozen at
+the untrained-init values (`0.7511` / `0.7151`) for the whole run while its real test macro-F1
+was 0.50. Any "still overfitting after round-2 regularization" reading from that `drive_pull` run
+is not real — the model wasn't training. Fix: `initial_learning_rate=1e-4`, frozen builder
+`learning_rate=1e-3`, and the drive-pull-only "round 2" regularization bump (`WEIGHT_DECAY`
+`1e-4→3e-4`, LSTM dropout/recurrent `0.3→0.4`, head `0.5→0.6`, `DROWSY_WEIGHT_BOOST` `0.99`,
+`NOT_DROWSY_WEIGHT_DAMPEN` `1.225`) reverted to the round-1 set the `upload` sibling uses.
+**No trustworthy `drive_pull` numbers exist yet** — it needs a rerun with the fix.
+
+**New machinery added to both `11` notebooks and to `07`, aimed at `Drowsy` precision+recall
+(none of it rerun yet):**
+- **Decision-threshold / operating-point cells** (new, after each eval). Everything was `argmax`
+  at 0.5; these sweep the threshold on `p(Drowsy)` on the *validation* set and pick a
+  *safety-first* point — among thresholds with val `Drowsy` recall ≥ `DROWSY_RECALL_FLOOR`
+  (default 0.70), the best `Drowsy` precision — then report test metrics there next to the argmax
+  baseline, plus an isotonic-calibration transfer check. The chosen raw-probability threshold is
+  written to `<checkpoint>.keras.threshold.json` for `src/cv-argus` to apply instead of `argmax`.
+  When reporting `11`/`07` results, don't quote the argmax numbers as final — quote the number at
+  `t*`.
+- **Balanced resampling** (`USE_BALANCED_SAMPLING`, default `True`). The training set is drawn
+  50/50 from the two classes (`tf.data.Dataset.sample_from_datasets` over two per-class
+  `.repeat()` streams; `07` splits the dataframe by label, `11` filters per class off separate
+  cache files), with `class_weight=None` and an explicit `steps_per_epoch`. Preferred over
+  `class_weight` at `11`'s `BATCH_SIZE=8`, where one reweighted example can dominate a batch.
+- **Cheap ensemble cell** in `11` — averages `p(Drowsy)` of the from-scratch and frozen-embedding
+  models (same `df_test` order) and runs the same threshold sweep on the average.
+- **`07`**: from-scratch CNN LR raised `1e-5 → 1e-4`; the `Drowsy` class-weight knobs, which had
+  been set to *tilt away* from `Drowsy` (`DROWSY_WEIGHT_BOOST=0.9`, `NOT_DROWSY_WEIGHT_BOOST=1.375`),
+  corrected to `1.5` / `1.0`; `MacroF1Callback` also logs `val_thr_macro_f1` (macro-F1 at the
+  best per-epoch threshold) as an optional checkpoint-selection metric.
+
+**Minority-class window rebalancing (Part 6 — code done in `src/dataset`, `09` mirrored, not
+rerun).** The ~2:1 Not Drowsy : Drowsy clip ratio carries straight into the window index under
+`09`'s non-overlapping tiling. `src/dataset/argus_dataset/config.py` now has
+`CNNLSTM_MINORITY_LEVEL = 2` / `CNNLSTM_MINORITY_WINDOW_OVERLAP = 0.5`: `cnn_lstm_windows_for_clip`
+takes a `window_overlap` arg, and the driver passes it for `level_2` clips only, so Drowsy
+windows are overlap-tiled (~half stride) while Not Drowsy stay non-overlapping — lifting the
+window-level Drowsy share toward parity without new video. `09` mirrors this
+(`MINORITY_WINDOW_OVERLAP`, per-class tiling spot-check). Subject-grouped splitting stays
+leak-safe (split is by subject). Regenerating `cnn_lstm_windows_index.csv` and rerunning `11` is
+the pending step. `0.0` restores the historical behaviour.
+
 ## Why CNN is the most probable next backbone
 
 The diagnosis above is specific: it's not "RandomForest and Dense NN are weak models," it's "a
@@ -653,6 +711,17 @@ live-broken either. Not fixed here — flagged for whoever picks that up next.
   three (`01_dataset_creation_lstm.ipynb`, `02_dataset_creation_flat.ipynb`,
   `08_deployment_export_lstm.ipynb`, `src/cv-argus/src/model/layers.py`) — there's no automated
   sync check, per the root `CLAUDE.md`.
+- **`07` and `11` now have decision-threshold cells** (after evaluation) that pick a
+  `Drowsy` operating point on the validation set and write it to `<checkpoint>.keras.threshold.json`.
+  When these notebooks are rerun, the number that matters is the one at the chosen threshold
+  `t*`, not the `argmax` (0.5) baseline — don't report the argmax `Drowsy` P/R as the result.
+  `DROWSY_RECALL_FLOOR` (default 0.70) is the knob: it's a *safety-first* rule (hit a recall
+  floor, then best precision), matching the project decision that missing a drowsy driver is the
+  costlier error.
+- **`11`'s Drowsy balancing is now `USE_BALANCED_SAMPLING` (50/50 batch resampling), not
+  `class_weight`** by default — same for `07`. If you reason about class weights there, check
+  which path is active first; with balanced sampling on, `class_weight` is forced to `None` and
+  the `DROWSY_WEIGHT_BOOST` constants are dead.
 - State findings the way this file does: measured numbers with their source, not aspirational or
   rounded-up claims — this project's own titulación-report standard (see the root `CLAUDE.md`'s
   "Model results and current status") applies to how you describe results here too.

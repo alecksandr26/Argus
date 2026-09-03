@@ -79,12 +79,23 @@ def contiguous_runs(sorted_indices: list[int]) -> list[tuple[int, int]]:
 def cnn_lstm_windows_for_clip(
     clip_df: pd.DataFrame,
     geo_features_by_path: dict[str, list[float]],
+    window_overlap: float = 0.0,
 ) -> list[dict]:
     """``clip_df``: the ``face_crops_index`` rows for one ``(subject, parent_video)``. Tiles
-    non-overlapping windows (``stride == win_size``) per maximal contiguous ``sample_idx`` run,
-    for each ``config.CNNLSTM_WINDOW_CONFIGS`` duration. Mirrors src/notebook/09's
+    windows per maximal contiguous ``sample_idx`` run, for each
+    ``config.CNNLSTM_WINDOW_CONFIGS`` duration. Mirrors src/notebook/09's
     ``build_windows_for_clip`` including the ``geometric_feature_seq`` string format.
+
+    ``window_overlap`` is the fraction of each window that overlaps the previous one:
+    ``0.0`` (default) reproduces src/notebook/09's historical non-overlapping tiling
+    (``stride == win_size``); ``0.5`` halves the stride. The driver
+    (:mod:`argus_dataset.cnn_lstm`) passes ``config.CNNLSTM_MINORITY_WINDOW_OVERLAP`` for
+    ``level_2`` (Drowsy) clips and ``0.0`` for ``level_1``, to rebalance the window-level class
+    ratio — see ``config.py`` and ``src/dataset/CLAUDE.md``.
     """
+    if not 0.0 <= window_overlap < 1.0:
+        raise ValueError(f"window_overlap must be in [0.0, 1.0), got {window_overlap}")
+
     sample_idx_to_path = dict(zip(clip_df["sample_idx"], clip_df["image_path"]))
     available = sorted(sample_idx_to_path.keys())
     if not available:
@@ -94,8 +105,9 @@ def cnn_lstm_windows_for_clip(
     windows: list[dict] = []
     for win_sec in config.CNNLSTM_WINDOW_CONFIGS:
         win_size = int(win_sec * config.SAMPLING_FPS)
+        stride = max(1, int(round(win_size * (1.0 - window_overlap)))) if window_overlap else win_size
         for run_start, run_end in runs:
-            for start in range(run_start, run_end - win_size + 2, win_size):
+            for start in range(run_start, run_end - win_size + 2, stride):
                 end = start + win_size  # exclusive
                 image_paths = [sample_idx_to_path[si] for si in range(start, end)]
                 geo_seq = ";".join(
