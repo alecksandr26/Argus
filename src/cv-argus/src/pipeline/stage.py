@@ -5,9 +5,9 @@ calls `process_item()` on each one, and pushes whatever comes back onto every qu
 `output_queues`. Subclasses implement `process_item()` (or, for a source/sink, `produce()`/
 `handle()` — see `SourceStage`/`OutputStage` below) only; the threading, queueing, backpressure,
 and shutdown plumbing here is shared by every concrete stage in this package
-(`FaceDetectorCropStage`, `CnnInferenceStage`, `LoggingOutputStage`, ...), which is the whole
-point of having this base class: a new stage (a video-overlay output stage, a future
-CNN+LSTM-windowed pipeline's stages, ...) only has to write its own `process_item()`.
+(`FaceDetectorCropStage`, `FusedInferenceStage`, `LoggingOutputStage`, ...), which is the whole
+point of having this base class: a new stage (a video-overlay output stage, a future model
+family's stages, ...) only has to write its own `process_item()`.
 
 **Threads, not multiprocessing** — a deliberate choice, not the default: MediaPipe's and
 TensorFlow's native inference calls release the GIL, so threads still get real parallelism on

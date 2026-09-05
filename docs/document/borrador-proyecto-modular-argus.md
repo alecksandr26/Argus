@@ -29,12 +29,12 @@ Encontré **dos documentos de definición técnica que no describen el mismo sis
 
 | | `CLAUDE.md` + `semantic-design` (18 jul) + notebook + `cv-argus/` (código real) | `Argus_Definicion_Tecnica.docx.pdf` (12 ago) |
 |---|---|---|
-| Modelo de IA | MediaPipe **FaceLandmarker** (Python) → capa `GeometricRatioFeatureLayer` (EAR/MAR/pose) → **LSTM** entrenado sobre 59 features (7 geométricas + 52 blendshapes), validado con Spearman/Kruskal-Wallis | MediaPipe **Face Mesh** cuantizado **INT8 + XNNPACK**, en **C++**, clasificación **PERCLOS** (umbral ≥1.5s) con **regresión logística o CNN-LSTM** sobre 68 landmarks |
+| Modelo de IA | MediaPipe **Face Detector** (BlazeFace, recorte de rostro) → **CNN** entrenada sobre el recorte, cuyo embedding de 64 dimensiones (capa penúltima, congelada) se fusiona con 10 features geométricas de MediaPipe **FaceLandmarker** (EAR/MAR + blendshapes) por cada instante → **LSTM** sobre una ventana deslizante de hasta 100 frames (20s a 5fps). Clasificación **binaria** (`Not Drowsy` / `Drowsy`), no de 6 niveles. **84.24% accuracy / 0.8375 F1-macro** en sujetos no vistos — ver Parte 6 | MediaPipe **Face Mesh** cuantizado **INT8 + XNNPACK**, en **C++**, clasificación **PERCLOS** (umbral ≥1.5s) con **regresión logística o CNN-LSTM** sobre 68 landmarks |
 | Backend | **Django/Flask/FastAPI** + SQL o MongoDB (sin decidir) + contenedor **OSRM** para rutas | **100% serverless en AWS**: IoT Core, Lambda, API Gateway, **DynamoDB**, Cognito, definido con **AWS CDK** |
 | Frontend | **React + react-leaflet**, 3 roles (Root/Admin, Guardian, Truck Driver) | **React** + Amazon Location Service o Google Maps API |
 | Comunicación camión↔nube | Protocolo sin decidir (candidato HTTPS), vía ESP32 | MQTT a AWS IoT Core, con **RockBLOCK/Iridium** satelital de respaldo |
 | Sensor adicional | Sensor de agarre en el volante (grip sensor) | Sensores **FSR** (fuerza resistiva) en el volante |
-| Qué existe como código | El notebook completo y el andamiaje de `cv-argus/` (Docker, packaging, entry point) — **nada de AWS/CDK/DynamoDB existe** | Nada de esto existe como código en el repo |
+| Qué existe como código | El pipeline completo de notebooks (creación de dataset + entrenamiento de 4 familias de modelo) y, en `cv-argus/`, el modelo desplegado corriendo de punta a punta: cámara → MediaPipe → inferencia → salida (`model/` y `pipeline/` terminados, no solo andamiaje) — **nada de AWS/CDK/DynamoDB existe** | Nada de esto existe como código en el repo |
 
 Esto no es un matiz de redacción: son dos sistemas distintos con distintas tecnologías en
 cada uno de los tres módulos que evalúa el comité. Si el reporte mezcla frases de los dos
@@ -91,37 +91,37 @@ más abajo, aplica igual aquí.)*
 > incumplimiento generalizado de la NOM-087. Argus es un sistema de monitoreo del conductor
 > (DMS) que augmenta —sin reemplazar— al operador: una capa preventiva que detecta
 > somnolencia en tiempo real mediante visión artificial y actúa antes de que ocurra un
-> microsueño. El sistema combina un módulo de inferencia en el borde (Raspberry Pi 5,
-> MediaPipe FaceLandmarker + una red LSTM entrenada sobre razones geométricas oculares/de
-> boca y blendshapes faciales) con un microcontrolador (ESP32) responsable de alertas,
-> frenado preventivo y comunicación, y un buffer local que garantiza continuidad sin
-> cobertura celular. La **LSTM** fue el modelo elegido sobre el baseline RandomForest, con
-> 98.55% de exactitud en el conjunto de prueba (F1 ponderado 0.99), frente al 95.66% del
-> RandomForest (F1 ponderado 0.96). Los hallazgos confirman que un enfoque multimodal
-> geométrico-secuencial es viable para clasificar 6 niveles de somnolencia en hardware de
-> borde de bajo costo.
+> microsueño. El sistema combina un módulo de inferencia en el borde (Raspberry Pi 5, MediaPipe
+> + una CNN cuyo embedding se fusiona con features geométricas faciales y se alimenta a una
+> LSTM sobre una ventana temporal) con un microcontrolador (ESP32) responsable de alertas,
+> frenado preventivo y comunicación, y un buffer local que garantiza continuidad sin cobertura
+> celular. El modelo final (fusión CNN+LSTM) alcanzó **84.24% de exactitud** y **0.8375 de F1
+> macro** en sujetos de prueba nunca vistos en entrenamiento — casi el doble del F1 de una CNN
+> de un solo frame (0.5273) sobre los mismos sujetos. Los hallazgos confirman que combinar
+> contexto temporal con características visuales crudas supera a un enfoque de un solo frame
+> para clasificar somnolencia (binaria: alerta / somnoliento) en hardware de borde de bajo costo.
 
-*(~150 palabras con los números ya puestos — ajustar solo si vuelven a entrenar con un split
-distinto, ver nota roja abajo.)*
+*(~140 palabras con los números ya puestos.)*
 
-✅ **Resuelto (LSTM confirmado como modelo final — ver Parte 6), pero 🔴 los números de abajo
-siguen pendientes de re-verificar.** Los venía de leer `ArgusMLModel.ipynb` (el monolito viejo,
-celdas 125–126 y 138) antes de que se dividiera en los tres notebooks actuales y se corrigiera
-el split train/test (ver el hallazgo detallado en Parte 6). Ese notebook corregido
-(`02_model_training.ipynb`) todavía no se ha ejecutado ni una vez, así que estos números son
-**placeholder**, no resultado verificado sobre el código que corre hoy:
+✅ **Resuelto — modelo final confirmado con números reales, no placeholder.** A diferencia de
+versiones anteriores de este borrador (que citaban 98.55%/95.66% de una corrida vieja del
+monolito `ArgusMLModel.ipynb` sobre 6 clases, nunca reproducida en el código actual), los
+números de abajo sí vienen de una corrida real, documentada y verificada del pipeline vigente
+— ver `notebook/CLAUDE.md`'s "`11_cnn_lstm_training_drive_pull.ipynb`'s fixed rerun" para el
+detalle completo:
 
-| Modelo | Accuracy (test) | F1 ponderado | Notas |
+| Modelo | Accuracy (test) | F1 macro | Notas |
 |---|---|---|---|
-| RandomForest (7 features: `eyeBlinkLeft`, `eyeBlinkRight`, `EAR_mean`, `eyeSquintLeft`, `eyeSquintRight`, `jawOpen`, `Pitch`) | 95.66% ⚠️ | 0.96 ⚠️ | baseline, pendiente re-run |
-| **LSTM** (60 timesteps × 58 features, `LSTM(128)→Dropout(0.3)→LSTM(64)→Dropout(0.3)→Dense(6, softmax)`, 145,542 parámetros) | **98.55%** ⚠️ (test loss 0.0536) | 0.99 ⚠️ | modelo final elegido, pendiente re-run |
+| CNN de un solo frame (recorte facial → CNN) | 59.64% | 0.5273 | primer resultado binario real, referencia — no es el modelo desplegado |
+| **CNN+LSTM (embedding CNN congelado + features geométricas fusionadas → LSTM)** | **84.24%** (84.38% en el umbral de decisión elegido) | **0.8375** (0.8379 en el umbral) | **modelo final, el que despliega `cv-argus`** |
 
-📎 **Nota técnica, actualizada:** el split ya no es un tema de "aceptar tal cual" — el código
-de `02_model_training.ipynb` **ya corrigió** el train/test a `GroupShuffleSplit` agrupado por
-sujeto (arregla la fuga de ventanas casi-duplicadas del mismo sujeto entre train y test que
-tenía el `train_test_split` estratificado anterior). Lo único pendiente es correr ese notebook
-una vez con el fix aplicado y traer los números reales de vuelta a esta tabla y a las Partes 4,
-6 y 8, que citan los mismos.
+⚠️ **Caveats reales que hay que mantener en el reporte, no esconder:** es un solo fold
+(`StratifiedGroupKFold`, sujetos nunca compartidos entre train/val/test), sin validación cruzada
+todavía — la propia experiencia del proyecto con otros modelos ha mostrado variaciones de
+hasta ±9 puntos de F1 macro entre folds con un número de sujetos similar. Tampoco se ha
+corrido todavía de punta a punta contra hardware real de Raspberry Pi (ver Parte 9). Redactar
+estos números como "el mejor resultado medido hasta ahora", no como "resultado validado en
+producción".
 
 ---
 
@@ -222,8 +222,9 @@ arte y no como que están parafraseando su trabajo.
 >   reportando 97% de precisión detectando ojos cerrados (94% con lentes, 92% con lentes de
 >   sol). Es un proyecto acotado al clasificador de visión en sí, sin backend, sin
 >   comunicación entre dispositivos, ni sistema de alertas/actuación. Argus se diferencia en
->   dos ejes a la vez: clasifica *secuencias* temporales (LSTM sobre ventanas), no frames
->   sueltos, y extiende el problema más allá de la detección hacia un sistema distribuido
+>   dos ejes a la vez: clasifica *secuencias* temporales (embedding de CNN fusionado con
+>   features geométricas, alimentando una LSTM sobre ventanas), no frames sueltos, y extiende
+>   el problema más allá de la detección hacia un sistema distribuido
 >   completo (borde + alerta + frenado + nube) — el mismo problema de fondo, alcance distinto.
 > - Soluciones comerciales existentes (Geotab, Samsara): DMS basados en video-telemática ya
 >   desplegados a nivel flota — referencia de qué "ya existe" en el mercado, y en qué se
@@ -265,7 +266,7 @@ MVP, con el estado de avance que se puede sustentar con lo que ya existe en el r
 
 | # | Requerimiento                                                                                           | Estado                                                                                                                                          |
 |---|---------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|
-| 1 | Detección facial y ocular (visión artificial, % de cierre ocular)                                       | ✅ **Completado** — pipeline MediaPipe FaceLandmarker + LSTM entrenado y evaluado (`notebook/`)                                                 |
+| 1 | Detección facial y ocular (visión artificial, % de cierre ocular)                                       | ✅ **Completado** — pipeline entrenado y evaluado (`notebook/`: CNN + features geométricas fusionadas → LSTM) y **corriendo en vivo** en `cv-argus/` (cámara → MediaPipe → inferencia → salida), no solo en el notebook                                                 |
 | 2 | Alertas sonoras en cabina ante microsueño (ojos cerrados >1.5s)                                         | ⏳ Pendiente — depende del firmware ESP32, aún no existe                                                                                        |
 | 3 | Frenado autónomo preventivo si el conductor no reacciona                                                | ⏳ Pendiente — interfaz con CAN bus/AEB no implementada                                                                                         |
 | 4 | Transmisión de alertas/ubicación por red celular                                                        | ⏳ Pendiente — protocolo Pi↔ESP32↔nube sin decidir (ver Parte 7)                                                                                |
@@ -289,13 +290,16 @@ final.\]
 
 **Tecnologías utilizadas** (de `CLAUDE.md` + `cv-argus/README.md` — ver también el hallazgo
 crítico arriba sobre cuál arquitectura es la vigente):
-- **Modelo/IA:** Python, MediaPipe FaceLandmarker, TensorFlow/Keras (LSTM +
-  `GeometricRatioFeatureLayer` custom), scikit-learn (RandomForest baseline), pandas/joblib —
-  todo dentro de `notebook/ArgusMLModel.ipynb`.
+- **Modelo/IA:** Python, MediaPipe (Face Detector para el recorte facial, FaceLandmarker para
+  las features geométricas), TensorFlow/Keras (CNN + `GeometricRatioFeatureLayer` custom + LSTM
+  sobre el embedding fusionado), scikit-learn (RandomForest, uno de los baselines comparados),
+  pandas/joblib — repartido en diez notebooks encadenados por etapa (creación de dataset,
+  entrenamiento, exportación), no en un solo monolito.
 - **Borde (Raspberry Pi 5):** contenedor Docker (`python:3.11-slim-bookworm`, elegido sobre
   Alpine porque MediaPipe/TensorFlow solo publican wheels `manylinux`/glibc), `picamera2`
-  para la cámara CSI, `gdown` para descargar el modelo entrenado desde Drive al iniciar el
-  contenedor (sin hornear el modelo en la imagen).
+  para la cámara CSI, `gdown` para descargar los modelos entrenados desde Drive **al construir
+  la imagen** (no al iniciar el contenedor) — para que el dispositivo pueda arrancar y empezar a
+  monitorear aunque el camión no tenga señal en ese momento.
 - **Microcontrolador (ESP32):** **C** (Arduino framework o ESP-IDF) con una librería de
   parseo GPS/NMEA para leer el módulo de geolocalización por UART (p. ej. TinyGPS++ es la
   opción estándar en ese ecosistema — \[confirmar si ya eligieron una librería/módulo GPS
@@ -315,21 +319,26 @@ que el formato pide explícitamente ("Repositorio de código", "Versión actual 
 "Licencia legal código") — si no han elegido una licencia todavía, es la única pieza que
 sigue pendiente aquí.\]
 
-**Pruebas realizadas:** del notebook — validación estadística por feature contra nivel de
-somnolencia (Kruskal-Wallis: EAR H=1985.27 p≈0, MAR H=476.41 p≈9.9e-101, eyeBlinkRight
-H=1823.48 p≈0, mouthFunnel H=709.80 p≈3.7e-151 — las 4 features probadas resultaron
-significativas) y comparación de dos clasificadores: RandomForest (95.66% accuracy ⚠️) vs. LSTM
-(98.55% accuracy ⚠️, elegido como modelo final — ver Parte 6), split 80/20 agrupado por sujeto
-(`GroupShuffleSplit`). *(⚠️ Los dos accuracy de arriba son del split viejo, no del
-`GroupShuffleSplit` ya corregido en el código — ver el hallazgo en Parte 6/1: falta correr
-`02_model_training.ipynb` una vez para tener números reales.)*
+**Pruebas realizadas:** comparación sistemática de cuatro familias de modelo sobre el mismo
+problema binario (`Not Drowsy` / `Drowsy`) — RandomForest y una red densa (Dense NN) sobre
+features de un solo frame quedaron topadas en 33-41% de accuracy (correlación de Spearman
+máxima de |r|=0.26 entre cualquier feature de un solo frame y el nivel de somnolencia — la
+razón medida, no solo sospechada, de ese techo); una CNN de un solo frame sobre el recorte
+facial subió a 59.64% accuracy / 0.5273 F1 macro; y el modelo final — el embedding de esa
+misma CNN, ya congelado, fusionado con features geométricas y alimentado a una LSTM sobre una
+ventana de hasta 100 frames — alcanzó **84.24% accuracy / 0.8375 F1 macro**, casi el doble del
+F1 de la CNN de un solo frame sobre los mismos sujetos de prueba. División train/val/test
+agrupada por sujeto (`StratifiedGroupKFold`) en todos los casos, para que ningún sujeto
+aparezca a la vez en entrenamiento y prueba.
 
-**Proceso de implementación:** pipeline lineal de notebook (Colab, con Google Drive como
-almacenamiento) → extracción de features en ventanas deslizantes (10 fps, ventanas de 1-6s,
-`stride` de 1s, umbral de validez de pose de 20°) → modelo de despliegue
-`LstmGeometricFeatureModel` que empaqueta todo el preprocesamiento dentro de un solo
-artefacto Keras → carga de ese artefacto en `cv-argus` vía `gdown` para inferencia en vivo en
-el Pi.
+**Proceso de implementación:** pipeline de notebooks encadenados por etapa (Colab, con Google
+Drive como almacenamiento) → extracción de recortes faciales (MediaPipe Face Detector) →
+extracción de features geométricas sobre esos recortes (MediaPipe FaceLandmarker) → entrenamiento
+de la CNN sobre los recortes → congelamiento de su embedding y fusión con las features
+geométricas por instante → entrenamiento de la LSTM sobre esa secuencia fusionada → exportación
+del modelo final y carga de ese artefacto en `cv-argus` para inferencia en vivo en el Pi, con
+una ventana deslizante en memoria (no imágenes, solo los vectores ya fusionados) que se
+actualiza un frame a la vez.
 
 ✅ **Resuelto** — repo confirmado y público: `github.com/alecksandr26/Argus`. Nota aparte, no
 bloqueante: ese mismo repo trae `docs/` con PDFs de criterios y borradores de titulación
@@ -362,9 +371,11 @@ elementos de Ingeniería de Software; estructurar el modelado del sistema.
     secuencia de frames, con descarte total de ventanas que contienen algún frame inválido
     (cara no detectada) en vez de imputar/rellenar — decisión de diseño a justificar
     (prioriza calidad de la señal de entrenamiento sobre cantidad de datos).
-  - Buffer interno del modelo desplegado: un `tf.Variable` de forma `(1, 60, 59)` que actúa
-    como cola circular de los últimos 60 frames — el modelo mismo mantiene el estado, así que
-    el código de inferencia no necesita implementar su propio buffer de secuencia.
+  - Ventana deslizante del modelo desplegado: un arreglo `numpy` de forma `(100, 74)` que
+    actúa como cola circular de los últimos 100 frames (20s a 5fps) — no imágenes, sino la
+    fila ya fusionada de cada instante (64 valores del embedding de la CNN + 10 features
+    geométricas). Se descarta el frame más viejo y se agrega el nuevo en cada llamada, lo que
+    mantiene el buffer en unos ~30KB en vez de reprocesar imágenes acumuladas.
   - **MongoDB** como base de datos del backend/nube (planeada, sin implementar aún — ver
     Parte 4): esquema flexible por documento, natural para los recursos `users`, `trucks`,
     `drivers`, `alerts`, `routes` que no comparten una forma rígida entre sí (p. ej. un
@@ -397,30 +408,20 @@ accidente el diagrama equivocado en el reporte.
 
 ## Parte 6 — Justificación de Sistemas Inteligentes (Módulo 2)
 
-✅ **Resuelto — el modelo secuencial final se queda como LSTM, no cambia a feedforward.**
-Revisé a fondo `02_model_training.ipynb` (la celda markdown "Design Decision: Persistent
-(`stateful=True`) Hidden State", justo antes de la definición del modelo) para confirmarlo con
-el código real, no solo de palabra: un LSTM plano (`stateful=False`, que es lo que ya está
-implementado) ya calcula recurrencia real — compuertas `h_t`/`c_t` genuinas — *dentro* de cada
-llamada, sobre la ventana completa de 60 frames. Eso es exactamente lo que permite capturar
-"los ojos llevan cerrándose los últimos segundos" (duración/velocidad del cierre ocular a lo
-largo de la ventana) — una señal que una capa `Dense`/feedforward, al no tener ese mecanismo de
-recurrencia, no puede replicar estructuralmente por más ancha o profunda que sea. Esa es la
-justificación técnica real, no solo "porque ya lo teníamos hecho".
-
-🔴 **Pero surgió un hallazgo nuevo, más importante para esta sección que LSTM-vs-feedforward:
-los números de accuracy de abajo (98.55%/95.66%) todavía no están re-verificados contra el
-código que corre hoy.** Al revisar `02_model_training.ipynb` directamente, ninguna de sus
-celdas tiene `execution_count`/`outputs` — es decir, **este notebook nunca se ha corrido** desde
-que se dividió del monolito original y se corrigió el bug de fuga de datos entre train/test
-(el split pasó de `train_test_split` estratificado, que mezclaba sujetos, a `GroupShuffleSplit`
-agrupado por sujeto — ver la celda "Design Decision" citada arriba, que documenta el fix). Los
-números 98.55%/95.66% que siguen citados abajo y en las Partes 1, 4 y 8 vienen de la corrida
-*anterior*, con el split que sí tenía fuga entre train/test — no hay garantía de que se
-sostengan una vez que alguien corra `02_model_training.ipynb` con el split corregido. **Hay que
-volver a correr el notebook y actualizar estos números en las cuatro secciones antes de dar el
-reporte por final** — mientras tanto, tratar 98.55%/95.66% como placeholder, no como resultado
-verificado.
+✅ **Resuelto — el modelo final es una fusión CNN+LSTM, con clasificación binaria, y con
+números reales de una corrida verificada.** Versiones anteriores de este borrador describían un
+LSTM puro sobre 59 features geométricas, clasificando 6 niveles de somnolencia, con
+98.55%/95.66% de accuracy sacados de `ArgusMLModel.ipynb` (el monolito original, ya retirado) —
+esa arquitectura nunca llegó a desplegarse ni a correr con esos números verificados. Lo que
+Argus sí entrenó, comparó y terminó desplegando es distinto en tres ejes a la vez: (1) el
+problema se simplificó de 6 niveles a **clasificación binaria** (`Not Drowsy` / `Drowsy`) —
+la clase intermedia ("baja vigilancia") resultó ser, en cada arquitectura probada, la más
+inconsistente de clasificar (0% de recall en dos corridas distintas), así que fusionarla con
+la clase de alerta elimina ese modo de falla en vez de solo mover el piso de adivinar al azar;
+(2) el modelo final no es un LSTM puro sobre features geométricas, sino una **fusión**: el
+embedding de una CNN entrenada sobre el recorte facial, combinado por instante con un
+subconjunto de features geométricas, alimentando una LSTM sobre una ventana temporal; y (3) los
+números reportados abajo sí vienen de una corrida real y documentada, no de un placeholder.
 
 **Qué pide el formato/criterios:** cubrir al menos una rama de IA de la lista (redes
 neuronales / ML / visión artificial / ...); formular el modelo matemático; justificar la
@@ -428,64 +429,62 @@ selección de algoritmos.
 
 **Propuesta de contenido:**
 
-- **Ramas cubiertas:** redes neuronales (LSTM), aprendizaje automático (RandomForest como
-  baseline comparativo), visión artificial (MediaPipe FaceLandmarker: detección de 478
-  landmarks faciales + blendshapes + matriz de rotación de cabeza). Cubre 3 de las 9 ramas
+- **Ramas cubiertas:** redes neuronales (CNN + LSTM), aprendizaje automático (RandomForest y una
+  red densa, ambos comparados como baseline), visión artificial (MediaPipe Face Detector para el
+  recorte facial + FaceLandmarker para 478 landmarks/blendshapes/pose). Cubre 3 de las 9 ramas
   listadas en el criterio 2.1 — más que suficiente (solo se exige una).
 - **Modelo matemático:** la capa `GeometricRatioFeatureLayer` calcula, por frame, EAR (Eye
   Aspect Ratio) y MAR (Mouth Aspect Ratio) a partir de razones geométricas entre landmarks
-  oculares/de boca, más pitch/yaw/roll de cabeza desde la matriz de rotación — produciendo un
-  vector de 59 features (7 geométricas + 52 blendshapes de MediaPipe) por frame \[nota menor:
-  el modelo entrenado que corrió en el notebook terminó usando 58 features de entrada, no 59
-  — vale la pena confirmar a qué se debe esa diferencia de una antes de citar el número en el
-  reporte final\]. Estas secuencias, en ventanas de hasta 60 timesteps (6s a 10fps), alimentan
-  la arquitectura `LSTM(128, return_sequences=True) → Dropout(0.3) → LSTM(64) → Dropout(0.3) →
-  Dense(6, softmax)` (145,542 parámetros entrenables), cuya salida es un softmax sobre 6
-  clases (niveles de somnolencia 1-6).
-- **Justificación de algoritmos:** Spearman (por ser variables ordinales — los niveles de
-  somnolencia no son una escala continua arbitraria) y Kruskal-Wallis por feature (EAR, MAR,
-  eyeBlinkRight y mouthFunnel probados, los 4 con p≈0 o prácticamente cero — significativos),
-  usados para decidir qué features realmente correlacionan con el nivel de somnolencia antes
-  de entrenar; comparación LSTM (98.55% accuracy \[⚠️ pendiente de re-verificar, ver nota roja
-  arriba\]) vs. RandomForest (95.66% accuracy \[ídem\]) como baseline, seleccionando LSTM como
-  modelo final por capturar dependencia temporal entre frames en vez de solo un frame promedio
-  por ventana. El entrenamiento del LSTM también usa `class_weight` (calculado desde la
-  distribución real de clases del set de entrenamiento, igual que ya hacía el RandomForest con
-  `class_weight='balanced'`) — relevante de mencionar porque el nivel 6 ("entrando en
-  microsueño") es, según la nota de metodología de recolección de `01_dataset_creation.ipynb`,
-  el único nivel actuado en vez de auto-grabado bajo fatiga real, lo que lo hace plausiblemente
-  el más escaso en el dataset y a la vez el más crítico de no descuidar.
-- **Justificación de MediaPipe FaceLandmarker como detector base:** internamente es una CNN
-  entrenada por *regresión* — no clasificación — sobre dos tareas encadenadas: localizar la
-  cara en el frame (bounding box) y luego regresar las coordenadas continuas de cada uno de
-  los 478 landmarks faciales (en vez de clasificar el frame en categorías discretas). Ese
-  diseño (arquitectura ligera tipo BlazeFace/MediaPipe, cuantizable, pensada para correr en
-  CPU/NPU de dispositivos móviles y embebidos sin GPU dedicada) es precisamente el motivo por
-  el que se eligió sobre alternativas más pesadas (p. ej. face-mesh models de mayor cómputo o
-  detectores basados en transformers): es la única opción de las evaluadas con inferencia en
-  tiempo real ya validada en hardware de borde de bajo costo — el mismo perfil de la Raspberry
-  Pi 5 donde corre Argus.
+  oculares/de boca. El modelo final usa un subconjunto de 10 de esas features (3 razones EAR/MAR
+  + 7 blendshapes de MediaPipe) por instante, concatenado con el embedding de 64 dimensiones de
+  una CNN (`Conv2D`/`BatchNorm`/`GlobalAveragePooling2D` → `Dense(64, relu)`) ya entrenada sobre
+  el recorte facial, cuyos pesos quedan **congelados** para esta segunda etapa — el vector
+  fusionado de 74 valores por instante, sobre una ventana de hasta 100 instantes (20s a 5fps),
+  alimenta una `LSTM(64)` cuya salida es un softmax binario (`Not Drowsy` / `Drowsy`).
+- **Justificación de algoritmos, con la evidencia real detrás de cada paso, no solo el
+  resultado final:**
+  1. RandomForest y una red densa, entrenados sobre features de un solo frame, quedaron topados
+     en 33-41% de accuracy — la correlación de Spearman entre cualquier feature de un solo frame
+     y el nivel de somnolencia no supera |r|=0.26 (el propio EAR, la feature alrededor de la cual
+     se diseñó todo el pipeline geométrico, tiene |r|=0.04). La instantánea de un frame no
+     alcanza a capturar la señal; el indicio real está en cómo cambia a lo largo de una
+     secuencia, no en un instante suelto.
+  2. Una CNN sobre el recorte facial completo (no solo un resumen geométrico hecho a mano) subió
+     a 59.64% accuracy / 0.5273 F1 macro sobre el mismo problema binario — evidencia de que los
+     píxeles crudos cargan información que las features geométricas no capturaban.
+  3. Fusionar el embedding de esa CNN (ya congelado, sin reentrenar) con las features
+     geométricas y alimentarlo a una LSTM sobre una ventana temporal llevó el resultado a
+     **84.24% accuracy / 0.8375 F1 macro** — casi el doble del F1 de la CNN de un solo frame
+     sobre los mismos sujetos de prueba. Es la primera confirmación directa, con un número
+     limpio y no un ajuste sobreajustado, de la hipótesis central del proyecto: el contexto
+     temporal revela algo que un solo frame no puede, estructuralmente, ver.
+  4. La clasificación final no usa `argmax` sobre el softmax, sino un **umbral de decisión**
+     elegido sobre el conjunto de validación con un criterio de seguridad primero: entre los
+     umbrales que garantizan un recall de `Drowsy` de al menos 70%, se elige el de mejor
+     precisión (`t*=0.57` en la corrida citada) — perder a un conductor somnoliento es el error
+     más costoso, así que el criterio de selección lo refleja explícitamente en vez de tratar
+     los dos tipos de error como equivalentes.
+  5. El desbalance de clases (más clips de "alerta" que de "somnoliento" en el dataset) se
+     maneja duplicando con traslape las ventanas de la clase minoritaria antes de entrenar
+     (`Drowsy`), en vez de un `class_weight` genérico — un ajuste que sí se probó y no mejoró el
+     resultado en las primeras familias de modelo, así que se dejó de usar como técnica por
+     defecto.
+- **Justificación de MediaPipe (Face Detector + FaceLandmarker) como base de visión:**
+  ambos son modelos tipo BlazeFace — arquitecturas ligeras, cuantizables, pensadas para correr
+  en CPU/NPU de dispositivos móviles y embebidos sin GPU dedicada — el motivo por el que se
+  eligieron sobre alternativas más pesadas (p. ej. detectores basados en transformers, o YOLO,
+  evaluado y descartado por su licencia AGPL-3.0 y el costo de mantener un segundo framework de
+  detección). Es la única opción de las evaluadas con inferencia en tiempo real ya validada en
+  hardware de borde de bajo costo — el mismo perfil de la Raspberry Pi 5 donde corre Argus.
 
-📎 **Nota de precisión sobre esta sección, actualizada** — versiones anteriores de esta nota
-decían que el split real era `train_test_split` estratificado por clase (80/20, mezclando
-sujetos) y que el equipo había decidido aceptarlo tal cual. Eso ya no describe el código
-actual: `02_model_training.ipynb` corrigió el split a `GroupShuffleSplit` agrupado por sujeto
-(elimina la fuga de ventanas casi-duplicadas del mismo sujeto entre train y test) — pero, como
-dice la nota roja de arriba, ese notebook corregido todavía no se ha ejecutado ni una vez. Así
-que el split *como código* ya es el correcto (agrupado por sujeto), pero los *números*
-reportados en esta sección siguen siendo del split viejo. En el reporte final, una vez que se
-corra el notebook: describir el split como "80/20 agrupado por sujeto (`GroupShuffleSplit`)",
-ya no como "estratificado por clase".
-
-✅ **Resuelto** — el criterio 2.3 pide *justificar la selección* del algoritmo, no solo
-nombrarlo. `Argus_Definicion_Tecnica.docx.pdf` justificaba MediaPipe Face Mesh diciendo que
-tiene "alta precisión y baja tasa de falsos positivos ante variaciones de iluminación", pero
-esa prueba de robustez a iluminación no existe en el notebook, así que no se usa en el
-reporte. La justificación que sí se sostiene con evidencia real, y que ya quedó arriba: (1)
-arquitectura — CNN de regresión para detección de cara + landmarks, diseñada para edge/móvil,
-que es la razón técnica de por qué corre viable en la Pi 5; y (2) desempeño del clasificador
-de somnolencia aguas abajo — Spearman/Kruskal-Wallis por feature y la comparación LSTM vs.
-RandomForest (con la limitación del split declarada, no escondida).
+⚠️ **Caveats que hay que mantener explícitos en el reporte, no solo en este borrador:** el
+84.24%/0.8375 es de un solo fold (`StratifiedGroupKFold`, sujetos disjuntos entre train/val/test),
+sin validación cruzada todavía — el propio proyecto ha visto variaciones de hasta ±9 puntos de F1
+macro entre folds con un número similar de sujetos en otras corridas. Tampoco se ha verificado
+todavía que el checkpoint de la CNN que `cv-argus` descarga en producción sea exactamente el
+mismo que se usó para generar los embeddings de esta corrida — un desajuste ahí degradaría la
+precisión en silencio, no con un error visible. Redactar el resultado como "el mejor medido
+hasta ahora", no como validado en producción.
 
 ---
 
@@ -587,51 +586,54 @@ requisito.
 
 ## Parte 8 — Resultados obtenidos del proyecto
 
-🔶 **En definición (no cerrado) — pero por una razón distinta a antes.** La arquitectura ya no
-es lo abierto: LSTM quedó confirmado como modelo final (Parte 6) y Pi↔ESP32↔nube ya tiene
-diseño (Parte 7). Lo que sigue bloqueando esta sección son los **números**: el accuracy/F1
-citado abajo viene de una corrida vieja, previa al fix del split (`GroupShuffleSplit`) que ya
-está en el código pero no se ha vuelto a ejecutar (ver Parte 6) — así que "resultados obtenidos"
-no se puede redactar en definitivo hasta correr `02_model_training.ipynb` una vez y traer
-números reales. Contenido de abajo dejado tal cual por ahora como referencia de estructura, no
-como texto final.
+✅ **Resuelto en cuanto a números — el resultado del modelo ya es real y verificado (Parte 6),
+pero el alcance de "terminado" sigue siendo parcial y hay que redactarlo así.**
 
 **Qué pide el formato:** resumir resultados en orden lógico; cubrir (1) objetivos realmente
 alcanzados al término del desarrollo, y (2) su relación con la solución planteada. **Escrito
 en tiempo pasado.**
 
-🔴 **Posible inconsistencia de alcance:** el formato asume un proyecto *terminado*, pero
-`cv-argus/README.md` dice explícitamente que de los 6 módulos planeados (`model/`,
-`pipeline/`, `orchestrator/`, `buffer/`, `sender/`, `alerts/`) **ninguno existe como código
-todavía** — solo el andamiaje (Docker, packaging, entry point que solo verifica el entorno).
-Tampoco existe el firmware del ESP32, ni el backend, ni el frontend.
+🔶 **Estado real de `cv-argus` a la fecha de este borrador, para no exagerar ni quedarse
+corto:** de los 6 módulos planeados, **dos ya están terminados como código, no solo diseñados**
+— `model/` (carga de los modelos entrenados, extracción del embedding congelado de la CNN,
+predicción sobre la ventana fusionada) y `pipeline/` (captura de cámara, las dos etapas de
+MediaPipe, la etapa de inferencia, salidas de texto y de video anotado para demo) — corriendo
+de punta a punta contra una cámara o un video grabado, no solo en el notebook. Los otros
+cuatro (`orchestrator/`, `buffer/`, `sender/`, `alerts/`) siguen sin código, más allá de la
+arquitectura ya definida (SQLite en modo WAL para el buffer, Bluetooth con polling del ESP32
+para el envío — ver Parte 7). Tampoco existe el firmware del ESP32, ni el backend, ni el
+frontend.
 
-❓ **Pregunta** — para la fecha de entrega, ¿qué parte del sistema sí van a tener corriendo de
-punta a punta? ¿Solo el notebook (modelo entrenado + validación), o también inferencia en
-vivo en el Pi (aunque sea sin ESP32/nube todavía)?
+**Propuesta de contenido — lo que sí se puede reportar como resultado real hoy:**
 
-💡 **Propuesta** — delimitar "resultados" honestamente a lo que sí esté terminado y
-verificado al momento de escribir esta sección, en vez de redactar en pasado algo que sigue
-en planeación (el propio criterio de no-aprobación **A** es "objetivos no alcanzables en los
-tiempos establecidos", y de no-aprobación general existe el riesgo de que el comité note la
-brecha entre lo narrado y lo demostrable). Ejemplo de qué sí se puede reportar como resultado
-real hoy: "se extrajo y validó estadísticamente un conjunto de features geométricas y de
-blendshapes por frame (Kruskal-Wallis significativo en las 4 features probadas); se
-entrenaron y compararon dos clasificadores — RandomForest (95.66% accuracy, F1 ponderado 0.96)
-y LSTM (98.55% accuracy, F1 ponderado 0.99), split 80/20 estratificado por clase — seleccionando
-**LSTM** como modelo final; el modelo final se empaquetó en un artefacto único reproducible
-(`LstmGeometricFeatureModel`) listo para inferencia en vivo." Dejar tanto la validación de
-desempeño en hardware real (Raspberry Pi: latencia, uso de CPU/memoria) como la integración de
-borde completa (Pi+ESP32+buffer+nube) explícitamente en la Parte 9 como "trabajo a futuro", no
-disfrazadas de resultado ya alcanzado.
+> Se comparó un conjunto de arquitecturas sobre el mismo problema binario (`Not Drowsy` /
+> `Drowsy`): RandomForest y una red densa sobre features geométricas de un solo frame (33-41%
+> de accuracy, techo explicado por una correlación de Spearman máxima de |r|=0.26 entre
+> cualquier feature de un solo frame y el nivel de somnolencia); una CNN sobre el recorte
+> facial completo (59.64% accuracy, 0.5273 F1 macro); y el modelo final — el embedding
+> congelado de esa CNN fusionado con features geométricas y alimentado a una LSTM sobre una
+> ventana temporal de hasta 20 segundos — que alcanzó **84.24% accuracy, 0.8375 F1 macro** sobre
+> sujetos nunca vistos en entrenamiento, casi el doble del F1 de la CNN de un solo frame. El
+> modelo final se empaquetó como un par de artefactos Keras reproducibles (la CNN congelada +
+> la LSTM de fusión) y se integró en `cv-argus`, el módulo de borde: hoy corre de punta a punta
+> contra una cámara en vivo o un video grabado, con una ventana deslizante ligera (vectores
+> numéricos, no imágenes acumuladas) manteniendo el estado entre frames.
+
+⚠️ **Caveats que van en esta sección junto con el resultado, no escondidos en una nota aparte:**
+el número es de un solo fold, sin validación cruzada todavía; no se ha corrido de punta a punta
+contra hardware real de Raspberry Pi (solo contra un contenedor Docker en una laptop); y la
+identidad exacta del checkpoint de CNN usado en producción frente al usado para generar los
+embeddings de entrenamiento no está verificada (ver Parte 6). Dejar tanto esa validación en
+hardware real como la integración completa de borde (Pi+ESP32+buffer+nube) explícitamente en la
+Parte 9 como "trabajo a futuro", no disfrazadas de resultado ya alcanzado.
 
 ---
 
 ## Parte 9 — Conclusiones y trabajo a futuro
 
-🔶 **En definición (no cerrado)** — misma razón que la Parte 8: el texto de abajo es
-estructura de referencia, no conclusión final, hasta que se corra `02_model_training.ipynb`
-con el split ya corregido y se traigan números reales (ver Parte 6).
+✅ **Resuelto en cuanto a base técnica** — a diferencia de versiones anteriores de este
+borrador, la conclusión de abajo ya se apoya en una comparación real de modelos con números
+verificados (Parte 6/8), no en un resultado pendiente de correr.
 
 **Qué pide el formato:** generalizaciones del proceso completo, sin repetir el resumen
 literalmente; evitar afirmaciones sobre partes no terminadas; recomendaciones/mejoras al
@@ -639,25 +641,41 @@ final.
 
 **Propuesta de contenido:**
 
-> El desarrollo confirmó que un enfoque geométrico-secuencial (EAR/MAR + pose + blendshapes
-> sobre ventanas temporales cortas) es una base viable y estadísticamente respaldada para
-> clasificar niveles de somnolencia, sin depender de reglas fijas de umbral (como PERCLOS a
-> secas) que no capturan la variabilidad entre sujetos. \[Completar con la conclusión real una
-> vez que exista comparación LSTM vs. RandomForest con números.\] El diseño edge-first —
-> procesamiento en el borde por camión, sincronización tolerante a fallos hacia la nube — es
-> además pensado desde el inicio para escalar por flota: sumar camiones no implica escalar un
-> servidor central de inferencia, porque cada unidad ya trae su propio cómputo. Esa
-> escalabilidad, junto con el costo humano y económico de los accidentes por fatiga descrito
-> en la Parte 2, es la motivación de fondo del proyecto: una barrera preventiva de bajo costo
-> tiene margen para reducir una fracción de esas pérdidas si se despliega a nivel flota.
+> El desarrollo confirmó que un enfoque puramente geométrico (EAR/MAR + pose + blendshapes de
+> un solo frame) tiene un techo real y medido — no solo sospechado — alrededor del 33-41% de
+> accuracy, y que superarlo requirió dos cambios a la vez: incorporar información visual cruda
+> (una CNN sobre el recorte facial, no solo un resumen geométrico hecho a mano) y, sobre todo,
+> dar contexto temporal a esa información (fusionar el embedding de esa CNN con features
+> geométricas y clasificar sobre una ventana, no un frame suelto). El resultado final —84.24%
+> de accuracy, 0.8375 de F1 macro— casi duplica el F1 de la misma CNN juzgando frame por frame,
+> confirmando de forma directa la hipótesis central del proyecto: la duración y velocidad del
+> cierre ocular a lo largo de una ventana es una señal que un solo instante no puede capturar
+> estructuralmente. El diseño edge-first —procesamiento en el borde por camión, sincronización
+> tolerante a fallos hacia la nube— es además pensado desde el inicio para escalar por flota:
+> sumar camiones no implica escalar un servidor central de inferencia, porque cada unidad ya
+> trae su propio cómputo. Esa escalabilidad, junto con el costo humano y económico de los
+> accidentes por fatiga descrito en la Parte 2, es la motivación de fondo del proyecto: una
+> barrera preventiva de bajo costo tiene margen para reducir una fracción de esas pérdidas si
+> se despliega a nivel flota.
 >
 > **Trabajo a futuro:**
-> - Validar el desempeño del modelo LSTM ya entrenado corriendo en hardware real (Raspberry
->   Pi 5): latencia de inferencia por frame, uso de CPU/memoria en ARM — el accuracy/F1
->   reportado en la Parte 8 viene del entrenamiento en notebook, no de una corrida en el Pi.
-> - Completar e integrar los módulos `orchestrator/`, `buffer/`, `sender/` de `cv-argus` con
->   hardware real (Pi 5 + cámara CSI) para validar la inferencia en vivo fuera de la
->   simulación del notebook.
+> - Validar el desempeño del modelo final (CNN+LSTM fusionado) corriendo en hardware real
+>   (Raspberry Pi 5): latencia de inferencia por frame, uso de CPU/memoria en ARM — el 84.24%
+>   accuracy / 0.8375 F1 macro reportado en la Parte 8 viene del entrenamiento y evaluación en
+>   notebook, no de una corrida en el Pi. Es también, de los modelos comparados, el más pesado
+>   por frame muestreado (dos tareas de MediaPipe más dos modelos de Keras), así que esta
+>   validación importa más aquí que para un modelo más simple.
+> - Correr una validación cruzada (k-fold) sobre el resultado del 84.24%/0.8375 — hoy es un
+>   solo fold agrupado por sujeto, y el propio proyecto ha visto variaciones de hasta ±9 puntos
+>   de F1 macro entre folds en otros modelos con un número similar de sujetos.
+> - Confirmar que el checkpoint de la CNN que `cv-argus` descarga en producción es exactamente
+>   el mismo que se usó para generar los embeddings con los que se entrenó la LSTM final — un
+>   riesgo abierto y no trivial: un checkpoint distinto degradaría la precisión de forma
+>   silenciosa, no con un error visible.
+> - Completar e integrar los módulos `orchestrator/`, `buffer/`, `sender/`, `alerts/` de
+>   `cv-argus` (el módulo de inferencia y de captura de cámara ya están terminados y corriendo)
+>   con hardware real (Pi 5 + cámara CSI) para validar la cadena completa de alerta, no solo la
+>   predicción.
 > - Prototipar el firmware del ESP32 sobre el diseño ya decidido en la Parte 7 (Bluetooth,
 >   polling de la cola SQLite del Pi, HTTP hacia el backend FastAPI).
 > - Implementar el backend/frontend cloud sobre **FastAPI + MongoDB** (ver Parte 1.2),
@@ -668,13 +686,9 @@ final.
 >   dado que hoy es una dirección posible, no una decisión tomada ni código existente.
 > - Módulos opcionales fuera del MVP: segmentación de carriles (Canny/Hough), monitoreo
 >   biométrico multimodal (ritmo cardiaco/respiración, hasta ~84% de precisión reportada en
->   literatura), detección de obstáculos (ADAS), respaldo satelital.
-> - **No opcional, bloqueante para cerrar Partes 1/4/6/8:** correr `02_model_training.ipynb`
->   una vez — el split ya está corregido en el código (`GroupShuffleSplit` agrupado por
->   sujeto), pero el notebook nunca se ha ejecutado con ese fix, así que los accuracy/F1 de
->   RandomForest y LSTM citados hoy en el documento son de la corrida vieja (split con fuga
->   entre sujetos) y hay que reemplazarlos por los números reales antes de dar el reporte por
->   final.
+>   literatura), detección de obstáculos (ADAS), respaldo satelital, y ampliar el conjunto de
+>   entrenamiento con más sujetos (el modelo final está entrenado sobre un número de sujetos
+>   todavía modesto para una arquitectura de este tamaño).
 
 ❓ **Pregunta** — el formato pide explícitamente *no* hacer afirmaciones sobre costos/beneficios
 económicos salvo que haya datos y análisis reales. `argus-descripción-proyecto.pdf` sí cita
@@ -739,15 +753,18 @@ transporte de carga mexicano, UL-DD, artículos de industria), más los 4 papers
    FaceLandmarker/LSTM (lo que hay en código, ver Parte 1.2 y Parte 6) es la base del documento
    de registro. AWS-serverless queda como dirección futura posible, mencionada en condicional
    en la Parte 9, sin detalle técnico comprometido en las Partes 4, 5, 6 o 7.
-2. ~~¿LSTM o red feedforward?~~ — ✅ **Resuelto:** se queda **LSTM** — confirmado releyendo
-   `02_model_training.ipynb`, no solo de palabra (ver Parte 6 para el porqué técnico:
-   recurrencia real dentro de cada llamada, que una capa `Dense` no puede replicar).
-3. 🔴 **Nuevo, bloqueante:** los accuracy/F1 citados en Partes 1, 4, 6 y 8 (LSTM 98.55%,
-   RandomForest 95.66%) son de una corrida **vieja**, con un split train/test que sí tenía fuga
-   de datos entre sujetos. El código ya corrigió ese split (`GroupShuffleSplit` agrupado por
-   sujeto, en `02_model_training.ipynb`), pero **ese notebook nunca se ha ejecutado** — hay que
-   correrlo una vez y reemplazar los números en las cuatro secciones antes de dar el reporte
-   por final (ver Parte 6 para el detalle completo).
+2. ~~¿LSTM o red feedforward?~~ — ✅ **Resuelto, y el modelo final tampoco es un LSTM puro sobre
+   features geométricas**: es una fusión del embedding de una CNN (sobre el recorte facial) con
+   features geométricas, alimentando una LSTM sobre una ventana temporal — ver Parte 6 para el
+   porqué técnico completo (recurrencia real dentro de cada llamada, que una capa `Dense` no
+   puede replicar, más el aporte medido de los píxeles crudos frente a un resumen geométrico).
+3. ~~🔴 Números de accuracy/F1 pendientes de re-verificar~~ — ✅ **Resuelto:** los números
+   citados hoy en Partes 1, 4, 6 y 8 (84.24% accuracy / 0.8375 F1 macro para el modelo final)
+   vienen de una corrida real y documentada del pipeline vigente, no de un placeholder del
+   monolito retirado. Lo que sigue abierto no es re-verificar estos números, sino tres cosas
+   distintas (ver Parte 9): validación cruzada (un solo fold hoy), correr contra hardware real
+   de Raspberry Pi, y confirmar que el checkpoint de CNN en producción coincide con el usado
+   para entrenar la LSTM final.
 4. ~~¿Cuál es la metodología de trabajo del equipo?~~ — ✅ **Resuelto:** Scrum, reuniones
    semanales/quincenales de avance y asignación de tareas.
 5. ~~¿Repo público listo?~~ — ✅ **Resuelto:** `github.com/alecksandr26/Argus`. Falta solo
@@ -769,14 +786,16 @@ transporte de carga mexicano, UL-DD, artículos de industria), más los 4 papers
 
 ---
 
-*Generado a partir de: `CLAUDE.md`, `README.md`/`src/cv-argus/README.md`,
-`notebook/01_dataset_creation.ipynb`, `notebook/02_model_training.ipynb` (celdas leídas
-directamente — sin `execution_count`/outputs, ver Parte 6 — estadística, `class_weight`,
-diseño LSTM y el fix de split), `notebook/03_deployment_export.ipynb` (armado del modelo de
-despliegue `LstmGeometricFeatureModel`), `docs/document/Analisis formato proyecto
-modular.docx`, `docs/criteria/Formato_Proyecto_Modular V2.docx`,
-`docs/criteria/criteriosaprobacion_0.pdf`, `docs/argus-descripción-proyecto.pdf`,
-`docs/Argus_Definicion_Tecnica.docx.pdf`, `docs/references/*` (5 archivos, 1 resultó ser un
-PDF roto — ver Parte 3). `notebook/ArgusMLModel.ipynb` (el monolito original, retirado) fue la
-fuente de los números de accuracy citados en varias secciones — ver el hallazgo de la Parte 6
-sobre por qué esos números necesitan reemplazarse.*
+*Generado/actualizado a partir de: `CLAUDE.md` (raíz), `src/notebook/CLAUDE.md`,
+`src/cv-argus/CLAUDE.md`, `src/cv-argus/README.md`, `src/notebook/07_cnn_training.ipynb`,
+`src/notebook/11_cnn_lstm_training_drive_pull.ipynb` (fuente de los números 84.24%/0.8375 del
+modelo final — ver Parte 6/8), `docs/document/Analisis formato proyecto modular.docx`,
+`docs/criteria/Formato_Proyecto_Modular V2.docx`, `docs/criteria/criteriosaprobacion_0.pdf`,
+`docs/argus-descripción-proyecto.pdf`, `docs/Argus_Definicion_Tecnica.docx.pdf`,
+`docs/references/*` (5 archivos, 1 resultó ser un PDF roto — ver Parte 3).
+`notebook/ArgusMLModel.ipynb` (el monolito original) y los notebooks `01_dataset_creation`/
+`02_model_training`/`03_deployment_export` citados en versiones anteriores de este borrador ya
+no existen con esos nombres — el pipeline se dividió en diez notebooks por etapa (ver
+`src/notebook/CLAUDE.md`'s "Pipeline map"); las cifras 98.55%/95.66% de 6 clases que este
+documento citaba antes nunca se reprodujeron con ese esquema y quedan descartadas, no
+pendientes, a favor de los números binarios reales de la Parte 6.*

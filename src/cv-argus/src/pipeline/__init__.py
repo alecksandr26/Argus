@@ -8,11 +8,12 @@ Everything the rest of the codebase needs from this subpackage is re-exported he
 - `VideoCaptureSource`/`PiCameraSource` (`sources.py`) — where frames come from: a camera, a
   video file (both via `cv2.VideoCapture`, same `CAMERA_SOURCE` convention as before), or the
   Pi's CSI camera.
-- `FaceDetectorCropStage` (`face_detector_stage.py`) / `FaceLandmarkerStage`
-  (`face_landmarker_stage.py`) — the two MediaPipe stages, one per model family: BlazeFace face
-  cropping for the (deployed) CNN path, FaceLandmarker for the (kept, optional) LSTM path.
-- `CnnInferenceStage`/`LstmInferenceStage` (`inference_stages.py`) — wrap the `model/`
-  detectors, turning a `FrameContext`'s MediaPipe output into a `DetectionResult`.
+- `FaceDetectorCropStage` (`face_detector_stage.py`) / `FaceLandmarkerCropStage`
+  (`face_landmarker_crop_stage.py`) — the two MediaPipe stages: BlazeFace face cropping, then
+  FaceLandmarker (on the crop, `IMAGE` mode) for the geometric-feature fusion vector — see the
+  latter's module docstring for why it runs on a crop, not the full frame.
+- `FusedInferenceStage` (`inference_stages.py`) — wraps `model/`'s `FusedDrowsinessDetector`,
+  turning a `FrameContext`'s MediaPipe output into a `DetectionResult`.
 - `LoggingOutputStage` (`output_stages.py`) — the placeholder sink until `orchestrator/` exists.
 - `MjpegStreamOutputStage` (`mjpeg_output_stage.py`) — a demo-only sink that draws a live
   overlay (drowsiness class, face box, fps) and serves it as a browser-viewable MJPEG stream.
@@ -25,11 +26,11 @@ Everything the rest of the codebase needs from this subpackage is re-exported he
 place all of this actually gets wired together and run.
 
 **Lazy submodule imports, deliberately** — everything above is importable as
-`cv_argus.pipeline.<Name>`, but `sources.py`/`face_detector_stage.py`/`face_landmarker_stage.py`/
-`inference_stages.py`/`mjpeg_output_stage.py` (which need `cv2`/`mediapipe`/`tensorflow`, the
-last transitively via `cv_argus.model`) are only imported on first attribute access via
-`__getattr__` (PEP 562), not eagerly below. `stage.py` (needs only `numpy`), `downloader.py`,
-and `output_stages.py` (need neither) stay eager. This keeps
+`cv_argus.pipeline.<Name>`, but `sources.py`/`face_detector_stage.py`/
+`face_landmarker_crop_stage.py`/`inference_stages.py`/`mjpeg_output_stage.py` (which need
+`cv2`/`mediapipe`/`tensorflow`, the last transitively via `cv_argus.model`) are only imported on
+first attribute access via `__getattr__` (PEP 562), not eagerly below. `stage.py` (needs only
+`numpy`), `downloader.py`, and `output_stages.py` (need neither) stay eager. This keeps
 `Stage`/`SourceStage`/`OutputStage`/`Pipeline`/`FrameContext` importable and testable (see
 `scripts/smoke_test_pipeline.py`) without installing the full stack this Docker-first project
 otherwise assumes is always present (see the root README's "Why a Docker-first workflow") —
@@ -51,9 +52,8 @@ __all__ = [
     "VideoCaptureSource",
     "PiCameraSource",
     "FaceDetectorCropStage",
-    "FaceLandmarkerStage",
-    "CnnInferenceStage",
-    "LstmInferenceStage",
+    "FaceLandmarkerCropStage",
+    "FusedInferenceStage",
     "LoggingOutputStage",
     "MjpegStreamOutputStage",
     "download_face_landmarker_bundle",
@@ -65,9 +65,8 @@ _LAZY = {
     "VideoCaptureSource": (".sources", "VideoCaptureSource"),
     "PiCameraSource": (".sources", "PiCameraSource"),
     "FaceDetectorCropStage": (".face_detector_stage", "FaceDetectorCropStage"),
-    "FaceLandmarkerStage": (".face_landmarker_stage", "FaceLandmarkerStage"),
-    "CnnInferenceStage": (".inference_stages", "CnnInferenceStage"),
-    "LstmInferenceStage": (".inference_stages", "LstmInferenceStage"),
+    "FaceLandmarkerCropStage": (".face_landmarker_crop_stage", "FaceLandmarkerCropStage"),
+    "FusedInferenceStage": (".inference_stages", "FusedInferenceStage"),
     "MjpegStreamOutputStage": (".mjpeg_output_stage", "MjpegStreamOutputStage"),
 }
 

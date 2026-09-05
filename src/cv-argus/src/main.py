@@ -1,16 +1,19 @@
 """Entry point for the cv-argus edge process.
 
 Builds one `Pipeline` (see `cv_argus.pipeline.stage`) end to end — a `Source` stage reads
-frames, a MediaPipe stage extracts whatever its downstream model needs, an inference stage
-turns that into a `DetectionResult`, and one or more output stages do something with it — starts
-it, and runs until stopped.
+frames, two MediaPipe stages produce a face crop and a geometric-feature vector from it, an
+inference stage turns both into a `DetectionResult`, and one or more output stages do something
+with it — starts it, and runs until stopped.
+
+There is one pipeline shape: `FaceDetectorCropStage` -> `FaceLandmarkerCropStage` ->
+`FusedInferenceStage` (the frozen-CNN-embedding + geometric-feature + LSTM classifier — see
+`src/cv-argus/CLAUDE.md`'s "Current status" for its measured accuracy and caveats). Earlier
+versions of this module supported a `PIPELINE` env var switching between this, a single-frame
+CNN, and a windowed-geometric-only LSTM — both of those were removed once this fused pipeline's
+result made them obsolete; see the root `CLAUDE.md` for why.
 
 Env vars:
 
-- `PIPELINE` (default `"cnn"`) — which model family runs: `"cnn"` (the model this container
-  actually deploys, see `src/cv-argus/CLAUDE.md`'s "Current status") or `"lstm"` (kept,
-  optional; needs `MODEL_DRIVE_FILE_ID` set). `FaceDetectorCropStage` -> `CnnInferenceStage`, or
-  `FaceLandmarkerStage` -> `LstmInferenceStage`.
 - `SOURCE` (default `"video_capture"`) — where frames come from: `"video_capture"`
   (`cv2.VideoCapture`, driven by `CAMERA_SOURCE` — a camera index, a `/dev/videoN` path, or a
   video file) or `"picamera"` (the Pi 5's CSI camera via `picamera2`).
@@ -23,9 +26,6 @@ Env vars:
   running).
 - `DEMO_STREAM_HOST`/`DEMO_STREAM_PORT` (default `"0.0.0.0"`/`8080`) — only read if `OUTPUTS`
   includes `"mjpeg"`.
-
-Every pipeline shares the same `Source`/`Pipeline`/output-stage plumbing regardless of
-`PIPELINE` — that sharing, not just the download logic, is the point of the `Stage` abstraction.
 """
 
 import logging
@@ -33,13 +33,12 @@ import os
 import signal
 import threading
 
-from cv_argus.model import CnnDrowsinessDetector, DrowsinessDetector
+from cv_argus.model import FusedDrowsinessDetector
 from cv_argus.pipeline import (
-    CnnInferenceStage,
     FaceDetectorCropStage,
-    FaceLandmarkerStage,
+    FaceLandmarkerCropStage,
+    FusedInferenceStage,
     LoggingOutputStage,
-    LstmInferenceStage,
     MjpegStreamOutputStage,
     OutputStage,
     PiCameraSource,
@@ -96,59 +95,32 @@ def _build_outputs() -> list[OutputStage]:
     return outputs
 
 
-def _build_cnn_pipeline() -> Pipeline:
-    bundle_path = download_face_detector_bundle()
-    detector = CnnDrowsinessDetector.from_env()
+def _build_pipeline() -> Pipeline:
+    face_detector_bundle = download_face_detector_bundle()
+    face_landmarker_bundle = download_face_landmarker_bundle()
+    detector = FusedDrowsinessDetector.from_env()
 
     source = _build_source()
-    crop_stage = FaceDetectorCropStage(bundle_path)
-    inference_stage = CnnInferenceStage(detector)
+    crop_stage = FaceDetectorCropStage(face_detector_bundle)
+    landmarker_crop_stage = FaceLandmarkerCropStage(face_landmarker_bundle)
+    inference_stage = FusedInferenceStage(detector)
     outputs = _build_outputs()
 
-    source.connect(crop_stage).connect(inference_stage)
+    source.connect(crop_stage).connect(landmarker_crop_stage).connect(inference_stage)
     for output in outputs:
         inference_stage.connect(output)
-    return Pipeline([source, crop_stage, inference_stage, *outputs])
-
-
-def _build_lstm_pipeline() -> Pipeline:
-    bundle_path = download_face_landmarker_bundle()
-    detector = DrowsinessDetector.from_env()
-
-    source = _build_source()
-    landmarker_stage = FaceLandmarkerStage(bundle_path)
-    inference_stage = LstmInferenceStage(detector)
-    outputs = _build_outputs()
-
-    source.connect(landmarker_stage).connect(inference_stage)
-    for output in outputs:
-        inference_stage.connect(output)
-    return Pipeline([source, landmarker_stage, inference_stage, *outputs])
-
-
-_PIPELINE_BUILDERS = {
-    "cnn": _build_cnn_pipeline,
-    "lstm": _build_lstm_pipeline,
-}
+    return Pipeline([source, crop_stage, landmarker_crop_stage, inference_stage, *outputs])
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
 
-    pipeline_name = os.environ.get("PIPELINE", "cnn").strip().lower()
-    build = _PIPELINE_BUILDERS.get(pipeline_name)
-    if build is None:
-        raise SystemExit(
-            f"Unknown PIPELINE={pipeline_name!r} -- expected one of {sorted(_PIPELINE_BUILDERS)}"
-        )
-
     logger.info(
-        "cv-argus starting (PIPELINE=%s, SOURCE=%s, OUTPUTS=%s)",
-        pipeline_name,
+        "cv-argus starting (SOURCE=%s, OUTPUTS=%s)",
         os.environ.get("SOURCE", "video_capture"),
         os.environ.get("OUTPUTS", "logging"),
     )
-    pipeline = build()
+    pipeline = _build_pipeline()
 
     stop_event = threading.Event()
 

@@ -1,16 +1,19 @@
 """Fetches pretrained MediaPipe model bundles used by pipeline/'s camera-loop stages.
 
 Two bundles, each a plain, public, unauthenticated HTTP download — no Drive file ID, no
-sharing settings, no credentials, unlike `cv_argus.model.downloader`'s trained-model fetches:
+sharing settings, no credentials, unlike `cv_argus.model.downloader`'s trained-model fetches.
+Both are needed by the fused pipeline, run back to back on the same face crop — see
+`face_landmarker_crop_stage.py`'s module docstring for why two separate MediaPipe tasks:
 
-- `download_face_landmarker_bundle()` — the Face Landmarker `.task` bundle the (now-optional)
-  LSTM path's `FaceLandmarkerStage` needs (478 landmarks + blendshapes + head pose). Same
-  URL/behavior as `notebook/01_dataset_creation_lstm.ipynb`'s "Downloading and Setting Up the
-  MediaPipe Model Bundle" cell.
+- `download_face_landmarker_bundle()` — the Face Landmarker `.task` bundle
+  `FaceLandmarkerCropStage` needs (478 landmarks + blendshapes + head pose, run in `IMAGE` mode
+  on the crop). Same URL/behavior as `notebook/01_dataset_creation_lstm.ipynb`'s "Downloading and
+  Setting Up the MediaPipe Model Bundle" cell.
 - `download_face_detector_bundle()` — the Face Detector (BlazeFace, short_range/float16)
-  `.tflite` bundle the CNN path's `FaceDetectorCropStage` needs (bounding-box-only, no
-  landmarks). Same URL/behavior as `notebook/06_dataset_creation_face_crops.ipynb`'s "MediaPipe
-  Face Detector Setup" cell — a different, lighter model from the Landmarker above, not a typo.
+  `.tflite` bundle `FaceDetectorCropStage` needs (bounding-box-only, no landmarks) to produce
+  the crop in the first place. Same URL/behavior as `notebook/06_dataset_creation_face_crops
+  .ipynb`'s "MediaPipe Face Detector Setup" cell — a different, lighter model from the Landmarker
+  above, not a typo.
 
 Both live here rather than in `model/` because they're this subpackage's dependency (neither
 detector class in `model/` touches MediaPipe) — the stages in `pipeline/` that wrap
@@ -74,7 +77,7 @@ def download_face_landmarker_bundle(
     Reads `MODEL_DIR` (shared with `cv_argus.model.downloader` — one cache directory for all
     startup artifacts) plus `FACE_LANDMARKER_BUNDLE_URL`/`FACE_LANDMARKER_BUNDLE_FILENAME` from
     the environment for any argument left as `None`, falling back to `constants.py`'s defaults
-    if unset. Needed only by the (now-optional) LSTM path.
+    if unset.
 
     Called from the Dockerfile at *build* time (see the `RUN python -m
     cv_argus.pipeline.downloader` step there) — baked into the image alongside the trained
@@ -107,8 +110,8 @@ def download_face_detector_bundle(
 
     Reads `MODEL_DIR` plus `FACE_DETECTOR_BUNDLE_URL`/`FACE_DETECTOR_BUNDLE_FILENAME` from the
     environment for any argument left as `None`, falling back to `constants.py`'s defaults if
-    unset. Needed by the CNN path's `FaceDetectorCropStage` — a different, lighter bundle from
-    the Landmarker one above (bounding-box-only, no landmarks/blendshapes), matching
+    unset. Needed by `FaceDetectorCropStage` — a different, lighter bundle from the Landmarker
+    one above (bounding-box-only, no landmarks/blendshapes), matching
     `notebook/06_dataset_creation_face_crops.ipynb`'s "MediaPipe Face Detector Setup" cell.
 
     Called from the Dockerfile at *build* time, same as the Landmarker bundle above.
@@ -132,5 +135,5 @@ def download_face_detector_bundle(
 if __name__ == "__main__":
     # `python -m cv_argus.pipeline.downloader` — called from the Dockerfile at build time.
     logging.basicConfig(level=logging.INFO)
-    download_face_detector_bundle()    # CNN path — the model this container actually deploys
-    download_face_landmarker_bundle()  # LSTM path — kept, optional; harmless to fetch either way
+    download_face_detector_bundle()
+    download_face_landmarker_bundle()

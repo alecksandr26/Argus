@@ -1,60 +1,47 @@
-"""Stages that turn a `FrameContext`'s MediaPipe output into a drowsiness prediction, by
-wrapping the `model/` detectors. Both stages are thin on purpose: they just call the detector
-and stash the result on `ctx.detection` — all the actual model logic lives in `model/`, per the
-`model/`-vs-`pipeline/` boundary documented in `model/detector.py` and `model/cnn_detector.py`
-(neither has a `mediapipe` import; translating MediaPipe output into what they expect is
-`pipeline/`'s job, done by `FaceDetectorCropStage`/`FaceLandmarkerStage` upstream of these).
+"""Stage that turns a `FrameContext`'s MediaPipe output into a drowsiness prediction, by
+wrapping `model/`'s `FusedDrowsinessDetector`. Thin on purpose: it just calls the detector and
+stashes the result on `ctx.detection` — all the actual model logic lives in `model/`, per the
+`model/`-vs-`pipeline/` boundary documented in `model/fused_detector.py` (no `mediapipe` import
+there; translating MediaPipe output into what it expects is done by `FaceDetectorCropStage`/
+`FaceLandmarkerCropStage` upstream of this stage).
 """
 
 import logging
 
-from ..model import CnnDrowsinessDetector, DrowsinessDetector
+from ..model import FusedDrowsinessDetector
 from .stage import FrameContext, Stage
 
 logger = logging.getLogger(__name__)
 
 
-class CnnInferenceStage(Stage):
-    """Wraps `CnnDrowsinessDetector` — the model this container actually deploys (see
-    `src/cv-argus/CLAUDE.md`'s "Current status"). Stateless per frame: unlike the LSTM path,
-    there's no buffer to keep in order, so a dropped or out-of-order frame here just means one
-    missed prediction, not corrupted state.
-
-    `predict_crop()` expects an already-RGB, not-yet-resized crop (see
-    `FaceDetectorCropStage.process_item()` for the `BGR->RGB` conversion) and does its own
-    resize + rescale internally — this stage doesn't need to know `CNN_IMG_SIZE` at all.
+class FusedInferenceStage(Stage):
+    """Wraps `FusedDrowsinessDetector` — the model this container deploys (the frozen-CNN-
+    embedding + geometric-feature + LSTM classifier). Stateful and order-sensitive (own window
+    buffer, must be called in order per camera stream), but a frame with no face crop at all
+    skips the tick entirely rather than being fed to the detector — the project's chosen
+    behavior for a totally-missed BlazeFace detection, matching how `06`'s extraction only ever
+    sampled frames where a crop was actually found (see `face_landmarker_crop_stage.py`'s module
+    docstring for the full reasoning). A frame *with* a crop but no landmarker detection still
+    reaches the detector, with an all-zero geo-feature vector already set by
+    `FaceLandmarkerCropStage`.
     """
 
-    def __init__(self, detector: CnnDrowsinessDetector, name: str = "cnn_inference", **kwargs) -> None:
+    def __init__(self, detector: FusedDrowsinessDetector, name: str = "fused_inference", **kwargs) -> None:
         super().__init__(name, **kwargs)
         self._detector = detector
 
     def process_item(self, ctx: FrameContext) -> FrameContext:
         if not ctx.face_found or "face_crop_rgb" not in ctx.features:
             return ctx
-        ctx.detection = self._detector.predict_crop(ctx.features["face_crop_rgb"])
-        return ctx
-
-
-class LstmInferenceStage(Stage):
-    """Wraps the existing `DrowsinessDetector` (LSTM + geometric features, kept, optional — see
-    `src/cv-argus/CLAUDE.md`'s "Current status"). Must be called once per incoming frame, in
-    order: `DrowsinessDetector`'s internal `feature_buffer` is what makes it stateful, not this
-    stage, so skipping frames or reordering them would corrupt its sliding window. Frames with
-    no detected face are passed through untouched (not fed to the detector), matching
-    `predict_frame()`'s expectation of real per-frame landmark data.
-    """
-
-    def __init__(self, detector: DrowsinessDetector, name: str = "lstm_inference", **kwargs) -> None:
-        super().__init__(name, **kwargs)
-        self._detector = detector
-
-    def process_item(self, ctx: FrameContext) -> FrameContext:
-        if not ctx.face_found:
+        fused_geo = ctx.features.get("fused_geo_features")
+        if fused_geo is None:
+            # FaceLandmarkerCropStage hasn't run on this ctx -- shouldn't happen given main.py's
+            # wiring (it always sits between FaceDetectorCropStage and this stage), but don't
+            # crash a live pipeline over a wiring bug elsewhere.
+            logger.warning(
+                "%s: face_crop_rgb present but fused_geo_features missing -- "
+                "is FaceLandmarkerCropStage wired upstream of this stage?", self.name
+            )
             return ctx
-        ctx.detection = self._detector.predict_frame(
-            ctx.features["landmarks_xy"],
-            ctx.features["rotation_matrix"],
-            ctx.features["blendshape_scores"],
-        )
+        ctx.detection = self._detector.predict_frame(ctx.features["face_crop_rgb"], fused_geo)
         return ctx

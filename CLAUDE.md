@@ -38,16 +38,20 @@ far; the rest is design work to be implemented.
   `Low Vigilant` / `Drowsy` scheme is retired: `Low Vigilant`, the ambiguous middle class, was
   the single most consistently broken class across every model family (0.0000 recall in two
   separate runs), so merging it away removes a real failure mode rather than just raising the
-  random-guess floor to 50%. All ten notebooks are migrated in code; the Colab reruns that
-  regenerate the datasets/models under the binary labels are still pending, and `src/cv-argus`
-  keeps the 3-class names until a binary model is actually trained and deployed — see the
-  "Working in this repo" section and `notebook/CLAUDE.md`'s "Binary migration" for status.
-  **That sequence-model pipeline is the long-term intended architecture, not what's currently
-  deployed**: `src/cv-argus` currently focuses on and downloads/runs the CNN face-crop model by
-  default instead (MediaPipe Face Detector/BlazeFace crop → CNN, not FaceLandmarker → LSTM) — a
-  current implementation decision, not a reversal of the design reasoning below. See
-  `src/cv-argus/CLAUDE.md`'s "Current status" for the deployed default and
-  `notebook/CLAUDE.md`'s "Why CNN is the most probable next backbone" for why. Keep this
+  random-guess floor to 50%. All ten notebooks are migrated in code, and `src/cv-argus` now
+  deploys binary labels too (`Not Drowsy`/`Drowsy`) — see the "Working in this repo" section and
+  `notebook/CLAUDE.md`'s "Binary migration" for the per-notebook rerun status.
+  **That sequence-model pipeline is the long-term intended architecture; what's currently
+  deployed is a related but distinct shape**: `src/cv-argus` deploys a frozen-CNN-embedding +
+  geometric-feature fusion + LSTM classifier (MediaPipe Face Detector/BlazeFace crop → frozen
+  CNN embedding, fused per-timestep with a FaceLandmarker geometric-feature subset → LSTM over a
+  rolling window), not the original FaceLandmarker → windowed-geometric-features-only → LSTM
+  design this section describes — a real result finally beat that original plan's absence with
+  a validated architecture of its own, rather than settling for the single-frame CNN that had
+  been the default before it. See `src/cv-argus/CLAUDE.md`'s "Current status" for the deployed
+  pipeline's real numbers and open caveats, and `notebook/CLAUDE.md`'s "`11_
+  cnn_lstm_training_drive_pull.ipynb`'s fixed rerun" section for where the underlying result
+  came from. Keep this
   distinction — *intended long-term design* vs. *what's actually deployed right now* — straight
   when reading the rest of this bullet. The sequence model is an **LSTM**; this had briefly
   been under evaluation against a plain feedforward deep neural network over the same windowed
@@ -130,13 +134,17 @@ firmware described in "Planned end-to-end system architecture" don't exist yet.
   Drive via `scripts/publish_to_drive.py` for the Colab training notebooks.
 - `src/cv-argus/` — the Raspberry Pi 5 edge module: loads a trained model from the notebook and
   runs live inference against camera frames, end to end (camera/video-file source → MediaPipe →
-  model inference → an output sink), not just the model-loading piece. **Currently focused on
-  and deploying the CNN face-crop model by default** (`PIPELINE=cnn`), not the LSTM described
-  above as the long-term intended design — the LSTM path is kept and fully functional
-  (`PIPELINE=lstm`), just not the default. Built as a threaded, queue-connected `Stage`/
-  `Pipeline` abstraction (see its `CLAUDE.md`'s "`pipeline/` — done") specifically so both model
-  families — and any future one — share the same camera-loop/threading/shutdown plumbing rather
-  than each reimplementing it; also has a demo mode (a browser-viewable live video stream with
+  model inference → an output sink), not just the model-loading piece. **Deploys one pipeline: a
+  frozen-CNN-embedding + geometric-feature fusion + LSTM classifier** (MediaPipe Face
+  Detector/BlazeFace crop → frozen CNN embedding, fused per-timestep with a FaceLandmarker
+  geometric-feature subset → LSTM over a rolling window) — the project's best measured result
+  (see "Current deployment status" below). Two earlier pipelines (a single-frame CNN, and a
+  windowed-geometric-only LSTM matching the original design above) were removed once this
+  result made both obsolete; see `src/cv-argus/CLAUDE.md`'s "Current status" for the full
+  history and this module's own `CLAUDE.md`'s "What this module is" for why. Built as a
+  threaded, queue-connected `Stage`/`Pipeline` abstraction (see its `CLAUDE.md`'s "`pipeline/` —
+  done") so a future model family could share the same camera-loop/threading/shutdown plumbing
+  without reimplementing it; also has a demo mode (a browser-viewable live video stream with
   the drowsiness classification overlaid, see that file's "Demo" section) for actually watching
   it work on a laptop or the Pi. Docker-first (own `Dockerfile`/`docker-compose.yml`, plus a
   `docker-compose.pi.yml` overlay for the Pi's CSI camera). Has both a `README.md` (practical
@@ -154,33 +162,54 @@ firmware described in "Planned end-to-end system architecture" don't exist yet.
 - `docs/references/` — background research papers on drowsiness/microsleep detection that
   inform feature and model choices.
 
-**Current deployment status, stated plainly since it's easy to lose track of amid the caveats
-above: `src/cv-argus` is currently focused on and deploys the single-frame CNN
-(`07_cnn_training.ipynb`'s model) by default** (`PIPELINE=cnn`) — not the LSTM, despite the LSTM
-remaining the architecturally-intended long-term model per the reasoning in "Planned end-to-end
-system architecture" above, **and not the CNN+LSTM either.** An earlier stale-24-subject smoke
-test of the CNN+LSTM had briefly looked like the project's best measured result (46.79% accuracy
-/ 0.4090 macro-F1, MobileNetV2 frozen) — that number does **not** hold up: the full-54-subject-
-pool rerun that `notebook/CLAUDE.md`'s "What we found" already called for dropped it to 33.68%
-accuracy / 0.3340 macro-F1, below both Dense NN (38.6–40.8%) and the deployed single-frame CNN
-(36.67%/0.3614) — so the CNN+LSTM was never actually the best measured result on a trustworthy
-run, and staying on the single-frame CNN was the right call for reasons beyond the ones below.
-`09`/`10` were then modified again (geometric feature fusion, `AdamW`/`recurrent_dropout`
-regularization, `class_weight=None`) and have now actually been rerun — the from-scratch backbone
-reached 35.04% accuracy / 0.3296 macro-F1, still just under the deployed single-frame CNN
-(36.67%/0.3614), not a decisive win. MobileNetV2 overfit even more severely on this rerun (95%+
-train accuracy, `val_macro_f1` never above 0.36) than on any prior attempt and has been disabled
-(commented out, not deleted) in `10` as a result — it has never once beaten the from-scratch
-backbone on a trustworthy run in this project. See `notebook/CLAUDE.md`'s "What we found" for the
-full numbers. This is a current decision, not a claim that the accuracy caveats just described are
-resolved — the deployed CNN's real,
-measured number (36.67% accuracy, 0.3614 macro-F1 single-fold; 35.93% ± 9.07% across the 3-fold
-subject-CV diagnostic, per the reruns above, still against the earlier 24-subject pool) is itself
-a low-recall, small-N result with a real train/test generalization gap, not a validated
-production number either. The LSTM path is kept in `src/cv-argus`
-and fully functional (`PIPELINE=lstm`), just not the default. See `src/cv-argus/CLAUDE.md`'s
-"Current status" for the deployment-side detail and `notebook/CLAUDE.md`'s "Why CNN is the most
-probable next backbone" for the reasoning.
+**Current deployment status, stated plainly since it's easy to lose track of amid the history
+below: `src/cv-argus` deploys one pipeline — the frozen-CNN-embedding + geometric-feature
+fusion + LSTM classifier from `11_cnn_lstm_training_drive_pull.ipynb`.** This wasn't the first
+thing deployed; the record of what was tried and rejected along the way is worth keeping,
+because each step is a real, measured reason the next one won:
+
+- **First deployed: the single-frame CNN** (`07_cnn_training.ipynb`'s model, `36.67%` accuracy /
+  `0.3614` macro-F1 single-fold; `35.93% ± 9.07%` across a 3-fold subject-CV diagnostic, against
+  a 24-subject pool) — chosen over the architecturally-intended LSTM (windowed geometric
+  features only) mainly because it was the cheapest real result available at the time, not
+  because it beat the LSTM on numbers; the LSTM itself was never deployed.
+- **The CNN+LSTM was tried next and did not beat the single-frame CNN, twice.** An early
+  24-subject smoke test (46.79% accuracy / 0.4090 macro-F1, MobileNetV2 frozen) looked
+  promising but didn't hold up on the full 54-subject pool (33.68% / 0.3340, below both Dense NN
+  and the deployed CNN). A later rerun with geometric-feature fusion and stronger
+  regularization also stayed just under the CNN's number (35.04% / 0.3296, from-scratch
+  backbone; MobileNetV2 overfit even worse and was disabled). All of this was still the
+  pre-binary-migration 3-class record — see `notebook/CLAUDE.md`'s "What we found" for the full
+  numbers.
+- **The result that actually changed the decision: a genuine binary rerun, not a 3-class one.**
+  `11_cnn_lstm_training_drive_pull.ipynb`'s frozen-CNN-embedding + LSTM variant, rerun after
+  fixing an LR bug (see `notebook/CLAUDE.md`'s "`11_…`" section) with a retrained `07` checkpoint
+  and active minority-class window rebalancing, reached **84.24% test accuracy, 0.8375
+  macro-F1** (Not Drowsy R 0.94, Drowsy R 0.73; 84.38%/0.8379 at the chosen safety threshold
+  `t*=0.57`) on 10 held-out subjects — roughly double `07`'s own fresh binary single-frame
+  result (59.64% accuracy, 0.5273 macro-F1) on the same subjects, and by a wide margin the best
+  number this project has produced. This is what made deploying a CNN+LSTM shape worth it: not
+  the architecture in the abstract, but this specific, much stronger measured result.
+
+**That architecture is now what `src/cv-argus` deploys**, replacing both the single-frame CNN
+and the never-deployed windowed-geometric-only LSTM (removed, not merely deprioritized — see
+`src/cv-argus/CLAUDE.md`'s "Current status"). `src/cv-argus/CLAUDE.md`'s "fused detector"
+section has the deployment-side mechanics; `notebook/CLAUDE.md`'s "`11_
+cnn_lstm_training_drive_pull.ipynb`'s fixed rerun" section has the full numbers. Real caveats
+that don't go away just because it's now deployed: it's a single `StratifiedGroupKFold` fold
+with no subject-CV diagnostic yet (this project's own 3-fold CV elsewhere has shown ±9-point
+macro-F1 swings at similar subject counts); the test set's minority-class windows are
+overlap-tiled from the same clips, so the effective independent sample size is smaller than the
+raw window count suggests; a real, still-open risk is unresolved — whether the CNN checkpoint
+`src/cv-argus` downloads as the frozen embedding backbone (`CNN_MODEL_DRIVE_FILE_ID`) is
+actually the same weights `11` trained its embeddings against, since a mismatch would silently
+degrade accuracy rather than crash; and it has been smoke-tested (synthetic-model window-buffer
+checks, a real geometric-feature equivalence test against real crop files) but **not yet run
+end to end against the real trained checkpoints on real Pi hardware** — no hardware has been
+available to benchmark it, and this is now the heaviest per-frame pipeline in the project (two
+MediaPipe tasks and two Keras models per sampled frame). See `src/cv-argus/CLAUDE.md`'s
+"Current status" for the full blocker list before treating this as a validated production
+result rather than the best real result the project has produced so far.
 
 ## Working in this repo
 
@@ -189,10 +218,11 @@ probable next backbone" for the reasoning.
   decision, not one option among several. The **code** side is complete: all ten notebooks
   (`01`–`10`, dataset creation + training + export) are migrated — `CLASS_NAMES =
   ["Not Drowsy", "Drowsy"]`, `NUM_CLASSES = 2`, `== {1, 2}` fold guards — and the
-  dataset-creation ones read a new `dataset/raw_videos_binary/` tree. What has **not** happened is
-  any rerun — every notebook still loads its old 3-class Drive artifacts, so all results and
-  framing in these files are the pre-migration record. `src/cv-argus`'s deploy-time class names
-  are deliberately still 3-class (no binary `.keras` model exists to deploy yet). See
+  dataset-creation ones read a new `dataset/raw_videos_binary/` tree. `01`–`08` still haven't
+  been rerun under this scheme (they still load their old 3-class Drive artifacts, so results and
+  framing for those in `notebook/CLAUDE.md` are the pre-migration record), but the `06`→`09`→`10`/
+  `11` chain feeding `src/cv-argus`'s deployed model has, and `src/cv-argus` now deploys binary
+  class names (`Not Drowsy`/`Drowsy`) to match — see "Current deployment status" above. See
   `notebook/CLAUDE.md`'s "Binary migration" for the authoritative per-notebook status.
 - For **training** logic (`03`/`04`/`05`/`07`/`08`/`10`) the notebooks are the source of truth;
   edit the corresponding cell(s). For **dataset creation** (`01`/`02`/`06`/`09`) the source of
@@ -200,9 +230,11 @@ probable next backbone" for the reasoning.
   mirror the constant into the matching notebook (kept as Colab reference).
 - **`07` and `11_cnn_lstm_training_drive_pull` now choose a `Drowsy` decision threshold** (not
   `argmax`) on the validation set after training and write it to `<checkpoint>.keras.threshold.json`
-  next to the model. When a binary model is deployed, `src/cv-argus` should read that file and
-  threshold `p(Drowsy)` instead of taking the softmax argmax. Selection is safety-first: hit a
-  `Drowsy` recall floor, then maximise precision. `11_drive_pull` also had a learning-rate bug
+  next to the model. `src/cv-argus` now deploys `11`'s fused model and thresholds `p(Drowsy)`
+  the same way, via a checked-in `FUSED_MODEL_THRESHOLD` constant rather than reading the JSON
+  file directly (see `src/cv-argus/CLAUDE.md`'s "Model download strategy" for why it's checked
+  in). Selection is safety-first: hit a `Drowsy` recall floor, then maximise precision.
+  `11_drive_pull` also had a learning-rate bug
   (both models trained at ~1e-8) that made its encouraging in-training `val_macro_f1` a
   non-training artifact — fixed; see `notebook/CLAUDE.md`. Minority-class window rebalancing
   (Drowsy windows overlap-tiled in `09`/`src/dataset`) is code-done, rerun pending.

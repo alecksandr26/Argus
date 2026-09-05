@@ -85,17 +85,17 @@ pre-migration 3-class record — this includes `07`, whose stale 3-class checkpo
 frozen-embedding variant is currently (and knowingly) reusing as a frozen feature extractor. The
 remaining regeneration order is: `01`/`02` → `03`/`04`/`05`; and `07` (now unblocked, since `06`
 is rebuilt); then `08` after `03` retrains. `src/cv-argus`'s `_CLASS_NAMES` / `_STATUS_COLORS`
-are deliberately left 3-class until a binary `.keras` model actually exists to deploy.
+are now binary (`Not Drowsy`/`Drowsy`), matching the binary fused model (`06`→`09`→`10`/`11`
+chain) it deploys — see the root `CLAUDE.md`'s "Current deployment status".
 
 `relabel_binary.py` (the earlier post-hoc-`level_binary`-CSV-column approach) is **superseded
 and must not be run** — its default `BINARY_FRAMING` is `alert_vs_attention` (the *wrong*
 framing) and it rewrites the dataset CSVs in place, so running it as-shipped silently
 mis-collapses every dataset CSV. It's kept only as a record of the rejected approach.
 
-`src/cv-argus/src/model/detector.py`'s `_CLASS_NAMES` still maps `{1,2,3}` → the 3 old names and
-would silently mislabel a binary model (argmax `{0,1}` → `level {1,2}` → `"Alert"`/`"Low
-Vigilant"`); `mjpeg_output_stage.py`'s status-colour map has the same 3-class keys. Not a
-problem until a binary model is actually deployed.
+`src/cv-argus/src/model/detector.py`'s `_CLASS_NAMES` is now `{1: "Not Drowsy", 2: "Drowsy"}`
+and `mjpeg_output_stage.py`'s status-colour map matches — both updated once the fused model was
+actually deployed (see the root `CLAUDE.md`'s "Current deployment status").
 
 **Most of "What we found" and "Why CNN is the most probable next backbone" below is still the
 pre-migration 3-class record** — the numbers are real and worth keeping, but don't read binary
@@ -114,11 +114,11 @@ not historical.
 | 04 | `random_forest_training` | `frame_features.csv`/enriched | RF `.joblib` + scaler | ⚠️ migrated to binary; baseline (3-class) run only, tuning/augmentation incomplete; needs a rerun after `02` |
 | 05 | `dense_nn_training` | `frame_features.csv`/enriched | Dense NN `.keras` + scaler | ⚠️ migrated to binary; prior runs were 3-class; needs a rerun after `02` |
 | 06 | `dataset_creation_face_crops` | raw videos | `face_crops_index.csv` + `.jpg`s | ✅ rebuilt against `raw_videos_binary/` at `sampling_fps=5`/`MAX_FRAMES_PER_CLIP=100` — inferred from `09`'s binary-labeled, correctly-sized window index below (no direct `06` log captured yet). Earlier 24-subject/20-complete-class figures elsewhere in this file predate this rebuild |
-| 07 | `cnn_training` | `face_crops_index.csv` | CNN `.keras` | ⚠️ **migrated to binary**; still **not re-run** against the rebuilt (binary, 5-FPS) `06` crop set above — `10`'s frozen-embedding variant (see row 10) is currently reusing its old pre-rebuild 3-class checkpoint (`best_cnn_scratch_face_crops.keras`) as a frozen feature extractor, a real staleness caveat on that result, not just a formality. Last (3-class) numbers: from-scratch CNN 36.67% acc / 0.3614 macro-F1 (35.93% ± 9.07% over 3-fold CV) against the 24-subject pool — low, not a bug; MobileNetV2 backbone regressed hard (16.81% acc, 0 recall on Low Vigilant) — see "What we found" |
+| 07 | `cnn_training` | `face_crops_index.csv` | CNN `.keras` | ✅ **now re-run against the rebuilt binary `06` crop set** (50 complete-class subjects, same `split_by_subject_fold` as `11`, 10/34/10 val/train/test subjects). First genuine binary single-frame number: **59.64% acc / 0.5273 macro-F1** (Not Drowsy P/R 0.68/0.73, Drowsy P/R 0.38/0.32) on 8700 test crops — real signal above the ~66%-majority-class floor's macro-F1 (≈0.40), but well below what the same crops produce once aggregated over time by `11`'s frozen-embedding LSTM (see that row and "What we found"). `11`'s frozen-embedding variant now loads *this* checkpoint (`best_cnn_scratch_face_crops.keras`), not a stale pre-binary one — the staleness caveat that applied to the earlier 0.6213 result no longer applies. Superseded 3-class numbers (36.67% acc / 0.3614 macro-F1 from-scratch; 16.81% MobileNetV2) are historical only — see "What we found" |
 | 08 | `deployment_export_lstm` | LSTM `.keras` + scaler | deployed `LstmGeometricFeatureModel` | ⬜ not re-run; migrated to binary (sim cell only — the export artifact needed no class change); `sampling_fps`/`MAX_TIMESTEPS` updated to 5 / 30 to match `01`/`03` — needs a rerun once `03` retrains |
-| 09 | `dataset_creation_cnn_lstm` | `face_crops_index.csv` | `cnn_lstm_windows_index.csv` | ⚠️ last rerun (5731 windows, 54 subjects, 50 complete-class, fusion populated) predates the **minority-class overlap-tiling** change — `level_2` clips are now tiled with `CNNLSTM_MINORITY_WINDOW_OVERLAP=0.5` (via `src/dataset/`, mirrored here) to rebalance the ~2:1 window ratio; re-run `scripts/build_cnn_lstm_windows.py` (step 2 always rewrites the index — no `--reset`, that discards the geometry cache). See "What we found" |
-| 10 | `cnn_lstm_training` | `cnn_lstm_windows_index.csv` | CNN+LSTM `.keras` (from-scratch + frozen-CNN-embedding variants; MobileNetV2 disabled) | ✅ **first real binary run**, `USE_CLASS_WEIGHTS=False`: from-scratch 69.89% acc / 0.5762 macro-F1 (Drowsy recall 0.24); frozen-CNN-embedding 67.07% acc / **0.6213 macro-F1** (Drowsy recall 0.46), far cheaper and far less overfit — see "What we found" for the full comparison. `USE_CLASS_WEIGHTS` has since been flipped to `True` (`DROWSY_WEIGHT_BOOST=1.5`) in the notebook but **not yet re-run** — treat the numbers above as the uniform-weight baseline, not the current code's expected output |
-| 11 | `cnn_lstm_training_{upload,drive_pull}` | `cnn_lstm_windows_index[_forcolab].csv` + `face_crops.zip` | same as `10` | Drive-I/O-workaround siblings of `10` (see the "`11_…`" section below). `upload` = source of the genuine 0.6213 binary frozen-embedding number. `drive_pull` had a learning-rate bug (both models trained at ~1e-8, "0.7151" was an untrained-init artifact) — **now fixed** and given operating-point / balanced-resampling / ensemble cells; **no trustworthy numbers yet, needs a rerun** |
+| 09 | `dataset_creation_cnn_lstm` | `face_crops_index.csv` | `cnn_lstm_windows_index.csv` | ✅ rerun with **minority-class overlap-tiling active** (`CNNLSTM_MINORITY_WINDOW_OVERLAP=0.5` on `level_2`/Drowsy clips) — inferred from `11_drive_pull`'s near-balanced train split (2270 Not Drowsy / 1900 Drowsy windows) and larger-than-before window counts (Train 4170 / Val 1441 / Test 1440, vs. the pre-tiling 4359/234/1170 split). See "What we found" |
+| 10 | `cnn_lstm_training` | `cnn_lstm_windows_index.csv` | CNN+LSTM `.keras` (from-scratch + frozen-CNN-embedding variants; MobileNetV2 disabled) | ✅ first real binary run (pre-rebalancing, `USE_CLASS_WEIGHTS=False`): from-scratch 69.89% acc / 0.5762 macro-F1 (Drowsy recall 0.24); frozen-CNN-embedding 67.07% acc / 0.6213 macro-F1 (Drowsy recall 0.46) — since superseded as the project's best result by `11_drive_pull`'s rerun on the rebalanced windows + retrained `07` checkpoint (see row 11 and "What we found") |
+| 11 | `cnn_lstm_training_{upload,drive_pull}` | `cnn_lstm_windows_index[_forcolab].csv` + `face_crops.zip` | same as `10` | ✅ **`drive_pull`'s LR bug is fixed and it has been rerun for real — this is now the project's best result, by a wide margin.** Frozen-CNN-embedding + LSTM: **84.24% acc / 0.8375 macro-F1** argmax (84.38%/0.8379 at chosen threshold `t*=0.57`; Not Drowsy P/R 0.80/0.94, Drowsy P/R 0.91/0.73 argmax) — nearly 2x `07`'s single-frame macro-F1 on the same held-out subjects, and far above the earlier `upload`-sourced 0.6213. From-scratch CNN+LSTM also improved (62.29% acc / 0.6078 macro-F1) but stays well behind the frozen-embedding variant. The from-scratch+frozen ensemble is *worse* than frozen alone (0.8255 macro-F1) — don't deploy the ensemble. See "What we found" for the full numbers and caveats (single fold, no cross-validation yet; overlap-tiled Drowsy test windows aren't fully independent samples) |
 
 Four model families share two dataset-creation notebooks:
 
@@ -132,15 +132,18 @@ Four model families share two dataset-creation notebooks:
 
 ## What we found
 
-**Update since this was first written: the CNN (below) is now what `src/cv-argus` actually
-focuses on and deploys by default** (`PIPELINE=cnn`, see `src/cv-argus/CLAUDE.md`'s "Current
-status") — the LSTM is no longer the only model family with a working, deployed pipeline. That
-doesn't change the architectural reasoning below, though: **the LSTM (windowed geometric
-features) remains the intended long-term production model** — see
-`03_model_training_lstm.ipynb`'s Design Decision cell for the full reasoning (recurrence over a
-buffered window captures duration/velocity of eye closure, which nothing single-frame can see) —
-and it doesn't resolve the CNN's own accuracy caveats below either. The CNN's current-deployment
-status is a practical decision layered on top of both those facts, not a replacement for either.
+**Update since this was first written, twice over: `src/cv-argus` moved from the geometric-only
+LSTM (never deployed) to the single-frame CNN (below) to, now, the fused CNN-embedding +
+geometric-feature + LSTM classifier from `11_cnn_lstm_training_drive_pull.ipynb`** — see the
+root `CLAUDE.md`'s "Current deployment status" for the full history and
+`src/cv-argus/CLAUDE.md`'s "Current status" for the deployment-side detail. The single-frame
+CNN's own findings below are historical record now, not the current deployment, but they're
+still the reason a CNN-based approach was worth pursuing at all: **raw pixels carry information
+the geometric features never captured**, and this project's central "temporal context beats a
+single frame" hypothesis (recurrence over a buffered window captures duration/velocity of eye
+closure — see `03_model_training_lstm.ipynb`'s Design Decision cell) is what the fused model's
+much stronger result (0.8375 macro-F1 vs. the CNN's own 0.5273 on the same subjects) finally
+confirmed directly, rather than just arguing for.
 
 **RandomForest and Dense NN, trained on single per-frame features, hit a real ceiling around
 33-41% accuracy** — and we now have direct statistical proof of *why*, not just a suspicion:
@@ -420,21 +423,86 @@ always-predicting-majority):**
   This is the first real evidence that option 3's premise — reusing a frozen single-frame CNN's
   embedding is enough, an end-to-end-trained CNN backbone inside the LSTM loop isn't necessary —
   actually holds, not just a cost-saving compromise.
-- **Real caveat on the frozen-embedding number: `07` has not been retrained against the rebuilt
-  binary `06` crop set yet** (see the pipeline map's `07` row) — the checkpoint
-  (`best_cnn_scratch_face_crops.keras`) this variant loads as its frozen feature extractor is
-  still `07`'s old, pre-binary-migration one. That the result is this good *despite* a stale,
-  label-space-mismatched feature extractor is if anything a point in its favor — retraining `07`
-  on the current binary data first is likely to raise this further, not a reason to discount the
-  0.6213 macro-F1 already measured.
+- **Caveat that applied at the time: `07` had not been retrained against the rebuilt binary `06`
+  crop set yet**, so this run's frozen feature extractor was still `07`'s old, pre-binary-
+  migration checkpoint. That caveat is now resolved — see the next subsection, where both `07`
+  and `11_drive_pull` have been rerun on consistent binary data and the result is superseded by a
+  much stronger one.
 - **Per-duration accuracy is still flat in both variants** (from-scratch: 0.697-0.705 across
-  3s/5s/10s/20s; frozen-embedding: 0.669-0.676) — still no evidence the extra temporal context is
-  paying for itself, the same finding as every prior run of this notebook and of `01`'s geometric
-  LSTM.
+  3s/5s/10s/20s; frozen-embedding: 0.669-0.676) — still no evidence that a *longer* window buys
+  anything over a shorter one, the same finding as every prior run of this notebook and of `01`'s
+  geometric LSTM. (The flatness itself holds in the superseding run below too — 0.839-0.856
+  across the same four durations — but at that much higher level it reads differently: not "no
+  evidence temporal context helps" but "a short window already captures whatever signal a longer
+  one does," which is good news for a low-latency deployment. See that subsection.)
 - **`USE_CLASS_WEIGHTS` has since been flipped to `True`** (`DROWSY_WEIGHT_BOOST=1.5`, unchanged)
   in the notebook, specifically to test whether reweighting raises the frozen-embedding variant's
   0.46 `Drowsy` recall further — **not yet run**. Don't report a weighted number for either
   variant until that run actually happens; the table above is the uniform-weight baseline.
+
+## `11_cnn_lstm_training_drive_pull.ipynb`'s fixed rerun — new best result in the project
+
+The LR bug described in the `11_…` section below is fixed, `09` has been rerun with minority-
+class window overlap-tiling active (near-balanced train split: 2270 Not Drowsy / 1900 Drowsy
+windows), and `07` has been retrained on the rebuilt binary `06` crop set (see the pipeline map's
+`07` row: **59.64% acc / 0.5273 macro-F1** single-frame, on the same 10 held-out subjects used
+below). With all three of those pieces now consistent and binary, `drive_pull` was rerun for
+real — not the `upload` sibling, and not the earlier `10` run on stale/pre-rebalancing data. Test
+set: 780 Not Drowsy / 660 Drowsy windows (54.2%-majority-class baseline, macro-F1 ≈ 0.47 for
+always-predicting-majority), 10 held-out subjects, same `split_by_subject_fold` as `07`:
+
+| Variant | Test Acc | Macro-F1 | Not Drowsy R | Drowsy R | Trainable params |
+|---|---|---|---|---|---|
+| CNN+LSTM (from-scratch) | 62.29% | 0.6078 | 0.76 | 0.47 | — |
+| CNN+LSTM (frozen CNN embedding + LSTM) | **84.24%** | **0.8375** | 0.94 | 0.73 | 35,714 |
+| Ensemble (0.5·scratch + 0.5·frozen) | 82.99% | 0.8255 | 0.91 | 0.73 | — |
+
+- **The frozen-CNN-embedding + LSTM variant is now the best measured result in the entire
+  project, by a wide margin** — nearly double `07`'s own single-frame macro-F1 (0.5273 → 0.8375)
+  from the *same* CNN's embeddings, just aggregated over a window by the LSTM instead of judged
+  frame-by-frame. This is the first time in ten notebooks that the project's central temporal-
+  context hypothesis (a sequence reveals what a single frame structurally can't, per "Why CNN is
+  the most probable next backbone" below) is actually confirmed by a clean, well-behaved number,
+  not just argued for.
+- **At the chosen safety threshold** (`t*=0.57`, picked on validation by `DROWSY_RECALL_FLOOR`):
+  84.38% acc, 0.8379 macro-F1, Drowsy P 0.93/R 0.71 — val→test transfer gap is tiny (val
+  macro-F1 0.8458-0.8509 vs. test 0.8375-0.8386), a healthy sign, not validation-set luck.
+- **Verified not a repeat of the earlier `drive_pull` LR bug or the 84.75% degenerate-split
+  artifact**: the epoch log shows real learning from epoch 1 (`val_macro_f1` climbing off a
+  sensible base, not frozen at an untrained-init value), `val_macro_f1` stays in a stable
+  0.76-0.85 band across all 20 trained epochs (not a single early spike that then collapses to
+  chance, the shape that sank the from-scratch variant in earlier runs), and the split is the
+  same subject-grouped `StratifiedGroupKFold` `07` uses — `11`'s test subjects are the same ones
+  `07` itself held out, so the frozen CNN never saw those faces during its own training either.
+- **The from-scratch backbone also improved substantially** (62.29% acc / 0.6078 macro-F1, vs.
+  0.5762 in the earlier pre-rebalancing `10` run) but stays well behind the frozen-embedding
+  variant, consistent with every prior run of this notebook — an end-to-end-trained CNN inside
+  the recurrent loop keeps underperforming the cheaper frozen-embedding approach at this subject
+  count.
+- **The ensemble is worse than the frozen-embedding model alone** (0.8255 vs. 0.8375 macro-F1) —
+  the weaker, noisier from-scratch probabilities drag the average down. Deploy the
+  frozen-embedding model by itself, not the ensemble.
+- **Real caveats, not yet resolved by this run:**
+  - **Single fold, no cross-validation yet.** This is one `StratifiedGroupKFold` split (10 held-
+    out subjects out of 50 complete-class). The project's own 3-fold subject-CV diagnostics
+    elsewhere (`07`'s single-frame CNN) have shown ±9-point macro-F1 swings at similar subject
+    counts — this specific 0.8375 hasn't been stress-tested that way.
+  - **Test-set Drowsy windows aren't fully independent samples.** Minority-class window
+    overlap-tiling (50% stride) happens before the subject split, so some of the 660 "Drowsy"
+    test windows are staggered, correlated views of the same clip — no leakage (still
+    subject-disjoint), but the effective independent sample size is smaller than 660 implies, so
+    treat the confidence interval as wider than the raw N suggests.
+  - **Not yet run with `USE_CLASS_WEIGHTS=True`** or on the `upload` sibling for a same-config
+    comparison — the jump from the earlier 0.6213 macro-F1 is best explained by the combination
+    of the LR fix, the retrained `07` checkpoint, and the now-active window rebalancing, not a
+    single isolated cause.
+  - **Now deployed, but still not run end to end against real hardware.** `src/cv-argus`
+    replaced its earlier single-frame-CNN default with this pipeline shape (frozen CNN embedding
+    + geometric-feature fusion + LSTM over a rolling window) — see the root `CLAUDE.md`'s
+    "Current deployment status". Its mechanics are smoke-tested, but a real run against real Pi
+    hardware, and the CNN-checkpoint-provenance check, are still open — see
+    `src/cv-argus/CLAUDE.md`'s "Current status" before treating this as a validated production
+    result.
 
 ## `11_cnn_lstm_training_{upload,drive_pull}.ipynb` — Drive-I/O variants of `10`, and a push on Drowsy P/R
 
@@ -443,22 +511,27 @@ what threw `Input/output error` / `A Google Drive timeout has occurred`. `11_cnn
 and `11_cnn_lstm_training_drive_pull.ipynb` are siblings of `10` that fix only *how the crops
 reach the Colab VM* — `upload` via a hand `files.upload()` of a zip each session, `drive_pull`
 by copying one `face_crops.zip` off Drive and unzipping to local disk. Everything downstream (the
-split, both model variants, training, eval) is meant to be identical to `10`. **The genuine
-binary frozen-embedding result recorded above (0.6213 macro-F1, 0.46 `Drowsy` recall) came from
-the `upload` variant**, which carries the correct config.
+split, both model variants, training, eval) is meant to be identical to `10`. **The earlier
+genuine binary frozen-embedding result (0.6213 macro-F1, 0.46 `Drowsy` recall) came from the
+`upload` variant** — that number is now superseded by `drive_pull`'s fixed rerun below (0.8375
+macro-F1), which benefits from a retrained `07` checkpoint and active window rebalancing that
+the `upload` run didn't have; `upload` hasn't been rerun under the same conditions for a
+same-config comparison.
 
-**A learning-rate bug was found in `drive_pull` (now fixed).** It had `lr_schedule_scratch`'s
-`CosineDecayRestarts(initial_learning_rate=1e-8, …)` (that argument is the schedule's *peak* LR)
-and `build_frozen_embedding_lstm(learning_rate=1e-8)` called with no override — so **both models
-trained at ~1e-8 and did not learn**: the from-scratch model's train accuracy sat flat at ~0.50
-for every epoch, and the frozen-embedding model's `val_accuracy` / `val_macro_f1` were frozen at
-the untrained-init values (`0.7511` / `0.7151`) for the whole run while its real test macro-F1
-was 0.50. Any "still overfitting after round-2 regularization" reading from that `drive_pull` run
-is not real — the model wasn't training. Fix: `initial_learning_rate=1e-4`, frozen builder
-`learning_rate=1e-3`, and the drive-pull-only "round 2" regularization bump (`WEIGHT_DECAY`
-`1e-4→3e-4`, LSTM dropout/recurrent `0.3→0.4`, head `0.5→0.6`, `DROWSY_WEIGHT_BOOST` `0.99`,
-`NOT_DROWSY_WEIGHT_DAMPEN` `1.225`) reverted to the round-1 set the `upload` sibling uses.
-**No trustworthy `drive_pull` numbers exist yet** — it needs a rerun with the fix.
+**A learning-rate bug was found in `drive_pull` — now fixed and confirmed working.** It had
+`lr_schedule_scratch`'s `CosineDecayRestarts(initial_learning_rate=1e-8, …)` (that argument is
+the schedule's *peak* LR) and `build_frozen_embedding_lstm(learning_rate=1e-8)` called with no
+override — so **both models trained at ~1e-8 and did not learn**: the from-scratch model's train
+accuracy sat flat at ~0.50 for every epoch, and the frozen-embedding model's `val_accuracy` /
+`val_macro_f1` were frozen at the untrained-init values (`0.7511` / `0.7151`) for the whole run
+while its real test macro-F1 was 0.50. Any "still overfitting after round-2 regularization"
+reading from that early `drive_pull` run was not real — the model wasn't training. Fix:
+`initial_learning_rate=1e-4`, frozen builder `learning_rate=1e-3`, and the drive-pull-only
+"round 2" regularization bump (`WEIGHT_DECAY` `1e-4→3e-4`, LSTM dropout/recurrent `0.3→0.4`, head
+`0.5→0.6`, `DROWSY_WEIGHT_BOOST` `0.99`, `NOT_DROWSY_WEIGHT_DAMPEN` `1.225`) reverted to the
+round-1 set the `upload` sibling uses. **`drive_pull` has since been rerun with the fix and
+produced the project's new best result — see "`11_cnn_lstm_training_drive_pull.ipynb`'s fixed
+rerun" above.**
 
 **New machinery added to both `11` notebooks and to `07`, aimed at `Drowsy` precision+recall
 (none of it rerun yet):**
@@ -527,15 +600,16 @@ result looks more like a resolution/architecture mismatch than a genuine verdict
 pretraining). Point 2 (`09`'s windowed CNN+LSTM) is still untested — `09` hasn't been run at all,
 and the CNN+LSTM training notebook (`10`) doesn't exist yet.
 
-**This "most probable next backbone" reasoning has since become the current focus, not just a
-recommendation**: `src/cv-argus` now actually deploys `07`'s single-frame CNN by default (see
-"What we found" above and `src/cv-argus/CLAUDE.md`'s "Current status"). That's a statement about
-what's *running*, though, not about what's *validated* — the CNN's real, measured number (36.67%
-accuracy, 0.3614 macro-F1 single-fold; 35.93% ± 9.07% across the 3-fold CV diagnostic, small-N
-with a real train/test generalization gap) is still a long way from a validated production
-result; being deployed didn't retroactively fix that. Finishing UTA-RLDD extraction toward the
-full 60-subject pool remains the actual next step, now with more urgency since it's no longer
-just a baseline being compared against, but the model this project's edge device runs.
+**This "most probable next backbone" reasoning did become the project's actual direction, and
+has since gone a step further**: `src/cv-argus` deployed `07`'s single-frame CNN by default for
+a while (36.67% accuracy, 0.3614 macro-F1 single-fold — real signal, but a long way from
+validated) before being replaced by the fused CNN-embedding + geometric-feature + LSTM
+classifier from `11_cnn_lstm_training_drive_pull.ipynb` (0.8375 macro-F1 on the same held-out
+subject shape) — see the root `CLAUDE.md`'s "Current deployment status" and
+`src/cv-argus/CLAUDE.md`'s "Current status". Being deployed still doesn't retroactively validate
+either number: the fused model is one un-cross-validated fold, and a real Pi-hardware run
+hasn't happened yet. Finishing UTA-RLDD extraction toward the full 60-subject pool remains a
+real next step regardless — more subjects would firm up any of these numbers.
 
 ## Cheaper options considered alongside the full CNN+LSTM build
 
@@ -636,20 +710,20 @@ first run — is covered in "What we found" above rather than here.)
   path still needs, and Ultralytics YOLOv8's AGPL-3.0 licensing, a real concern for a project
   meant to become a commercial product.
 
-## One more thing worth knowing before touching `08` or `cv-argus/`
+## One more thing worth knowing before touching `08`
 
 **History:** `MAX_TIMESTEPS` went **120 → 60** (removing unused headroom, after a full extraction
 run at 120 OOM-crashed the Colab kernel), then **60 → 30** when `sampling_fps` was cut from 10 to
 5 in `01`/`02` (to roughly halve extraction time — a 6s max window is now `6 * 5 = 30` frames).
 In notebooks `01`, `03`, and `08`, `MAX_TIMESTEPS`/`max_timesteps` is now **30** (and `08`'s
-`LstmGeometricFeatureModel.__init__` default was moved 60 → 30 to match). `src/cv-argus/src/
-model/lstm_model.py` still carries a `max_timesteps: int = 60` **default** — not updated here and
-not load-bearing: a model loaded from a saved `.keras` takes its real `max_timesteps` from the
-serialized config, not this class default. An earlier version of this note claimed the value was
-"60 everywhere, consistently"; that was true before the `sampling_fps` change, not after — the
-notebooks (30) and the `cv-argus` default (60) now differ on the number, though not in a way
-that breaks a loaded model. `08` and `src/cv-argus` both need re-validation against a binary
-model retrained on the 5-FPS / 30-timestep data before deployment.
+`LstmGeometricFeatureModel.__init__` default was moved 60 → 30 to match). This whole
+windowed-geometric-only LSTM path (`01`→`03`→`08`) was never deployed to `src/cv-argus` — the
+project went from nothing deployed, to the single-frame CNN, to the fused CNN-embedding +
+geometric-feature + LSTM classifier (see the root `CLAUDE.md`'s "Current deployment status")
+without ever shipping this one, and `src/cv-argus`'s corresponding `model/lstm_model.py`/
+`detector.py` (`DrowsinessDetector`) were removed once the fused pipeline made this path
+obsolete. `08` and its notebooks stay as-is here as a reference/kept-for-history slice of the
+pipeline, not as something with a live deployment counterpart to keep in sync anymore.
 
 There is a real, smaller mismatch worth flagging instead: `lstm_model.py`'s
 `LstmGeometricFeatureModel.__init__` defaults `num_features` to **59**, but
@@ -698,15 +772,20 @@ live-broken either. Not fixed here — flagged for whoever picks that up next.
   at epoch 1 — see "What we found"'s binary subsection). Don't reach for a brand-new architecture
   for that specific backbone, and don't propose further regularization/LR tuning on it as the
   first response — see "Cheaper options considered alongside the full CNN+LSTM build" above.
-  **That "cheaper option" (option 3, the frozen-CNN-embedding + LSTM variant) has since actually
-  been run under binary labels and is a real, meaningfully better result** (0.6213 macro-F1,
-  0.46 `Drowsy` recall, far less overfitting — see "What we found"), so treat it as the current
-  best CNN+LSTM result, not just a hypothetical alternative, when discussing this notebook. The
-  MobileNetV2 resolution fix, a late-fusion ensemble of the existing RandomForest/Dense NN/CNN
-  models, and a
-  frozen-CNN-embedding-into-the-geometric-LSTM hybrid were all already discussed as lower-data-
-  cost alternatives; treat them as the next things to try, not as ideas that still need to be
-  proposed from scratch.
+  **That "cheaper option" (option 3, the frozen-CNN-embedding + LSTM variant) has since been run
+  twice under binary labels, and the second run is the project's best result overall, not just
+  the best CNN+LSTM one** — `11_cnn_lstm_training_drive_pull.ipynb`'s fixed rerun (retrained `07`
+  checkpoint + active window rebalancing) reached **0.8375 macro-F1, 0.73 `Drowsy` recall**,
+  superseding the earlier `upload`-sourced 0.6213 figure (see "`11_cnn_lstm_training_drive_pull.
+  ipynb`'s fixed rerun — new best result in the project" above for the full numbers and caveats —
+  single fold, no cross-validation yet). Treat this as the current best model in the project when
+  discussing next steps, not just the best CNN+LSTM variant. **It is now deployed** in
+  `src/cv-argus` (replacing the earlier single-frame CNN default), though still not run end to
+  end against real hardware — see `src/cv-argus/CLAUDE.md`'s "Current status". The MobileNetV2
+  resolution fix and a late-fusion ensemble of the
+  existing RandomForest/Dense NN/CNN models are still untried and remain reasonable next things
+  to try; the frozen-CNN-embedding hybrid is no longer one of them, since it's now the validated
+  best result rather than an untested idea.
 - Don't edit `GeometricRatioFeatureLayer` in one of its four copies without checking the other
   three (`01_dataset_creation_lstm.ipynb`, `02_dataset_creation_flat.ipynb`,
   `08_deployment_export_lstm.ipynb`, `src/cv-argus/src/model/layers.py`) — there's no automated
