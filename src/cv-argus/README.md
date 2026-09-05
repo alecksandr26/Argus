@@ -13,10 +13,10 @@ docker compose up --build
 ```
 
 That's it — **no `.env` file, no configuration, needed to get it building and running.** This
-builds and runs the CNN pipeline (the model this project currently focuses on and deploys by
-default) against whatever's at `/dev/video0`, and logs each frame's drowsiness classification to
-the console. The trained model's Google Drive file ID has a checked-in default, so the build
-doesn't need one supplied.
+builds and runs the fused CNN-embedding + geometric-feature + LSTM pipeline (the only pipeline
+this module runs — see `CLAUDE.md`'s "Current status") against whatever's at `/dev/video0`, and
+logs each frame's drowsiness classification to the console. Both trained models' Google Drive
+file IDs have checked-in defaults, so the build doesn't need one supplied.
 
 To actually **watch** it work instead of reading log lines, see "Demo" below.
 
@@ -43,14 +43,15 @@ browser shows the live camera feed with the current classification drawn on it:
 │   │ face │  ← box around │
 │   └──────┘    the detected face
 │                          │
-│  STATUS: Alert  (green)  │
+│  STATUS: Not Drowsy (green) │
 │  fps: 11.2               │
 └──────────────────────────┘
 ```
 
-`STATUS` is color-coded — green for `Alert`, amber for `Low Vigilant`, red for `Drowsy` — and
-comes straight from the model, so it'll be as reliable (or not) as the model currently is; see
-`CLAUDE.md`'s "Current status" for the honest caveat on that.
+`STATUS` is color-coded — green for `Not Drowsy`, red for `Drowsy` — and comes straight from the
+model, so it'll be as reliable (or not) as the model currently is; see `CLAUDE.md`'s "Current
+status" for the honest caveat on that (real accuracy, but a single fold, not yet
+cross-validated).
 
 ## Configuration
 
@@ -61,10 +62,12 @@ including model-artifact overrides not covered here).
 | Variable | Default | What it does |
 |---|---|---|
 | `CAMERA_SOURCE` | `0` | Passed to `cv2.VideoCapture`: an integer camera index, a `/dev/videoN` path, or a video file path (for testing/demoing with no camera attached). |
-| `PIPELINE` | `cnn` | Which model runs: `cnn` (the current default/deployed model) or `lstm` (kept, optional — needs `MODEL_DRIVE_FILE_ID` set to actually download a model). |
 | `SOURCE` | `video_capture` | Where frames come from: `video_capture` (`cv2.VideoCapture`, driven by `CAMERA_SOURCE`) or `picamera` (the Pi 5's CSI camera — see "On the Pi 5" below). |
 | `OUTPUTS` | `logging` | Comma-separated sink(s): `logging` (text only) and/or `mjpeg` (the browser-viewable demo stream — e.g. `OUTPUTS=logging,mjpeg`). |
 | `DEMO_STREAM_PORT` | `8080` | Only read when `OUTPUTS` includes `mjpeg`. Change if `8080` is already taken on your machine. |
+
+There's one pipeline — the frozen-CNN-embedding + geometric-feature + LSTM classifier — see
+`CLAUDE.md`'s "Current status" for its measured accuracy and caveats.
 
 **`mjpeg` has no authentication.** It's meant for demos on a network you trust, not for leaving
 on — see `CLAUDE.md`'s "Demo" section for why this matters more than usual for this project.
@@ -133,8 +136,8 @@ be checked, not a sign something's broken.
   the way it might be for a project with a bundled/offline fallback.
 - **Camera opens but no face is ever detected** — check lighting and that the camera is actually
   pointed at a face; also confirm `CAMERA_SOURCE`/`SOURCE` actually point at the device you think
-  they do (`docker compose logs` will show `cv-argus starting (PIPELINE=..., SOURCE=...,
-  OUTPUTS=...)` on startup, confirming what it's actually using).
+  they do (`docker compose logs` will show `cv-argus starting (SOURCE=..., OUTPUTS=...)` on
+  startup, confirming what it's actually using).
 - **The `mjpeg` stream shows a solid green/corrupted image instead of the camera feed** — the
   camera opened fine (`cap.read()` reports success) but the negotiated pixel format is wrong;
   this is the single most common cause of "no face ever detected" too, since MediaPipe is
@@ -155,9 +158,9 @@ be checked, not a sign something's broken.
 
 ## Where to go next
 
-- [`CLAUDE.md`](CLAUDE.md) — the real architecture: the `Stage`/`Pipeline` threading design, why
-  the CNN is the current focus vs. the LSTM's long-term intended role, exact model
-  input/output shapes, and every convention worth knowing before changing code here.
+- [`CLAUDE.md`](CLAUDE.md) — the real architecture: the `Stage`/`Pipeline` threading design, the
+  fused pipeline's measured accuracy and open caveats, exact model input/output shapes, and
+  every convention worth knowing before changing code here.
 - [`scripts/smoke_test_pipeline.py`](scripts/smoke_test_pipeline.py) — a synthetic test of the
   threading/queue plumbing itself, runnable with no camera, no model, and none of `cv2`/
   `mediapipe`/`tensorflow` installed.

@@ -7,12 +7,12 @@ link-accessible to anyone who has the ID. Every Drive file this module downloads
 as "Anyone with the link" (Viewer), or `gdown` can't fetch it without extra auth.
 
 This only downloads — it doesn't load a model into memory or know anything about Keras.
-`CnnDrowsinessDetector`/`DrowsinessDetector` (`cnn_detector.py`/`detector.py`) are what call
-these functions and then load the resulting file.
+`CnnDrowsinessDetector`/`FusedDrowsinessDetector` (`cnn_detector.py`/`fused_detector.py`) are
+what call these functions and then load the resulting file.
 
-The MediaPipe Face Landmarker `.task` bundle is a separate, unrelated download — see
-`pipeline/downloader.py` for that one. It doesn't live here because it isn't this module's
-dependency (neither detector class touches it); it's `pipeline/`'s.
+The MediaPipe Face Landmarker/Face Detector `.task`/`.tflite` bundles are a separate, unrelated
+download — see `pipeline/downloader.py` for those. They don't live here because they aren't this
+module's dependency (neither class here touches MediaPipe); they're `pipeline/`'s.
 """
 
 import logging
@@ -24,9 +24,6 @@ import gdown
 from .. import constants
 
 logger = logging.getLogger(__name__)
-
-# Backwards-compatible alias — kept in case anything outside this file still imports it by name.
-DEFAULT_MODEL_FILENAME = constants.LSTM_MODEL_FILENAME
 
 
 class ModelDownloadError(RuntimeError):
@@ -42,8 +39,8 @@ def _download_from_drive(
 ) -> Path:
     """Shared gdown-download-if-not-cached logic for one Drive-hosted model artifact.
 
-    `label` is just for log/error messages (e.g. "CNN model", "LSTM model") so `download_cnn_model`
-    and `download_lstm_model` below don't duplicate this logic with no distinguishing detail.
+    `label` is just for log/error messages (e.g. "CNN model", "fused CNN+LSTM model") so the two
+    public functions below don't duplicate this logic with no distinguishing detail.
     """
     destination = model_dir / filename
 
@@ -82,12 +79,13 @@ def download_cnn_model(
     model_dir: str | os.PathLike | None = None,
     filename: str | None = None,
 ) -> Path:
-    """Ensure the trained CNN face-crop classifier is present locally, downloading if needed.
+    """Ensure the trained CNN face-crop checkpoint is present locally, downloading if needed.
 
-    This is the model the container actually deploys (see `src/cv-argus/CLAUDE.md`'s "Current
-    status"). `constants.CNN_MODEL_DRIVE_FILE_ID` gives this a checked-in default, so this
-    succeeds with no environment configuration at all; the `CNN_MODEL_DRIVE_FILE_ID` env var
-    still overrides it, for swapping in a newer trained model without a code change. An env var
+    Required, not for its own classification (see `cnn_detector.py`'s module docstring), but as
+    the frozen embedding backbone `download_fused_model()`'s model depends on.
+    `constants.CNN_MODEL_DRIVE_FILE_ID` gives this a checked-in default, so this succeeds with no
+    environment configuration at all; the `CNN_MODEL_DRIVE_FILE_ID` env var still overrides it,
+    for swapping in a newer trained model without a code change. An env var
     present-but-set-to-empty-string (e.g. an unset Docker build `ARG` substituted in) is treated
     the same as absent, falling through to the `constants.py` default either way.
 
@@ -111,50 +109,41 @@ def download_cnn_model(
     return _download_from_drive(file_id, model_dir, filename, label="CNN model")
 
 
-def download_lstm_model(
+def download_fused_model(
     file_id: str | None = None,
     model_dir: str | os.PathLike | None = None,
     filename: str | None = None,
 ) -> Path:
-    """Ensure the trained LSTM/geometric-feature model is present locally, downloading if needed.
+    """Ensure the trained fused CNN-embedding + geometric-feature + LSTM classifier
+    (`best_cnn_lstm_frozen_embedding.keras`, `notebook/11_cnn_lstm_training_drive_pull.ipynb`)
+    is present locally, downloading if needed. Required — this is the model this container
+    deploys.
 
-    Still fully functional, but no longer required at build time now that the CNN is the model
-    this container actually deploys (see `src/cv-argus/CLAUDE.md`). `constants.py` has no
-    checked-in default for `LSTM_MODEL_DRIVE_FILE_ID` (it's `None`), so this only downloads
-    anything if `MODEL_DRIVE_FILE_ID` is set explicitly in the environment — the Dockerfile
-    treats a `ModelDownloadError` from this call as non-fatal rather than failing the whole
-    image build (see its build step).
+    `constants.FUSED_MODEL_DRIVE_FILE_ID` gives this a checked-in default (same "Anyone with the
+    link isn't a secret" rationale `CNN_MODEL_DRIVE_FILE_ID` is checked in under), so this
+    succeeds with no environment configuration; `FUSED_MODEL_DRIVE_FILE_ID` still overrides it.
 
     Returns the local path to the model file.
     """
     file_id = (
         file_id
-        or os.environ.get("MODEL_DRIVE_FILE_ID")
-        or constants.LSTM_MODEL_DRIVE_FILE_ID
+        or os.environ.get("FUSED_MODEL_DRIVE_FILE_ID")
+        or constants.FUSED_MODEL_DRIVE_FILE_ID
     )
     model_dir = Path(
         model_dir or os.environ.get("MODEL_DIR") or constants.MODEL_DIR_DEFAULT
     )
     filename = (
-        filename or os.environ.get("MODEL_FILENAME") or constants.LSTM_MODEL_FILENAME
+        filename or os.environ.get("FUSED_MODEL_FILENAME") or constants.FUSED_MODEL_FILENAME
     )
-    return _download_from_drive(file_id, model_dir, filename, label="LSTM model")
-
-
-# Backwards-compatible alias: detector.py and model/__init__.py import this name.
-download_model = download_lstm_model
+    return _download_from_drive(file_id, model_dir, filename, label="fused CNN+LSTM model")
 
 
 if __name__ == "__main__":
-    # `python -m cv_argus.model.downloader` — called from the Dockerfile at build time.
+    # `python -m cv_argus.model.downloader` — called from the Dockerfile at build time. Both
+    # downloads are required: the fused model is what this container deploys, and it needs the
+    # CNN checkpoint as its frozen embedding backbone (see fused_detector.py). Either one
+    # failing should fail the whole image build, not silently produce an image that can't start.
     logging.basicConfig(level=logging.INFO)
-    download_cnn_model()  # required — has a checked-in default Drive id, so this should succeed
-    try:
-        download_lstm_model()
-    except ModelDownloadError as exc:
-        # Optional/best-effort: no checked-in default Drive id for this model anymore, since the
-        # CNN is what's actually deployed. Not required for the CNN path to work — log and move
-        # on rather than failing the whole build.
-        logger.info(
-            "Skipping LSTM model download (optional, no MODEL_DRIVE_FILE_ID set): %s", exc
-        )
+    download_cnn_model()
+    download_fused_model()

@@ -12,18 +12,16 @@ services:
       context: .
       # Model artifacts are baked in at build time now (see the Dockerfile) — compose reads
       # these from this directory's `.env` (the same file `env_file:` below loads for runtime)
-      # to pass them through as build args. CNN_MODEL_DRIVE_FILE_ID has a checked-in default
-      # (see src/constants.py), so `docker compose build` succeeds even with no `.env` at all;
-      # MODEL_DRIVE_FILE_ID (the LSTM model) is optional the same way.
+      # to pass them through as build args. Both have checked-in defaults (see src/constants.py),
+      # so `docker compose build` succeeds even with no `.env` at all.
       args:
         CNN_MODEL_DRIVE_FILE_ID: ${CNN_MODEL_DRIVE_FILE_ID:-}
-        MODEL_DRIVE_FILE_ID: ${MODEL_DRIVE_FILE_ID:-}
+        FUSED_MODEL_DRIVE_FILE_ID: ${FUSED_MODEL_DRIVE_FILE_ID:-}
     image: argus/cv-argus:dev
     env_file:
       - .env
     environment:
       - CAMERA_SOURCE=${CAMERA_SOURCE:-0}
-      - PIPELINE=${PIPELINE:-cnn}
       - SOURCE=${SOURCE:-video_capture}
       - OUTPUTS=${OUTPUTS:-logging}
       - DEMO_STREAM_HOST=${DEMO_STREAM_HOST:-0.0.0.0}
