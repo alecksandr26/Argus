@@ -1,10 +1,10 @@
 """`FaceDetectorCropStage`: MediaPipe Face Detector (BlazeFace, short_range) -> a cropped face
-image, feeding `CnnInferenceStage`. Ports `notebook/06_dataset_creation_face_crops.ipynb`'s
-`FaceCropExtractionPipeline` extraction logic verbatim (`VIDEO` running mode,
-`min_detection_confidence`, `bbox_margin_frac`, highest-confidence-detection selection when more
-than one face is found) because the deployed CNN model was trained on crops built exactly this
-way — diverging here is a silent train/inference skew, not something that would show up as an
-exception.
+image, feeding `FaceLandmarkerCropStage` and ultimately `FusedInferenceStage`. Ports
+`notebook/06_dataset_creation_face_crops.ipynb`'s `FaceCropExtractionPipeline` extraction logic
+verbatim (`VIDEO` running mode, `min_detection_confidence`, `bbox_margin_frac`, highest-
+confidence-detection selection when more than one face is found) because the deployed model's
+frozen CNN embedding backbone was trained on crops built exactly this way — diverging here is a
+silent train/inference skew, not something that would show up as an exception.
 """
 
 import logging
@@ -35,9 +35,10 @@ def _expand_and_clip_bbox(
 
 class FaceDetectorCropStage(Stage):
     """Runs MediaPipe's Face Detector on each frame and, when a face is found, crops it (with
-    margin) and converts it to RGB for the CNN. Frames with no confident detection are passed
-    through with `face_found=False` rather than dropped — `CnnInferenceStage` and the output
-    stage decide what "no detection this frame" means; this stage only reports it.
+    margin) and converts it to RGB for the frozen CNN embedder. Frames with no confident
+    detection are passed through with `face_found=False` rather than dropped —
+    `FaceLandmarkerCropStage`/`FusedInferenceStage` and the output stage decide what "no
+    detection this frame" means; this stage only reports it.
     """
 
     def __init__(

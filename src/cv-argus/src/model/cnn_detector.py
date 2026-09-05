@@ -1,43 +1,45 @@
-"""Loads the trained CNN face-crop model and wraps it in a per-crop `predict_crop()` call.
+"""Loads the trained CNN face-crop model (`notebook/07_cnn_training.ipynb`) and exposes its
+penultimate layer as a frozen embedding sub-model — the feature extractor `FusedDrowsinessDetector`
+(`fused_detector.py`) fuses with a geometric-feature vector before feeding an LSTM.
 
-Unlike the LSTM path (see `detector.py`), the CNN model is plain, built-in Keras layers only —
-`Sequential`/`Rescaling`/`Conv2D`/`BatchNormalization`/`GlobalAveragePooling2D`/`Dense` (see
-`notebook/07_cnn_training.ipynb`'s model-definition cell) — no custom `Layer`/`Model`
-subclasses, so loading it needs no `custom_objects`, unlike `DrowsinessDetector.from_path()`.
+This CNN is no longer run for its own single-frame classification in this codebase (that was the
+now-removed `PIPELINE=cnn`, superseded by `PIPELINE=fused`'s much stronger windowed result — see
+the root `CLAUDE.md` and `src/cv-argus/CLAUDE.md`'s "Current status"). Its trained weights are
+still needed, though: `FusedDrowsinessDetector`'s per-frame embedding must come from the *exact*
+checkpoint `notebook/11_cnn_lstm_training_drive_pull.ipynb` trained its LSTM against, not a
+re-derived one — see `embedding_submodel()` below.
+
+Plain, built-in Keras layers only — `Sequential`/`Rescaling`/`Conv2D`/`BatchNormalization`/
+`GlobalAveragePooling2D`/`Dense` (see `07`'s model-definition cell) — no custom `Layer`/`Model`
+subclasses, so loading it needs no `custom_objects`.
 
 Deliberately has no `mediapipe` import, the same boundary `detector.py` draws for the LSTM
-path: `predict_crop()` takes a plain `numpy` array (an already-cropped face image), not a
-MediaPipe detection result. Producing that crop — running MediaPipe's Face Detector (BlazeFace)
-over a raw frame and cropping its bounding box, the way
-`notebook/06_dataset_creation_face_crops.ipynb` does it — is `pipeline/`'s job, not this
-module's; see `src/cv-argus/CLAUDE.md` for the current status of that piece.
+path: this module only ever sees an already-cropped face image, not a MediaPipe detection
+result — producing that crop is `pipeline/`'s job.
 """
 
 import logging
 import os
 from pathlib import Path
 
-import numpy as np
 import tensorflow as tf
 
 from .. import constants
-from .detector import DetectionResult, _LEVEL_OFFSET
-from .downloader import download_cnn_model
 
 logger = logging.getLogger(__name__)
 
 
 class CnnDrowsinessDetector:
-    """Loads the trained CNN face-crop classifier and turns one face crop into a drowsiness
-    level.
+    """Loads the trained CNN face-crop classifier and exposes its frozen embedding sub-model.
 
-    No internal state or buffering, unlike `DrowsinessDetector`: the CNN was trained on — and
-    only ever sees — a single frame's face crop (see `notebook/07_cnn_training.ipynb`), so
-    there's no sliding window to maintain and no `reset()` to call between predictions.
+    No internal state or buffering: this class is now purely a checkpoint loader for
+    `embedding_submodel()` — the CNN itself is never called for a standalone prediction anymore
+    (see this module's docstring).
     """
 
     def __init__(self, model: tf.keras.Model):
         self._model = model
+        self._embedding_submodel: tf.keras.Model | None = None
 
     @classmethod
     def from_path(cls, model_path: str | os.PathLike) -> "CnnDrowsinessDetector":
@@ -47,29 +49,41 @@ class CnnDrowsinessDetector:
         model = tf.keras.models.load_model(model_path, compile=False)
         return cls(model)
 
-    @classmethod
-    def from_env(cls) -> "CnnDrowsinessDetector":
-        """Download the model per `CNN_MODEL_DRIVE_FILE_ID`/`MODEL_DIR`/`CNN_MODEL_FILENAME`
-        (see `downloader.py`), then load it. This is what `main()` should call in production
-        for the CNN path."""
-        model_path = download_cnn_model()
-        return cls.from_path(model_path)
+    def embedding_submodel(self) -> tf.keras.Model:
+        """Build (and cache) a sub-graph exposing this CNN's penultimate `Dense(64, relu)`
+        layer — the "frozen CNN embedding" `FusedDrowsinessDetector` (`fused_detector.py`)
+        fuses with a geometric-feature vector before feeding an LSTM. Ported verbatim from
+        `notebook/11_cnn_lstm_training_drive_pull.ipynb` cell 25.
 
-    def predict_crop(self, face_crop_rgb: np.ndarray) -> DetectionResult:
-        """Feed one already-cropped, RGB face image into the model and return the prediction.
-
-        Args:
-            face_crop_rgb: an (H, W, 3) RGB image, pixel values in `[0, 255]`, any size — resized
-                to `(constants.CNN_IMG_SIZE, constants.CNN_IMG_SIZE)` internally via
-                `tf.image.resize`, matching `07_cnn_training.ipynb`'s `load_and_preprocess`
-                exactly. Don't pre-normalize before calling this: the model's own first layer
-                (`Rescaling(1./255)`) handles the `[0, 255] -> [0, 1]` scaling, the same way it
-                does during training.
+        This CNN (`notebook/07_cnn_training.ipynb`'s `build_cnn_scratch`) ends
+        `... -> GlobalAveragePooling2D -> Dense(64, relu) -> Dropout(0.5) -> Dense(num_classes,
+        softmax)`. "The embedding" is the second-to-last `Dense` layer (`dense_layers[-2]`) —
+        the 64-dim pre-classification representation, not the final softmax. Kept as a method on
+        this class rather than a free function taking a raw `tf.keras.Model`, so "the loaded CNN
+        and everything derived from it" stays one owned object — using a *different* CNN's
+        weights for the embedding than what `self._model` holds would silently produce
+        embeddings the fused LSTM was never trained on.
         """
-        image = tf.convert_to_tensor(face_crop_rgb, dtype=tf.float32)
-        image = tf.image.resize(image, [constants.CNN_IMG_SIZE, constants.CNN_IMG_SIZE])
-        image = image[tf.newaxis, ...]  # batch size 1
+        if self._embedding_submodel is not None:
+            return self._embedding_submodel
 
-        probabilities = self._model(image, training=False).numpy()[0]
-        level = int(np.argmax(probabilities)) + _LEVEL_OFFSET
-        return DetectionResult(level=level, probabilities=probabilities)
+        dense_layers = [layer for layer in self._model.layers if isinstance(layer, tf.keras.layers.Dense)]
+        if len(dense_layers) < 2:
+            raise ValueError(
+                f"Expected at least 2 Dense layers in the loaded CNN, found {len(dense_layers)} "
+                "-- can't locate the penultimate embedding layer."
+            )
+        embedding_layer = dense_layers[-2]
+
+        # Force the model to build (assign real input/output shapes) before touching .input on
+        # a layer of it -- a freshly-loaded, never-called Sequential raises "model has never
+        # been called" otherwise. `model.layers[0].input`, not `model.input` directly, for the
+        # same reason (notebook 11 cell 25's own comment on this exact gotcha).
+        self._model(tf.zeros((1, constants.CNN_IMG_SIZE, constants.CNN_IMG_SIZE, 3)), training=False)
+
+        self._embedding_submodel = tf.keras.Model(
+            inputs=self._model.layers[0].input,
+            outputs=embedding_layer.output,
+            name="frozen_cnn_embedder",
+        )
+        return self._embedding_submodel

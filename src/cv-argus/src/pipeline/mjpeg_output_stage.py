@@ -27,11 +27,10 @@ logger = logging.getLogger(__name__)
 
 _BOUNDARY = b"frame"
 
-# Alert -> green, Low Vigilant -> amber, Drowsy -> red. Falls back to white for anything
-# unrecognized (e.g. DetectionResult.class_name's "Unknown(n)" case) rather than raising.
+# Not Drowsy -> green, Drowsy -> red. Falls back to white for anything unrecognized (e.g.
+# DetectionResult.class_name's "Unknown(n)" case, or no detection yet) rather than raising.
 _STATUS_COLORS = {
-    "Alert": (0, 200, 0),
-    "Low Vigilant": (0, 165, 255),
+    "Not Drowsy": (0, 200, 0),
     "Drowsy": (0, 0, 255),
 }
 _DEFAULT_COLOR = (255, 255, 255)

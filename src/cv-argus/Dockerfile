@@ -50,21 +50,21 @@ RUN pip install --no-cache-dir --no-deps -e .
 COPY docker-entrypoint.sh .
 RUN chmod +x docker-entrypoint.sh
 
-# Model artifacts (the trained CNN face-crop classifier + the MediaPipe Face Landmarker bundle
-# needed by the still-present-but-optional LSTM path) are baked into the image at BUILD time,
-# not fetched at container start — see model/downloader.py and pipeline/downloader.py. This
-# device has to be able to boot and start monitoring the driver in a moving truck that may have
-# no signal right then; a runtime download dependency is a liability a build-time one isn't.
-# Accepted trade-off: a new trained CNN model needs an image rebuild + redeploy, not just a
-# container restart. Unlike before, `docker build` now succeeds with no ARG/`.env` at all — the
-# CNN model's Drive file id has a checked-in default in constants.py; only the (now optional)
-# LSTM model still needs MODEL_DRIVE_FILE_ID set to be included (see src/cv-argus/CLAUDE.md's
-# "Current status").
+# Model artifacts (the fused CNN-embedding/LSTM classifier this container deploys, the CNN
+# checkpoint it depends on as a frozen embedding backbone, and the two MediaPipe bundles both
+# pipeline stages need) are baked into the image at BUILD time, not fetched at container start —
+# see model/downloader.py and pipeline/downloader.py. This device has to be able to boot and
+# start monitoring the driver in a moving truck that may have no signal right then; a runtime
+# download dependency is a liability a build-time one isn't. Accepted trade-off: a new trained
+# model needs an image rebuild + redeploy, not just a container restart. `docker build` succeeds
+# with no ARG/`.env` at all — both Drive file ids have checked-in defaults in constants.py — and
+# both downloads are required: a failure in either fails the whole build (see
+# model/downloader.py's `__main__` block).
 ENV MODEL_DIR=/app/models
 ARG CNN_MODEL_DRIVE_FILE_ID
 ENV CNN_MODEL_DRIVE_FILE_ID=${CNN_MODEL_DRIVE_FILE_ID}
-ARG MODEL_DRIVE_FILE_ID
-ENV MODEL_DRIVE_FILE_ID=${MODEL_DRIVE_FILE_ID}
+ARG FUSED_MODEL_DRIVE_FILE_ID
+ENV FUSED_MODEL_DRIVE_FILE_ID=${FUSED_MODEL_DRIVE_FILE_ID}
 RUN python -m cv_argus.model.downloader && python -m cv_argus.pipeline.downloader
 
 # Still a volume even though the image already has the files: an empty named volume is

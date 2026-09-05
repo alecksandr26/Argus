@@ -2,36 +2,39 @@
 
 Everything the rest of the pipeline needs from this subpackage is re-exported here:
 
-- `GeometricRatioFeatureLayer`, `LstmGeometricFeatureModel` — the custom Keras classes for the
-  LSTM path, ported verbatim from `notebook/01_dataset_creation_lstm.ipynb` (source of truth for
-  `GeometricRatioFeatureLayer`) and `notebook/08_deployment_export_lstm.ipynb`
-  (`LstmGeometricFeatureModel`). They must stay importable under these exact names: loading a
-  saved model that uses custom Keras classes requires passing the same class objects back in as
-  `custom_objects`, since Keras can't reconstruct arbitrary `call()` logic from the saved file
-  alone.
-- `download_model` (LSTM, kept as a backwards-compatible alias for `download_lstm_model`) /
-  `download_cnn_model` — fetch trained `.keras` artifacts from Google Drive via `gdown`,
-  skipping the download if already cached in `MODEL_DIR` (see `downloader.py`).
-- `DrowsinessDetector` (LSTM) / `CnnDrowsinessDetector` (CNN) — load a downloaded artifact and
-  wrap it in a `predict_frame(...)`/`predict_crop(...)` call, so `pipeline/` doesn't need to
-  know anything about Keras or either model's internals. The CNN is the model this container
-  actually deploys right now — see `src/cv-argus/CLAUDE.md`'s "Current status" for why both
-  still exist side by side.
+- `GeometricRatioFeatureLayer` — the custom Keras layer computing EAR/MAR/pose ratios, ported
+  verbatim from `notebook/01_dataset_creation_lstm.ipynb` (source of truth). Used directly (not
+  deserialized) by `fused_features.py`'s geometric-feature computation.
+- `download_cnn_model` — fetches `07`'s trained CNN checkpoint from Google Drive via `gdown`
+  (needed as the frozen embedding backbone, see below), skipping the download if already cached
+  in `MODEL_DIR` (see `downloader.py`).
+- `download_fused_model` — fetches the trained fused CNN+LSTM checkpoint
+  (`best_cnn_lstm_frozen_embedding.keras`) the same way. This is the model the container deploys.
+- `CnnDrowsinessDetector` — loads the CNN checkpoint and exposes its penultimate layer as a
+  frozen embedding sub-model (`embedding_submodel()`); no longer used for its own single-frame
+  classification (see `cnn_detector.py`'s module docstring).
+- `FusedDrowsinessDetector` — loads both artifacts, maintains the per-camera-stream sliding
+  window buffer, and exposes `predict_frame(face_crop_rgb, geo_features) -> DetectionResult`.
+  This is the only detector `pipeline/` calls.
+- `compute_fused_geo_features`/`FUSED_GEO_FEATURE_NAMES` (`fused_features.py`) — the 10-feature
+  geometric subset `FusedDrowsinessDetector.predict_frame()` expects.
 """
 
 from .layers import GeometricRatioFeatureLayer
-from .lstm_model import LstmGeometricFeatureModel
-from .downloader import download_model, download_lstm_model, download_cnn_model
-from .detector import DrowsinessDetector, DetectionResult
+from .downloader import download_cnn_model, download_fused_model
+from .detector import DetectionResult
 from .cnn_detector import CnnDrowsinessDetector
+from .fused_detector import FusedDrowsinessDetector
+from .fused_features import compute_fused_geo_features, zero_fused_geo_features, FUSED_GEO_FEATURE_NAMES
 
 __all__ = [
     "GeometricRatioFeatureLayer",
-    "LstmGeometricFeatureModel",
-    "download_model",
-    "download_lstm_model",
     "download_cnn_model",
-    "DrowsinessDetector",
+    "download_fused_model",
     "DetectionResult",
     "CnnDrowsinessDetector",
+    "FusedDrowsinessDetector",
+    "compute_fused_geo_features",
+    "zero_fused_geo_features",
+    "FUSED_GEO_FEATURE_NAMES",
 ]
