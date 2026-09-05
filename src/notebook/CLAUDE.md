@@ -133,10 +133,12 @@ Four model families share two dataset-creation notebooks:
 ## What we found
 
 **Update since this was first written, twice over: `src/cv-argus` moved from the geometric-only
-LSTM (never deployed) to the single-frame CNN (below) to, now, the fused CNN-embedding +
-geometric-feature + LSTM classifier from `11_cnn_lstm_training_drive_pull.ipynb`** — see the
-root `CLAUDE.md`'s "Current deployment status" for the full history and
-`src/cv-argus/CLAUDE.md`'s "Current status" for the deployment-side detail. The single-frame
+LSTM (never deployed) to the single-frame CNN (below) to, now, the binary frozen-CNN-embedding +
+geometric-feature-fusion + LSTM classifier from `11_cnn_lstm_training_drive_pull.ipynb`** (a
+frozen convolutional embedding fused per frame with a FaceLandmarker geometric-feature subset,
+classified over a rolling window as `Not Drowsy` vs. `Drowsy`) — see the root `CLAUDE.md`'s
+"Current deployment status" for the full history and `src/cv-argus/CLAUDE.md`'s "Current status"
+for the deployment-side detail. The single-frame
 CNN's own findings below are historical record now, not the current deployment, but they're
 still the reason a CNN-based approach was worth pursuing at all: **raw pixels carry information
 the geometric features never captured**, and this project's central "temporal context beats a
