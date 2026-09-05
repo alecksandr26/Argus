@@ -42,13 +42,15 @@ far; the rest is design work to be implemented.
   deploys binary labels too (`Not Drowsy`/`Drowsy`) — see the "Working in this repo" section and
   `notebook/CLAUDE.md`'s "Binary migration" for the per-notebook rerun status.
   **That sequence-model pipeline is the long-term intended architecture; what's currently
-  deployed is a related but distinct shape**: `src/cv-argus` deploys a frozen-CNN-embedding +
-  geometric-feature fusion + LSTM classifier (MediaPipe Face Detector/BlazeFace crop → frozen
-  CNN embedding, fused per-timestep with a FaceLandmarker geometric-feature subset → LSTM over a
-  rolling window), not the original FaceLandmarker → windowed-geometric-features-only → LSTM
-  design this section describes — a real result finally beat that original plan's absence with
-  a validated architecture of its own, rather than settling for the single-frame CNN that had
-  been the default before it. See `src/cv-argus/CLAUDE.md`'s "Current status" for the deployed
+  deployed is a related but distinct shape**: `src/cv-argus` deploys a **binary
+  frozen-CNN-embedding + geometric-feature-fusion + LSTM classifier** — a MediaPipe Face
+  Detector/BlazeFace crop → a frozen **convolutional** network's 64-dim embedding, fused
+  per-timestep with a FaceLandmarker geometric-feature subset (EAR/MAR ratios + selected
+  blendshapes) → an **LSTM** over a rolling window, output `Not Drowsy` vs. `Drowsy` — not the
+  original FaceLandmarker → windowed-geometric-features-only → LSTM design this section
+  describes. A real result finally beat that original plan's absence with a validated
+  architecture of its own, rather than settling for the single-frame CNN that had been the
+  default before it. See `src/cv-argus/CLAUDE.md`'s "Current status" for the deployed
   pipeline's real numbers and open caveats, and `notebook/CLAUDE.md`'s "`11_
   cnn_lstm_training_drive_pull.ipynb`'s fixed rerun" section for where the underlying result
   came from. Keep this
@@ -135,10 +137,11 @@ firmware described in "Planned end-to-end system architecture" don't exist yet.
 - `src/cv-argus/` — the Raspberry Pi 5 edge module: loads a trained model from the notebook and
   runs live inference against camera frames, end to end (camera/video-file source → MediaPipe →
   model inference → an output sink), not just the model-loading piece. **Deploys one pipeline: a
-  frozen-CNN-embedding + geometric-feature fusion + LSTM classifier** (MediaPipe Face
-  Detector/BlazeFace crop → frozen CNN embedding, fused per-timestep with a FaceLandmarker
-  geometric-feature subset → LSTM over a rolling window) — the project's best measured result
-  (see "Current deployment status" below). Two earlier pipelines (a single-frame CNN, and a
+  binary frozen-CNN-embedding + geometric-feature-fusion + LSTM classifier** (MediaPipe Face
+  Detector/BlazeFace crop → a frozen convolutional network's 64-dim embedding, fused per-timestep
+  with a FaceLandmarker geometric-feature subset → an LSTM over a rolling window, output
+  `Not Drowsy` vs. `Drowsy`) — the project's best measured result (see "Current deployment
+  status" below). Two earlier pipelines (a single-frame CNN, and a
   windowed-geometric-only LSTM matching the original design above) were removed once this
   result made both obsolete; see `src/cv-argus/CLAUDE.md`'s "Current status" for the full
   history and this module's own `CLAUDE.md`'s "What this module is" for why. Built as a
@@ -163,10 +166,12 @@ firmware described in "Planned end-to-end system architecture" don't exist yet.
   inform feature and model choices.
 
 **Current deployment status, stated plainly since it's easy to lose track of amid the history
-below: `src/cv-argus` deploys one pipeline — the frozen-CNN-embedding + geometric-feature
-fusion + LSTM classifier from `11_cnn_lstm_training_drive_pull.ipynb`.** This wasn't the first
-thing deployed; the record of what was tried and rejected along the way is worth keeping,
-because each step is a real, measured reason the next one won:
+below: `src/cv-argus` deploys one pipeline — the binary frozen-CNN-embedding +
+geometric-feature-fusion + LSTM classifier from `11_cnn_lstm_training_drive_pull.ipynb`** (a
+frozen convolutional embedding + a FaceLandmarker geometric-feature subset, fused per frame and
+classified over a rolling window as `Not Drowsy` vs. `Drowsy`). This wasn't the first thing
+deployed; the record of what was tried and rejected along the way is worth keeping, because each
+step is a real, measured reason the next one won:
 
 - **First deployed: the single-frame CNN** (`07_cnn_training.ipynb`'s model, `36.67%` accuracy /
   `0.3614` macro-F1 single-fold; `35.93% ± 9.07%` across a 3-fold subject-CV diagnostic, against

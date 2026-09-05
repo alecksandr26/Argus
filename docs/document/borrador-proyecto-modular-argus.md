@@ -44,13 +44,15 @@ literalmente *"el proyecto no se encuentra claramente delimitado"*.
 
 ✅ **Por qué esta decisión es la correcta para un documento de *registro*, no solo la más
 cómoda de escribir:**
-1. Es la única de las dos que tiene código real corriendo detrás (el notebook entrenado, el
-   andamiaje Docker de `cv-argus`) — un comité de titulación puede pedir ver el prototipo
-   funcionando, y hoy eso es MediaPipe+LSTM en Python, no C++/INT8/XNNPACK.
-2. El modelo matemático que ya está *validado estadísticamente* (Spearman/Kruskal-Wallis
-   sobre 59 features, comparación RandomForest vs. LSTM) es el del notebook, no un PERCLOS
-   con umbral fijo — y el criterio 2.3 pide justificar la selección del algoritmo, que aquí
-   ya está hecho con evidencia, mientras que "PERCLOS ≥1.5s" es una regla fija sin ese respaldo.
+1. Es la única de las dos que tiene código real corriendo detrás (el pipeline de notebooks
+   entrenado, el módulo `cv-argus` desplegado y corriendo) — un comité de titulación puede
+   pedir ver el prototipo funcionando, y hoy eso es MediaPipe + CNN+LSTM en Python, no
+   C++/INT8/XNNPACK.
+2. La selección del algoritmo ya está *respaldada con evidencia medida* (el techo estadístico
+   de las features de un solo frame, correlación de Spearman máxima |r|=0.26; la comparación
+   sistemática de cuatro familias de modelo — ver Parte 6), no un PERCLOS con umbral fijo — y
+   el criterio 2.3 pide justamente esa justificación, mientras que "PERCLOS ≥1.5s" es una regla
+   fija sin ese respaldo.
 3. Este documento es para *registrar* el proyecto, no un reporte final de titulación — el
    criterio de no-aprobación **A** ("objetivos no alcanzables en los tiempos establecidos") y
    **B** ("el prototipo no es viable") castigan justo lo contrario de lo que conviene aquí:
@@ -91,15 +93,17 @@ más abajo, aplica igual aquí.)*
 > incumplimiento generalizado de la NOM-087. Argus es un sistema de monitoreo del conductor
 > (DMS) que augmenta —sin reemplazar— al operador: una capa preventiva que detecta
 > somnolencia en tiempo real mediante visión artificial y actúa antes de que ocurra un
-> microsueño. El sistema combina un módulo de inferencia en el borde (Raspberry Pi 5, MediaPipe
-> + una CNN cuyo embedding se fusiona con features geométricas faciales y se alimenta a una
-> LSTM sobre una ventana temporal) con un microcontrolador (ESP32) responsable de alertas,
-> frenado preventivo y comunicación, y un buffer local que garantiza continuidad sin cobertura
-> celular. El modelo final (fusión CNN+LSTM) alcanzó **84.24% de exactitud** y **0.8375 de F1
-> macro** en sujetos de prueba nunca vistos en entrenamiento — casi el doble del F1 de una CNN
-> de un solo frame (0.5273) sobre los mismos sujetos. Los hallazgos confirman que combinar
-> contexto temporal con características visuales crudas supera a un enfoque de un solo frame
-> para clasificar somnolencia (binaria: alerta / somnoliento) en hardware de borde de bajo costo.
+> microsueño. El sistema combina un módulo de inferencia en el borde (Raspberry Pi 5) con un
+> microcontrolador (ESP32) responsable de alertas, frenado preventivo y comunicación, y un
+> buffer local que garantiza continuidad sin cobertura celular. El modelo de IA es un
+> clasificador **binario** (`Not Drowsy` / `Drowsy`) que fusiona, por cada instante, el
+> *embedding* de una red **convolucional** (CNN) congelada —entrenada sobre el recorte
+> facial— con un subconjunto de características geométricas faciales, y clasifica esa secuencia
+> con una red **LSTM** sobre una ventana temporal. Alcanzó **84.24% de exactitud** y **0.8375
+> de F1 macro** en sujetos de prueba nunca vistos en entrenamiento — casi el doble del F1 de
+> una CNN de un solo frame (0.5273) sobre los mismos sujetos. Los hallazgos confirman que
+> combinar contexto temporal con características visuales crudas supera a un enfoque de un solo
+> frame para clasificar somnolencia en hardware de borde de bajo costo.
 
 *(~140 palabras con los números ya puestos.)*
 
@@ -110,18 +114,30 @@ números de abajo sí vienen de una corrida real, documentada y verificada del p
 — ver `notebook/CLAUDE.md`'s "`11_cnn_lstm_training_drive_pull.ipynb`'s fixed rerun" para el
 detalle completo:
 
-| Modelo | Accuracy (test) | F1 macro | Notas |
-|---|---|---|---|
-| CNN de un solo frame (recorte facial → CNN) | 59.64% | 0.5273 | primer resultado binario real, referencia — no es el modelo desplegado |
-| **CNN+LSTM (embedding CNN congelado + features geométricas fusionadas → LSTM)** | **84.24%** (84.38% en el umbral de decisión elegido) | **0.8375** (0.8379 en el umbral) | **modelo final, el que despliega `cv-argus`** |
+| Modelo | Accuracy (test) | F1 macro | Recall `Drowsy` | Notas |
+|---|---|---|---|---|
+| RandomForest (7 features geométricas curadas) | 32.6% | — | 0.13 | baseline de un solo frame — techo estadístico confirmado |
+| Red densa (Dense NN, 58 features planas) | 38.6–40.8% | — | — | baseline de un solo frame — mismo techo |
+| CNN de un solo frame (recorte facial → CNN) | 59.64% | 0.5273 | — | primer resultado binario real, referencia — no es el modelo desplegado |
+| CNN+LSTM (backbone entrenado de cero) | 62.29% | 0.6078 | 0.47 | variante comparada, no desplegada |
+| **CNN+LSTM (embedding CNN congelado + features geométricas → LSTM)** | **84.24%** (84.38% en el umbral `t*`) | **0.8375** (0.8379 en `t*`) | **0.73** (0.71 en `t*`) | **modelo final, el que despliega `cv-argus`** |
+| Ensemble (0.5·de-cero + 0.5·congelado) | 82.99% | 0.8255 | 0.73 | probado, *peor* que el congelado solo — no se despliega |
+
+Sobre 1 440 ventanas de prueba de 10 sujetos nunca vistos (780 `Not Drowsy` / 660 `Drowsy`).
+Matriz de confusión del modelo final (umbral argmax): 731 / 49 en la fila `Not Drowsy`,
+178 / 482 en la fila `Drowsy`.
+
+![Matriz de confusión — CNN+LSTM (embedding congelado)](img/cnn-lstm-confusion-matrix.png)
 
 ⚠️ **Caveats reales que hay que mantener en el reporte, no esconder:** es un solo fold
 (`StratifiedGroupKFold`, sujetos nunca compartidos entre train/val/test), sin validación cruzada
 todavía — la propia experiencia del proyecto con otros modelos ha mostrado variaciones de
-hasta ±9 puntos de F1 macro entre folds con un número de sujetos similar. Tampoco se ha
-corrido todavía de punta a punta contra hardware real de Raspberry Pi (ver Parte 9). Redactar
-estos números como "el mejor resultado medido hasta ahora", no como "resultado validado en
-producción".
+hasta ±9 puntos de F1 macro entre folds con un número de sujetos similar. Las curvas de
+entrenamiento (ver Parte 8) muestran una brecha train/val real: la exactitud de entrenamiento
+sube a ~0.99 mientras la de validación se queda en la banda 0.80–0.85 — no colapsa, pero
+tampoco converge. Tampoco se ha corrido todavía de punta a punta contra hardware real de
+Raspberry Pi (ver Parte 9). Redactar estos números como "el mejor resultado medido hasta
+ahora", no como "resultado validado en producción".
 
 ---
 
@@ -477,6 +493,29 @@ selección de algoritmos.
   detección). Es la única opción de las evaluadas con inferencia en tiempo real ya validada en
   hardware de borde de bajo costo — el mismo perfil de la Raspberry Pi 5 donde corre Argus.
 
+**Resultados medidos del modelo final** (`11_cnn_lstm_training_drive_pull.ipynb`, backbone
+congelado; 1 440 ventanas de prueba, 10 sujetos held-out):
+
+| Clase | Precisión | Recall | F1 | Soporte |
+|---|---|---|---|---|
+| `Not Drowsy` | 0.80 | 0.94 | 0.87 | 780 |
+| `Drowsy` | 0.91 | 0.73 | 0.81 | 660 |
+| **accuracy** | | | **0.8424** | 1 440 |
+| **macro avg** | 0.86 | 0.83 | **0.8375** | 1 440 |
+
+**Selección del umbral de decisión** — se barre el umbral sobre `p(Drowsy)` en el conjunto de
+validación y se elige, entre los umbrales con recall de `Drowsy` ≥ 0.70, el de mejor precisión:
+`t*=0.57`. En prueba, `t*` da 84.38% accuracy / 0.8379 F1 macro (`Drowsy` P 0.93 / R 0.71) —
+prácticamente idéntico al argmax, señal de que el modelo está bien calibrado, no de que el
+umbral esté "salvando" el resultado.
+
+![Barrido de umbral sobre p(Drowsy) — validación](img/cnn-lstm-threshold-sweep.png)
+
+**Exactitud por duración de ventana** (¿ayuda más contexto temporal?): 3s → 0.839, 5s → 0.844,
+10s → 0.843, 20s → 0.856. Plana — pero a este nivel alto la lectura es favorable para el
+despliegue: una ventana corta ya captura casi toda la señal que captura una larga, lo que
+permite una latencia baja en el Pi sin sacrificar exactitud.
+
 ⚠️ **Caveats que hay que mantener explícitos en el reporte, no solo en este borrador:** el
 84.24%/0.8375 es de un solo fold (`StratifiedGroupKFold`, sujetos disjuntos entre train/val/test),
 sin validación cruzada todavía — el propio proyecto ha visto variaciones de hasta ±9 puntos de F1
@@ -520,8 +559,8 @@ en el reporte, no la parte REST):
   central) en N camiones sigue siendo N clientes de *un mismo* sistema centralizado —
   exactamente el patrón que la segunda nota en negritas descalifica, solo que multiplicado
   por flota. Lo que sí cuenta como cómputo distribuido real es que **el procesamiento pesado
-  (inferencia del modelo LSTM sobre video) ocurre en el borde, dentro de cada camión, en vez
-  de mandar video crudo a un servidor central para procesarlo ahí** — eso sí es
+  (inferencia del modelo CNN+LSTM sobre video) ocurre en el borde, dentro de cada camión, en
+  vez de mandar video crudo a un servidor central para procesarlo ahí** — eso sí es
   "procesamiento distribuido" (una de las opciones del criterio 3.1.4): la carga de cómputo
   está descentralizada por diseño, no por escala. Ese punto, combinado con la comunicación
   directa Pi↔ESP32 de abajo, es donde se sostiene el módulo — no en "hay muchas copias
@@ -618,6 +657,13 @@ frontend.
 > la LSTM de fusión) y se integró en `cv-argus`, el módulo de borde: hoy corre de punta a punta
 > contra una cámara en vivo o un video grabado, con una ventana deslizante ligera (vectores
 > numéricos, no imágenes acumuladas) manteniendo el estado entre frames.
+
+**Curvas de entrenamiento del modelo final** — se muestran tal cual, con la brecha train/val
+visible, porque es parte honesta del resultado: la exactitud de entrenamiento sube a ~0.99
+mientras la de validación se mantiene estable en 0.80–0.85 (no colapsa, que es lo que sí hacían
+las variantes descartadas). El checkpoint guardado es el de mejor `val_macro_f1`, no el último.
+
+![Curvas de exactitud y pérdida — entrenamiento vs. validación](img/cnn-lstm-training-curves.png)
 
 ⚠️ **Caveats que van en esta sección junto con el resultado, no escondidos en una nota aparte:**
 el número es de un solo fold, sin validación cruzada todavía; no se ha corrido de punta a punta
@@ -749,10 +795,11 @@ transporte de carga mexicano, UL-DD, artículos de industria), más los 4 papers
 
 ## Resumen de todas las preguntas abiertas (para decidir en equipo/con el asesor)
 
-1. ~~🔴 Arquitectura vigente~~ — ✅ **Resuelto:** FastAPI + MongoDB + MediaPipe
-   FaceLandmarker/LSTM (lo que hay en código, ver Parte 1.2 y Parte 6) es la base del documento
-   de registro. AWS-serverless queda como dirección futura posible, mencionada en condicional
-   en la Parte 9, sin detalle técnico comprometido en las Partes 4, 5, 6 o 7.
+1. ~~🔴 Arquitectura vigente~~ — ✅ **Resuelto:** FastAPI + MongoDB en la nube; en el borde,
+   MediaPipe (Face Detector + FaceLandmarker) + el modelo binario CNN+LSTM fusionado (lo que hay
+   en código, ver Parte 1.2 y Parte 6) es la base del documento de registro. AWS-serverless
+   queda como dirección futura posible, mencionada en condicional en la Parte 9, sin detalle
+   técnico comprometido en las Partes 4, 5, 6 o 7.
 2. ~~¿LSTM o red feedforward?~~ — ✅ **Resuelto, y el modelo final tampoco es un LSTM puro sobre
    features geométricas**: es una fusión del embedding de una CNN (sobre el recorte facial) con
    features geométricas, alimentando una LSTM sobre una ventana temporal — ver Parte 6 para el
@@ -789,7 +836,9 @@ transporte de carga mexicano, UL-DD, artículos de industria), más los 4 papers
 *Generado/actualizado a partir de: `CLAUDE.md` (raíz), `src/notebook/CLAUDE.md`,
 `src/cv-argus/CLAUDE.md`, `src/cv-argus/README.md`, `src/notebook/07_cnn_training.ipynb`,
 `src/notebook/11_cnn_lstm_training_drive_pull.ipynb` (fuente de los números 84.24%/0.8375 del
-modelo final — ver Parte 6/8), `docs/document/Analisis formato proyecto modular.docx`,
+modelo final, y de las figuras en `docs/document/img/` — matriz de confusión, barrido de umbral
+y curvas de entrenamiento, extraídas de las celdas de salida de ese notebook),
+`docs/document/Analisis formato proyecto modular.docx`,
 `docs/criteria/Formato_Proyecto_Modular V2.docx`, `docs/criteria/criteriosaprobacion_0.pdf`,
 `docs/argus-descripción-proyecto.pdf`, `docs/Argus_Definicion_Tecnica.docx.pdf`,
 `docs/references/*` (5 archivos, 1 resultó ser un PDF roto — ver Parte 3).

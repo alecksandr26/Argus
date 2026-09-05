@@ -15,17 +15,21 @@ binary — `Not Drowsy` vs. `Drowsy`**, and this module now labels binary too:
 `detector.py`'s `_CLASS_NAMES` and `mjpeg_output_stage.py`'s status-colour map are both
 `{Not Drowsy, Drowsy}`.
 
-**This module deploys exactly one pipeline: the fused CNN-embedding + geometric-feature + LSTM
-classifier** (`notebook/11_cnn_lstm_training_drive_pull.ipynb`'s frozen-embedding variant) — see
-"Current status" below for its measured accuracy and open caveats. Two earlier pipelines — a
-single-frame CNN (`notebook/07_cnn_training.ipynb`, deployed by itself for a while) and a
+**This module deploys exactly one pipeline: the binary frozen-CNN-embedding +
+geometric-feature-fusion + LSTM classifier** (`notebook/11_cnn_lstm_training_drive_pull.ipynb`'s
+frozen-embedding variant). End to end: a MediaPipe BlazeFace face crop → a frozen
+**convolutional** network's 64-dim penultimate embedding, fused per frame with a 10-feature
+MediaPipe FaceLandmarker geometric subset (EAR/MAR ratios + selected blendshapes) → an **LSTM**
+over a rolling window of up to 100 frames, output **`Not Drowsy` vs. `Drowsy`**. See "Current
+status" below for its measured accuracy and open caveats. Two earlier pipelines — a single-frame
+CNN (`notebook/07_cnn_training.ipynb`, deployed by itself for a while) and a
 windowed-geometric-only LSTM (`notebook/01_dataset_creation_lstm.ipynb` →
 `03_model_training_lstm.ipynb` → `08_deployment_export_lstm.ipynb`) — were removed once this
-fused result made both obsolete (see the root `CLAUDE.md`): the single-frame CNN's own macro-F1
-(0.5273) was roughly half the fused model's (0.8375) on the same held-out subjects, and the
+result made both obsolete (see the root `CLAUDE.md`): the single-frame CNN's own macro-F1
+(0.5273) was roughly half this model's (0.8375) on the same held-out subjects, and the
 geometric-only LSTM was never deployed to begin with. The CNN checkpoint from the first of those
 two is still downloaded and loaded, though — not for its own classification, but as the frozen
-embedding backbone the fused model's LSTM was trained on top of (see `cnn_detector.py`).
+convolutional embedding backbone this model's LSTM was trained on top of (see `cnn_detector.py`).
 `notebook/ArgusMLModel.ipynb` is the retired monolith the whole pipeline was originally split
 from — don't reference it in new work. See `notebook/CLAUDE.md` for the full pipeline this
 module now draws on (the CNN and CNN+LSTM model families it deploys, and the
@@ -39,14 +43,15 @@ and a real entry point (`src/main.py` plus `src/__main__.py`, so it's runnable a
 `python -m cv_argus` — the Dockerfile's `CMD` — as well as `python -m cv_argus.main`, or
 installed as the `cv-argus-run` console script via `setup.py`'s `entry_points`) all exist.
 
-**This module deploys one pipeline: the frozen-CNN-embedding + geometric-feature + LSTM
-classifier, `notebook/11_cnn_lstm_training_drive_pull.ipynb`'s frozen-embedding variant.**
-Measured **84.24% test accuracy / 0.8375 macro-F1** (binary Not Drowsy/Drowsy) on held-out
-subjects — by far the best result in the project, roughly double the single-frame CNN's own
-macro-F1 (0.5273) on the same subjects, which is why that earlier pipeline (and the
-never-deployed windowed-geometric-only LSTM before it) was removed rather than kept as an
-alternative — see "What this module is" above and the root `CLAUDE.md`. **Not yet
-cross-validated**: one subject-grouped train/val/test split, no k-fold, no variance estimate.
+**This module deploys one pipeline: the binary frozen-CNN-embedding +
+geometric-feature-fusion + LSTM classifier, `notebook/11_cnn_lstm_training_drive_pull.ipynb`'s
+frozen-embedding variant.** Measured **84.24% test accuracy / 0.8375 macro-F1** (binary
+`Not Drowsy` / `Drowsy`) on held-out subjects — by far the best result in the project, roughly
+double the single-frame CNN's own macro-F1 (0.5273) on the same subjects, which is why that
+earlier pipeline (and the never-deployed windowed-geometric-only LSTM before it) was removed
+rather than kept as an alternative — see "What this module is" above and the root `CLAUDE.md`.
+**Not yet cross-validated**: one subject-grouped train/val/test split, no k-fold, no variance
+estimate.
 
 `model/fused_detector.py`'s `FusedDrowsinessDetector` and `model/fused_features.py` (the
 10-feature geometric subset this model fuses with the CNN embedding) load two artifacts: the
