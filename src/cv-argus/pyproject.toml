@@ -11,3 +11,22 @@
 [build-system]
 requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
+
+# --- Test suite (see tests/ and tests/README-ish note in tests/conftest.py) ---------------
+# The default `pytest` run is hermetic: no network, no camera, no Google Drive, no model
+# download. Every downloader test either exercises the skip-if-cached path or monkeypatches
+# `gdown` / `urllib`. The one non-hermetic tier is `-m docker` (builds and runs the image);
+# it is deselected by default and additionally skips itself unless CV_ARGUS_DOCKER_TESTS=1.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Deselect the docker tier from a plain `pytest`; run it explicitly with `-m docker`.
+addopts = "-m 'not docker'"
+markers = [
+    "docker: builds/runs the Docker image end to end (opt-in: needs `docker` on PATH and CV_ARGUS_DOCKER_TESTS=1; slow, pulls ~1GB)",
+]
+filterwarnings = [
+    # TensorFlow / protobuf / mediapipe drag in a long tail of DeprecationWarnings that aren't
+    # this project's to fix; keep test output readable.
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
