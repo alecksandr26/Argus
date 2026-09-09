@@ -24,12 +24,15 @@ frame, a face crop, a `DetectionResult`, ...) without any upstream stage needing
 import logging
 import queue
 import threading
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+from .latency import StageStats
 
 if TYPE_CHECKING:
     from ..model.detector import DetectionResult
@@ -67,6 +70,14 @@ class FrameContext:
     face_found: bool = False
     features: dict[str, Any] = field(default_factory=dict)
     detection: "DetectionResult | None" = None
+    # Capture wall-clock (monotonic seconds), stamped when the source builds this context.
+    # Used only for end-to-end latency in `StageStats` (see `latency.py`) — how stale the frame
+    # a sink is acting on is by the time it gets there.
+    created_at: float = field(default_factory=time.monotonic)
+    # Instrumentation only: monotonic seconds when this context was last put on a stage's input
+    # queue (overwritten each hop by `Stage._emit`). A consumer diffs it on dequeue to get that
+    # hop's queue-wait time. Not part of the data model — ignore it in stage logic.
+    enqueued_at: float | None = None
 
 
 class Stage(ABC):
@@ -85,6 +96,7 @@ class Stage(ABC):
         maxsize: int = DEFAULT_QUEUE_MAXSIZE,
         drop_oldest_when_full: bool = False,
         queue_get_timeout: float = DEFAULT_QUEUE_GET_TIMEOUT,
+        stats_interval: float = 0.0,
     ) -> None:
         self.name = name
         self.input_queue: queue.Queue | None = None if is_source else queue.Queue(maxsize=maxsize)
@@ -93,6 +105,16 @@ class Stage(ABC):
         self._queue_get_timeout = queue_get_timeout
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        # Per-stage timing / queue-depth / drop instrumentation. Silent unless the interval is
+        # > 0 — `Pipeline.__init__` pushes the configured value in via `set_stats_interval()`.
+        self.stats = StageStats(
+            name, stats_interval, role="produce" if is_source else "process"
+        )
+
+    def set_stats_interval(self, interval: float) -> None:
+        """Set the `StageStats` report interval (seconds; 0 disables). Called by
+        `Pipeline.__init__` before any stage thread starts."""
+        self.stats.set_interval(interval)
 
     def connect(self, downstream: "Stage") -> "Stage":
         """Wire this stage's output to `downstream`'s input queue. Returns `downstream`, so
@@ -135,6 +157,12 @@ class Stage(ABC):
         default; override in a subclass that owns something worth releasing explicitly."""
 
     def _emit(self, item: Any) -> None:
+        if isinstance(item, FrameContext):
+            # Stamp when this frame enters the queue so the downstream consumer can measure how
+            # long it waited there (see `_run_consumer` / `StageStats.record_wait`). On a
+            # fan-out the last queue's stamp wins -- close enough, the consumers dequeue within
+            # microseconds of each other.
+            item.enqueued_at = time.monotonic()
         for q in self.output_queues:
             if not self.drop_oldest_when_full:
                 q.put(item)  # blocking -> backpressure; the correct default off a live source
@@ -146,6 +174,7 @@ class Stage(ABC):
             try:
                 q.put_nowait(item)
             except queue.Full:
+                self.stats.record_drop()
                 try:
                     q.get_nowait()
                 except queue.Empty:
@@ -180,20 +209,32 @@ class Stage(ABC):
 
     def _run_consumer(self) -> None:
         while not self._stop_event.is_set():
+            # Sampled before the get() so it reflects the backlog waiting on this stage, not
+            # the post-dequeue depth. A stage sitting at maxsize is downstream of the
+            # bottleneck (or is the bottleneck) -- see latency.py's module docstring.
+            self.stats.record_qdepth(self.input_queue.qsize())
             try:
                 item = self.input_queue.get(timeout=self._queue_get_timeout)
             except queue.Empty:
+                self.stats.maybe_report()
                 continue
             if item is _SENTINEL:
                 break
+            started = time.monotonic()
+            if isinstance(item, FrameContext) and item.enqueued_at is not None:
+                self.stats.record_wait(started - item.enqueued_at)
             try:
                 result = self.process_item(item)
             except Exception:
                 # One bad frame shouldn't kill the pipeline -- log it and keep consuming.
                 logger.exception("%s: error processing item, skipping", self.name)
                 continue
+            self.stats.record_process(time.monotonic() - started)
+            if isinstance(self, OutputStage) and isinstance(item, FrameContext):
+                self.stats.record_e2e(time.monotonic() - item.created_at)
             if result is not None:
                 self._emit(result)
+            self.stats.maybe_report()
 
     def _run_source(self) -> None:
         raise NotImplementedError(f"{type(self).__name__} has input_queue=None but doesn't override _run_source()")
@@ -220,6 +261,10 @@ class SourceStage(Stage):
             if self._stop_event.is_set():
                 break
             self._emit(item)
+            # `proc` on a source's report line is the frame-grab cost, recorded by the concrete
+            # source around its own `cap.read()` / `capture_array()` call (see `sources.py`) --
+            # the effective capture fps is then ~ n / interval on that line.
+            self.stats.maybe_report()
 
     @abstractmethod
     def produce(self) -> Iterator[Any]:
@@ -248,10 +293,16 @@ class Pipeline:
     them as a group, in the right order.
     """
 
-    def __init__(self, stages: list[Stage]) -> None:
+    def __init__(self, stages: list[Stage], *, stats_interval: float = 0.0) -> None:
         """`stages` should be every stage in the graph, upstream-to-downstream — used to decide
-        join order on `stop()`, not to (re-)connect them; connect stages explicitly first."""
+        join order on `stop()`, not to (re-)connect them; connect stages explicitly first.
+
+        `stats_interval` (seconds, 0 = off) is applied to every stage's `StageStats` here so
+        `main.py` sets it once rather than threading it through six stage constructors — see
+        `latency.py`."""
         self.stages = stages
+        for stage in stages:
+            stage.set_stats_interval(stats_interval)
 
     def start(self) -> None:
         for stage in self.stages:
