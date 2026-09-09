@@ -3,6 +3,9 @@ exercises the actual correctness risk (thread startup order, sentinel propagatio
 shutdown on a source that finishes on its own, `Pipeline.is_alive()`) without needing
 MediaPipe/TensorFlow or any downloaded model at all.
 
+The maintained version of these checks is `tests/test_pipeline_stage.py` (run via `pytest`);
+this script is kept as a zero-config, standalone way to eyeball the same plumbing.
+
 Not imported by `cv_argus` at runtime — like the rest of `scripts/`, run this by hand:
 
     python scripts/smoke_test_pipeline.py

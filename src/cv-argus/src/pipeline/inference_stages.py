@@ -44,4 +44,8 @@ class FusedInferenceStage(Stage):
             )
             return ctx
         ctx.detection = self._detector.predict_frame(ctx.features["face_crop_rgb"], fused_geo)
+        # Break this stage's proc time into "embed" (frozen CNN) and "lstm" (sequence model)
+        # on the StageStats report line -- see FusedDrowsinessDetector.last_phase_seconds.
+        for phase, seconds in self._detector.last_phase_seconds.items():
+            self.stats.record_phase(phase, seconds)
         return ctx

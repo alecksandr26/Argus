@@ -31,8 +31,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Unbuffered stdout/stderr: without this Python block-buffers its output when the container
+# isn't attached to a TTY, so `docker compose logs` (and the per-stage StageStats latency
+# lines in particular -- see cv_argus.pipeline.latency) arrive in delayed bursts instead of
+# streaming.
+ENV PYTHONUNBUFFERED=1
+
 # Install pinned deps before copying source so `docker build` cache reuses this (slow,
 # mediapipe/tensorflow-heavy) layer as long as requirements.txt hasn't changed.
+RUN pip install --no-cache-dir --upgrade pip
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -43,7 +50,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # requirements.txt already installed everything in install_requires. pyproject.toml has to be
 # copied in too (see that file) -- without it pip falls back to a legacy editable-install mode
 # that ignores setup.py's package_dir remap entirely and `import cv_argus` fails at runtime.
-COPY pyproject.toml setup.py .
+COPY pyproject.toml setup.py ./
 COPY src ./src
 RUN pip install --no-cache-dir --no-deps -e .
 

@@ -4,6 +4,10 @@ __pycache__/
 .pytest_cache/
 .git
 .env
+# The test suite is never needed inside the image (nothing COPYs it in anyway); keeping it out
+# of the build context also stops an edit under tests/ from busting the Docker layer cache.
+tests/
+.venv/
 models/
 *.keras
 *.task

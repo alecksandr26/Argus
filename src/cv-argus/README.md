@@ -65,6 +65,8 @@ including model-artifact overrides not covered here).
 | `SOURCE` | `video_capture` | Where frames come from: `video_capture` (`cv2.VideoCapture`, driven by `CAMERA_SOURCE`) or `picamera` (the Pi 5's CSI camera — see "On the Pi 5" below). |
 | `OUTPUTS` | `logging` | Comma-separated sink(s): `logging` (text only) and/or `mjpeg` (the browser-viewable demo stream — e.g. `OUTPUTS=logging,mjpeg`). |
 | `DEMO_STREAM_PORT` | `8080` | Only read when `OUTPUTS` includes `mjpeg`. Change if `8080` is already taken on your machine. |
+| `LATENCY_LOG_INTERVAL` | `10` | Seconds between per-stage latency / queue-depth / dropped-frame report lines (see "Finding the bottleneck" below). `0` disables them. |
+| `LOG_LEVEL` | `INFO` | Root log level. `DEBUG` also prints a line per processed frame and the drop-oldest debug logs. |
 
 There's one pipeline — the frozen-CNN-embedding + geometric-feature + LSTM classifier — see
 `CLAUDE.md`'s "Current status" for its measured accuracy and caveats.
@@ -103,6 +105,50 @@ hardware yet — if the camera doesn't show up, run `ls /dev/video*` and `ls /de
 the Pi itself and compare against that file's `devices:` list; it may need adjusting. CPU
 performance for this model on a Pi 5 is also unmeasured — if it feels slow, that's expected to
 be checked, not a sign something's broken.
+
+## Finding the bottleneck
+
+Every stage logs a timing summary every `LATENCY_LOG_INTERVAL` seconds (default 10). Watch
+them with `docker compose logs -f` (or straight to the console with `docker compose up`):
+
+```
+stats video_capture.produce: n=300 proc(mean=3.2ms p50=3 p95=6 max=12) drop=250 life(n=1500 max=33ms)
+stats face_detector_crop.process: n=48 wait(mean=33ms p95=40 max=41) proc(mean=61.3ms p50=58 p95=98 max=140) inq(avg=3.8 max=4) drop=0 life(...)
+stats face_landmarker_crop.process: n=48 wait(mean=0.2ms ...) proc(mean=22.1ms p50=21 p95=30 max=44) inq(avg=0.2 max=2) drop=0 life(...)
+stats fused_inference.process: n=48 wait(mean=0.1ms ...) proc(mean=41.0ms p50=39 p95=63 max=90) embed(mean=27.0ms ...) lstm(mean=13.5ms ...) inq(avg=1.1 max=4) drop=0 life(...)
+stats logging_output.process: n=48 wait(mean=0.1ms ...) proc(mean=0.1ms ...) e2e(mean=520ms p95=690) drop=0 life(...)
+```
+
+A frame's whole trip, and which number is which:
+
+```
+video_capture.produce  proc = grabbing one frame (cap.read)
+   │  queue
+face_detector_crop      wait = time queued   proc = MediaPipe BlazeFace + crop
+   │  queue
+face_landmarker_crop    wait = time queued   proc = MediaPipe FaceLandmarker + geo features
+   │  queue
+fused_inference         wait = time queued   proc = model  → embed = frozen CNN, lstm = sequence model
+   │  queue
+logging_output          wait = time queued   proc ≈ 0       e2e = grab-to-here (the whole trip)
+```
+
+- **`proc(mean=...)`** — work done *inside* the stage. The **largest one is the compute
+  bottleneck** (here `face_detector_crop` at ~61 ms → the pipeline can't exceed ~16 fps).
+- **`wait(mean=...)`** — how long the frame sat in that stage's input queue first. The stage
+  with the **biggest `wait`** is where frames pile up (it's right in front of the bottleneck).
+  All the `wait`s + all the `proc`s ≈ the sink's `e2e`; the rest is scheduling.
+- **`embed` / `lstm`** on `fused_inference` — that stage's `proc` split into the frozen CNN
+  embed vs. the LSTM predict, so you can tell which half of the model to worry about.
+- **`inq(avg=.. max=N)`** — input-queue depth (capacity 4). A stage **pinned at `max=4`** is
+  the bottleneck or right behind it.
+- **`drop=`** — frames the source shed because downstream couldn't keep up (only the source
+  drops). A big number means the camera produces far faster than the pipeline consumes —
+  expected until frame-rate capping is added.
+- **`e2e(mean=...)`** — capture-to-output latency at the sink. The "it feels laggy" number.
+- source `.produce` line: `n / LATENCY_LOG_INTERVAL` ≈ the raw capture fps.
+
+`LATENCY_LOG_INTERVAL=0` turns all of this off.
 
 ## Troubleshooting
 
@@ -156,11 +202,39 @@ be checked, not a sign something's broken.
   doesn't refresh an existing one. Run `docker compose down -v` first — see `CLAUDE.md`'s "Model
   download strategy" → "Gotcha this creates" for the full explanation.
 
+## Running the tests
+
+```sh
+cd src/cv-argus
+pip install -e .          # once -- maps src/ to the cv_argus import name (see setup.py)
+pytest                    # the full unit suite
+```
+
+The default run is **hermetic** — no network, no camera, no Google Drive, no model download.
+Every downloader test either exercises the skip-if-cached path or monkeypatches `gdown` /
+`urllib`. It needs `tensorflow` + `mediapipe` + `opencv` installed (the same deps the app
+needs); `pip install -e .` pulls them in.
+
+There is a second, opt-in tier that actually builds and runs the Docker image:
+
+```sh
+CV_ARGUS_DOCKER_TESTS=1 pytest -m docker
+```
+
+It is deselected from a plain `pytest` and additionally skips itself unless `docker` is on
+`PATH` and `CV_ARGUS_DOCKER_TESTS=1` — the build pulls ~1GB of TensorFlow plus the model
+artifacts and takes minutes. It checks the image builds, `import cv_argus` works inside it,
+the four model artifacts are baked into `/app/models`, re-running the downloaders is a cached
+no-op, and the `SOURCE`/`OUTPUTS` guards reject bad values.
+
 ## Where to go next
 
 - [`CLAUDE.md`](CLAUDE.md) — the real architecture: the `Stage`/`Pipeline` threading design, the
   fused pipeline's measured accuracy and open caveats, exact model input/output shapes, and
   every convention worth knowing before changing code here.
+- [`tests/`](tests/) — the `pytest` suite (mirrors `src/`: `test_model_*`, `test_pipeline_*`,
+  `test_main.py`, plus the opt-in `test_docker_build.py`).
 - [`scripts/smoke_test_pipeline.py`](scripts/smoke_test_pipeline.py) — a synthetic test of the
   threading/queue plumbing itself, runnable with no camera, no model, and none of `cv2`/
-  `mediapipe`/`tensorflow` installed.
+  `mediapipe`/`tensorflow` installed. `tests/test_pipeline_stage.py` is the maintained
+  `pytest` version of the same checks.
