@@ -26,6 +26,11 @@ Env vars:
   running).
 - `DEMO_STREAM_HOST`/`DEMO_STREAM_PORT` (default `"0.0.0.0"`/`8080`) — only read if `OUTPUTS`
   includes `"mjpeg"`.
+- `LOG_LEVEL` (default `"INFO"`) — root log level. `DEBUG` also surfaces `LoggingOutputStage`'s
+  per-frame lines and the drop-oldest debug logs.
+- `LATENCY_LOG_INTERVAL` (default `"10"`) — seconds between per-stage `StageStats` report
+  lines (timing, input-queue depth, dropped-frame count, end-to-end latency at the sink — see
+  `cv_argus.pipeline.latency`). `0` disables them.
 """
 
 import logging
@@ -95,6 +100,18 @@ def _build_outputs() -> list[OutputStage]:
     return outputs
 
 
+def _latency_log_interval() -> float:
+    """Seconds between `StageStats` report lines (`LATENCY_LOG_INTERVAL`, default 10; 0 = off).
+    A malformed value falls back to the default rather than aborting startup over a logging
+    knob."""
+    raw = os.environ.get("LATENCY_LOG_INTERVAL", "10").strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logger.warning("LATENCY_LOG_INTERVAL=%r is not a number, using 10", raw)
+        return 10.0
+
+
 def _build_pipeline() -> Pipeline:
     face_detector_bundle = download_face_detector_bundle()
     face_landmarker_bundle = download_face_landmarker_bundle()
@@ -109,16 +126,24 @@ def _build_pipeline() -> Pipeline:
     source.connect(crop_stage).connect(landmarker_crop_stage).connect(inference_stage)
     for output in outputs:
         inference_stage.connect(output)
-    return Pipeline([source, crop_stage, landmarker_crop_stage, inference_stage, *outputs])
+    return Pipeline(
+        [source, crop_stage, landmarker_crop_stage, inference_stage, *outputs],
+        stats_interval=_latency_log_interval(),
+    )
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
     logger.info(
-        "cv-argus starting (SOURCE=%s, OUTPUTS=%s)",
+        "cv-argus starting (SOURCE=%s, OUTPUTS=%s, LATENCY_LOG_INTERVAL=%s)",
         os.environ.get("SOURCE", "video_capture"),
         os.environ.get("OUTPUTS", "logging"),
+        os.environ.get("LATENCY_LOG_INTERVAL", "10"),
     )
     pipeline = _build_pipeline()
 

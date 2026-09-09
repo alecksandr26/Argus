@@ -19,11 +19,20 @@ services:
         FUSED_MODEL_DRIVE_FILE_ID: ${FUSED_MODEL_DRIVE_FILE_ID:-}
     image: argus/cv-argus:dev
     env_file:
-      - .env
+      # Optional: every value here has a checked-in default (src/constants.py for the Drive
+      # ids, the `environment:` block below for the rest), so `docker compose up` works with
+      # no .env at all. `required: false` stops Compose erroring on a missing file.
+      - path: .env
+        required: false
     environment:
       - CAMERA_SOURCE=${CAMERA_SOURCE:-0}
       - SOURCE=${SOURCE:-video_capture}
       - OUTPUTS=${OUTPUTS:-logging}
+      # Diagnostics: per-stage timing / queue-depth / dropped-frame / end-to-end latency lines
+      # every LATENCY_LOG_INTERVAL seconds (0 disables). LOG_LEVEL=DEBUG also shows per-frame
+      # detection lines. See cv_argus.pipeline.latency and the README's "Finding the bottleneck".
+      - LATENCY_LOG_INTERVAL=${LATENCY_LOG_INTERVAL:-10}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DEMO_STREAM_HOST=${DEMO_STREAM_HOST:-0.0.0.0}
       - DEMO_STREAM_PORT=${DEMO_STREAM_PORT:-8080}
     # Only actually listened on when OUTPUTS includes "mjpeg" (see src/main.py,
