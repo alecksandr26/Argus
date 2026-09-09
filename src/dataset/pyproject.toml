@@ -27,6 +27,11 @@ dependencies = [
 # Notebook 02's statistical-analysis cells (Spearman / Kruskal-Wallis / logistic-regression
 # baseline). Only needed for `build_frame_features.py --analysis`; never for the artifacts.
 analysis = ["scipy>=1.11", "scikit-learn>=1.4", "seaborn>=0.13", "matplotlib>=3.8"]
+# Live preview window for `scripts/collect_clips.py` webcam recording. The base dep is
+# `opencv-python-headless` (no GUI); this swaps in the full build. Do NOT install both in one
+# env — pip will, and the duplicate native libs crash at import. Without this the collector
+# still records fine, just headless (fixed --duration, Ctrl-C to stop early).
+collect = ["opencv-python>=4.9,<5"]
 # `tests/test_geometry_equiv.py` cross-checks the NumPy port against the real tf.keras layer.
 dev = ["pytest>=8", "tensorflow>=2.16,<2.17", "pyarrow>=15"]
 

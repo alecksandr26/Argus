@@ -17,7 +17,8 @@ Colab-runnable reference. Every tunable that has to match a notebook lives in
 
 The raw video tree is `raw/raw_videos/subject_NN/level_<1-2>_clip_NN.mp4` and must already be
 **binary-labelled** — `level_1` = Not Drowsy, `level_2` = Drowsy. There is no relabel step; the
-builds read this tree directly.
+builds read this tree directly. Use `scripts/collect_clips.py` (below) to get clips into it with
+the right names.
 
 ## Setup (one time)
 
@@ -61,6 +62,52 @@ python scripts/publish_to_drive.py                   # rewrite paths, tar crops,
 ```
 
 Or the whole chain: `scripts/run_all.sh`.
+
+## Collecting new clips
+
+`scripts/collect_clips.py` files clips into `raw/raw_videos/subject_NN/level_<1-2>_clip_NN.mp4`
+with the correct name and a clip number that's always `max(existing) + 1` — it **never
+overwrites**. Every clip is appended to `raw/raw_videos/collection_log.csv` (provenance;
+not read by the builds) the moment it lands.
+
+```bash
+# record two 20 s "Drowsy" clips for a brand-new subject from camera 0
+python scripts/collect_clips.py --subject new --label 2 --count 2 --duration 20
+
+# import existing phone/dashcam files as "Not Drowsy" clips for subject_07
+python scripts/collect_clips.py --subject 7 --not-drowsy --from-file ~/vids/*.mp4
+python scripts/collect_clips.py --subject 7 --not-drowsy --from-dir ~/vids --reencode --import-fps 20
+
+python scripts/collect_clips.py --list      # inventory: clips per subject per label
+```
+
+`--subject` takes `7`, `07`, `subject_07`, or `new` (next free `subject_NN`). Label via
+`--label {1,2}`, `--drowsy`, or `--not-drowsy`. Imports are copied verbatim unless `--reencode`
+/ `--import-fps` is given. After capture it runs a quick BlazeFace check and warns if a face
+isn't visible in most frames (`--no-face-check` to skip).
+
+Webcam recording works headless (fixed `--duration`, Ctrl-C stops early and keeps the clip).
+For a live preview window install the full OpenCV build: `pip install -e .[collect]` (don't
+keep `opencv-python-headless` alongside it — see `pyproject.toml`).
+
+## Updating the dataset with new raw clips
+
+**The four builds are already incremental.** Re-running any `build_*.py` processes only clips
+not in `processed/.progress/<artifact>.completed.jsonl` and *appends* to the CSV — it never
+regenerates rows it already has. So: collect clips, re-run the build (or `run_all.sh`), done.
+`--reset` is only for a `config.py` change.
+
+`scripts/update_dataset.py` is the cross-artifact view around that:
+
+```bash
+python scripts/update_dataset.py            # status table: per artifact -> done / new / orphan
+python scripts/update_dataset.py --run      # run every build that has new work (+ --enrich)
+python scripts/update_dataset.py --prune    # drop rows whose raw .mp4 was deleted/renamed
+```
+
+"orphan" = a CSV row / completed-log entry whose raw clip is gone. `--prune` removes those
+(and the orphaned `face_crops/*.jpg`); re-run `build_cnn_lstm_windows.py` afterwards to rebuild
+the window index.
 
 ## Pause / resume
 
