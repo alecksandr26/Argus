@@ -102,8 +102,13 @@ mirrors this (`MINORITY_WINDOW_OVERLAP`, per-class tiling spot-check) — keep t
 | `verify.py` | Per-artifact schema/label/relationship checks; `--compare` against a Colab CSV. |
 | `cli.py` | Shared argparse plumbing for `scripts/`. |
 
-`scripts/` are thin (`≤40-line`) argparse wrappers over the package. `run_all.sh` chains them,
-forwarding SIGINT to the active child.
+`scripts/` are thin argparse wrappers over the package — the four `build_*` and
+`fetch_models` / `verify_artifacts` / `publish_to_drive` ones are `≤40 lines`;
+`collect_clips.py` and `update_dataset.py` are larger only because they carry more
+user-facing CLI surface, still with no logic of their own (it lives in `collect.py` /
+`update.py`). `run_all.sh` chains the build steps, forwarding SIGINT to the active child.
+`README.md` is the end-to-end runbook (extraction → build → verify → publish → incremental
+updates).
 
 ## Parallelism — the substantive change vs. the notebooks
 
@@ -146,7 +151,14 @@ Unit of work = one clip (01/02/06) or one crop (09 step 1).
 - **`build_cnn_lstm_windows.py`** — step 1 (slow per-crop geometry) streams to a parquet cache
   with its own completed-log; step 2 (windowing) is fast and pure, always re-run.
 
-## Collection + incremental updates
+## Raw-video sources, collection + incremental updates
+
+Raw video reaches `raw/raw_videos/` two ways. The bulk of the current dataset is **UTA-RLDD**
+sub-clips cut by `src/cv-argus/scripts/extract_uta_rldd_clips.py` (run against downloaded Kaggle
+fold-zips; see its docstring). That script emits UTA-RLDD's native **3-class** `level_<1-3>`
+scheme — it must be collapsed to this module's binary `level_1`/`level_2` before the builds see
+it (`config.map_level` refuses `level_3` with a pointed error). The second source is new
+recordings via `collect_clips.py` (below), which are binary from the start.
 
 `scripts/collect_clips.py` (→ `collect.py`) is the front door for new raw video: it records
 from a webcam or imports existing files into `raw/raw_videos/subject_NN/level_<1-2>_clip_NN.mp4`.
@@ -185,11 +197,16 @@ When you change feature extraction / windowing / sampling here:
 
 ## What's verified vs. not
 
-- **Verified:** the test suite (`pytest` → 19 pass + geometry-equiv; `[dev]` → 20); the NumPy
+- **Verified:** the test suite (`pytest` → 39 pass, 2 skipped without `[dev]`; the 2 skips are
+  the geometry-equivalence and analysis checks that need `tensorflow` / `scipy`); the NumPy
   geometry port vs. the real `tf.keras` layer to `atol=1e-4`; the spawn pool + checkpoint +
-  resume + model-download flow, end to end, on synthetic video.
+  resume + model-download flow end to end on synthetic video; the collector's no-overwrite
+  naming, verbatim / re-encode import, and provenance log (`test_collect.py`); the incremental
+  new-vs-orphan diff and `prune_missing` (`test_update.py`).
 - **Not verified on the dev box:** real MediaPipe inference — it needs system shared libs
   (`libgles2`/`libegl1`/…, see `README.md`) that weren't installable in the environment this
   was built in. So feature-*value* fidelity against a real Colab run is unconfirmed (expected —
   see "Same artifact" above). First real run should `verify_artifacts.py` and, if a Colab CSV
-  is handy, `verify_artifacts.py --compare`.
+  is handy, `verify_artifacts.py --compare`. Real webcam capture in `collect_clips.py` is also
+  unexercised (no camera in that environment) — the import path is tested, the capture loop
+  isn't.
