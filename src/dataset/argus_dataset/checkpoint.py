@@ -92,6 +92,43 @@ class RunCheckpoint:
             df.loc[keep_mask].to_csv(csv_path, index=False)
         return removed
 
+    def prune_missing(self, csv_path: Path, key_cols: tuple[str, str],
+                      existing_keys: set[Key]) -> tuple[int, int]:
+        """Drop every completed-log key — and every artifact CSV row — whose clip key isn't in
+        ``existing_keys`` (the raw ``.mp4`` was deleted or renamed after it was processed).
+
+        Rewrites ``<artifact>.completed.jsonl`` and ``csv_path`` atomically (tmp + replace).
+        Returns ``(log_lines_removed, csv_rows_removed)``. This is the inverse selector to
+        :meth:`reconcile`: reconcile keeps rows whose key IS in the log; this keeps rows whose
+        key still has a file on disk.
+        """
+        keep_keys = self.completed_keys() & existing_keys
+        removed_keys = self.completed_keys() - keep_keys
+
+        if removed_keys and self.completed_log.exists():
+            tmp = self.completed_log.with_suffix(".jsonl.tmp")
+            with open(tmp, "w") as fh:
+                for k in sorted(keep_keys):
+                    fh.write(json.dumps(list(k)) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            tmp.replace(self.completed_log)
+
+        rows_removed = 0
+        if csv_path.exists() and csv_path.stat().st_size > 0:
+            df = pd.read_csv(csv_path)
+            if not df.empty:
+                keep_mask = df[list(key_cols)].apply(
+                    lambda r: (r.iloc[0], r.iloc[1]) in keep_keys, axis=1
+                )
+                rows_removed = int((~keep_mask).sum())
+                if rows_removed:
+                    tmp = csv_path.with_suffix(csv_path.suffix + ".tmp")
+                    df.loc[keep_mask].to_csv(tmp, index=False)
+                    tmp.replace(csv_path)
+
+        return len(removed_keys), rows_removed
+
     # --- progress file ------------------------------------------------------------------
 
     def save_progress(self, *, total_units: int, n_completed: int,
