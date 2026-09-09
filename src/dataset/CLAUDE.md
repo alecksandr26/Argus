@@ -94,14 +94,21 @@ mirrors this (`MINORITY_WINDOW_OVERLAP`, per-class tiling spot-check) — keep t
 | `pipelines.py` | MediaPipe wrappers, ports of the notebook classes: `FaceLandmarkerFeatureExtractor` (VIDEO mode, 01 c85 / 02 c73), `FaceCropExtractor` (BlazeFace, 06 c9), `extract_geo_for_crop` (IMAGE mode, 09 c13). `cv2`/`mediapipe` imported lazily so the parent process can ship these objects to workers without loading native libs early. Each instance holds only picklable primitives — never a live MediaPipe handle. |
 | `windowing.py` | Pure functions, no I/O. `lstm_windows_for_clip` (01 c94 — slide, drop windows with an invalid-pose frame, zero-**pre**-pad to 30, flatten timestep-outer). `contiguous_runs` + `cnn_lstm_windows_for_clip` (09 c14 — per-contiguous-`sample_idx`-run tiling, `geometric_feature_seq` string format; `window_overlap` arg — `0.0`/non-overlapping default, driver passes `CNNLSTM_MINORITY_WINDOW_OVERLAP` for `level_2`, see departure 3). `enrich_frame_features` (02 c106-114 — `EAR_mean` + causal rolling mean/std + `_delta1`). |
 | `workers.py` | The `spawn` pool, per-worker thread pinning + SIGINT-ignore, the atomic `Committer`, the three per-clip task functions (`lstm_task` / `flat_task` / `crops_task`), and `run_video_build` — the resumable driver shared by builds 01/02/06. |
-| `checkpoint.py` | `RunCheckpoint`: `<artifact>.completed.jsonl` (authority for "what's done"), `<artifact>.json` (progress summary), `reconcile` (drop orphan rows), `check_config_or_die` (the `config_hash` guard), `reset`. |
+| `checkpoint.py` | `RunCheckpoint`: `<artifact>.completed.jsonl` (authority for "what's done"), `<artifact>.json` (progress summary), `reconcile` (drop rows for keys missing from the log — interrupted commit), `prune_missing` (drop rows/log keys whose raw `.mp4` is gone — the inverse selector, used by `update.py`), `check_config_or_die` (the `config_hash` guard), `reset`. |
 | `cnn_lstm.py` | Build 09's own driver (not a "video build"): parallel per-crop geometry → `.cache/geo_per_crop.parquet` (resumable), then windowing. |
+| `collect.py` | Clip collection into the raw tree — subject/clip naming (`next_clip_number` = `max+1`, the no-overwrite guarantee), `record_webcam` (headless-capable), `import_file` (copy or re-encode), `append_collection_log` (write-as-you-go provenance), `quick_face_coverage` (optional BlazeFace sanity check). Driven by `scripts/collect_clips.py`. |
+| `update.py` | Incremental-update orchestration: `status` (per-artifact new/orphan diff of the raw tree vs. each `completed.jsonl`), `prune` (drop orphan rows + JPEGs), `run` (the `run_all.sh` build chain as one call). Driven by `scripts/update_dataset.py`. |
 | `assets.py` | Idempotent download of `face_landmarker.task` + `blaze_face_short_range.tflite`. |
 | `verify.py` | Per-artifact schema/label/relationship checks; `--compare` against a Colab CSV. |
 | `cli.py` | Shared argparse plumbing for `scripts/`. |
 
-`scripts/` are thin (`≤40-line`) argparse wrappers over the package. `run_all.sh` chains them,
-forwarding SIGINT to the active child.
+`scripts/` are thin argparse wrappers over the package — the four `build_*` and
+`fetch_models` / `verify_artifacts` / `publish_to_drive` ones are `≤40 lines`;
+`collect_clips.py` and `update_dataset.py` are larger only because they carry more
+user-facing CLI surface, still with no logic of their own (it lives in `collect.py` /
+`update.py`). `run_all.sh` chains the build steps, forwarding SIGINT to the active child.
+`README.md` is the end-to-end runbook (extraction → build → verify → publish → incremental
+updates).
 
 ## Parallelism — the substantive change vs. the notebooks
 
@@ -144,6 +151,37 @@ Unit of work = one clip (01/02/06) or one crop (09 step 1).
 - **`build_cnn_lstm_windows.py`** — step 1 (slow per-crop geometry) streams to a parquet cache
   with its own completed-log; step 2 (windowing) is fast and pure, always re-run.
 
+## Raw-video sources, collection + incremental updates
+
+Raw video reaches `raw/raw_videos/` two ways. The bulk of the current dataset is **UTA-RLDD**
+sub-clips cut by `src/cv-argus/scripts/extract_uta_rldd_clips.py` (run against downloaded Kaggle
+fold-zips; see its docstring). That script emits UTA-RLDD's native **3-class** `level_<1-3>`
+scheme — it must be collapsed to this module's binary `level_1`/`level_2` before the builds see
+it (`config.map_level` refuses `level_3` with a pointed error). The second source is new
+recordings via `collect_clips.py` (below), which are binary from the start.
+
+`scripts/collect_clips.py` (→ `collect.py`) is the front door for new raw video: it records
+from a webcam or imports existing files into `raw/raw_videos/subject_NN/level_<1-2>_clip_NN.mp4`.
+New real drivers continue the existing `subject_NN` numbering (`next_subject_id` = highest + 1);
+there is deliberately **no separate prefix** — the leak-safe subject split downstream keys on the
+folder name, so one namespace is simplest. `next_clip_number` returns `max(existing) + 1` and
+`clip_path` refuses a path that exists, so collection cannot overwrite a clip. Each clip is
+logged to `raw/raw_videos/collection_log.csv` immediately (write-as-you-go, never batched).
+
+**The four builds are already incremental — this is not something to reimplement.** Each keeps
+`<artifact>.completed.jsonl`; `workers.run_video_build` discovers all clips, subtracts the
+completed keys, processes only the remainder, and *appends*. Adding clips + re-running a
+`build_*.py` (or `run_all.sh`, or `update_dataset.py --run`) is the supported update path.
+`--reset` is only for a `config.py` change (the `config_hash` guard, not new data).
+
+`scripts/update_dataset.py` (→ `update.py`) adds the cross-artifact view: `status()` classifies
+every raw clip as done / **new** (not yet processed) / **orphan** (a row or completed-log key
+whose raw `.mp4` was deleted or renamed). Orphan handling is opt-in: `status` only reports,
+`--prune` calls `RunCheckpoint.prune_missing` (rewrites `completed.jsonl` and the CSV, keeping
+only keys whose file still exists) and deletes the orphaned `face_crops/*.jpg`. `cnn_lstm_windows`
+has no `RunCheckpoint` (its geometry cache is keyed by crop path, its window CSV always
+rebuilt), so after a prune re-run `build_cnn_lstm_windows.py` to regenerate the index.
+
 ## The notebook-fidelity contract
 
 When you change feature extraction / windowing / sampling here:
@@ -159,11 +197,16 @@ When you change feature extraction / windowing / sampling here:
 
 ## What's verified vs. not
 
-- **Verified:** the test suite (`pytest` → 19 pass + geometry-equiv; `[dev]` → 20); the NumPy
+- **Verified:** the test suite (`pytest` → 39 pass, 2 skipped without `[dev]`; the 2 skips are
+  the geometry-equivalence and analysis checks that need `tensorflow` / `scipy`); the NumPy
   geometry port vs. the real `tf.keras` layer to `atol=1e-4`; the spawn pool + checkpoint +
-  resume + model-download flow, end to end, on synthetic video.
+  resume + model-download flow end to end on synthetic video; the collector's no-overwrite
+  naming, verbatim / re-encode import, and provenance log (`test_collect.py`); the incremental
+  new-vs-orphan diff and `prune_missing` (`test_update.py`).
 - **Not verified on the dev box:** real MediaPipe inference — it needs system shared libs
   (`libgles2`/`libegl1`/…, see `README.md`) that weren't installable in the environment this
   was built in. So feature-*value* fidelity against a real Colab run is unconfirmed (expected —
   see "Same artifact" above). First real run should `verify_artifacts.py` and, if a Colab CSV
-  is handy, `verify_artifacts.py --compare`.
+  is handy, `verify_artifacts.py --compare`. Real webcam capture in `collect_clips.py` is also
+  unexercised (no camera in that environment) — the import path is tested, the capture loop
+  isn't.
