@@ -24,6 +24,7 @@ vector (see `fused_features.py`), not any MediaPipe result object. Producing tho
 
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -107,6 +108,13 @@ class FusedDrowsinessDetector:
         self._buffer = np.zeros((max_timesteps, self._fused_dim), dtype=np.float32)
         self._mask = np.zeros((max_timesteps,), dtype=bool)
 
+        # Instrumentation only: seconds spent in each half of the last `predict_frame()` call
+        # ("embed" = the frozen CNN, "lstm" = the sequence model). `FusedInferenceStage` reads
+        # this after each call and feeds it to `StageStats` so the report line breaks
+        # `fused_inference`'s proc time into `embed(...)` / `lstm(...)`. Not part of the
+        # prediction contract -- empty until the first call.
+        self.last_phase_seconds: dict[str, float] = {}
+
     @classmethod
     def from_path(
         cls,
@@ -150,10 +158,12 @@ class FusedDrowsinessDetector:
                 resized to `(CNN_IMG_SIZE, CNN_IMG_SIZE)` internally before the embedder runs.
             geo_features: shape `(NUM_FUSED_GEO_FEATURES,)` float32.
         """
+        embed_start = time.monotonic()
         image = tf.convert_to_tensor(face_crop_rgb, dtype=tf.float32)
         image = tf.image.resize(image, [constants.CNN_IMG_SIZE, constants.CNN_IMG_SIZE])
         image = image[tf.newaxis, ...]
         embedding = self._embedder(image, training=False).numpy()[0]  # (embed_dim,)
+        embed_seconds = time.monotonic() - embed_start
 
         fused_frame = np.concatenate([embedding, geo_features]).astype(np.float32)  # (fused_dim,)
 
@@ -165,9 +175,14 @@ class FusedDrowsinessDetector:
         self._mask = np.roll(self._mask, shift=-1)
         self._mask[-1] = True
 
+        lstm_start = time.monotonic()
         probabilities = self._model(
             [self._buffer[np.newaxis, ...], self._mask[np.newaxis, ...]], training=False
         ).numpy()[0]
+        self.last_phase_seconds = {
+            "embed": embed_seconds,
+            "lstm": time.monotonic() - lstm_start,
+        }
 
         is_drowsy = bool(probabilities[self._drowsy_index] >= self._threshold)
         level = int(is_drowsy) + _LEVEL_OFFSET  # 1 = Not Drowsy, 2 = Drowsy

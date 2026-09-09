@@ -410,9 +410,29 @@ pipelines share it before they were removed in favor of the fused one:
 - **`downloader.py`** — `download_face_landmarker_bundle()` and `download_face_detector_bundle()`,
   both called from `src/main.py`'s pipeline builder as well as at Docker build time — see "Model
   download strategy" above.
+- **`latency.py`** — `StageStats`, the per-stage diagnostics every `Stage` owns
+  (`self.stats`). Each stage's own thread feeds it, per frame: `proc` (`process_item()` time —
+  on a source, the `cap.read()`/`capture_array()` grab, timed inside `sources.py`); `wait`
+  (queue time before the stage, from `FrameContext.enqueued_at` stamped by `Stage._emit`);
+  `inq` (input-queue depth, `qsize()` sampled once per consumer loop); drop-oldest drop
+  counts; optional named **phases** (`record_phase()` — `FusedInferenceStage` records `embed`
+  vs `lstm` from `FusedDrowsinessDetector.last_phase_seconds`, splitting the CNN embed from
+  the sequence model). Sinks also feed `e2e` (`time.monotonic() - FrameContext.created_at`,
+  the whole capture-to-output trip). Every `LATENCY_LOG_INTERVAL` seconds (env, default 10;
+  `0` disables — `main.py` reads it, `Pipeline.__init__(..., stats_interval=)` distributes it
+  to every stage before threads start) it logs one
+  `stats <stage>.<role>: wait(...) proc(...) <phases...> inq(...) e2e(...) drop=... life(...)`
+  line under the `cv_argus.pipeline.stats` logger. Full reading guide (highest `proc` = compute
+  bottleneck; highest `wait` = where frames stack up) is in `latency.py`'s module docstring and
+  the README's "Finding the bottleneck". Stdlib only, so it stays on the
+  no-`cv2`/`mediapipe`/`tf` import path. Not thread-safe by design — one instance per stage,
+  one writer thread. This is instrumentation only: it does **not** cap the frame rate or drop
+  frames itself (a `FrameSamplerStage` for that is a planned follow-up — the deployed model was
+  trained at 5 fps sampling, `src/dataset`'s `SAMPLING_FPS`, and the live pipeline currently
+  runs every frame).
 
 `pipeline/__init__.py` re-exports all of the above, but lazily for anything needing `cv2`/
-`mediapipe`/`tensorflow` (everything except `stage.py`, `downloader.py`, and
+`mediapipe`/`tensorflow` (everything except `stage.py`, `latency.py`, `downloader.py`, and
 `output_stages.py`) — see that file's module docstring for why: it keeps `Stage`/`Pipeline`/
 `FrameContext` importable and testable without the full stack installed.
 
@@ -522,6 +542,35 @@ get an actual alert out of this end to end:
 `orchestrator/`, `buffer/`, `sender/`, `alerts/` — `LoggingOutputStage` is the sink until those
 exist. Design work on those remaining modules continues outside this repo — pick up from this
 file rather than re-deriving the plan from scratch.
+
+## Tests
+
+`tests/` is a `pytest` suite mirroring `src/` (`test_model_*`, `test_pipeline_*`,
+`test_main.py`). Run it with `pytest` from `src/cv-argus/` after `pip install -e .`.
+
+- **The default run is hermetic** — no network, no camera, no Google Drive, no model
+  download. That's a hard rule, not an aspiration: every `model/downloader.py` /
+  `pipeline/downloader.py` test either exercises the skip-if-cached branch or monkeypatches
+  `gdown` / `urllib.request.urlretrieve`. Keep it that way — a test that would fetch something
+  belongs behind the `docker` marker (or nowhere).
+- **`FusedDrowsinessDetector` is tested with stub callables** for the fused `.keras` model and
+  the CNN embedder (`test_model_fused_detector.py`) — the real `.keras` files are never loaded
+  in the unit suite. The stubs pin the wrapper's own logic (the zero-pre-pad ring buffer, the
+  crop resize, the `p(Drowsy) >= threshold` decision). `GeometricRatioFeatureLayer` and
+  `compute_fused_geo_features` *do* run real TensorFlow (they're cheap and the maths is the
+  point).
+- The MediaPipe stages (`FaceDetectorCropStage` / `FaceLandmarkerCropStage`) need real
+  `.task`/`.tflite` bundles to construct, so only their pure helpers (`_expand_and_clip_bbox`)
+  are unit-tested; end-to-end MediaPipe coverage is the opt-in Docker tier plus
+  `src/dataset/tests/test_fused_features_equiv.py`.
+- **`test_docker_build.py` is opt-in** (`@pytest.mark.docker`): deselected from a plain
+  `pytest`, and skipped unless `docker` is on `PATH`, `CV_ARGUS_DOCKER_TESTS=1` is set, and the
+  daemon is reachable. It builds the image and checks `import cv_argus` works inside it, the
+  four artifacts are baked into `/app/models`, the downloaders are a cached no-op on re-run,
+  and the `SOURCE`/`OUTPUTS` guards reject bad values. Run it before changing the Dockerfile,
+  the compose files, `constants.py`'s Drive IDs, or the downloader modules.
+- `scripts/smoke_test_pipeline.py` is kept as a standalone hand-run script; its checks are now
+  also in `tests/test_pipeline_stage.py` as the maintained version.
 
 ## Working in this module
 

@@ -76,7 +76,9 @@ class VideoCaptureSource(SourceStage):
             frame_interval = 1.0 / self._target_fps if self._target_fps else None
             next_due = time.monotonic()
             while not self._stop_event.is_set():
+                read_start = time.monotonic()
                 ok, frame_bgr = self._cap.read()
+                self.stats.record_process(time.monotonic() - read_start)  # frame-grab cost
                 if not ok:
                     logger.info("%s: source exhausted or disconnected (%r)", self.name, self._source)
                     break
@@ -135,7 +137,9 @@ class PiCameraSource(SourceStage):
         picam2.start()
         try:
             while not self._stop_event.is_set():
+                capture_start = time.monotonic()
                 frame_bgr = picam2.capture_array()
+                self.stats.record_process(time.monotonic() - capture_start)  # frame-grab cost
                 yield FrameContext(
                     frame_bgr=frame_bgr,
                     timestamp_ms=int(time.monotonic() * 1000),
