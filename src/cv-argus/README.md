@@ -74,6 +74,44 @@ There's one pipeline — the frozen-CNN-embedding + geometric-feature + LSTM cla
 **`mjpeg` has no authentication.** It's meant for demos on a network you trust, not for leaving
 on — see `CLAUDE.md`'s "Demo" section for why this matters more than usual for this project.
 
+## Running it without Docker (local dev)
+
+Docker is the supported way to run this (same image on a laptop and the Pi — see `CLAUDE.md`'s
+"Why a Docker-first workflow"). But for quick iteration you can run it straight from a
+virtualenv:
+
+```sh
+cd src/cv-argus
+python -m venv .venv && . .venv/bin/activate
+pip install -e .                 # installs mediapipe / tensorflow / opencv per setup.py
+MODEL_DIR=./models python -m cv_argus     # <- runs the pipeline; same entry point as the container
+```
+
+Other equivalent entry points: `python -m cv_argus.main`, or the `cv-argus-run` console
+script that `pip install` puts on your PATH.
+
+`MODEL_DIR` defaults to `/app/models` (the container path) — **set it to a writable local
+directory** when running outside Docker. The **trained model + MediaPipe bundles download on
+first run** into `MODEL_DIR` and are reused after that (needs network the first time, ~a few
+hundred MB); the Docker build bakes them into the image instead. Set the rest of the env vars
+inline the same way:
+
+```sh
+MODEL_DIR=./models CAMERA_SOURCE=~/clip.mp4 OUTPUTS=logging,mjpeg LATENCY_LOG_INTERVAL=5 python -m cv_argus
+```
+
+## Running it as a service (the truck cabin)
+
+On the Pi the container is meant to come back up on its own after a power cycle — that's what
+the `docker-compose.pi.yml` overlay's `restart: unless-stopped` is for (see "On the Raspberry
+Pi 5" below). The dev `docker-compose.yml` deliberately leaves that off so a laptop container
+doesn't restart forever while you're iterating.
+
+**Lifecycle:** the process runs until it gets `SIGINT` (Ctrl-C) or `SIGTERM` (`docker compose
+down` / `docker stop`), at which point it shuts every pipeline stage down in order and exits
+cleanly. A **video-file** `CAMERA_SOURCE` also makes it exit on its own when the file ends;
+a live camera runs until stopped.
+
 ## Demo: watching it work
 
 ### On a laptop
@@ -182,8 +220,8 @@ logging_output          wait = time queued   proc ≈ 0       e2e = grab-to-here
   the way it might be for a project with a bundled/offline fallback.
 - **Camera opens but no face is ever detected** — check lighting and that the camera is actually
   pointed at a face; also confirm `CAMERA_SOURCE`/`SOURCE` actually point at the device you think
-  they do (`docker compose logs` will show `cv-argus starting (SOURCE=..., OUTPUTS=...)` on
-  startup, confirming what it's actually using).
+  they do (`docker compose logs` will show `cv-argus starting (SOURCE=..., OUTPUTS=...,
+  LATENCY_LOG_INTERVAL=...)` on startup, confirming what it's actually using).
 - **The `mjpeg` stream shows a solid green/corrupted image instead of the camera feed** — the
   camera opened fine (`cap.read()` reports success) but the negotiated pixel format is wrong;
   this is the single most common cause of "no face ever detected" too, since MediaPipe is
@@ -214,7 +252,9 @@ The default run is **hermetic** — no network, no camera, no Google Drive, no m
 Every downloader test either exercises the skip-if-cached path or monkeypatches `gdown` /
 `urllib`. It needs `tensorflow` + `mediapipe` + `opencv` installed (the same deps the app
 needs); `pip install -e .` pulls them in.
-
+`tests/` mirrors `src/`: `test_model_*`, `test_pipeline_*` (including `test_pipeline_latency.py`
+for the `StageStats` instrumentation), and `test_main.py`. `FusedDrowsinessDetector` is tested
+with **stub** model callables — the real `.keras` files are never loaded in the unit suite.
 There is a second, opt-in tier that actually builds and runs the Docker image:
 
 ```sh
@@ -236,5 +276,5 @@ no-op, and the `SOURCE`/`OUTPUTS` guards reject bad values.
   `test_main.py`, plus the opt-in `test_docker_build.py`).
 - [`scripts/smoke_test_pipeline.py`](scripts/smoke_test_pipeline.py) — a synthetic test of the
   threading/queue plumbing itself, runnable with no camera, no model, and none of `cv2`/
-  `mediapipe`/`tensorflow` installed. `tests/test_pipeline_stage.py` is the maintained
-  `pytest` version of the same checks.
+  `mediapipe`/`tensorflow` installed. `tests/test_pipeline_stage.py` is the maintained `pytest`
+  version of the same checks.

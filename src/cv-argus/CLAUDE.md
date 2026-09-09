@@ -141,10 +141,33 @@ cp .env.example .env   # optional -- see "Model download strategy" below, both d
 docker compose up --build
 ```
 
-`CAMERA_SOURCE` (env var) is passed straight to `cv2.VideoCapture`: `0` for the first
-camera, a `/dev/videoN` path, or a video file path for testing without any camera attached.
-The compose file passes through `/dev/video0` by default — adjust the `devices:` entry to
-match your machine, or drop it entirely when testing against a video file.
+Same process either way it's started: `src/main.py`'s `main()`, reachable as `python -m
+cv_argus` (the Dockerfile `CMD`), `python -m cv_argus.main`, or the `cv-argus-run` console
+script (`setup.py` `entry_points`). It builds one `Pipeline` (`_build_pipeline()`), starts it,
+installs `SIGINT`/`SIGTERM` handlers, and blocks until a signal arrives **or** the source ends
+on its own (`Pipeline.is_alive()` goes false — e.g. a video-file `CAMERA_SOURCE` hitting EOF),
+then `Pipeline.stop()` joins every stage upstream-to-downstream and calls each `close()`.
+
+Env vars `main.py` reads (all optional, all with defaults):
+
+| var | default | effect |
+|---|---|---|
+| `SOURCE` | `video_capture` | `video_capture` (`cv2.VideoCapture`, driven by `CAMERA_SOURCE`) or `picamera` |
+| `CAMERA_SOURCE` | `0` | int index / `/dev/videoN` / video-file path — passed straight to `cv2.VideoCapture` |
+| `OUTPUTS` | `logging` | comma-separated sinks: `logging` and/or `mjpeg` (fanned out via `Stage.connect()`) |
+| `DEMO_STREAM_HOST`/`DEMO_STREAM_PORT` | `0.0.0.0`/`8080` | only read when `OUTPUTS` includes `mjpeg` |
+| `LATENCY_LOG_INTERVAL` | `10` | seconds between `StageStats` report lines; `0` disables (see the `latency.py` bullet) |
+| `LOG_LEVEL` | `INFO` | root log level; `DEBUG` adds `LoggingOutputStage`'s per-frame lines + drop-path debug logs |
+| model-artifact overrides | see `constants.py` | `MODEL_DIR`, `*_DRIVE_FILE_ID`, `*_FILENAME`, `*_BUNDLE_URL` — see "Model download strategy" |
+
+`docker compose` passes `/dev/video0` through by default — adjust the `devices:` entry to
+match your machine, or drop it when testing against a video file. `Dockerfile` sets
+`ENV PYTHONUNBUFFERED=1` so `docker compose logs` (the `StageStats` lines in particular)
+streams instead of arriving in delayed bursts.
+
+**Outside Docker** (`pip install -e .` then `python -m cv_argus`): set `MODEL_DIR` to a
+writable local path first — it defaults to the container path `/app/models`, and the trained
+model + MediaPipe bundles download into it on first run rather than being baked in.
 
 ### Demo: watching it work, on a laptop or on the Pi
 
@@ -546,7 +569,8 @@ file rather than re-deriving the plan from scratch.
 ## Tests
 
 `tests/` is a `pytest` suite mirroring `src/` (`test_model_*`, `test_pipeline_*`,
-`test_main.py`). Run it with `pytest` from `src/cv-argus/` after `pip install -e .`.
+`test_main.py`, `test_constants.py`). Run it with `pytest` from `src/cv-argus/` after
+`pip install -e .`. Config lives in `pyproject.toml`'s `[tool.pytest.ini_options]`.
 
 - **The default run is hermetic** — no network, no camera, no Google Drive, no model
   download. That's a hard rule, not an aspiration: every `model/downloader.py` /
@@ -559,16 +583,20 @@ file rather than re-deriving the plan from scratch.
   crop resize, the `p(Drowsy) >= threshold` decision). `GeometricRatioFeatureLayer` and
   `compute_fused_geo_features` *do* run real TensorFlow (they're cheap and the maths is the
   point).
+- `test_pipeline_latency.py` covers `StageStats` — the aggregates/percentiles, the
+  interval-gated `maybe_report`, the disabled-interval no-op, `wait`/`e2e`/phase/drop
+  recording — with no native deps (it's stdlib-only, like `latency.py` itself).
 - The MediaPipe stages (`FaceDetectorCropStage` / `FaceLandmarkerCropStage`) need real
   `.task`/`.tflite` bundles to construct, so only their pure helpers (`_expand_and_clip_bbox`)
   are unit-tested; end-to-end MediaPipe coverage is the opt-in Docker tier plus
   `src/dataset/tests/test_fused_features_equiv.py`.
 - **`test_docker_build.py` is opt-in** (`@pytest.mark.docker`): deselected from a plain
-  `pytest`, and skipped unless `docker` is on `PATH`, `CV_ARGUS_DOCKER_TESTS=1` is set, and the
-  daemon is reachable. It builds the image and checks `import cv_argus` works inside it, the
-  four artifacts are baked into `/app/models`, the downloaders are a cached no-op on re-run,
-  and the `SOURCE`/`OUTPUTS` guards reject bad values. Run it before changing the Dockerfile,
-  the compose files, `constants.py`'s Drive IDs, or the downloader modules.
+  `pytest` (`addopts = -m 'not docker'`), and skipped unless `docker` is on `PATH`,
+  `CV_ARGUS_DOCKER_TESTS=1` is set, and the daemon is reachable. It builds the image and checks
+  `import cv_argus` works inside it, the four artifacts are baked into `/app/models`, the
+  downloaders are a cached no-op on re-run, and the `SOURCE`/`OUTPUTS` guards reject bad
+  values. Run it before changing the Dockerfile, the compose files, `constants.py`'s Drive IDs,
+  or the downloader modules.
 - `scripts/smoke_test_pipeline.py` is kept as a standalone hand-run script; its checks are now
   also in `tests/test_pipeline_stage.py` as the maintained version.
 
