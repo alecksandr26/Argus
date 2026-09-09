@@ -57,6 +57,12 @@ def raw_dir() -> Path:
     return dataset_root() / "raw" / "raw_videos"
 
 
+def collection_log_csv() -> Path:
+    """Append-only provenance log written by ``scripts/collect_clips.py`` — one row per clip
+    filed into ``raw_dir()``. Not consumed by the builds; safe to read or delete."""
+    return raw_dir() / "collection_log.csv"
+
+
 def processed_dir() -> Path:
     return dataset_root() / "processed"
 
