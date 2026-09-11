@@ -17,12 +17,12 @@ setup(
     package_dir={"cv_argus": "src"},
     packages=[
         "cv_argus",
+        "cv_argus.alerts",
         "cv_argus.model",
         "cv_argus.pipeline",
-        # "cv_argus.orchestrator",
-        # "cv_argus.buffer",
-        # "cv_argus.sender",
-        # "cv_argus.alerts",
+        "cv_argus.orchestrator",
+        "cv_argus.buffer",
+        "cv_argus.sender",
     ],
     # Keep this list in sync with requirements.txt by hand — the Dockerfile installs from
     # requirements.txt, then runs `pip install -e . --no-deps` for this package, so
