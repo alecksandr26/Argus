@@ -525,6 +525,20 @@ mismo que se usó para generar los embeddings de esta corrida — un desajuste a
 precisión en silencio, no con un error visible. Redactar el resultado como "el mejor medido
 hasta ahora", no como validado en producción.
 
+**Corrección de fidelidad encontrada al correr el pipeline completo (cámara → Docker →
+predicción) por primera vez, no solo el modelo en notebook:** nada limitaba la tasa de captura
+en vivo, así que la ventana de 100 frames de la LSTM cubría ~4s de tiempo real en vez de los
+~20s con los que se entrenó (`sampling_fps=5` en la creación del dataset). Se corrigió
+muestreando a 5 fps **en el origen** (antes de correr MediaPipe/CNN/LSTM sobre los frames que se
+van a descartar), para que la ventana en vivo vuelva a corresponder con la de entrenamiento. La
+misma corrida también expuso un bug de rendimiento — la LSTM fusionada se ejecutaba en modo
+eager (~600 ms/frame; con `tf.function` y una firma de entrada fija baja a ~10 ms/frame,
+resultado idéntico) — y sirvió para medir el pipeline bajo un **límite de recursos simulado tipo
+Raspberry Pi 5** (4 núcleos vía `cpuset`/`cpus` de Docker, 8GB de RAM, no hardware ARM real):
+~54% de un núcleo, ~344MB residentes, ~80ms de latencia extremo a extremo por frame muestreado,
+cero frames descartados. Es una medición real bajo un techo simulado fiel, no un sustituto de
+correrlo en una Pi 5 física.
+
 ---
 
 ## Parte 7 — Justificación de Sistemas Distribuidos (Módulo 3)
@@ -705,12 +719,21 @@ final.
 > se despliega a nivel flota.
 >
 > **Trabajo a futuro:**
-> - Validar el desempeño del modelo final (CNN+LSTM fusionado) corriendo en hardware real
->   (Raspberry Pi 5): latencia de inferencia por frame, uso de CPU/memoria en ARM — el 84.24%
->   accuracy / 0.8375 F1 macro reportado en la Parte 8 viene del entrenamiento y evaluación en
->   notebook, no de una corrida en el Pi. Es también, de los modelos comparados, el más pesado
->   por frame muestreado (dos tareas de MediaPipe más dos modelos de Keras), así que esta
->   validación importa más aquí que para un modelo más simple.
+> - Validar el desempeño del pipeline completo corriendo en **hardware ARM real** (Raspberry
+>   Pi 5) — lo que existe hoy es una corrida end-to-end real en CPU de escritorio (cámara →
+>   Docker → predicción) bajo un límite de recursos *simulado* tipo Pi 5 (4 núcleos vía cgroups
+>   de Docker, 8GB de RAM), no una corrida en la tarjeta física: ~54% de un núcleo, ~344MB de
+>   RAM, ~80ms de latencia extremo a extremo por frame muestreado bajo ese límite simulado. Esa
+>   misma corrida corrigió dos problemas reales que una evaluación solo-en-notebook no iba a
+>   exponer nunca: (1) un bug de rendimiento — la LSTM se ejecutaba en modo eager, ~600ms/frame,
+>   corregido a ~10ms/frame con `tf.function` — y (2) un bug de fidelidad al entrenamiento — la
+>   captura en vivo no tenía límite de tasa, así que la ventana de 100 frames de la LSTM cubría
+>   ~4s de tiempo real en vez de los ~20s con los que se entrenó; ahora se muestrea a 5 fps
+>   desde el origen para igualar la tasa de entrenamiento. El 84.24% accuracy / 0.8375 F1 macro
+>   de la Parte 8 sigue viniendo del entrenamiento/evaluación en notebook, no de esta corrida.
+>   Es también, de los modelos comparados, el más pesado por frame muestreado (dos tareas de
+>   MediaPipe más dos modelos de Keras), así que la validación en hardware ARM real (no solo
+>   simulado) importa más aquí que para un modelo más simple.
 > - Correr una validación cruzada (k-fold) sobre el resultado del 84.24%/0.8375 — hoy es un
 >   solo fold agrupado por sujeto, y el propio proyecto ha visto variaciones de hasta ±9 puntos
 >   de F1 macro entre folds en otros modelos con un número similar de sujetos.

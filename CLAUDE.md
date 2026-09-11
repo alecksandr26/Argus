@@ -214,9 +214,19 @@ correctly), it has **not** run on real Pi hardware. That first real run also exp
 inference-speed bug — the fused LSTM was being called eagerly, ~600 ms/frame (a `tf.function`
 wrapper fixed it to ~10 ms; see `src/cv-argus/CLAUDE.md`'s fused-detector section) — so treat
 any earlier "it runs" claim as pre-profiling. It's still the heaviest per-frame pipeline in the
-project (two MediaPipe tasks and two Keras models per sampled frame). See `src/cv-argus/
-CLAUDE.md`'s "Current status" for the full blocker list before treating this as a validated
-production result rather than the best real result the project has produced so far.
+project (two MediaPipe tasks and two Keras models per sampled frame). That first run also
+surfaced a correctness gap, not just a speed one: nothing capped the capture rate, so the
+LSTM's 100-frame window was spanning ~4s of real time instead of the ~20s it was trained on
+(`src/dataset`'s `SAMPLING_FPS = 5`). `src/cv-argus` now samples at 5 fps **at the source**
+(`SAMPLE_FPS`, decimated before any MediaPipe/CNN/LSTM work runs) so the deployed window
+matches training again. The container's `docker-compose.yml` also now defaults to a **simulated
+Raspberry Pi 5 resource envelope** — a cgroup `cpuset`/`cpus` limit to 4 cores plus an 8 GB
+memory cap, not real ARM hardware — under which the whole pipeline (two MediaPipe tasks, the
+CNN embed, the LSTM) measured ~54% of one core and ~344 MB resident, ~80 ms end-to-end per
+sampled frame, zero dropped frames. That's a real, measured number under a faithful *simulated*
+ceiling, not a substitute for running on an actual Pi 5 board — see `src/cv-argus/CLAUDE.md`'s
+"Current status" for the full blocker list before treating this as a validated production
+result rather than the best real result the project has produced so far.
 
 ## Working in this repo
 
