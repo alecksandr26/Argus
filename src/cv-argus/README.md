@@ -1,9 +1,10 @@
 # cv-argus
 
-The Raspberry Pi 5 edge module: camera → MediaPipe → drowsiness-classification model, running
-live in a Docker container. This is the practical "how do I run it" guide — for the
-architecture, why things are built the way they are, and the deep notebook-fidelity contract,
-see [`CLAUDE.md`](CLAUDE.md) instead.
+The Raspberry Pi 5 edge module: camera → MediaPipe → drowsiness-classification model → an
+alert-decision loop that queues Alerts/RouteStatus heartbeats locally (SQLite) for a Bluetooth
+hand-off to the ESP32 — running live in a Docker container. This is the practical "how do I run
+it" guide — for the architecture, why things are built the way they are, and the deep
+notebook-fidelity contract, see [`CLAUDE.md`](CLAUDE.md) instead.
 
 ## Quick start
 
@@ -30,6 +31,11 @@ To actually **watch** it work instead of reading log lines, see "Demo" below.
 - Network access at build time, to download the pretrained MediaPipe bundles and the trained
   model weights (all baked into the image at `docker build`, not fetched later at container
   start — see `CLAUDE.md`'s "Why a Docker-first workflow" for why).
+- **A Bluetooth adapter, only if you want `sender/`'s real transport running.** Neither compose
+  file passes through real Bluetooth access yet (see `CLAUDE.md`'s "Open decisions"), so
+  `docker-compose.yml` defaults `SENDER_TRANSPORT=none` — alerts and RouteStatus heartbeats
+  still get decided and queued in `buffer/`'s SQLite file, there's just nothing yet dequeuing
+  them. Nothing extra is needed to run the quick start below as-is.
 
 ## What you'll see
 
@@ -70,9 +76,16 @@ including model-artifact overrides not covered here).
 | `LOG_LEVEL` | `INFO` | Root log level. `DEBUG` also prints a line per processed frame and the drop-oldest debug logs. |
 | `CV_ARGUS_NUM_THREADS` | `4` (in Docker) | Pins BLAS/OpenMP/TensorFlow/OpenCV thread pools. Unset outside Docker (full speed). See "Simulating the Raspberry Pi 5". |
 | `CV_ARGUS_CPUSET` / `CV_ARGUS_CPUS` / `CV_ARGUS_MEM` | `0-3` / `4` / `8g` | Container cgroup limits — the 4-core / 8 GB Pi 5 ceiling. Docker-only. |
+| `BUFFER_DIR` / `BUFFER_DB_FILENAME` | `/app/data` / `buffer.sqlite3` | Where `buffer/`'s SQLite alert queue lives — matches the `buffer-data` volume. |
+| `SENDER_TRANSPORT` | `none` (this file) / `bluetooth` (main.py's own default) | `bluetooth` (real `BluetoothSppListener` — needs a real adapter + device passthrough, see "Prerequisites") or `none` (no `SenderServer`; alerts just accumulate unsent in `buffer/`). |
+| `BLUETOOTH_CHANNEL` | `4` | Only read when `SENDER_TRANSPORT=bluetooth`: the RFCOMM channel `BluetoothSppListener` binds. |
 
-There's one pipeline — the frozen-CNN-embedding + geometric-feature + LSTM classifier — see
-`CLAUDE.md`'s "Current status" for its measured accuracy and caveats.
+There's one detection pipeline — the frozen-CNN-embedding + geometric-feature + LSTM classifier
+— see `CLAUDE.md`'s "Current status" for its measured accuracy and caveats. Downstream of a
+detection, `orchestrator/` decides whether to raise an Alert (debounce + cooldown) or emit a
+periodic RouteStatus("OK") heartbeat, `buffer/` persists both to SQLite, and `sender/` answers
+the ESP32's Bluetooth poll for unsent records — see `CLAUDE.md`'s "`orchestrator/`, `buffer/`,
+`sender/`, `alerts/` — done" for the full design.
 
 **`mjpeg` has no authentication.** It's meant for demos on a network you trust, not for leaving
 on — see `CLAUDE.md`'s "Demo" section for why this matters more than usual for this project.
@@ -292,9 +305,15 @@ Every downloader test either exercises the skip-if-cached path or monkeypatches 
 `urllib`. It needs `tensorflow` + `mediapipe` + `opencv` installed (the same deps the app
 needs); `pip install -e .` pulls them in.
 `tests/` mirrors `src/`: `test_model_*`, `test_pipeline_*` (including `test_pipeline_latency.py`
-for the `StageStats` instrumentation), and `test_main.py`. `FusedDrowsinessDetector` is tested
-with **stub** model callables — the real `.keras` files are never loaded in the unit suite.
-There is a second, opt-in tier that actually builds and runs the Docker image:
+for the `StageStats` instrumentation), `test_alerts_*`, `test_buffer_*`, `test_orchestrator_*`,
+`test_sender_*`, and `test_main.py`. `FusedDrowsinessDetector` is tested with **stub** model
+callables — the real `.keras` files are never loaded in the unit suite. The alert-pipeline
+tests are just as hermetic in kind: `test_buffer_store.py`/`test_sender_server.py` use a real
+SQLite file under `tmp_path` (never a fixed path), `test_sender_*` uses an in-memory
+`FakeTransport`/`FakeListener` pair instead of a real Bluetooth socket, and
+`test_orchestrator_decision.py` uses a plain duck-typed stand-in for `DetectionResult` instead
+of the real (tensorflow-backed) class. All of that is part of the default `pytest` run above,
+not a separate tier. There is a second, opt-in tier that actually builds and runs the Docker image:
 
 ```sh
 CV_ARGUS_DOCKER_TESTS=1 pytest -m docker
@@ -309,11 +328,19 @@ no-op, and the `SOURCE`/`OUTPUTS` guards reject bad values.
 ## Where to go next
 
 - [`CLAUDE.md`](CLAUDE.md) — the real architecture: the `Stage`/`Pipeline` threading design, the
-  fused pipeline's measured accuracy and open caveats, exact model input/output shapes, and
-  every convention worth knowing before changing code here.
+  fused pipeline's measured accuracy and open caveats, the `orchestrator/`/`buffer/`/`sender/`/
+  `alerts/` design (decision loop, SQLite schema, the Bluetooth PULL/ACK protocol), exact model
+  input/output shapes, and every convention worth knowing before changing code here.
 - [`tests/`](tests/) — the `pytest` suite (mirrors `src/`: `test_model_*`, `test_pipeline_*`,
-  `test_main.py`, plus the opt-in `test_docker_build.py`).
+  `test_alerts_*`, `test_buffer_*`, `test_orchestrator_*`, `test_sender_*`, `test_main.py`, plus
+  the opt-in `test_docker_build.py`).
 - [`scripts/smoke_test_pipeline.py`](scripts/smoke_test_pipeline.py) — a synthetic test of the
   threading/queue plumbing itself, runnable with no camera, no model, and none of `cv2`/
   `mediapipe`/`tensorflow` installed. `tests/test_pipeline_stage.py` is the maintained `pytest`
   version of the same checks.
+- **What's still genuinely open, not just undocumented**: real Bluetooth device passthrough
+  isn't wired into either compose file yet (`SENDER_TRANSPORT=none` is this file's safe
+  default — see "Prerequisites" and `CLAUDE.md`'s "Open decisions"); no ESP32 firmware/hardware
+  exists in this repo, so `BluetoothSppTransport` itself is untested against a real device; and
+  whether the CNN checkpoint the fused model depends on is provenance-matched to what it was
+  trained against is still unverified (see `CLAUDE.md`'s "Current status").

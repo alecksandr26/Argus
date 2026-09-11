@@ -51,6 +51,19 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DEMO_STREAM_HOST=${DEMO_STREAM_HOST:-0.0.0.0}
       - DEMO_STREAM_PORT=${DEMO_STREAM_PORT:-8080}
+      # sender/'s Bluetooth SPP server. main.py's own code-level default is "bluetooth" (the
+      # eventual production intent), but this file's default is deliberately "none": neither
+      # this compose file nor docker-compose.pi.yml passes through a real Bluetooth device yet
+      # (see the `devices:` comment below), so "bluetooth" would fail BluetoothSppListener's
+      # socket.bind() at startup and crash the whole process before the pipeline even starts --
+      # confirmed directly (constructing it on a machine with no Bluetooth adapter raises
+      # OSError immediately). Same reasoning as `restart: unless-stopped` below: this dev/base
+      # file picks the safe default, override with SENDER_TRANSPORT=bluetooth once real
+      # passthrough is added and verified against actual hardware (see
+      # src/cv-argus/CLAUDE.md's "Open decisions"). Until then, alerts/route-status heartbeats
+      # just accumulate unsent in buffer/ -- nothing is lost, there's just nothing serving them.
+      - SENDER_TRANSPORT=${SENDER_TRANSPORT:-none}
+      - BLUETOOTH_CHANNEL=${BLUETOOTH_CHANNEL:-4}
     # Only actually listened on when OUTPUTS includes "mjpeg" (see src/main.py,
     # pipeline/mjpeg_output_stage.py) — harmless to always publish otherwise, nothing binds the
     # container-side port if that output stage was never built. No authentication on that
@@ -67,6 +80,13 @@ services:
       # camera (SOURCE=picamera) needs different device passthrough entirely — see
       # docker-compose.pi.yml, not this file.
       - /dev/video0:/dev/video0
+      # NOT YET ADDED: sender/'s real Bluetooth transport (SENDER_TRANSPORT=bluetooth) needs a
+      # device passed through here too -- a `/dev/rfcommN` device, or the host's BlueZ/D-Bus
+      # socket -- neither is wired into this file yet (flagged, not solved; don't fabricate a
+      # specific path without real Pi 5 hardware to verify it against, same convention as the
+      # camera device list above). Until this is added, SENDER_TRANSPORT=bluetooth will fail to
+      # bind inside the container even though the code path itself works (see
+      # src/cv-argus/CLAUDE.md's "Open decisions").
 
 volumes:
   model-cache:
