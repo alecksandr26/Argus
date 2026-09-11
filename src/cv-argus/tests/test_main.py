@@ -7,11 +7,39 @@ import logging
 
 import pytest
 
-from cv_argus import main
+from cv_argus import constants, main
 from cv_argus.pipeline import LoggingOutputStage
 from cv_argus.pipeline.sources import PiCameraSource, VideoCaptureSource
 
 LOGGER = "cv_argus.main"
+
+
+class TestSampleFps:
+    def test_default_when_unset(self, monkeypatch):
+        monkeypatch.delenv("SAMPLE_FPS", raising=False)
+        assert main._sample_fps() == constants.DEFAULT_SAMPLE_FPS
+
+    def test_parses_an_integer_value(self, monkeypatch):
+        monkeypatch.setenv("SAMPLE_FPS", "10")
+        assert main._sample_fps() == 10.0
+
+    def test_parses_a_float_value(self, monkeypatch):
+        monkeypatch.setenv("SAMPLE_FPS", "2.5")
+        assert main._sample_fps() == 2.5
+
+    def test_zero_disables_the_cap(self, monkeypatch):
+        monkeypatch.setenv("SAMPLE_FPS", "0")
+        assert main._sample_fps() == 0.0
+
+    def test_negative_is_clamped_to_zero(self, monkeypatch):
+        monkeypatch.setenv("SAMPLE_FPS", "-3")
+        assert main._sample_fps() == 0.0
+
+    def test_malformed_falls_back_to_default_with_warning(self, monkeypatch, caplog):
+        monkeypatch.setenv("SAMPLE_FPS", "fast")
+        with caplog.at_level(logging.WARNING, logger=LOGGER):
+            assert main._sample_fps() == constants.DEFAULT_SAMPLE_FPS
+        assert any("not a number" in r.message for r in caplog.records)
 
 
 class TestCameraSource:
@@ -50,6 +78,27 @@ class TestBuildSource:
         monkeypatch.setenv("SOURCE", "webcam9000")
         with pytest.raises(SystemExit, match="Unknown SOURCE"):
             main._build_source()
+
+    def test_sample_fps_env_var_reaches_video_capture_source(self, monkeypatch):
+        monkeypatch.delenv("SOURCE", raising=False)
+        monkeypatch.setenv("SAMPLE_FPS", "12")
+        source = main._build_source()
+        assert source._target_fps == 12.0
+
+    def test_sample_fps_env_var_reaches_pi_camera_source(self, monkeypatch):
+        monkeypatch.setenv("SOURCE", "picamera")
+        monkeypatch.setenv("SAMPLE_FPS", "12")
+        source = main._build_source()
+        assert source._frame_rate == 12.0
+
+    def test_sample_fps_zero_disables_the_cap_on_either_source(self, monkeypatch):
+        monkeypatch.setenv("SAMPLE_FPS", "0")
+
+        monkeypatch.delenv("SOURCE", raising=False)
+        assert main._build_source()._target_fps is None
+
+        monkeypatch.setenv("SOURCE", "picamera")
+        assert main._build_source()._frame_rate is None
 
 
 class TestBuildOutputs:
