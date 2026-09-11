@@ -1,20 +1,20 @@
 /**
  * TypeScript shapes for the Argus domain entities.
  *
- * Field names are copied verbatim from the ER model
- * (`docs/designs/ER-model.drawio.xml` / the Lucid JSON export) so that when the
- * FastAPI backend and its Pydantic models exist, these line up 1:1 and the only
- * work is deleting the fixtures — see INTEGRATION.md gap #2. That's also why a
- * couple of names look "wrong" (`reviwed_by_operator`, `blod_type` in the source
- * model): they're kept as the model spells them, with the corrected spelling
- * only where the model itself already uses it.
+ * Field names line up 1:1 with `src/backend-argus/app/models/*.py` and its Pydantic
+ * schemas, now that the backend exists — see that module's CLAUDE.md for the full
+ * old (ER-diagram) -> new field-name table. The ER diagram itself
+ * (`docs/designs/ER-model.drawio.xml`) had a couple of typos (`reviwed_by_operator`,
+ * `blod_type`) that are now corrected everywhere, here included; treat the diagram
+ * as historical, not the live source of truth.
  *
- * The `*_status` string unions below do NOT exist in the ER model (it just says
- * `operative_status` with no enumerated values). They're a frontend-side guess
- * for the scaffold and must be reconciled with the backend before this is real.
+ * The `*_status` string unions below still do NOT exist in the ER model (it just
+ * says `operative_status` with no enumerated values) — they remain a frontend-side
+ * guess pending backend confirmation, except `Role`, which now matches the
+ * backend's `Role` enum exactly (see below).
  */
 
-export type Role = 'guard' | 'admin'
+export type Role = 'root_admin' | 'guardian' | 'truck_driver'
 
 export interface User {
   id_user: string
@@ -105,11 +105,16 @@ export interface StatusRoute {
 export type AlertSeverity = 'critical' | 'medium' | 'low'
 
 export interface AlertAiMetadata {
-  /** Which model produced the classification, for the triage readout. */
-  model: string
-  /** Softmax over the 3 drowsiness classes, 0..1. */
-  scores: { alert: number; low_vigilance: number; drowsy: number }
-  clip_seconds: number
+  /** Which model produced the classification, for the triage readout. Nullable: the deployed
+   * cv-argus pipeline doesn't currently expose a per-alert model-version string — see the
+   * backend CLAUDE.md's "Coordination note". */
+  model: string | null
+  /** Probability of Drowsy vs Not Drowsy — the project's binary scheme (root CLAUDE.md's
+   * drowsiness-class migration), not the old 3-class Alert/Low Vigilant/Drowsy split. */
+  scores: { not_drowsy: number; drowsy: number }
+  /** Nullable for the same reason as `model` — no discrete clip duration in the current
+   * pipeline (a rolling window, not a fixed-length clip). */
+  clip_seconds: number | null
 }
 
 export interface Alert {
@@ -122,7 +127,6 @@ export interface Alert {
   coordinates: Coordinates
   speed_at_event: number
   timestamp: string
-  /** ER model spelling kept on purpose. */
-  reviwed_by_operator: boolean
+  reviewed_by_operator: boolean
   operator_notes: string
 }

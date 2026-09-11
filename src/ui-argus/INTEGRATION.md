@@ -42,10 +42,10 @@ exists yet:
    user object anywhere in the app right now, not even a hardcoded stand-in.
 4. **No route guarding.** `src/App.tsx` currently makes every route public — `/fleet` is
    reachable without logging in. Add a `ProtectedRoute` wrapper (redirect to `/login` when
-   unauthenticated) once #3 exists, and a role check on top of it once the backend's `role`
-   values are known (the ER model's `User.role` field doesn't enumerate its possible values
-   anywhere yet — confirm them with whoever builds `/api/users` before hardcoding a role list
-   in the frontend).
+   unauthenticated) once #3 exists, and a role check on top of it — `src/types.ts`'s `Role`
+   now matches `src/backend-argus`'s `Role` enum exactly (`root_admin` / `guardian` /
+   `truck_driver`, see that module's `CLAUDE.md`), so the role list itself is no longer an
+   open question, only the guarding logic is unbuilt.
 5. **No real-time strategy decided.** The Control Tower dashboard's mockup shows a live
    alert feed and live truck positions ("EN VIVO"). Polling `GET /api/alerts` on an interval
    is the simplest option; a WebSocket/SSE push is the more genuine real-time fit and the one
@@ -58,9 +58,9 @@ exists yet:
    `MapContainer` `center`/`zoom`/`bounds` are init-only; `Marker` `position` *is* reactive,
    so live positions move markers for free, but a `useMap()` child effect is needed to re-fit
    the viewport when the fleet moves.
-6. **CORS isn't the frontend's code, but will silently break this if forgotten**: the FastAPI
-   backend will need to allow the Vite dev server's origin (`http://localhost:5173`) once any
-   of the fetches below are wired up.
+6. **CORS** — resolved: `src/backend-argus`'s `CORSMiddleware` allows `http://localhost:5173`
+   (the Vite dev server origin) by default (`CORS_ORIGINS` config var), so this no longer needs
+   separate follow-up once the fetches below are wired up.
 
 ## Per-screen breakdown
 
@@ -69,8 +69,8 @@ exists yet:
 | `src/pages/Login.tsx` | `POST /api/auth/login` | Controlled form; submit routes to `/` with no auth | Real submit handler, error display, on success: store session (#3 above) and redirect by role |
 | `src/App.tsx` (routing shell) | — | Every route public, no session read; `AppLayout` layout route wraps the in-app screens | `ProtectedRoute` wrapper + role-based redirect after login (#4 above) |
 | `src/components/Sidebar.tsx` | — | Ported; shows **both** role nav-groups and fills the footer from the `CURRENT_USER` fixture | Read the logged-in user's name/initials/role from session state; hide the nav-group the role can't see |
-| `src/pages/LiveOps.tsx` | `GET /api/alerts`, `GET /api/routes/:id/status` | Stat tiles / alert feed computed from fixtures; a real `react-leaflet` map (`FleetMap`) with one truck marker per `statusRoutes[]` row, positioned from `current_coordinates`; feed severity filter works; rows link to `/alerts/:id` | Fetching + the real-time strategy from gap #5 (feed `FleetMap` markers from live data; add a `useMap()` child effect to re-fit bounds as the fleet moves); **also a real gap in the committed API list itself**: there's no endpoint to list *all currently-active* routes/trucks at once, only `/api/routes/:id/status` for one route at a time — the dashboard's fleet-wide map and stat tiles need something like `GET /api/routes?status=active`, which doesn't exist in `semantic-design.drawio.xml` yet and should be raised with the backend, not assumed into existence here |
-| `src/pages/AlertTriage.tsx` | `GET /api/alerts/:id`, `PUT /api/alerts/:id` | Looks the alert up in fixtures by `:alertId` (`useParams`); "not found" state; review checkbox + notes are local state, "Save" flips a local flag | Fetch on mount; `PUT` `reviwed_by_operator`/`operator_notes` from the checkbox + textarea; **also unresolved**: `Alert.media_url` — how/where captured clips are stored and served (S3? the backend directly?) isn't decided anywhere yet, so the media placeholder has nothing real to point at |
+| `src/pages/LiveOps.tsx` | `GET /api/routes/active` | Stat tiles / alert feed computed from fixtures; a real `react-leaflet` map (`FleetMap`) with one truck marker per `statusRoutes[]` row, positioned from `current_coordinates`; feed severity filter works; rows link to `/alerts/:id` | Fetching + the real-time strategy from gap #5 (feed `FleetMap` markers from live data; add a `useMap()` child effect to re-fit bounds as the fleet moves). **The "no endpoint lists all active routes" gap this row used to flag is now resolved**: `src/backend-argus` added `GET /api/routes/active`, returning in-progress routes each embedded with their latest status + truck/driver refs specifically for this screen — see that module's `CLAUDE.md` for why it's a dedicated endpoint rather than `?status=active` |
+| `src/pages/AlertTriage.tsx` | `GET /api/alerts/:id`, `PUT /api/alerts/:id` | Looks the alert up in fixtures by `:alertId` (`useParams`); "not found" state; review checkbox + notes are local state, "Save" flips a local flag | Fetch on mount; `PUT` `reviewed_by_operator`/`operator_notes` from the checkbox + textarea; **also unresolved**: `Alert.media_url` — how/where captured clips are stored and served (S3? the backend directly?) isn't decided anywhere yet, so the media placeholder has nothing real to point at |
 | `src/pages/Fleet.tsx` | `GET/POST/PUT/DELETE /api/trucks` | Table from fixtures with client-side search; row-select → edit panel; add/edit mutate a local `useState` copy | Swap the fixture import for a fetch; point the panel's submit at `POST`/`PUT`, add a delete affordance |
 | `src/pages/Drivers.tsx` | `GET/POST/PUT/DELETE /api/drivers` | Same shape as Fleet | Same as Fleet |
 | `src/pages/TravelManagement.tsx` | `GET/POST/PUT/DELETE /api/routes` | Route table from fixtures with search; "New route" form creates a `scheduled` row in local state | Fetch + real `POST`; the "computed with OSRM on confirm" note means the create submit calls OSRM (directly or backend-proxied — not decided) for `destination_coordinates`/`estimated_arrival` before saving — currently stubbed to `{lat:0,lon:0}` / `null` |

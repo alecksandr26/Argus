@@ -1,0 +1,34 @@
+# Standalone dev loop for this module alone — mirrors src/cv-argus's and src/ui-argus's own
+# per-module compose files (each runnable in isolation, without the rest of the stack). For the
+# whole Argus cloud stack (this backend + Mongo + ui-argus together), see the repo root's
+# docker-compose.yml instead — this file doesn't replace that one, it's for solo-module dev.
+services:
+  backend-argus:
+    build:
+      context: .
+    image: argus/backend-argus:dev
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_DB=${MONGO_DB:-argus}
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-me}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173}
+    ports:
+      - "8000:8000"
+    volumes:
+      # Bind-mounted so --reload picks up edits without a rebuild, same convention as the other
+      # two modules' dev targets.
+      - ./app:/app/app
+    depends_on:
+      - mongo
+
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo-data:/data/db
+
+volumes:
+  mongo-data:
