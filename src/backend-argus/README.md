@@ -98,5 +98,8 @@ defaults so nothing here is required to boot:
    embedded status; `POST /api/alerts` with the seeded truck's device key succeeds, and fails
    with 401 given a wrong/missing key.
 
-None of steps 2-5 have been run in the session that first wrote this module — see `CLAUDE.md`'s
-"Current status" for exactly what has and hasn't been verified so far.
+**All five steps above have been run for real**, including step 5's device-key checks — see
+`CLAUDE.md`'s "Current status" for the exact commands and results. What's still unverified: real
+concurrent load, Mongo running as anything but a single local container, and driving this
+backend from an actual browser session rather than `curl` (since `ui-argus` doesn't call any
+real API yet — see its own `INTEGRATION.md`).
