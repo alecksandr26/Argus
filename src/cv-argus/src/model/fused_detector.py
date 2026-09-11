@@ -20,6 +20,17 @@ Deliberately has no `mediapipe` import, the same boundary `detector.py`/`cnn_det
 `predict_frame()` takes an already-cropped RGB image and an already-computed geometric-feature
 vector (see `fused_features.py`), not any MediaPipe result object. Producing those two things is
 `pipeline/`'s job (`FaceDetectorCropStage` + `FaceLandmarkerCropStage`).
+
+**Both model calls run through a fixed-signature `tf.function`, not eager.** The LSTM was
+trained with `recurrent_dropout=0.3`, which permanently rules out Keras' fused/cuDNN RNN kernel
+(even at inference) -- so the layer uses the generic step-by-step loop. Called eagerly, that
+loop dispatches ~`max_timesteps` x a handful of tiny ops *per frame* through the Python/TF
+eager runtime, and dispatch overhead dwarfs the (trivially small) arithmetic: ~600 ms/frame
+measured for the deployed 36k-param model. Wrapped in a `tf.function` with a fixed
+`input_signature`, the loop is traced into one graph once (no retracing -- the mask changes
+value but not shape/dtype) and every later call runs the compiled graph: ~8 ms/frame, output
+identical to eager to float32 rounding. `_force_no_cudnn()` below is a *correctness* lever for
+the pre-pad convention, unrelated to this.
 """
 
 import logging
@@ -48,6 +59,30 @@ class _LoadedFusedModels:
 
     fused_model: tf.keras.Model
     cnn_embedder: tf.keras.Model
+
+
+def _graph_call(model, input_signature):
+    """Return a uniform `fn(*arrays) -> tensor` wrapper around `model(..., training=False)`.
+
+    For a real `tf.keras.Model` the call is put behind a `tf.function` with the given fixed
+    `input_signature`, so a same-shape call runs a compiled graph instead of dispatching the
+    LSTM's ~`max_timesteps` recurrence steps one op at a time through the eager runtime (the
+    ~600 ms -> ~8 ms difference -- see the module docstring). A non-Keras stub (unit tests) is
+    handed back with the same `fn(*arrays)` calling convention but no tracing.
+
+    `single` (one entry in `input_signature`) means the model takes a single tensor input, not
+    a list -- the CNN embedder vs. the fused model's `[features, mask]`.
+    """
+    single = len(input_signature) == 1
+
+    def _invoke(*args):
+        return model(args[0] if single else list(args), training=False)
+
+    if not isinstance(model, tf.keras.Model):
+        return _invoke
+    # A fixed input_signature = exactly one trace, ever: same shapes/dtypes every call (the
+    # mask's *values* change per frame, its shape/dtype don't).
+    return tf.function(_invoke, input_signature=input_signature)
 
 
 def _force_no_cudnn(model: tf.keras.Model) -> None:
@@ -108,6 +143,31 @@ class FusedDrowsinessDetector:
         self._buffer = np.zeros((max_timesteps, self._fused_dim), dtype=np.float32)
         self._mask = np.zeros((max_timesteps,), dtype=bool)
 
+        # Both model calls go through a fixed-signature tf.function (see module docstring +
+        # `_graph_call`). Signatures are fully static -- batch of 1, known dims -- so each
+        # traces exactly once and never again.
+        img = constants.CNN_IMG_SIZE
+        self._embed = _graph_call(
+            self._embedder, [tf.TensorSpec((1, img, img, 3), tf.float32)]
+        )
+        self._classify = _graph_call(
+            self._model,
+            [
+                tf.TensorSpec((1, max_timesteps, self._fused_dim), tf.float32),
+                tf.TensorSpec((1, max_timesteps), tf.bool),
+            ],
+        )
+
+        # Force the one-time trace/compile now (it's ~0.5-0.7 s each) so it lands at startup
+        # next to model loading, not on the first live frame. No-op for the stub path.
+        if isinstance(self._embedder, tf.keras.Model):
+            self._embed(np.zeros((1, img, img, 3), np.float32))
+        if isinstance(self._model, tf.keras.Model):
+            self._classify(
+                np.zeros((1, max_timesteps, self._fused_dim), np.float32),
+                np.zeros((1, max_timesteps), bool),
+            )
+
         # Instrumentation only: seconds spent in each half of the last `predict_frame()` call
         # ("embed" = the frozen CNN, "lstm" = the sequence model). `FusedInferenceStage` reads
         # this after each call and feeds it to `StageStats` so the report line breaks
@@ -161,8 +221,8 @@ class FusedDrowsinessDetector:
         embed_start = time.monotonic()
         image = tf.convert_to_tensor(face_crop_rgb, dtype=tf.float32)
         image = tf.image.resize(image, [constants.CNN_IMG_SIZE, constants.CNN_IMG_SIZE])
-        image = image[tf.newaxis, ...]
-        embedding = self._embedder(image, training=False).numpy()[0]  # (embed_dim,)
+        image = image[tf.newaxis, ...]  # (1, CNN_IMG_SIZE, CNN_IMG_SIZE, 3) -- matches _embed's signature
+        embedding = self._embed(image).numpy()[0]  # (embed_dim,)
         embed_seconds = time.monotonic() - embed_start
 
         fused_frame = np.concatenate([embedding, geo_features]).astype(np.float32)  # (fused_dim,)
@@ -176,8 +236,8 @@ class FusedDrowsinessDetector:
         self._mask[-1] = True
 
         lstm_start = time.monotonic()
-        probabilities = self._model(
-            [self._buffer[np.newaxis, ...], self._mask[np.newaxis, ...]], training=False
+        probabilities = self._classify(
+            self._buffer[np.newaxis, ...], self._mask[np.newaxis, ...]
         ).numpy()[0]
         self.last_phase_seconds = {
             "embed": embed_seconds,

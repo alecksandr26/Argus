@@ -64,9 +64,12 @@ including model-artifact overrides not covered here).
 | `CAMERA_SOURCE` | `0` | Passed to `cv2.VideoCapture`: an integer camera index, a `/dev/videoN` path, or a video file path (for testing/demoing with no camera attached). |
 | `SOURCE` | `video_capture` | Where frames come from: `video_capture` (`cv2.VideoCapture`, driven by `CAMERA_SOURCE`) or `picamera` (the Pi 5's CSI camera — see "On the Pi 5" below). |
 | `OUTPUTS` | `logging` | Comma-separated sink(s): `logging` (text only) and/or `mjpeg` (the browser-viewable demo stream — e.g. `OUTPUTS=logging,mjpeg`). |
+| `SAMPLE_FPS` | `5` | Frames/sec sampled from the camera, decimated at the source (skipped frames aren't decoded). `5` matches the model's training rate; `0` = every frame. See "Simulating the Raspberry Pi 5" below. |
 | `DEMO_STREAM_PORT` | `8080` | Only read when `OUTPUTS` includes `mjpeg`. Change if `8080` is already taken on your machine. |
 | `LATENCY_LOG_INTERVAL` | `10` | Seconds between per-stage latency / queue-depth / dropped-frame report lines (see "Finding the bottleneck" below). `0` disables them. |
 | `LOG_LEVEL` | `INFO` | Root log level. `DEBUG` also prints a line per processed frame and the drop-oldest debug logs. |
+| `CV_ARGUS_NUM_THREADS` | `4` (in Docker) | Pins BLAS/OpenMP/TensorFlow/OpenCV thread pools. Unset outside Docker (full speed). See "Simulating the Raspberry Pi 5". |
+| `CV_ARGUS_CPUSET` / `CV_ARGUS_CPUS` / `CV_ARGUS_MEM` | `0-3` / `4` / `8g` | Container cgroup limits — the 4-core / 8 GB Pi 5 ceiling. Docker-only. |
 
 There's one pipeline — the frozen-CNN-embedding + geometric-feature + LSTM classifier — see
 `CLAUDE.md`'s "Current status" for its measured accuracy and caveats.
@@ -98,6 +101,37 @@ inline the same way:
 
 ```sh
 MODEL_DIR=./models CAMERA_SOURCE=~/clip.mp4 OUTPUTS=logging,mjpeg LATENCY_LOG_INTERVAL=5 python -m cv_argus
+```
+
+## Simulating the Raspberry Pi 5
+
+The truck-cabin target is a **Raspberry Pi 5** (4× Cortex-A76, no dGPU). `docker compose up`
+holds the container to that envelope **by default**, so the latency numbers you see on a beefy
+dev box actually mean something:
+
+- **`cpuset: 0-3` + `cpus: 4`** — pins threads to 4 CPUs *and* caps total CPU-time at 4 cores.
+  MediaPipe's XNNPACK pool has no Python thread knob, so this cgroup limit is the only thing
+  that constrains it.
+- **`mem_limit: 8g`** — the 8 GB board (actual use is ~400 MB, so this only catches leaks).
+- **`CV_ARGUS_NUM_THREADS=4`** — pins the BLAS / OpenMP / TensorFlow / OpenCV pools so they
+  don't oversubscribe within that ceiling (`src/bootstrap.py`).
+- **`SAMPLE_FPS=5`** — the model's training rate; also the single biggest lever for staying
+  within a Pi's budget.
+
+For an **unthrottled local run**, widen them in `.env` or inline:
+
+```sh
+CV_ARGUS_CPUSET=0-11 CV_ARGUS_CPUS=12 CV_ARGUS_NUM_THREADS=12 CV_ARGUS_MEM=32g docker compose up
+```
+
+On a real Pi 5 the defaults are already the hardware's actual limits — the overlay
+(`docker-compose.pi.yml`) changes nothing here.
+
+Check it's applied:
+
+```sh
+docker compose exec cv-argus python -c "import os; print(len(os.sched_getaffinity(0)), 'cpus')"
+docker compose exec cv-argus python -c "import os; print(os.environ['OMP_NUM_THREADS'], 'threads')"
 ```
 
 ## Running it as a service (the truck cabin)
@@ -177,14 +211,19 @@ logging_output          wait = time queued   proc ≈ 0       e2e = grab-to-here
   with the **biggest `wait`** is where frames pile up (it's right in front of the bottleneck).
   All the `wait`s + all the `proc`s ≈ the sink's `e2e`; the rest is scheduling.
 - **`embed` / `lstm`** on `fused_inference` — that stage's `proc` split into the frozen CNN
-  embed vs. the LSTM predict, so you can tell which half of the model to worry about.
+  embed vs. the LSTM predict, so you can tell which half of the model to worry about. Both run
+  through a traced `tf.function` (see `CLAUDE.md`'s fused-detector section), so expect a few ms
+  each; `lstm` in the hundreds of ms means the graph is re-tracing every frame — a regression.
 - **`inq(avg=.. max=N)`** — input-queue depth (capacity 4). A stage **pinned at `max=4`** is
   the bottleneck or right behind it.
-- **`drop=`** — frames the source shed because downstream couldn't keep up (only the source
-  drops). A big number means the camera produces far faster than the pipeline consumes —
-  expected until frame-rate capping is added.
+- **`drop=`** — frames decoded and emitted but that a full downstream queue forced the source
+  to shed. With `SAMPLE_FPS=5` (the default) this should sit at ~0 — the ~25/s of *skipped*
+  camera frames are `grab()`-discarded before decode and never counted here. A climbing `drop`
+  means the pipeline can't keep up even at 5 fps. (With `SAMPLE_FPS=0` it's back to shedding
+  most of a 30 fps feed, and `drop` is large and expected.)
 - **`e2e(mean=...)`** — capture-to-output latency at the sink. The "it feels laggy" number.
-- source `.produce` line: `n / LATENCY_LOG_INTERVAL` ≈ the raw capture fps.
+- source `.produce` line: `n / LATENCY_LOG_INTERVAL` ≈ the **sampled** fps (should track
+  `SAMPLE_FPS`); its `proc` is the per-kept-frame decode cost, not the full camera rate.
 
 `LATENCY_LOG_INTERVAL=0` turns all of this off.
 

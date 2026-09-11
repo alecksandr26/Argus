@@ -208,13 +208,15 @@ overlap-tiled from the same clips, so the effective independent sample size is s
 raw window count suggests; a real, still-open risk is unresolved — whether the CNN checkpoint
 `src/cv-argus` downloads as the frozen embedding backbone (`CNN_MODEL_DRIVE_FILE_ID`) is
 actually the same weights `11` trained its embeddings against, since a mismatch would silently
-degrade accuracy rather than crash; and it has been smoke-tested (synthetic-model window-buffer
-checks, a real geometric-feature equivalence test against real crop files) but **not yet run
-end to end against the real trained checkpoints on real Pi hardware** — no hardware has been
-available to benchmark it, and this is now the heaviest per-frame pipeline in the project (two
-MediaPipe tasks and two Keras models per sampled frame). See `src/cv-argus/CLAUDE.md`'s
-"Current status" for the full blocker list before treating this as a validated production
-result rather than the best real result the project has produced so far.
+degrade accuracy rather than crash; and while it has now been **run end to end against the real
+trained checkpoints on a desktop CPU** (webcam → `docker compose up`, classifications tracking
+correctly), it has **not** run on real Pi hardware. That first real run also exposed a large
+inference-speed bug — the fused LSTM was being called eagerly, ~600 ms/frame (a `tf.function`
+wrapper fixed it to ~10 ms; see `src/cv-argus/CLAUDE.md`'s fused-detector section) — so treat
+any earlier "it runs" claim as pre-profiling. It's still the heaviest per-frame pipeline in the
+project (two MediaPipe tasks and two Keras models per sampled frame). See `src/cv-argus/
+CLAUDE.md`'s "Current status" for the full blocker list before treating this as a validated
+production result rather than the best real result the project has produced so far.
 
 ## Working in this repo
 
