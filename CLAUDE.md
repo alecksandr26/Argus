@@ -14,7 +14,7 @@ lack of low-latency 5G, and cost (~$450k USD for a Level-4 truck vs. ~$180k conv
 
 This is also an academic titulación ("trabajo de grado") project for an Ingeniería en
 Computación program, and its architecture is explicitly shaped to satisfy the program's
-grading criteria (`docs/criterios/criteriosaprobacion_0.pdf`), which require covering three
+grading criteria (`docs/criteria/criteriosaprobacion_0.pdf`), which require covering three
 modules: **Arquitectura y Programación** (justified language/data-structure/methodology
 choices, system modeling), **Sistemas Inteligentes** (ML/CV with a justified mathematical
 model), and **Sistemas Distribuidos** (a genuinely decentralized system — not just a UI
@@ -124,7 +124,9 @@ fussier than a USB webcam.
 Three parts of the planned architecture exist as code so far: the training notebook, the
 `cv-argus` edge module, and now the `backend-argus` cloud backend (all below). The frontend
 (`ui-argus`, below) exists too, still on fixture data rather than the real API. The ESP32
-firmware and OSRM described in "Planned end-to-end system architecture" don't exist yet.
+firmware and OSRM described in "Planned end-to-end system architecture" don't exist yet. See
+`docs/roadmap.md` for the full, up-to-date gap list across every module (including what's built
+but not yet merged into `main`) — read that before assuming something is missing or done.
 
 - `src/notebook/01_dataset_creation_lstm.ipynb` through `src/notebook/10_cnn_lstm_training.ipynb`
   (the `notebook/` folder was moved under `src/`) — the ML pipeline, split into ten stage-scoped
@@ -188,7 +190,7 @@ firmware and OSRM described in "Planned end-to-end system architecture" don't ex
   MongoDB + `ui-argus` together for local integration testing; no OSRM service in it yet, per the
   "still deferred" note above.
 - `docs/argus-descripción-proyecto.pdf` — project description/proposal.
-- `docs/criterios/` — academic thesis/grading-criteria documents (this is a school "trabajo de
+- `docs/criteria/` — academic thesis/grading-criteria documents (this is a school "trabajo de
   grado" project); `Formato_Proyecto_Modular V2.docx` is the report template being filled in.
 - `docs/designs/semantic-design*` — draw.io system architecture diagram; source of truth for
   the planned end-to-end architecture summarized above (`semantic-design` is the raw XML,
