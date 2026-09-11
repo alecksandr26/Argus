@@ -99,7 +99,11 @@ export default function Sidebar() {
   const u = CURRENT_USER
   const initials = (u.first_name[0] + u.last_name[0]).toUpperCase()
   const roleLabel =
-    u.role === 'guard' ? 'Control Tower' : 'Administration / Logistics'
+    u.role === 'guardian'
+      ? 'Control Tower'
+      : u.role === 'root_admin'
+        ? 'Administration / Logistics'
+        : 'Truck Driver'
 
   return (
     <aside

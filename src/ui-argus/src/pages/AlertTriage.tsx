@@ -14,7 +14,7 @@ import { severity } from '../utils/status'
  * Mockup: "Control Tower — Alert triage". Looks the alert up by the `:alertId`
  * route param. The review checkbox + notes are local state and "Save" only
  * flips a local `saved` flag — wiring is `PUT /api/alerts/:id` with
- * `reviwed_by_operator` / `operator_notes` (INTEGRATION.md, AlertTriage row).
+ * `reviewed_by_operator` / `operator_notes` (INTEGRATION.md, AlertTriage row).
  */
 export default function AlertTriage() {
   const { alertId } = useParams()
@@ -30,7 +30,7 @@ export default function AlertTriage() {
     }
   }, [alert])
 
-  const [reviewed, setReviewed] = useState(alert?.reviwed_by_operator ?? false)
+  const [reviewed, setReviewed] = useState(alert?.reviewed_by_operator ?? false)
   const [notes, setNotes] = useState(alert?.operator_notes ?? '')
   const [saved, setSaved] = useState(false)
 
@@ -70,18 +70,19 @@ export default function AlertTriage() {
   }
 
   const sev = severity[alert.severity_level]
+  // Binary Not Drowsy / Drowsy scheme (root CLAUDE.md's drowsiness-class migration) — the old
+  // 3-way Alert/Low vigilance/Drowsy split is retired.
   const scores = [
-    { label: 'Alert', value: alert.ai_metadata.scores.alert, color: 'var(--good)' },
     {
-      label: 'Low vigilance',
-      value: alert.ai_metadata.scores.low_vigilance,
-      color: 'var(--warn)',
+      label: 'Not drowsy',
+      value: alert.ai_metadata.scores.not_drowsy,
+      color: 'var(--good)',
     },
     { label: 'Drowsy', value: alert.ai_metadata.scores.drowsy, color: 'var(--bad)' },
   ]
 
   function save() {
-    // TODO(INTEGRATION.md): PUT /api/alerts/:id { reviwed_by_operator, operator_notes }
+    // TODO(INTEGRATION.md): PUT /api/alerts/:id { reviewed_by_operator, operator_notes }
     setSaved(true)
   }
 
@@ -258,7 +259,7 @@ export default function AlertTriage() {
                 color: 'var(--text-soft)',
               }}
             >
-              {alert.ai_metadata.clip_seconds > 0
+              {alert.ai_metadata.clip_seconds != null && alert.ai_metadata.clip_seconds > 0
                 ? `Captured clip · 00:0${alert.ai_metadata.clip_seconds}`
                 : 'No clip'}
             </span>
@@ -279,7 +280,7 @@ export default function AlertTriage() {
 
           <div className="panel" style={{ padding: '14px 16px' }}>
             <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>
-              Model output ({alert.ai_metadata.model})
+              Model output ({alert.ai_metadata.model ?? 'unknown'})
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {scores.map((s) => (

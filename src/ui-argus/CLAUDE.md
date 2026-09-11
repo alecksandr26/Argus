@@ -2,15 +2,19 @@
 
 This file explains why `ui-argus` is built the way it is. See `README.md` in this directory
 for practical "how do I run this" instructions, and the top-level `CLAUDE.md` for how this
-module fits the rest of Argus (the ER model, the planned FastAPI backend, the two UI roles).
+module fits the rest of Argus (the ER model, `src/backend-argus`, the three actor roles).
 
 ## What this is
 
-The Argus web frontend: a single React app serving both MVP roles by role-based navigation
-(one login, `role` on the `User` entity decides what's visible) rather than two separate
-portal apps — see the "Argus — Mockups de UI" design canvas for the actual screen designs this
-scaffold follows, and the conversation that produced it for why Reports, Access (Users), and
-Geofences were cut from the first UI pass (no committed API/table effort yet for those).
+The Argus web frontend: a single React app serving every MVP role by role-based navigation
+(one login, `role` on the `User` entity decides what's visible) rather than separate portal
+apps per role — see the "Argus — Mockups de UI" design canvas for the actual screen designs
+this scaffold follows, and the conversation that produced it for why Reports, Access (Users),
+and Geofences were cut from the first UI pass (no committed API/table effort yet for those). The
+screens built so far are shaped around the `root_admin`/`guardian` roles' workflows (fleet,
+drivers, routes, alerts); `truck_driver` has a `Role` value and shows up in role-label logic
+(`Sidebar.tsx`) but no dedicated screen exists yet — per the root `CLAUDE.md`, that role mainly
+*receives* alerts/status rather than manages the fleet, so it may not need one.
 
 **UI copy and route paths are in English** (`/fleet`, `/drivers`, `/routes`, `/alerts/:id`),
 even though the design canvas is in Spanish — translated on request. Domain field names still
@@ -21,10 +25,10 @@ follow the ER model. If the copy ever needs to go back to Spanish, it's all in t
 ## Stack choices
 
 - **Vite, not Create React App or Next.js.** No server-side rendering or backend-for-frontend
-  is needed — the FastAPI backend (planned, not built yet) is a separate service the browser
-  talks to directly per the top-level CLAUDE.md's architecture, so a pure client-side SPA is
-  the right shape, and Vite's dev server + esbuild-based build is materially faster than CRA's
-  webpack pipeline for that shape.
+  is needed — `src/backend-argus` (the FastAPI backend, now real code) is a separate service the
+  browser talks to directly per the top-level CLAUDE.md's architecture, so a pure client-side
+  SPA is the right shape, and Vite's dev server + esbuild-based build is materially faster than
+  CRA's webpack pipeline for that shape.
 - **TypeScript, not plain JS.** This is a titulación project whose grading criteria
   (`docs/criterios/`) explicitly reward justified language choices; static typing catches
   integration errors against the backend's Pydantic models at compile time rather than at
@@ -67,32 +71,43 @@ is a plain frontend with no native-wheel/glibc-vs-musl concerns, so it uses Alpi
   for `prod`.
 - **`prod` target** (the Dockerfile's default): the `dist/` bundle served by nginx
   (`nginx.conf` adds the SPA `try_files … /index.html` fallback react-router's client-side
-  routes need). This is what's meant to join the FastAPI backend in the planned cloud Docker
-  Compose stack — there's no `docker-compose.prod.yml` yet because that stack (backend +
-  OSRM + Mongo, per the top-level CLAUDE.md) doesn't exist yet either; write it alongside the
-  backend, not before it.
+  routes need). The repo-root `docker-compose.yml` that now exists (alongside `src/backend-argus`)
+  still builds this module's **`dev`** target, not `prod` — it's a local-integration/dev stack
+  (backend + Mongo + `ui-argus` dev server), not a production deploy. There's still no
+  `docker-compose.prod.yml` using this `prod` target; write one when an actual production
+  deployment (nginx-served bundle, not the Vite dev server) is needed, not before.
 
 ## Current status
 
-**All six mockup screens are ported and render fake data — not build-verified.** No
-`npm`/`node_modules`/`node` and no working Docker daemon have been available in any environment
-this was authored in, so every file is hand-authored to match what the real toolchain would
-produce and has **never** been run through `npm install`, `tsc`, `npm run build`, `npm run
-dev`, or `docker compose up`. Treat the first real run as a verification step, not a formality
-— a version-range conflict in `package.json` or a stray type error could still surface. There
-is also no `package-lock.json` yet for the same reason — the Dockerfile's `deps` stage uses
+**Build-verified, as of the `src/backend-argus` change**: `docker compose up --build` (both this
+module's own compose file and the new repo-root one) has been run for real — `npm install`
+(181 packages, 0 vulnerabilities), `npx tsc --noEmit`, and `npm run build` (Vite production
+build, 103 modules) all pass cleanly, and the dev server serves `http://localhost:5173`
+correctly inside the container. This was this module's first-ever real toolchain run; earlier
+revisions of this file said exactly that hadn't happened yet — it has now. `types.ts`/
+`fixtures.ts` and a few consuming components (`AlertTriage.tsx`, `LiveOps.tsx`,
+`Sidebar.tsx`) were updated in that same session to match `src/backend-argus`'s corrected field
+names (`reviewed_by_operator`, the 3→2-role `Role` enum, binary `not_drowsy`/`drowsy` AI
+scores) — see that module's `CLAUDE.md` for the full old→new field table.
+
+There is still no `package-lock.json` committed — the Dockerfile's `deps` stage uses
 `npm install` rather than `npm ci` until one is generated and committed (see the Dockerfile's
-comment on this).
+comment on this). All six mockup screens are ported and render fake data from fixtures.
 
 What exists now:
 - `App.tsx` mounts `AppLayout` (sidebar + `<Outlet/>`) as a layout route around the five
   in-app screens; `/login` sits outside it. Every screen is a real component — `PageStub` is
   deleted.
 - **`src/types.ts`** — TypeScript interfaces for `User`/`Truck`/`Driver`/`Route`/`StatusRoute`/
-  `Alert`, field names copied verbatim from the ER model (`docs/designs/ER-model.drawio.xml`)
-  so they line up 1:1 with the backend's Pydantic models when those exist. The `*_status`
-  string unions are a frontend guess (the ER model doesn't enumerate `operative_status`
-  values) and must be reconciled with the backend.
+  `Alert`. Field names now line up 1:1 with `src/backend-argus`'s Pydantic schemas (not just the
+  ER diagram verbatim — a couple of the diagram's own typos are fixed here to match the real
+  backend; see that module's `CLAUDE.md` for the full table). `Role` is reconciled too
+  (`'root_admin' | 'guardian' | 'truck_driver'`, matching the backend's enum exactly). The
+  `*_status` string unions for `Truck`/`Driver`/`Route`/`Status_Route`/`Alert` are still a
+  frontend guess — the ER model doesn't enumerate `operative_status` values — but they do match
+  what `src/backend-argus/app/models/common.py` actually implements, since that backend was
+  built reading these fixtures as the reference; still worth a final glance across both files
+  before treating them as permanently locked.
 - **`src/data/fixtures.ts`** — the fake ("foo") data every screen reads: 8 trucks, 8 drivers,
   9 routes, 6 live-status rows, 7 alerts, one user, kept name-consistent with the mockups.
   `MOCK_NOW` is a fixed clock so relative timestamps ("40s ago") don't drift. **Delete this
@@ -126,8 +141,6 @@ authenticate, and every "Guardar"/"Crear" mutates local state only. All of it is
 
 ## Next steps (not started)
 
-- Run `npm install` + `npm run build` and fix whatever the first real type-check / bundle
-  surfaces.
 - Generate and commit `package-lock.json` on the first real `npm install` (it will also pin
   `leaflet` / `react-leaflet` / `@types/leaflet`), then switch the Dockerfile's `deps` stage
   from `npm install` to `npm ci`.

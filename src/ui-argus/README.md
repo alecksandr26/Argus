@@ -50,8 +50,10 @@ npm run dev
 ## Building the production image
 
 The Dockerfile's default target (`prod`) builds the app and serves the static bundle via
-nginx — this is what's meant to sit next to the FastAPI backend in the planned cloud Docker
-Compose stack (not yet built), not something you run for day-to-day development:
+nginx — meant for an eventual production deploy sitting next to `src/backend-argus` (the FastAPI
+backend, now real code — see its own README for running it), not something you run for
+day-to-day development. The repo-root `docker-compose.yml` doesn't use this target yet — it
+runs this module's `dev` target instead, for local integration testing against a real backend:
 
 ```bash
 docker build -t argus/ui-argus:prod .
@@ -62,7 +64,7 @@ docker run --rm -p 8080:80 argus/ui-argus:prod
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `VITE_API_BASE_URL` | `http://localhost:8000` | Base URL of the FastAPI backend. Unused for now — that backend doesn't exist yet. |
+| `VITE_API_BASE_URL` | `http://localhost:8000` | Base URL of `src/backend-argus` (now real code, see its README). Still unused by this app's own code — no API client exists here yet, see `INTEGRATION.md`. |
 
 ## Troubleshooting
 
@@ -77,3 +79,15 @@ docker run --rm -p 8080:80 argus/ui-argus:prod
   because no `package-lock.json` is committed yet (see the Dockerfile's comment on this). Once
   one exists and is committed, switch the Dockerfile's `deps` stage to `npm ci` for
   reproducible installs.
+
+## Missing / not yet built
+
+Short pointer, not a duplicate — see `INTEGRATION.md` for the full per-screen breakdown, and
+`docs/roadmap.md` for how this fits the whole project's gaps:
+
+- No API client (`src/api/*` doesn't exist), no auth/session, no route guarding — every screen
+  still reads `src/data/fixtures.ts`.
+- No Reports panel, no Access/Users panel, no Geofence management, no dedicated Truck Driver
+  screen.
+- `Alert.media_url`'s storage/serving story (S3? the backend directly?) isn't decided anywhere.
+- No real-time strategy decided for the live dashboard (polling vs. WebSocket/SSE).

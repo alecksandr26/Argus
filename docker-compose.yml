@@ -1,0 +1,55 @@
+# Whole-cloud-stack composition — the "Cloud/server side (planned as Docker Compose)" section of
+# the root CLAUDE.md, now that the backend exists as code. This is new and additive: it doesn't
+# replace either module's own standalone compose file (src/backend-argus/docker-compose.yml and
+# src/ui-argus/docker-compose.yml both keep working on their own for solo-module dev) — it's
+# purely the integration layer that didn't exist before because the backend didn't exist before.
+#
+# No OSRM service here. The borrador doc (docs/document/borrador-proyecto-modular-argus.md)
+# explicitly frames OSRM as "mejora futura, no como parte del backend comprometido" — deferred
+# future work, not part of this MVP stack — so it's left out on purpose, not forgotten. Same
+# convention src/cv-argus/docker-compose.pi.yml uses for documenting deliberate omissions.
+services:
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo-data:/data/db
+
+  backend-argus:
+    build:
+      context: ./src/backend-argus
+    image: argus/backend-argus:dev
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    environment:
+      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_DB=${MONGO_DB:-argus}
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-me}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src/backend-argus/app:/app/app
+    depends_on:
+      - mongo
+
+  ui-argus:
+    build:
+      context: ./src/ui-argus
+      target: dev
+    image: argus/ui-argus:dev
+    env_file:
+      - path: ./src/ui-argus/.env
+        required: false
+    environment:
+      # Host-reachable, NOT the Docker-network hostname `backend-argus` — it's the *browser*
+      # that makes API calls with this value, not the ui-argus container itself.
+      - VITE_API_BASE_URL=${VITE_API_BASE_URL:-http://localhost:8000}
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./src/ui-argus:/app
+      - /app/node_modules
+    depends_on:
+      - backend-argus
+
+volumes:
+  mongo-data:
