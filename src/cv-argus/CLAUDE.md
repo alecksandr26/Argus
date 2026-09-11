@@ -745,26 +745,20 @@ tuned against a real recorded drive.
   or the downloader modules.
 - `scripts/smoke_test_pipeline.py` is kept as a standalone hand-run script; its checks are now
   also in `tests/test_pipeline_stage.py` as the maintained version.
-- `tests/test_pipeline_sources.py` covers the frame-rate cap (`_frame_stride` pure; the camera
-  grab-skip loop cv2-gated against a synthetic clip). `tests/test_bootstrap.py` covers the
-  thread-pinning knobs (`configure()` only touches the vars when `CV_ARGUS_NUM_THREADS` is set,
-  and never overwrites an existing value).
-- **`alerts/`, `buffer/`, `orchestrator/`, `sender/`** — all hermetic, no exceptions:
-  `test_alerts_models.py`/`test_alerts_serialization.py` (uuid shape, round-trips, unknown-`kind`
-  raises); `test_buffer_store.py` (schema, WAL pragma, enqueue/fetch/mark_sent semantics
-  including a real two-thread concurrency smoke test — all via `tmp_path`, never a fixed path);
-  `test_orchestrator_bridge.py`/`test_orchestrator_decision.py`/`test_orchestrator_lifecycle.py`
-  (the decision tests call `_on_detection`/`_maybe_heartbeat` directly against a fake `Buffer`
-  and a plain duck-typed stand-in for `DetectionResult` — deliberately **not** the real class,
-  since it would pull in `cv_argus.model`'s tensorflow dependency just to build a fake value);
-  `test_sender_protocol.py`/`test_sender_transport.py`/`test_sender_server.py` (pure grammar
-  tests, `FakeTransport`/`FakeListener` semantics, and the full PULL/ACK protocol over fakes
-  plus a real `tmp_path` `Buffer` — no real Bluetooth socket anywhere in the suite).
-  `test_main.py`'s `TestBuildSenderListener`/`TestBuildPipeline` cover the `SENDER_TRANSPORT`
-  env parsing and that the orchestrator bridge stage actually gets wired into the pipeline's
-  stage list, with every heavy constructor (bundle downloads, `FusedDrowsinessDetector.from_env`,
-  the MediaPipe/inference stages) monkeypatched out — same spirit as the existing
-  `test_mjpeg_builder_is_wired` test in that file.
+- `tests/test_pipeline_sources.py` covers the frame-rate cap: `_frame_stride` (pure), the
+  video-file decimation path (cv2-gated against a synthetic clip), the live-camera grab-skip
+  pacing loop (`TestProduceLive` — a fake `cv2.VideoCapture`-shaped object plus a monkeypatched
+  `time.monotonic`, so the decimation/uncapped/disconnect/stop-event cases are deterministic
+  and need no real camera or real sleeping), and `PiCameraSource`'s `FrameRate` control wiring
+  (`TestPiCameraSource` — a fake `picamera2` module injected into `sys.modules`, exercising the
+  deferred-import path without the real arm-only package). `tests/test_main.py`'s
+  `TestSampleFps`/`TestBuildSource` cover `SAMPLE_FPS` parsing (default, float, `0`, negative
+  clamp, malformed fallback) and that the parsed value actually reaches
+  `VideoCaptureSource(target_fps=...)`/`PiCameraSource(frame_rate=...)`, not just that the right
+  class gets built. `tests/test_bootstrap.py` covers the thread-pinning knobs (`configure()`
+  only touches the vars when `CV_ARGUS_NUM_THREADS` is set, and never overwrites an existing
+  value).
+
 
 ## Working in this module
 
