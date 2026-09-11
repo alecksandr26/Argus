@@ -1,0 +1,13 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+# The "mongo" tier spins up a real MongoDB via testcontainers (needs Docker) to exercise
+# real 2dsphere geospatial behavior mongomock-motor can't faithfully emulate. Deselected by
+# default so a plain `pytest` run stays hermetic — see tests/conftest.py and
+# CLAUDE.md's "Testing" section for the opt-in gating (ARGUS_BACKEND_MONGO_TESTS=1 + docker
+# on PATH).
+markers = [
+    "mongo: needs a real MongoDB via testcontainers (opt-in, see CLAUDE.md)",
+]
+addopts = "-m 'not mongo'"
