@@ -74,15 +74,20 @@ is a plain frontend with no native-wheel/glibc-vs-musl concerns, so it uses Alpi
 
 ## Current status
 
-**All six mockup screens are ported and render fake data — not build-verified.** No
-`npm`/`node_modules`/`node` and no working Docker daemon have been available in any environment
-this was authored in, so every file is hand-authored to match what the real toolchain would
-produce and has **never** been run through `npm install`, `tsc`, `npm run build`, `npm run
-dev`, or `docker compose up`. Treat the first real run as a verification step, not a formality
-— a version-range conflict in `package.json` or a stray type error could still surface. There
-is also no `package-lock.json` yet for the same reason — the Dockerfile's `deps` stage uses
+**Build-verified, as of the `src/backend-argus` change**: `docker compose up --build` (both this
+module's own compose file and the new repo-root one) has been run for real — `npm install`
+(181 packages, 0 vulnerabilities), `npx tsc --noEmit`, and `npm run build` (Vite production
+build, 103 modules) all pass cleanly, and the dev server serves `http://localhost:5173`
+correctly inside the container. This was this module's first-ever real toolchain run; earlier
+revisions of this file said exactly that hadn't happened yet — it has now. `types.ts`/
+`fixtures.ts` and a few consuming components (`AlertTriage.tsx`, `LiveOps.tsx`,
+`Sidebar.tsx`) were updated in that same session to match `src/backend-argus`'s corrected field
+names (`reviewed_by_operator`, the 3→2-role `Role` enum, binary `not_drowsy`/`drowsy` AI
+scores) — see that module's `CLAUDE.md` for the full old→new field table.
+
+There is still no `package-lock.json` committed — the Dockerfile's `deps` stage uses
 `npm install` rather than `npm ci` until one is generated and committed (see the Dockerfile's
-comment on this).
+comment on this). All six mockup screens are ported and render fake data from fixtures.
 
 What exists now:
 - `App.tsx` mounts `AppLayout` (sidebar + `<Outlet/>`) as a layout route around the five
@@ -126,8 +131,6 @@ authenticate, and every "Guardar"/"Crear" mutates local state only. All of it is
 
 ## Next steps (not started)
 
-- Run `npm install` + `npm run build` and fix whatever the first real type-check / bundle
-  surfaces.
 - Generate and commit `package-lock.json` on the first real `npm install` (it will also pin
   `leaflet` / `react-leaflet` / `@types/leaflet`), then switch the Dockerfile's `deps` stage
   from `npm install` to `npm ci`.

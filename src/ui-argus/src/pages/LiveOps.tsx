@@ -304,7 +304,7 @@ export default function LiveOps() {
           >
             {feed.map(({ alert, route, driver, truck }) => {
               const sev = severity[alert.severity_level]
-              const resolved = alert.reviwed_by_operator
+              const resolved = alert.reviewed_by_operator
               return (
                 <Link
                   key={alert.id_alert}
