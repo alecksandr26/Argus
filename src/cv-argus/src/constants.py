@@ -88,5 +88,36 @@ FUSED_MODEL_THRESHOLD = 0.57
 # so the extra frames never cost CPU. SAMPLE_FPS=0 disables the cap (process every frame).
 DEFAULT_SAMPLE_FPS = 5
 
+# --- Local alert buffer (buffer/store.py) ---
+# BUFFER_DIR/BUFFER_DB_FILENAME env vars are already documented in .env.example/Dockerfile/
+# docker-compose.yml (the buffer-data volume) -- these are just their checked-in defaults,
+# following the same MODEL_DIR_DEFAULT pattern below.
+BUFFER_DIR_DEFAULT = "/app/data"
+BUFFER_DB_FILENAME_DEFAULT = "buffer.sqlite3"
+
+# --- Orchestrator decision loop (orchestrator/orchestrator.py) ---
+# How many consecutive Drowsy-level detections in a row are required before an Alert is
+# actually raised -- guards against a single flickering/misclassified frame spamming alerts.
+# 3 frames at SAMPLE_FPS=5 = ~0.6s of sustained "Drowsy" before alerting: short enough to react
+# to a real drowsy episode quickly, long enough to absorb one bad frame (a blink, a head turn
+# mid-detection) without firing on it alone.
+ORCHESTRATOR_DEBOUNCE_FRAMES = 3
+# Once an Alert has fired, suppress a repeat Alert for this many seconds even if the driver
+# stays classified Drowsy the whole time -- a real drowsy episode shouldn't re-fire every
+# debounce window while it's ongoing (that's notification-spam, not a detection problem); the
+# ESP32/backend already have this one Alert to act on. 30s is a starting default: long enough
+# not to spam, short enough that a second, independently worsening episode a minute later still
+# gets its own Alert.
+ORCHESTRATOR_ALERT_COOLDOWN_SECONDS = 30.0
+# Cadence for the RouteStatus("OK") heartbeat when no Alert is due -- lets the backend/ESP32
+# distinguish "quiet because everything's fine" from "the Pi died". 60s default: frequent enough
+# that a stuck/crashed Pi is noticed within about a minute, infrequent enough not to flood the
+# buffer with heartbeats between real alerts (at 60s this adds at most ~1440 extra rows/day).
+ORCHESTRATOR_HEARTBEAT_INTERVAL_SECONDS = 60.0
+# How long the decision loop blocks on its input queue before re-checking its own stop event and
+# whether a heartbeat is due -- mirrors pipeline/stage.py's DEFAULT_QUEUE_GET_TIMEOUT rationale
+# (responsive shutdown without busy-looping), but this also gates heartbeat timing resolution.
+ORCHESTRATOR_LOOP_POLL_SECONDS = 1.0
+
 # --- Shared ---
 MODEL_DIR_DEFAULT = "/app/models"
