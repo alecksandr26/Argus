@@ -83,12 +83,18 @@ far; the rest is design work to be implemented.
   OTA), the ESP32 *acts* (bare-metal/real-time, must not depend on a Linux/Docker boot cycle
   completing). Don't move CAN-bus/alarm/panic-button logic onto the Pi — keep that boundary.
 
-**Cloud/server side (planned as Docker Compose):**
+**Cloud/server side (Docker Compose):**
 - A **backend API** (**FastAPI**) exposing REST resources for `users`, `trucks`, `drivers`,
-  `alerts`, `routes`, and `routes/:id/status`, backed by **MongoDB** accessed through an
-  ORM/ODM (e.g. Beanie or PyMongo with Pydantic models) rather than raw driver calls.
+  `alerts`, `routes`, and `routes/:id/status`, backed by **MongoDB** accessed through **Beanie**
+  (an async ODM) rather than raw driver calls. **This now exists as code** — `src/backend-argus`
+  — covering exactly those six resources plus login; see that module's `CLAUDE.md` for the full
+  design (auth, RBAC, geo storage) and "Repository state and structure" below for status.
+  `Report`, `Device`, and `Geofence` are in the ER diagram but stay future work (no consumer
+  committed to them yet).
 - An **OSRM** (`Project-OSRM/osrm-backend`) container computing routes from a prebaked
-  OpenStreetMap extract, queried by the backend/frontend for route + ETA data.
+  OpenStreetMap extract, queried by the backend/frontend for route + ETA data. **Still deferred**
+  — not part of `src/backend-argus`'s Docker Compose stack, per the borrador doc's explicit
+  "mejora futura" framing.
 - A **React** frontend using **react-leaflet** to render the OSRM route and live truck/alert
   status, with panels for login, fleet management, driver/user access, route tracking, alerts,
   travel management, and reports. (The `react-leaflet` map is now implemented in `src/ui-argus`
@@ -96,8 +102,9 @@ far; the rest is design work to be implemented.
   OSRM route-line rendering is still deferred. The map-library choice — react-leaflet over
   Google Maps / Amazon Location — and how backend coordinates get normalized are written up in
   `docs/designs/frontend-map-and-coordinates.md`.)
-- Three actor roles: Root/Admin (manage users, trips, reports), Guardian (monitor trips/alerts),
-  Truck Driver (receives alerts/status).
+- Three actor roles, now a settled enum matching `src/backend-argus`'s `Role`: **`root_admin`**
+  (manage users, trips, reports), **`guardian`** (monitor trips/alerts), **`truck_driver`**
+  (receives alerts/status) — see that module's `CLAUDE.md` for the RBAC table.
 
 When implementing the edge side, containerize the Pi's AI-orchestrator service (reproducible
 MediaPipe/TensorFlow/OpenCV versions, easy redeploys) but pass through specific devices
@@ -110,9 +117,10 @@ fussier than a USB webcam.
 
 ## Repository state and structure
 
-Only two parts of the planned architecture exist as code so far: the training notebook and
-the `cv-argus` edge module (below). The backend, frontend, Docker Compose stack, and ESP32
-firmware described in "Planned end-to-end system architecture" don't exist yet.
+Three parts of the planned architecture exist as code so far: the training notebook, the
+`cv-argus` edge module, and now the `backend-argus` cloud backend (all below). The frontend
+(`ui-argus`, below) exists too, still on fixture data rather than the real API. The ESP32
+firmware and OSRM described in "Planned end-to-end system architecture" don't exist yet.
 
 - `src/notebook/01_dataset_creation_lstm.ipynb` through `src/notebook/10_cnn_lstm_training.ipynb`
   (the `notebook/` folder was moved under `src/`) — the ML pipeline, split into ten stage-scoped
@@ -156,6 +164,25 @@ firmware described in "Planned end-to-end system architecture" don't exist yet.
   requirements); read the `CLAUDE.md` before *changing* anything in this module, not just
   running it — it has the details (exact model input/output shapes, why the model classes must
   be ported verbatim, etc.) that would otherwise need re-deriving from the notebook each session.
+- `src/backend-argus/` — the cloud backend: **FastAPI + MongoDB (via Beanie)**, covering
+  exactly six of the ER diagram's nine entities — **User, Truck, Driver, Route, Status_Route,
+  Alert** — plus `/api/auth/login`. `Report`, `Device`, `Geofence` are in the ER diagram but
+  deliberately out of scope (no consumer/committed endpoint for them yet). Fixes a handful of
+  ER-diagram typos/inconsistencies (`blod_type`→`blood_type`, `reviwed_by_operator`→
+  `reviewed_by_operator`, `Id_Route`→`id_route`, `updated_at` everywhere) — this module's
+  `CLAUDE.md` is now the authoritative field-name reference, not the diagram. Password/device-key
+  hashing via `bcrypt` directly and JWT via `PyJWT` (not `passlib`/`python-jose` — both
+  unmaintained); a per-truck device API key (not a user login) authenticates the ESP32's writes
+  to `/api/alerts`/`/api/routes/:id/status`, since cv-argus itself never calls this backend
+  directly (alerts flow cv-argus → SQLite → Bluetooth → ESP32 → HTTP → here, per `cv-argus`'s own
+  `CLAUDE.md`). Coordinates store as MongoDB GeoJSON internally but serialize as `{lat, lon}` at
+  the API boundary, matching `ui-argus/src/types.ts` exactly. Has a `README.md` (quick start,
+  Docker, config vars, verification checklist) and a `CLAUDE.md` (full design rationale, RBAC
+  table, known gaps — e.g. no `User`↔`Driver`/`Truck` link yet, so `truck_driver`-role
+  "own-data-only" scoping isn't real yet either); read that `CLAUDE.md` before changing anything
+  here. A new root-level `docker-compose.yml` (alongside each module's own) wires this backend +
+  MongoDB + `ui-argus` together for local integration testing; no OSRM service in it yet, per the
+  "still deferred" note above.
 - `docs/argus-descripción-proyecto.pdf` — project description/proposal.
 - `docs/criterios/` — academic thesis/grading-criteria documents (this is a school "trabajo de
   grado" project); `Formato_Proyecto_Modular V2.docx` is the report template being filled in.
