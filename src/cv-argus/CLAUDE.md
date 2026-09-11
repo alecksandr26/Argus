@@ -639,10 +639,19 @@ file rather than re-deriving the plan from scratch.
   or the downloader modules.
 - `scripts/smoke_test_pipeline.py` is kept as a standalone hand-run script; its checks are now
   also in `tests/test_pipeline_stage.py` as the maintained version.
-- `tests/test_pipeline_sources.py` covers the frame-rate cap (`_frame_stride` pure; the camera
-  grab-skip loop cv2-gated against a synthetic clip). `tests/test_bootstrap.py` covers the
-  thread-pinning knobs (`configure()` only touches the vars when `CV_ARGUS_NUM_THREADS` is set,
-  and never overwrites an existing value).
+- `tests/test_pipeline_sources.py` covers the frame-rate cap: `_frame_stride` (pure), the
+  video-file decimation path (cv2-gated against a synthetic clip), the live-camera grab-skip
+  pacing loop (`TestProduceLive` — a fake `cv2.VideoCapture`-shaped object plus a monkeypatched
+  `time.monotonic`, so the decimation/uncapped/disconnect/stop-event cases are deterministic
+  and need no real camera or real sleeping), and `PiCameraSource`'s `FrameRate` control wiring
+  (`TestPiCameraSource` — a fake `picamera2` module injected into `sys.modules`, exercising the
+  deferred-import path without the real arm-only package). `tests/test_main.py`'s
+  `TestSampleFps`/`TestBuildSource` cover `SAMPLE_FPS` parsing (default, float, `0`, negative
+  clamp, malformed fallback) and that the parsed value actually reaches
+  `VideoCaptureSource(target_fps=...)`/`PiCameraSource(frame_rate=...)`, not just that the right
+  class gets built. `tests/test_bootstrap.py` covers the thread-pinning knobs (`configure()`
+  only touches the vars when `CV_ARGUS_NUM_THREADS` is set, and never overwrites an existing
+  value).
 
 ## Working in this module
 
