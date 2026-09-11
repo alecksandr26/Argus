@@ -103,3 +103,16 @@ defaults so nothing here is required to boot:
 concurrent load, Mongo running as anything but a single local container, and driving this
 backend from an actual browser session rather than `curl` (since `ui-argus` doesn't call any
 real API yet — see its own `INTEGRATION.md`).
+
+## Missing / not yet built
+
+Short pointer, not a duplicate — see `CLAUDE.md`'s "Future work" section for the full list with
+rationale, and `docs/roadmap.md` for how this fits the whole project's gaps:
+
+- `Report`, `Device`, `Geofence` entities (in the ER diagram, deliberately deferred).
+- Real "own truck/route only" scoping for the `truck_driver` role — no `User`↔`Driver`/`Truck`
+  link exists in the ER model to scope by yet.
+- No refresh-token flow.
+- No decided real-time push strategy for the live dashboard (currently: `ui-argus` would poll
+  `GET /api/routes/active`, once it has an API client at all).
+- Not merged into `main` yet — this whole module currently lives on a local branch.
