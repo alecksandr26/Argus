@@ -174,3 +174,66 @@ def test_force_no_cudnn_flips_the_lstm_flag():
     lstm_layer.use_cudnn = True
     _force_no_cudnn(model)
     assert lstm_layer.use_cudnn is False
+
+
+# --- traced-graph path (real Keras models, not stubs) ---------------------------------------
+# The stub tests above cover the wrapper's numpy/threshold/buffer logic on the un-traced path.
+# These check the thing the stubs can't: that `_graph_call` puts a *real* model behind a
+# fixed-signature tf.function that (a) matches eager output and (b) never re-traces.
+
+_FUSED_DIM = EMBED_DIM + NUM_GEO
+
+
+def _real_fused_model():
+    feats = tf.keras.Input(shape=(MAX_T, _FUSED_DIM), name="fused_features")
+    mask = tf.keras.Input(shape=(MAX_T,), dtype=tf.bool, name="mask")
+    x = tf.keras.layers.LSTM(4, recurrent_dropout=0.3, use_cudnn=False)(feats, mask=mask)
+    out = tf.keras.layers.Dense(2, activation="softmax")(x)
+    return tf.keras.Model([feats, mask], out)
+
+
+def _real_embedder():
+    inp = tf.keras.Input(shape=(96, 96, 3))
+    x = tf.keras.layers.GlobalAveragePooling2D()(inp)
+    out = tf.keras.layers.Dense(EMBED_DIM, activation="relu")(x)
+    return tf.keras.Model(inp, out)
+
+
+def _real_detector():
+    return FusedDrowsinessDetector(
+        fused_model=_real_fused_model(),
+        cnn_embedder=_real_embedder(),
+        threshold=0.5,
+        drowsy_index=1,
+        max_timesteps=MAX_T,
+        embed_dim=EMBED_DIM,
+        num_geo_features=NUM_GEO,
+    )
+
+
+def test_traced_output_matches_eager():
+    detector = _real_detector()
+    rng = np.random.default_rng(0)
+    for _ in range(MAX_T + 2):
+        result = detector.predict_frame(
+            (rng.random((130, 100, 3)) * 255).astype(np.uint8), _geo(rng.random()),
+        )
+        eager = detector._model(
+            [detector._buffer[None], detector._mask[None]], training=False
+        ).numpy()[0]
+        assert np.allclose(result.probabilities, eager, atol=1e-5)
+
+
+def test_models_are_traced_once_and_never_again():
+    detector = _real_detector()
+    # __init__ warms both graphs up -> already 1 trace each before any frame.
+    assert detector._classify.experimental_get_tracing_count() == 1
+    assert detector._embed.experimental_get_tracing_count() == 1
+
+    rng = np.random.default_rng(1)
+    for _ in range(MAX_T + 4):  # mask fills then stays full -- shape/dtype never change
+        detector.predict_frame(
+            (rng.random((88, 120, 3)) * 255).astype(np.uint8), _geo(rng.random()),
+        )
+    assert detector._classify.experimental_get_tracing_count() == 1
+    assert detector._embed.experimental_get_tracing_count() == 1
