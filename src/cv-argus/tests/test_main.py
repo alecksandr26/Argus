@@ -96,6 +96,100 @@ class TestBuildOutputs:
         assert built == {"host": "127.0.0.1", "port": 9111}
 
 
+class TestBuildSenderListener:
+    def test_default_is_bluetooth(self, monkeypatch):
+        monkeypatch.delenv("SENDER_TRANSPORT", raising=False)
+        monkeypatch.delenv("BLUETOOTH_CHANNEL", raising=False)
+        built = {}
+
+        class _FakeListener:
+            def __init__(self, channel):
+                built["channel"] = channel
+
+        monkeypatch.setattr(main, "BluetoothSppListener", _FakeListener)
+        listener = main._build_sender_listener()
+        assert isinstance(listener, _FakeListener)
+        assert built == {"channel": 4}
+
+    def test_bluetooth_reads_channel_env(self, monkeypatch):
+        monkeypatch.setenv("SENDER_TRANSPORT", "bluetooth")
+        monkeypatch.setenv("BLUETOOTH_CHANNEL", "7")
+        built = {}
+
+        class _FakeListener:
+            def __init__(self, channel):
+                built["channel"] = channel
+
+        monkeypatch.setattr(main, "BluetoothSppListener", _FakeListener)
+        main._build_sender_listener()
+        assert built == {"channel": 7}
+
+    def test_none_returns_none(self, monkeypatch):
+        monkeypatch.setenv("SENDER_TRANSPORT", "none")
+        assert main._build_sender_listener() is None
+
+    def test_value_is_normalised(self, monkeypatch):
+        monkeypatch.setenv("SENDER_TRANSPORT", "  NONE  ")
+        assert main._build_sender_listener() is None
+
+    def test_unknown_transport_exits(self, monkeypatch):
+        monkeypatch.setenv("SENDER_TRANSPORT", "carrier_pigeon")
+        with pytest.raises(SystemExit, match="Unknown SENDER_TRANSPORT"):
+            main._build_sender_listener()
+
+
+class TestBuildPipeline:
+    """`_build_pipeline` itself downloads bundles and loads models in the general case (see this
+    module's docstring), so every heavy constructor is faked here -- this test is only about
+    whether the orchestrator bridge stage actually gets wired in, not about the real pipeline.
+    """
+
+    def test_wires_the_orchestrator_bridge_stage(self, monkeypatch):
+        import queue
+
+        from cv_argus.orchestrator import OrchestratorBridgeOutputStage
+        from cv_argus.pipeline.stage import Stage
+
+        monkeypatch.delenv("SOURCE", raising=False)
+        monkeypatch.setenv("OUTPUTS", "logging")
+        monkeypatch.setattr(main, "download_face_detector_bundle", lambda: "fake_bundle")
+        monkeypatch.setattr(main, "download_face_landmarker_bundle", lambda: "fake_bundle")
+
+        class _FakeFusedDrowsinessDetector:
+            @staticmethod
+            def from_env():
+                return object()
+
+        monkeypatch.setattr(main, "FusedDrowsinessDetector", _FakeFusedDrowsinessDetector)
+
+        class _FakeStage(Stage):
+            def __init__(self, *args, **kwargs):
+                super().__init__("fake_stage")
+
+            def process_item(self, item):
+                return item
+
+        monkeypatch.setattr(main, "FaceDetectorCropStage", _FakeStage)
+        monkeypatch.setattr(main, "FaceLandmarkerCropStage", _FakeStage)
+        monkeypatch.setattr(main, "FusedInferenceStage", _FakeStage)
+
+        class _FakeOrchestrator:
+            def __init__(self):
+                self.input_queue = queue.Queue()
+
+        orchestrator = _FakeOrchestrator()
+        pipeline = main._build_pipeline(orchestrator)
+
+        bridges = [s for s in pipeline.stages if isinstance(s, OrchestratorBridgeOutputStage)]
+        assert len(bridges) == 1
+        assert bridges[0]._out_queue is orchestrator.input_queue
+        # bridge is connected from the inference stage (stages[3]: source, crop, landmarker,
+        # inference, *outputs, bridge), same fan-out mechanism OUTPUTS=logging,mjpeg already uses.
+        inference_stage = pipeline.stages[3]
+        assert bridges[0].input_queue in inference_stage.output_queues
+        assert pipeline.stages[-1] is bridges[0]
+
+
 class TestLatencyLogInterval:
     def test_parses_a_float(self, monkeypatch):
         monkeypatch.setenv("LATENCY_LOG_INTERVAL", "2.5")
