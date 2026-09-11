@@ -50,8 +50,10 @@ npm run dev
 ## Building the production image
 
 The Dockerfile's default target (`prod`) builds the app and serves the static bundle via
-nginx — this is what's meant to sit next to the FastAPI backend in the planned cloud Docker
-Compose stack (not yet built), not something you run for day-to-day development:
+nginx — meant for an eventual production deploy sitting next to `src/backend-argus` (the FastAPI
+backend, now real code — see its own README for running it), not something you run for
+day-to-day development. The repo-root `docker-compose.yml` doesn't use this target yet — it
+runs this module's `dev` target instead, for local integration testing against a real backend:
 
 ```bash
 docker build -t argus/ui-argus:prod .
@@ -62,7 +64,7 @@ docker run --rm -p 8080:80 argus/ui-argus:prod
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `VITE_API_BASE_URL` | `http://localhost:8000` | Base URL of the FastAPI backend. Unused for now — that backend doesn't exist yet. |
+| `VITE_API_BASE_URL` | `http://localhost:8000` | Base URL of `src/backend-argus` (now real code, see its README). Still unused by this app's own code — no API client exists here yet, see `INTEGRATION.md`. |
 
 ## Troubleshooting
 

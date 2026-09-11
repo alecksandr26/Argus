@@ -26,8 +26,10 @@ product but not the degree requirement.
 ### Planned end-to-end system architecture
 
 The full system (see `docs/designs/semantic-design.drawio.png` / the underlying `.drawio` XML
-at `docs/designs/semantic-design`) has two halves. Only the ML piece (below) exists as code so
-far; the rest is design work to be implemented.
+at `docs/designs/semantic-design`) has two halves — the edge (truck cabin) and the cloud/server
+side. Both halves now have real code behind them (see "Repository state and structure" below
+for exactly what and its verified/unverified status); the ESP32 firmware and OSRM are the two
+pieces of this section that remain pure design, not implemented anywhere in this repo.
 
 **Truck cabin (edge, hard real-time / safety-critical):**
 - A camera captures frames, read by the **Raspberry Pi 5 ("AI Orchestrator")**, which — per the
@@ -78,7 +80,9 @@ far; the rest is design work to be implemented.
   actuation- and safety-critical: it drives the **alarm speaker**, the **CAN Bus/AEB actuator**
   (preventive autonomous braking), reads the **panic button** and **geolocation module**, polls
   the Pi's SQLite buffer over **Bluetooth** (the ESP32 initiates periodic pulls of unsent
-  records — the Pi doesn't push), and is the device that talks to the backend over **HTTP**.
+  records — the Pi doesn't push), and is the device that talks to the backend over **HTTP** —
+  authenticated with a per-truck device API key rather than a user login, now that
+  `src/backend-argus` exists (see that module's `CLAUDE.md`, "Device (ESP32) auth").
 - Deliberate split: the Pi *decides* (heavy AI inference, containerizable, can be redeployed via
   OTA), the ESP32 *acts* (bare-metal/real-time, must not depend on a Linux/Docker boot cycle
   completing). Don't move CAN-bus/alarm/panic-button logic onto the Pi — keep that boundary.
