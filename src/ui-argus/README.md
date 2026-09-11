@@ -79,3 +79,15 @@ docker run --rm -p 8080:80 argus/ui-argus:prod
   because no `package-lock.json` is committed yet (see the Dockerfile's comment on this). Once
   one exists and is committed, switch the Dockerfile's `deps` stage to `npm ci` for
   reproducible installs.
+
+## Missing / not yet built
+
+Short pointer, not a duplicate — see `INTEGRATION.md` for the full per-screen breakdown, and
+`docs/roadmap.md` for how this fits the whole project's gaps:
+
+- No API client (`src/api/*` doesn't exist), no auth/session, no route guarding — every screen
+  still reads `src/data/fixtures.ts`.
+- No Reports panel, no Access/Users panel, no Geofence management, no dedicated Truck Driver
+  screen.
+- `Alert.media_url`'s storage/serving story (S3? the backend directly?) isn't decided anywhere.
+- No real-time strategy decided for the live dashboard (polling vs. WebSocket/SSE).
