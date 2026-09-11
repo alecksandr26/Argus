@@ -2,15 +2,19 @@
 
 This file explains why `ui-argus` is built the way it is. See `README.md` in this directory
 for practical "how do I run this" instructions, and the top-level `CLAUDE.md` for how this
-module fits the rest of Argus (the ER model, the planned FastAPI backend, the two UI roles).
+module fits the rest of Argus (the ER model, `src/backend-argus`, the three actor roles).
 
 ## What this is
 
-The Argus web frontend: a single React app serving both MVP roles by role-based navigation
-(one login, `role` on the `User` entity decides what's visible) rather than two separate
-portal apps — see the "Argus — Mockups de UI" design canvas for the actual screen designs this
-scaffold follows, and the conversation that produced it for why Reports, Access (Users), and
-Geofences were cut from the first UI pass (no committed API/table effort yet for those).
+The Argus web frontend: a single React app serving every MVP role by role-based navigation
+(one login, `role` on the `User` entity decides what's visible) rather than separate portal
+apps per role — see the "Argus — Mockups de UI" design canvas for the actual screen designs
+this scaffold follows, and the conversation that produced it for why Reports, Access (Users),
+and Geofences were cut from the first UI pass (no committed API/table effort yet for those). The
+screens built so far are shaped around the `root_admin`/`guardian` roles' workflows (fleet,
+drivers, routes, alerts); `truck_driver` has a `Role` value and shows up in role-label logic
+(`Sidebar.tsx`) but no dedicated screen exists yet — per the root `CLAUDE.md`, that role mainly
+*receives* alerts/status rather than manages the fleet, so it may not need one.
 
 **UI copy and route paths are in English** (`/fleet`, `/drivers`, `/routes`, `/alerts/:id`),
 even though the design canvas is in Spanish — translated on request. Domain field names still
@@ -21,10 +25,10 @@ follow the ER model. If the copy ever needs to go back to Spanish, it's all in t
 ## Stack choices
 
 - **Vite, not Create React App or Next.js.** No server-side rendering or backend-for-frontend
-  is needed — the FastAPI backend (planned, not built yet) is a separate service the browser
-  talks to directly per the top-level CLAUDE.md's architecture, so a pure client-side SPA is
-  the right shape, and Vite's dev server + esbuild-based build is materially faster than CRA's
-  webpack pipeline for that shape.
+  is needed — `src/backend-argus` (the FastAPI backend, now real code) is a separate service the
+  browser talks to directly per the top-level CLAUDE.md's architecture, so a pure client-side
+  SPA is the right shape, and Vite's dev server + esbuild-based build is materially faster than
+  CRA's webpack pipeline for that shape.
 - **TypeScript, not plain JS.** This is a titulación project whose grading criteria
   (`docs/criterios/`) explicitly reward justified language choices; static typing catches
   integration errors against the backend's Pydantic models at compile time rather than at
@@ -67,10 +71,11 @@ is a plain frontend with no native-wheel/glibc-vs-musl concerns, so it uses Alpi
   for `prod`.
 - **`prod` target** (the Dockerfile's default): the `dist/` bundle served by nginx
   (`nginx.conf` adds the SPA `try_files … /index.html` fallback react-router's client-side
-  routes need). This is what's meant to join the FastAPI backend in the planned cloud Docker
-  Compose stack — there's no `docker-compose.prod.yml` yet because that stack (backend +
-  OSRM + Mongo, per the top-level CLAUDE.md) doesn't exist yet either; write it alongside the
-  backend, not before it.
+  routes need). The repo-root `docker-compose.yml` that now exists (alongside `src/backend-argus`)
+  still builds this module's **`dev`** target, not `prod` — it's a local-integration/dev stack
+  (backend + Mongo + `ui-argus` dev server), not a production deploy. There's still no
+  `docker-compose.prod.yml` using this `prod` target; write one when an actual production
+  deployment (nginx-served bundle, not the Vite dev server) is needed, not before.
 
 ## Current status
 
@@ -94,10 +99,15 @@ What exists now:
   in-app screens; `/login` sits outside it. Every screen is a real component — `PageStub` is
   deleted.
 - **`src/types.ts`** — TypeScript interfaces for `User`/`Truck`/`Driver`/`Route`/`StatusRoute`/
-  `Alert`, field names copied verbatim from the ER model (`docs/designs/ER-model.drawio.xml`)
-  so they line up 1:1 with the backend's Pydantic models when those exist. The `*_status`
-  string unions are a frontend guess (the ER model doesn't enumerate `operative_status`
-  values) and must be reconciled with the backend.
+  `Alert`. Field names now line up 1:1 with `src/backend-argus`'s Pydantic schemas (not just the
+  ER diagram verbatim — a couple of the diagram's own typos are fixed here to match the real
+  backend; see that module's `CLAUDE.md` for the full table). `Role` is reconciled too
+  (`'root_admin' | 'guardian' | 'truck_driver'`, matching the backend's enum exactly). The
+  `*_status` string unions for `Truck`/`Driver`/`Route`/`Status_Route`/`Alert` are still a
+  frontend guess — the ER model doesn't enumerate `operative_status` values — but they do match
+  what `src/backend-argus/app/models/common.py` actually implements, since that backend was
+  built reading these fixtures as the reference; still worth a final glance across both files
+  before treating them as permanently locked.
 - **`src/data/fixtures.ts`** — the fake ("foo") data every screen reads: 8 trucks, 8 drivers,
   9 routes, 6 live-status rows, 7 alerts, one user, kept name-consistent with the mockups.
   `MOCK_NOW` is a fixed clock so relative timestamps ("40s ago") don't drift. **Delete this

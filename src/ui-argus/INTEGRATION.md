@@ -1,16 +1,18 @@
 # INTEGRATION.md — backend connectivity: what's missing and where it plugs in
 
-A map of every point in `ui-argus` where backend code needs to land, for whoever builds the
-FastAPI backend (or comes back to wire this frontend up to it). Nothing described as
-"missing" here exists yet — this is a checklist, not a status report on work in progress.
+A map of every point in `ui-argus` where backend code needs to land, for whoever wires this
+frontend up to `src/backend-argus` (the FastAPI backend — now real code, not just a plan). All
+of this is still genuinely missing on the frontend side, despite the backend existing — this
+is a checklist, not a status report on work in progress here.
 
 **As of the screen port:** every screen below is a real component rendering fake data from
-`src/data/fixtures.ts` (shapes in `src/types.ts`, field names copied from the ER model). The
-"Currently" column reflects that. Wiring a screen up = swap its `fixtures` import for an
-`src/api/*` call and delete the local-state mutation; the component structure stays.
-Endpoints referenced are the list already committed in
-`docs/designs/semantic-design.drawio.xml`; nothing here invents new ones except where
-explicitly flagged as a gap in that list.
+`src/data/fixtures.ts` (shapes in `src/types.ts`, now reconciled field-for-field with
+`src/backend-argus`'s Pydantic schemas — see that module's `CLAUDE.md` for the old ER-diagram
+names vs. the corrected ones actually implemented). The "Currently" column reflects the fixture
+state. Wiring a screen up = swap its `fixtures` import for an `src/api/*` call and delete the
+local-state mutation; the component structure stays. Endpoints referenced below are
+`src/backend-argus`'s real router paths (see that module's `CLAUDE.md`'s "Routes per resource");
+nothing here invents new ones except where explicitly flagged as a gap.
 
 ## Cross-cutting gaps (touch every screen, not just one)
 

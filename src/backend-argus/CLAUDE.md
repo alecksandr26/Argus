@@ -151,14 +151,32 @@ geolocation}`. Two things from that exchange shaped this backend's schema direct
 
 ## Current status
 
-Implemented and passing its own hermetic test suite (`pytest` from this directory, 27 tests,
-`mongomock-motor` backing Beanie — no real Mongo needed) as of this change. **Not yet run**
-against a live MongoDB, a real `docker compose up`, or wired up to a running `ui-argus` — those
-are the honest next verification steps (see README's "Verification" section), not something to
-describe as production-validated without having actually done them. The opt-in
-`pytest -m mongo` tier (real Mongo via testcontainers, for genuine `2dsphere` behavior) has not
-been run against real Docker in this session either — it's written and skips gracefully when
-Docker/the opt-in env var aren't present, per its own module docstring.
+Implemented and **verified end to end against real infrastructure**, not just written — Docker
+was available in the session that built this, so every layer below was actually run, not left
+as a "should work" claim:
+
+- The hermetic test suite passes (`pytest` from this directory, 27 tests, `mongomock-motor`
+  backing Beanie — no real Mongo needed).
+- The opt-in `pytest -m mongo` tier (real MongoDB via testcontainers) also passes, confirming
+  genuine `2dsphere` behavior, not just the mock's approximation.
+- `docker compose up --build` (this module's own compose file) boots a real `backend-argus` +
+  `mongo` pair; `GET /health` and `GET /docs` both respond, and `POST /api/auth/login` correctly
+  round-trips a real query against the live database.
+- `scripts/seed_dev_data.py` ran successfully against that live Mongo container.
+- The full root-level `docker compose up --build` (backend + Mongo + `ui-argus` together) booted
+  all three services; real HTTP round-trips confirmed against the live stack: login issuing a
+  working JWT, `GET /api/routes/active` returning a route with its embedded latest status +
+  truck/driver refs, and the device-API-key path correctly rejecting a wrong key (401) and
+  accepting the real one (201) for `POST /api/routes/{id}/status`.
+- `ui-argus`'s field-name changes (see "ui-argus mechanical diff" below) were verified against
+  that same live container: `npx tsc --noEmit` and `npm run build` both passed clean — this was
+  `ui-argus`'s first-ever real toolchain run (see that module's own `CLAUDE.md`).
+
+What genuinely hasn't been exercised: real concurrent load, MongoDB running as anything other
+than a single local container (no replica set, no auth), and — since `ui-argus` doesn't call
+any real API yet (`INTEGRATION.md`'s cross-cutting gaps are all still open) — an actual browser
+session driving this backend through the UI rather than `curl`. Treat those as the honest next
+steps, not something to describe as production-validated without having actually done them.
 
 ## Future work (explicitly out of scope for this pass)
 
