@@ -16,6 +16,9 @@
 # assume this list is exhaustive or correct as a first try.
 services:
   cv-argus:
+    # The base file's Pi-5 simulation defaults (cpuset 0-3, cpus 4, mem_limit 8g,
+    # CV_ARGUS_NUM_THREADS 4, SAMPLE_FPS 5) are already correct for real Pi-5 hardware --
+    # nothing to override here. On a 4-core / 8 GB board the limits are simply no-ops.
     environment:
       - SOURCE=picamera
     devices:

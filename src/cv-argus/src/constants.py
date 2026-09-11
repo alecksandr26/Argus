@@ -78,5 +78,15 @@ FUSED_MODEL_DROWSY_INDEX = 1     # index of "Drowsy" in the model's 2-class soft
 # accuracy bug, not a crash.
 FUSED_MODEL_THRESHOLD = 0.57
 
+# --- Capture / runtime ---
+# Frames per second the pipeline samples from the camera (see pipeline/sources.py +
+# main.py's SAMPLE_FPS env var). Default 5 to match how the deployed model was trained:
+# src/dataset/argus_dataset/config.py's SAMPLING_FPS = 5, and FUSED_MODEL_MAX_TIMESTEPS = 100
+# is 20s * 5fps. Running inference faster feeds the LSTM's 100-frame window at a denser rate
+# than training, so its "20 seconds of context" shrinks -- a correctness issue, not just a
+# perf knob. A live camera is decimated at the source (grab-without-decode on skipped frames)
+# so the extra frames never cost CPU. SAMPLE_FPS=0 disables the cap (process every frame).
+DEFAULT_SAMPLE_FPS = 5
+
 # --- Shared ---
 MODEL_DIR_DEFAULT = "/app/models"

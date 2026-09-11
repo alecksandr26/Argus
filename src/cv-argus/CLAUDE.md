@@ -155,15 +155,26 @@ Env vars `main.py` reads (all optional, all with defaults):
 | `SOURCE` | `video_capture` | `video_capture` (`cv2.VideoCapture`, driven by `CAMERA_SOURCE`) or `picamera` |
 | `CAMERA_SOURCE` | `0` | int index / `/dev/videoN` / video-file path — passed straight to `cv2.VideoCapture` |
 | `OUTPUTS` | `logging` | comma-separated sinks: `logging` and/or `mjpeg` (fanned out via `Stage.connect()`) |
+| `SAMPLE_FPS` | `constants.DEFAULT_SAMPLE_FPS` (5) | frames/sec sampled from the camera, decimated **at the source** (`_frame_stride` for files, `grab()`-without-`retrieve()` for a live camera, `FrameRate` control for `picamera2`). 5 = the model's training rate — see the `sources.py` bullet. `0` = every frame. |
 | `DEMO_STREAM_HOST`/`DEMO_STREAM_PORT` | `0.0.0.0`/`8080` | only read when `OUTPUTS` includes `mjpeg` |
 | `LATENCY_LOG_INTERVAL` | `10` | seconds between `StageStats` report lines; `0` disables (see the `latency.py` bullet) |
 | `LOG_LEVEL` | `INFO` | root log level; `DEBUG` adds `LoggingOutputStage`'s per-frame lines + drop-path debug logs |
+| `CV_ARGUS_NUM_THREADS` | unset (Docker: `4`) | pins BLAS/OpenMP/TF/OpenCV thread pools — `cv_argus.bootstrap`, imported first in `main.py`/`__main__.py` |
 | model-artifact overrides | see `constants.py` | `MODEL_DIR`, `*_DRIVE_FILE_ID`, `*_FILENAME`, `*_BUNDLE_URL` — see "Model download strategy" |
 
 `docker compose` passes `/dev/video0` through by default — adjust the `devices:` entry to
 match your machine, or drop it when testing against a video file. `Dockerfile` sets
 `ENV PYTHONUNBUFFERED=1` so `docker compose logs` (the `StageStats` lines in particular)
 streams instead of arriving in delayed bursts.
+
+**Raspberry Pi 5 simulation — on by default.** `docker-compose.yml` holds the container to a
+Pi-5 envelope (`cpuset: 0-3` + `cpus: 4` + `mem_limit: 8g`, `CV_ARGUS_NUM_THREADS=4`,
+`SAMPLE_FPS=5`) so latency numbers on a big dev box are meaningful. `cpuset`+`cpus` (the cgroup
+limit) is what actually constrains **MediaPipe/XNNPACK** — it has no Python thread knob;
+`CV_ARGUS_NUM_THREADS` only stops the *other* libraries oversubscribing within that ceiling.
+Every limit is a `CV_ARGUS_*` / `SAMPLE_FPS` env override away from full-speed dev (see the
+README's "Simulating the Raspberry Pi 5"). On real Pi-5 hardware the defaults are already the
+actual limits — `docker-compose.pi.yml` overrides none of them.
 
 **Outside Docker** (`pip install -e .` then `python -m cv_argus`): set `MODEL_DIR` to a
 writable local path first — it defaults to the container path `/app/models`, and the trained
@@ -355,7 +366,23 @@ Key behavior:
 - **`use_cudnn=False` is forced on the loaded LSTM layer post-load** (`fused_detector.py`'s
   `_force_no_cudnn()`) — required because of the pre-pad convention above (Keras' cuDNN fast
   path assumes right-padding), mirroring `notebook/11`'s own `evaluate_variant`/`_load_for_eval`.
-  Irrelevant for raw speed on a Pi (no cuDNN there anyway) but required for correctness.
+  Irrelevant for raw speed on a Pi (no cuDNN there anyway) but required for correctness. This
+  is **not** the speed lever — see the next point.
+- **Both model calls run through a fixed-signature `tf.function`, not eager** (`_graph_call()`).
+  The LSTM was trained with `recurrent_dropout=0.3`, which permanently disables Keras' fused
+  RNN kernel even at inference, so the layer uses the generic step-by-step loop. Called
+  *eagerly*, that loop dispatches ~`max_timesteps` × a few tiny ops per frame through the
+  Python/TF eager runtime and dispatch overhead dominates: **~600 ms/frame** measured for the
+  deployed 36k-param model (it was the pipeline's bottleneck by ~10×, `e2e` ~7 s). Wrapped in a
+  `tf.function` with a fully-static `input_signature` (batch of 1, known dims), the loop traces
+  to one graph **once** — the mask changes value each frame but never shape/dtype, so no
+  retracing — and every later call runs the compiled graph: **~8–11 ms/frame**, output identical
+  to eager to float32 rounding (verified). `__init__` fires the one-time trace during startup
+  (next to model loading) so it doesn't land on the first live frame; that also cuts the
+  100-frame buffer warm-up from ~75 s to ~0.8 s. `tests/test_model_fused_detector.py`'s
+  `test_traced_output_matches_eager` / `test_models_are_traced_once_and_never_again` guard both
+  properties. The stub-based tests exercise the un-traced path (a non-`tf.keras.Model` stub is
+  handed back unwrapped by `_graph_call`).
 - **Input**: `predict_frame(face_crop_rgb, geo_features)` — an already-cropped RGB image plus an
   already-computed 10-dim geometric-feature vector (`fused_features.compute_fused_geo_features()`,
   or `zero_fused_geo_features()` on a landmarker miss) — never a MediaPipe result object; that
@@ -393,6 +420,19 @@ pipelines share it before they were removed in favor of the fused one:
   not yet verified against real Pi hardware, see "Open decisions" below). "Multiple cameras" is
   multiple `Pipeline` instances, each with its own `Source`, not one `Source` merging feeds —
   see `sources.py`'s module docstring for why.
+  **Frame-rate cap (`target_fps` / `frame_rate`, default `constants.DEFAULT_SAMPLE_FPS` = 5).**
+  The deployed model was trained on frames sampled at 5 fps (`src/dataset`'s `SAMPLING_FPS`;
+  `FUSED_MODEL_MAX_TIMESTEPS = 100 = 20 s × 5 fps`), so the live pipeline samples at 5 fps too
+  — this is a **training-fidelity requirement**, not just a perf knob: a denser rate shrinks
+  how much real time the LSTM's 100-frame window covers. Decimation happens **at the source**,
+  before any MediaPipe/CNN/LSTM work: a live camera `grab()`s every frame (cheap, no decode)
+  and only `retrieve()`s + emits one per `1/target_fps`; a video file strides by
+  `_frame_stride(src_fps, target_fps)` and emits a virtual frame-clock `timestamp_ms`
+  (deterministic, strictly increasing — the old wall-clock stamp for a file was
+  replay-speed-dependent); `PiCameraSource` sets the sensor's `FrameRate` control so the ISP
+  never processes the skipped frames. `SAMPLE_FPS=0` disables the cap. `_frame_stride` is a
+  pure helper (`tests/test_pipeline_sources.py`); the camera grab-skip loop is cv2-gated in
+  the same file (synthetic clip, no MediaPipe).
 - **`face_detector_stage.py`** (`FaceDetectorCropStage`) / **`face_landmarker_crop_stage.py`**
   (`FaceLandmarkerCropStage`, `IMAGE` mode on the crop `FaceDetectorCropStage` produced — see its
   module docstring for why this must run on the crop and in `IMAGE` mode specifically, a
@@ -599,8 +639,19 @@ file rather than re-deriving the plan from scratch.
   or the downloader modules.
 - `scripts/smoke_test_pipeline.py` is kept as a standalone hand-run script; its checks are now
   also in `tests/test_pipeline_stage.py` as the maintained version.
+- `tests/test_pipeline_sources.py` covers the frame-rate cap (`_frame_stride` pure; the camera
+  grab-skip loop cv2-gated against a synthetic clip). `tests/test_bootstrap.py` covers the
+  thread-pinning knobs (`configure()` only touches the vars when `CV_ARGUS_NUM_THREADS` is set,
+  and never overwrites an existing value).
 
 ## Working in this module
+
+- **`import cv_argus.bootstrap` stays the first line of `main.py` and `__main__.py`**, above
+  every other import. It sets `OMP_NUM_THREADS` / `TF_NUM_*` / etc. from `CV_ARGUS_NUM_THREADS`,
+  and the native libraries read those env vars once at load time — moving the import below
+  `import tensorflow` / `import cv2` silently makes the thread pinning a no-op. The Dockerfile's
+  build-time `python -m cv_argus.model.downloader` bypasses `main.py` and so skips bootstrap;
+  that's fine (it only downloads).
 
 - Before touching `model/`, re-read "`model/` — done" above. `GeometricRatioFeatureLayer` must
   stay a byte-identical port of the notebook's class (source of truth: `01_dataset_creation_lstm

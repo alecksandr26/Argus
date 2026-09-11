@@ -31,13 +31,21 @@ Env vars:
 - `LATENCY_LOG_INTERVAL` (default `"10"`) — seconds between per-stage `StageStats` report
   lines (timing, input-queue depth, dropped-frame count, end-to-end latency at the sink — see
   `cv_argus.pipeline.latency`). `0` disables them.
+- `SAMPLE_FPS` (default `constants.DEFAULT_SAMPLE_FPS` = 5) — frames/sec sampled from the
+  camera, at the source (skipped frames aren't even decoded). 5 matches the model's training
+  rate; `0` processes every frame. See `cv_argus.pipeline.sources`.
+- `CV_ARGUS_NUM_THREADS` (unset by default) — pins BLAS/OpenMP/TensorFlow thread pools; set by
+  `docker-compose.yml` to 4 to simulate the Raspberry Pi 5. See `cv_argus.bootstrap`.
 """
+
+import cv_argus.bootstrap  # noqa: F401 -- MUST be first: sets thread env vars before tf/cv2 load
 
 import logging
 import os
 import signal
 import threading
 
+from cv_argus import constants
 from cv_argus.model import FusedDrowsinessDetector
 from cv_argus.pipeline import (
     FaceDetectorCropStage,
@@ -69,12 +77,25 @@ def _camera_source() -> int | str:
         return raw
 
 
+def _sample_fps() -> float:
+    """Frames/sec to sample from the camera (`SAMPLE_FPS`, default
+    `constants.DEFAULT_SAMPLE_FPS`; `0` = uncapped, process every frame). A malformed value
+    falls back to the default rather than aborting startup."""
+    raw = os.environ.get("SAMPLE_FPS", str(constants.DEFAULT_SAMPLE_FPS)).strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logger.warning("SAMPLE_FPS=%r is not a number, using %s", raw, constants.DEFAULT_SAMPLE_FPS)
+        return float(constants.DEFAULT_SAMPLE_FPS)
+
+
 def _build_source() -> SourceStage:
     kind = os.environ.get("SOURCE", "video_capture").strip().lower()
+    fps = _sample_fps()
     if kind == "video_capture":
-        return VideoCaptureSource(_camera_source())
+        return VideoCaptureSource(_camera_source(), target_fps=fps)
     if kind == "picamera":
-        return PiCameraSource()
+        return PiCameraSource(frame_rate=fps)
     raise SystemExit(f"Unknown SOURCE={kind!r} -- expected 'video_capture' or 'picamera'")
 
 
@@ -140,10 +161,13 @@ def main() -> None:
     )
 
     logger.info(
-        "cv-argus starting (SOURCE=%s, OUTPUTS=%s, LATENCY_LOG_INTERVAL=%s)",
+        "cv-argus starting (SOURCE=%s, OUTPUTS=%s, SAMPLE_FPS=%s, "
+        "LATENCY_LOG_INTERVAL=%s, CV_ARGUS_NUM_THREADS=%s)",
         os.environ.get("SOURCE", "video_capture"),
         os.environ.get("OUTPUTS", "logging"),
+        os.environ.get("SAMPLE_FPS", str(constants.DEFAULT_SAMPLE_FPS)),
         os.environ.get("LATENCY_LOG_INTERVAL", "10"),
+        os.environ.get("CV_ARGUS_NUM_THREADS", "(unset)"),
     )
     pipeline = _build_pipeline()
 

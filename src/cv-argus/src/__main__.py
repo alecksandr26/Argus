@@ -2,6 +2,8 @@
 the standard way to mark a Python package as directly runnable.
 """
 
+import cv_argus.bootstrap  # noqa: F401 -- MUST be first: sets thread env vars before tf/cv2 load
+
 from cv_argus.main import main
 
 if __name__ == "__main__":

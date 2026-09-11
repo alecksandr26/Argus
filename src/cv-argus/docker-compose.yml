@@ -18,6 +18,18 @@ services:
         CNN_MODEL_DRIVE_FILE_ID: ${CNN_MODEL_DRIVE_FILE_ID:-}
         FUSED_MODEL_DRIVE_FILE_ID: ${FUSED_MODEL_DRIVE_FILE_ID:-}
     image: argus/cv-argus:dev
+    # --- Raspberry Pi 5 simulation (ON BY DEFAULT) --------------------------------------------
+    # `docker compose up` gives you a stand-in for the truck-cabin Pi 5: 4 cores, 8 GB, 5 fps.
+    #   - cpuset pins threads to 4 CPUs (so nproc / sched_getaffinity report 4 and most
+    #     libraries self-limit); cpus is a hard CPU-time quota on top (MediaPipe's XNNPACK pool
+    #     has no Python knob and only the cgroup constrains it).
+    #   - SAMPLE_FPS=5 matches the model's training rate -- see src/constants.py.
+    # For full-speed local dev, set these in .env or inline:
+    #   CV_ARGUS_CPUSET=0-11  CV_ARGUS_CPUS=12  CV_ARGUS_NUM_THREADS=12  CV_ARGUS_MEM=32g
+    # On a real Pi 5 (4 cores / 8 GB) every default here is already accurate -- no-ops.
+    cpuset: "${CV_ARGUS_CPUSET:-0-3}"
+    cpus: ${CV_ARGUS_CPUS:-4}
+    mem_limit: ${CV_ARGUS_MEM:-8g}
     env_file:
       # Optional: every value here has a checked-in default (src/constants.py for the Drive
       # ids, the `environment:` block below for the rest), so `docker compose up` works with
@@ -28,6 +40,10 @@ services:
       - CAMERA_SOURCE=${CAMERA_SOURCE:-0}
       - SOURCE=${SOURCE:-video_capture}
       - OUTPUTS=${OUTPUTS:-logging}
+      # Sample the camera at the model's 5 fps training rate (see src/constants.py); 0 = every
+      # frame. CV_ARGUS_NUM_THREADS pins BLAS/OpenMP/TF pools -- 4 for the Pi 5 sim above.
+      - SAMPLE_FPS=${SAMPLE_FPS:-5}
+      - CV_ARGUS_NUM_THREADS=${CV_ARGUS_NUM_THREADS:-4}
       # Diagnostics: per-stage timing / queue-depth / dropped-frame / end-to-end latency lines
       # every LATENCY_LOG_INTERVAL seconds (0 disables). LOG_LEVEL=DEBUG also shows per-frame
       # detection lines. See cv_argus.pipeline.latency and the README's "Finding the bottleneck".
