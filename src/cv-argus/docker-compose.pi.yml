@@ -37,3 +37,11 @@ services:
     # left off the base/dev compose file so a laptop container doesn't restart forever while
     # iterating on it (see the root README's "Why a Docker-first workflow").
     restart: unless-stopped
+    # NOT YET DONE: this overlay doesn't set SENDER_TRANSPORT=bluetooth or add a Bluetooth
+    # device to `devices:` -- the base file defaults SENDER_TRANSPORT=none precisely because
+    # neither compose file passes through real Bluetooth access yet (a `/dev/rfcommN` device,
+    # or the host's BlueZ/D-Bus socket -- see the root CLAUDE.md and src/cv-argus/CLAUDE.md's
+    # "Open decisions"). Flip it here once that's added and verified against real Pi 5
+    # hardware; don't just set the env var without the matching device passthrough, or
+    # SenderServer will crash main.py at startup the same way it does on a laptop with no
+    # Bluetooth adapter.

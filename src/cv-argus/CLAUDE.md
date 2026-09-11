@@ -82,9 +82,14 @@ see "`pipeline/` — done" below for the security caveat) as sinks. `src/main.py
 to it: `SOURCE` (`video_capture` default / `picamera`) picks where frames come from, `OUTPUTS`
 (comma-separated, `logging` default) picks one or more sinks — fanned out from the same
 inference stage via `Stage.connect()`, not a new mechanism. See "`pipeline/` — done" below and
-"Running it" below for the demo procedure. `orchestrator/`, `buffer/`, `sender/`, and `alerts/`
-still don't exist — see "Planned module layout" below for what goes in next, and the exact
-behavior each part needs to replicate from the notebook.
+"Running it" below for the demo procedure. **`orchestrator/`, `buffer/`, `sender/`, and
+`alerts/` are now done too** — a thin, always-on bridge stage hands each frame's
+`DetectionResult` to `orchestrator/`'s own decision-loop thread, which debounces/cools down
+before raising an `Alert` (or a periodic `RouteStatus("OK")` heartbeat) into `buffer/`'s
+WAL-mode SQLite queue; `sender/` answers the ESP32's Bluetooth PULL/ACK poll against that same
+queue. See "`orchestrator/`, `buffer/`, `sender/`, `alerts/` — done" below for the full design,
+and "Module status at a glance" for what's still genuinely untested (no ESP32 hardware/firmware
+exists in this repo, and neither compose file wires real Bluetooth device passthrough yet).
 
 ## Python packaging: `src/` on disk, `cv_argus` at import time
 
@@ -160,6 +165,9 @@ Env vars `main.py` reads (all optional, all with defaults):
 | `LATENCY_LOG_INTERVAL` | `10` | seconds between `StageStats` report lines; `0` disables (see the `latency.py` bullet) |
 | `LOG_LEVEL` | `INFO` | root log level; `DEBUG` adds `LoggingOutputStage`'s per-frame lines + drop-path debug logs |
 | `CV_ARGUS_NUM_THREADS` | unset (Docker: `4`) | pins BLAS/OpenMP/TF/OpenCV thread pools — `cv_argus.bootstrap`, imported first in `main.py`/`__main__.py` |
+| `BUFFER_DIR` / `BUFFER_DB_FILENAME` | `/app/data` / `buffer.sqlite3` | where `buffer/`'s SQLite alert queue lives — see "`buffer/`'s SQLite file needs a volume" and `buffer/store.py` |
+| `SENDER_TRANSPORT` | `bluetooth` (code) / `none` (this repo's compose files) | `bluetooth` (real `BluetoothSppListener`) or `none` (no `SenderServer` started — alerts accumulate unsent in `buffer/`). The compose-file default is `none` because neither compose file passes through real Bluetooth access yet — see "Open decisions" |
+| `BLUETOOTH_CHANNEL` | `4` | only read when `SENDER_TRANSPORT=bluetooth`: the RFCOMM channel `BluetoothSppListener` binds |
 | model-artifact overrides | see `constants.py` | `MODEL_DIR`, `*_DRIVE_FILE_ID`, `*_FILENAME`, `*_BUNDLE_URL` — see "Model download strategy" |
 
 `docker compose` passes `/dev/video0` through by default — adjust the `devices:` entry to
@@ -267,7 +275,7 @@ actually take effect.
 
 SQLite isn't a server — there's no daemon, no port, nothing to add as a separate
 `docker-compose.yml` service. It's a library (Python's stdlib `sqlite3`) that opens a single
-file directly from within whatever process calls it, so `buffer/` will just read/write a
+file directly from within whatever process calls it, so `buffer/` just reads/writes a
 file path from inside the existing `cv-argus` container, same as any other local file.
 
 The one thing that *does* need infrastructure: a container's filesystem is thrown away on
@@ -277,11 +285,13 @@ volume (`buffer-data`, separate from `model-cache`) for exactly this — the que
 model cache have different lifecycles (e.g. you may want to wipe/back up the alert queue
 without touching the downloaded model, or vice versa).
 
-One implementation note for whoever builds `buffer/`: if `orchestrator/` (writing new
-alerts) and `sender/` (reading/marking them sent) end up touching the file from different
-threads, open the connection with `PRAGMA journal_mode=WAL` — SQLite's default journal mode
-serializes readers behind a writer more aggressively than WAL does, and this file will
-plausibly have both happening around the same time.
+**Now implemented**: `buffer/store.py`'s `Buffer` opens the connection with `PRAGMA
+journal_mode=WAL` (plus `synchronous=NORMAL` and `busy_timeout=5000`) exactly for the reason
+anticipated here — `orchestrator/` (writing new alerts from its own thread) and `sender/`
+(reading, then marking sent from its own thread, only after an ACK) do touch the same file
+from different threads. WAL alone doesn't make two Python threads' *writes* atomic with each
+other, though, so a `threading.Lock` around every write method (`enqueue`/`mark_sent`) handles
+that on top of it — see "`orchestrator/`, `buffer/`, `sender/`, `alerts/` — done" below.
 
 ## Planned module layout
 
@@ -295,27 +305,30 @@ src/
 ├── pipeline/       # DONE — threaded Stage/Pipeline abstraction (stage.py), sources
 │                   # (camera/video file/Pi CSI), the two MediaPipe stages, the inference
 │                   # stage, and both bundle downloads; wired into src/main.py
-├── orchestrator/   # decision logic: given a prediction (+ later, other signals like the
-│                   # grip sensor), decides whether it's worth raising an alert at all
-│                   # (thresholds, debounce/hysteresis across frames, cooldowns) — the
-│                   # "Alert/RouteStatus Orchestration (Decision Making)" box in the design
-│                   # diagram. Builds an Alert (via alerts/) and hands it to buffer/.
-├── buffer/         # saving and queuing only: persists Alerts to SQLite (enqueue) and tracks
-│                   # sent/unsent state — the "Queue Message Local Buffer (SQLite)" box in the
-│                   # design diagram, and the answer to "what happens when the truck goes
-│                   # offline". No communication logic of its own — sender/ dequeues from it.
-├── sender/         # owns the actual communication with the ESP32 — now decided as Bluetooth,
-│                   # with the ESP32 polling: this is likely a small server side that answers
-│                   # the ESP32's periodic pulls (unsent alerts, then sent/unsent acks) rather
-│                   # than a component that pushes on its own schedule — see "Open decisions"
-│                   # below before assuming the push-based shape implied by earlier notes here.
-└── alerts/         # data model + serialization only for an Alert record (level,
-                     # probabilities, timestamp, geolocation, ...) — no logic, no persistence;
-                     # orchestrator/, buffer/, and sender/ all depend on this, not vice versa
+├── alerts/         # DONE — Alert data model (models.py: AlertKind discriminator + one
+│                   # envelope dataclass, route_status() factory) + serialization
+│                   # (serialization.py: to/from dict/json) only — no logic, no persistence;
+│                   # orchestrator/, buffer/, and sender/ all depend on this, not vice versa
+├── orchestrator/   # DONE — OrchestratorBridgeOutputStage (bridge.py, a thin always-on
+│                   # pipeline sink) + Orchestrator (orchestrator.py, its own decision-loop
+│                   # thread): debounce/cooldown before raising an Alert, a periodic
+│                   # RouteStatus("OK") heartbeat otherwise — the "Alert/RouteStatus
+│                   # Orchestration (Decision Making)" box in the design diagram. Builds
+│                   # records via alerts/ and calls buffer/.enqueue().
+├── buffer/         # DONE — Buffer (store.py): a single SQLite table (WAL mode), enqueue/
+│                   # fetch_unsent/mark_sent/unsent_count/close — the "Queue Message Local
+│                   # Buffer (SQLite)" box in the design diagram, and the answer to "what
+│                   # happens when the truck goes offline". No communication logic of its own
+│                   # — sender/ dequeues from it.
+└── sender/         # DONE — a Bluetooth SPP *server* answering the ESP32's PULL/ACK poll
+                     # (protocol.py's grammar, server.py's SenderServer accept loop,
+                     # transport.py's Transport/Listener abstraction + FakeTransport/
+                     # FakeListener, bluetooth_transport.py's platform-gated real transport).
+                     # Not yet run against real ESP32 hardware/firmware — see "Open decisions".
 ```
 
-Internal file names within each subpackage aren't decided yet — the notes below describe
-required *behavior*, to carry forward regardless of how the files end up split up.
+See "`orchestrator/`, `buffer/`, `sender/`, `alerts/` — done" below for the full design of the
+four newer packages.
 
 ### `model/` — done: a shared geometric-feature layer plus the fused detector's two backbones
 
@@ -507,33 +520,125 @@ no `PIPELINE` env var to pick between model families anymore (see "Current statu
 why the earlier `cnn`/`lstm` options were removed). Runs until a signal arrives or the source
 (e.g. a video file) ends on its own — see `Pipeline.is_alive()` in `stage.py`.
 
-### `orchestrator/`, `buffer/`, `sender/`, `alerts/` — intentionally stubbed
+### `orchestrator/`, `buffer/`, `sender/`, `alerts/` — done
 
-None of these four are designed yet beyond the split of responsibility above. What's known so
-far is the data flow: `orchestrator/` decides send-or-not → builds an `Alert` using
-`alerts/`'s model → hands it to `buffer/`, which only saves and queues it (SQLite, tracks
-sent/unsent) → `sender/` is what actually talks to the ESP32 described in `docs/designs/semantic-design*`
-(that hardware and firmware don't exist in this repo), reporting success back to `buffer/` so
-an item can be removed from the queue once the ESP32 has it. The wire protocol is no longer
-fully open — Bluetooth, ESP32-initiated polling (see "Open decisions" below) — but the exact
-shape of `sender/`'s interface still is, since polling flips who calls whom compared to a
-simple `Transport.send(alert) -> bool`. Build against a small interface with a logging/no-op
-implementation for now regardless of the final shape, so the rest of the pipeline has
-somewhere to hand off predictions without blocking on that design.
+Built as **three independent peer components** (Pipeline, `Orchestrator`, `SenderServer`),
+coupled only through `buffer/`'s SQLite file — not as more pipeline stages, and not as one
+component owning the others' lifecycles. `main.py`'s `main()` builds and starts/stops all
+three; see its module docstring for the full picture and the shutdown-order rationale.
+
+Data flow: the pipeline's `FusedInferenceStage` → `OrchestratorBridgeOutputStage` (a thin,
+always-on sink — *not* one of `OUTPUTS=`'s demo/observability toggles) → `Orchestrator`'s own
+decision-loop thread → `alerts/`'s `Alert.new()`/`route_status()` → `buffer/`'s `Buffer.enqueue()`
+→ (later, asynchronously) `sender/`'s `SenderServer` answers an ESP32 Bluetooth poll by calling
+`Buffer.fetch_unsent()`, streaming rows, and only calling `Buffer.mark_sent()` once the ESP32
+actually ACKs them.
+
+**`alerts/` — the shared data model.** One envelope dataclass, not one class per alert type: the
+draw.io diagram shows a single "Alert/RouteStatus Model" box feeding a single "Queue Message
+Local Buffer (SQLite)" box, and alert payloads are expected to vary by type anyway (a drowsiness
+alert and a route-status heartbeat don't share a rigid shape — see the thesis draft's MongoDB
+justification). `models.py`'s `Alert` carries `id` (uuid4 hex), `kind` (`AlertKind.DROWSINESS` /
+`AlertKind.ROUTE_STATUS`), `level` (1/2, `None` for a heartbeat), `created_at_ms` (**wall clock**,
+`time.time()` — not `FrameContext.created_at`'s monotonic convention, since this value gets
+serialized and shown off-device), `source_id`, a flexible `payload` dict, and `geolocation`
+(**always `None`** — see below). `route_status()` is a factory returning an `Alert` with
+`kind=ROUTE_STATUS`, not a second class, so `buffer/`/`sender/` only ever handle one type.
+`serialization.py`'s `to_json()`/`from_json()` are compact and newline-free (required by
+`sender/`'s newline-delimited wire format); an unknown `kind` string raises a clear `ValueError`
+rather than silently defaulting.
+
+**Geolocation is never populated by this module.** The draw.io diagram wires the geolocation
+module directly to the ESP32, not the Pi — this device has no GPS. The ESP32 attaches its own
+live GPS reading only when it relays a pulled record onward to the backend over HTTP; no
+reverse-direction Bluetooth message exists for this, and none is needed.
+
+**`buffer/` — the SQLite queue, one shared table.** `store.py`'s `Buffer` opens with `PRAGMA
+journal_mode=WAL` + `synchronous=NORMAL` + `busy_timeout=5000`, and wraps every write
+(`enqueue`/`mark_sent`) in a `threading.Lock` — WAL lets `fetch_unsent()` (a pure reader) proceed
+without blocking on a writer, but doesn't by itself make two Python threads' *writes* atomic
+with each other, which is what the lock is for. One `Buffer` instance is constructed once in
+`main.py` and shared by `Orchestrator` and `SenderServer` — this is the project's actual
+"concurrencia real" argument (thesis draft, criterion 3.1.1), so the two threads have to
+genuinely share the same lock, not just point at the same file. `enqueue()` is idempotent
+(`INSERT OR IGNORE` on `id`); `fetch_unsent()` never mutates `sent` — the only method that does
+is `mark_sent()`, and `sender/` calls it exclusively after an ACK (see below), never right after
+handing rows over. `BUFFER_DIR`/`BUFFER_DB_FILENAME` env vars (already scaffolded in
+`.env.example`/`Dockerfile`/`docker-compose.yml` before this module existed) are read via
+`constants.BUFFER_DIR_DEFAULT`/`BUFFER_DB_FILENAME_DEFAULT`.
+
+**`orchestrator/` — one decision loop, not two independent timers.** `bridge.py`'s
+`OrchestratorBridgeOutputStage` has zero decision logic — it only pushes `(source_id,
+detection)` onto a plain `queue.Queue` that `Orchestrator` owns, via `put_nowait`/drop-on-full
+(a dropped detection just costs one fewer sample toward the debounce counter, never blocks the
+pipeline). `orchestrator.py`'s `Orchestrator` runs a single `while` loop on its own thread,
+gated by `queue.get(timeout=ORCHESTRATOR_LOOP_POLL_SECONDS)`: every wake — a real detection or a
+timeout — checks both "should I alert" and "is a heartbeat due", matching the draw.io diagram's
+one Orchestration box producing both message kinds. Debounce
+(`ORCHESTRATOR_DEBOUNCE_FRAMES = 3`, ~0.6s of sustained `Drowsy` at 5fps) is **rising-edge
+only** — there's no symmetric hysteresis counter to "clear" the streak, a deliberate
+simplification since the cooldown (`ORCHESTRATOR_ALERT_COOLDOWN_SECONDS = 30.0`) already stops a
+continuing episode from re-alerting every debounce window. `ORCHESTRATOR_HEARTBEAT_INTERVAL_
+SECONDS = 60.0` paces the `RouteStatus("OK")` heartbeat when no alert is due; an alert also
+resets the heartbeat clock (no immediate double-fire). All four constants live in
+`constants.py` with their reasoning. `start()`/`stop()`/`join()`/`is_alive` mirror
+`Pipeline`'s own method names (not by inheritance — `Orchestrator` isn't a `Stage`/`Pipeline`
+subclass) so `main.py` can treat all three top-level components uniformly.
+
+**`sender/` — a custom Bluetooth SPP server, ESP32-initiated polling.** `protocol.py` defines a
+small, pure (no I/O) request/response grammar:
+```
+Client -> Server:  PULL <n>\n
+Server -> Client:  one JSON line per unsent Alert (oldest first, up to n)
+Server -> Client:  END\n                          (even if 0 rows)
+Client -> Server:  ACK <id1>,<id2>,...\n           (only if rows were sent)
+Server -> Client:  ACKED <n>\n                     (n = rows actually marked sent)
+```
+`server.py`'s `SenderServer` runs a single-session-at-a-time accept loop (matches the
+one-Pi-one-ESP32 topology assumed throughout this design) against a `Transport`/`Listener`
+pair (`transport.py`). **Critical invariant**: `buffer.mark_sent()` is called *only* after an
+`ACK` line actually arrives — a connection dropped between `END` and `ACK` leaves those rows
+`sent=0`, so the next `PULL` re-serves them verbatim. This makes an interrupted pull idempotent
+by construction: a duplicate delivery is possible (the ESP32 could receive the same alert
+twice), a *lost* one is not. Backend-side dedup by `Alert.id`, and what happens if the ESP32
+pulls successfully but then fails its own HTTP relay to the backend, are both explicitly out of
+scope for this repo — flagged, not solved, the same way the CNN-checkpoint-provenance risk above
+is flagged rather than assumed away. `bluetooth_transport.py`'s `BluetoothSppTransport`/
+`BluetoothSppListener` use stdlib `socket.AF_BLUETOOTH`/`BTPROTO_RFCOMM` (no PyBluez dependency)
+— `socket.AF_BLUETOOTH` is referenced only inside method bodies, never at class/module level, so
+*importing* this module never requires Bluetooth support; only *constructing* a
+`BluetoothSppListener` can fail, with a clear `OSError`, on a platform/build without it (verified
+directly: it raises immediately on a machine with no Bluetooth adapter, rather than hanging or
+silently no-opping). `sender/__init__.py` re-exports both lazily (mirrors `pipeline/__init__.py`'s
+`_LAZY` `__getattr__` pattern) for the same reason. `transport.py`'s `FakeTransport`/
+`FakeListener` (an in-memory, queue-backed duplex pair) are what every `sender/` test actually
+runs against — no real socket anywhere in the unit suite.
+
+This satisfies the grading-criteria constraint behind all of it (3.2's "not a pre-built
+client/server service" note): the PULL/ACK grammar is a protocol this project defines and
+implements itself, not a call into someone else's client/server library — only the Pi side
+exists in this repo (no ESP32 firmware here), but the protocol design is what the criterion is
+actually asking for.
 
 ## Open decisions that affect this module later
 
-- **Pi ↔ ESP32 transport: decided as Bluetooth, with the ESP32 as the polling side.** The
-  ESP32 periodically connects and pulls unsent records from the Pi's SQLite buffer — the Pi
-  doesn't push. This flips the assumption `sender/`'s description above was written under
-  (that it "dequeues from `buffer/` ... transmits them"): if the ESP32 is the one initiating
-  each pull, `sender/` is closer to a small Bluetooth *server* that answers "give me unsent
-  alerts" / "mark these as sent" requests than to a component that proactively pushes on its
-  own schedule. Worth settling this shape explicitly before writing `sender/`, since it changes
-  what the `Transport` interface mentioned below needs to look like. Container-wise this also
-  means passing through Bluetooth access (e.g. a `/dev/rfcommN` device, or the host's
-  BlueZ/D-Bus socket) instead of the `/dev/ttyAMA0`/`/dev/ttyUSB0` UART passthrough a serial
-  link would have needed.
+- **Pi ↔ ESP32 transport: decided AND implemented as Bluetooth SPP, with the ESP32 as the
+  polling side** — `sender/`'s `SenderServer` (see "`orchestrator/`, `buffer/`, `sender/`,
+  `alerts/` — done" above) is the server; the ESP32 periodically connects and pulls unsent
+  records, never the reverse. What's still genuinely open, not just undocumented:
+  - **No ESP32 firmware or hardware exists in this repo/session**, so `BluetoothSppTransport`
+    has never run against a real device — only against `FakeTransport` in the unit suite. Don't
+    describe the Bluetooth path as validated end-to-end; it's a protocol design and a Pi-side
+    implementation, not a tested link.
+  - **Neither compose file passes through real Bluetooth device access yet** — no
+    `/dev/rfcommN` device, no host BlueZ/D-Bus socket wired into `devices:`/`volumes:` in
+    `docker-compose.yml` or `docker-compose.pi.yml`. This is why `docker-compose.yml` defaults
+    `SENDER_TRANSPORT=none` even though `main.py`'s own code-level default is `bluetooth` —
+    setting `SENDER_TRANSPORT=bluetooth` without adding real passthrough first will crash
+    `main()` at startup (`BluetoothSppListener`'s `socket.bind()` fails immediately without a
+    real adapter — confirmed directly in this repo's own sessions). Don't fabricate a specific
+    device path without real Pi 5 hardware to verify it against, same convention as the
+    camera-passthrough device list in `docker-compose.pi.yml`.
 - Real camera on the Pi: settled as `picamera2` (see "Python packaging" above) for the CSI
   module, rather than raw `/dev/video*` + `libcamera` device passthrough. `docker-compose.pi.yml`
   now exists with a best-effort device list (`/dev/video0`-`/dev/video3` plus a couple of
@@ -582,29 +687,30 @@ number**, not filename, when deciding whether to apply the original 1-6→3-clas
 
 ## Module status at a glance
 
-The module breakdown is six pieces, with `buffer/` and `sender/` cleanly split:
+All six pieces are done now:
 
 | Module | Responsibility |
 |---|---|
 | `model/` | **done** — fused CNN-embedding/geometric-feature/LSTM inference (the model this container deploys — best measured accuracy in the project, not yet cross-validated) plus the CNN checkpoint loader it depends on as a frozen embedding backbone, gdown download for both |
 | `pipeline/` | **done** — threaded Stage/Pipeline abstraction, two MediaPipe stages, one inference-stage wrapper, both bundle downloads; wired into `src/main.py` |
-| `orchestrator/` | decides send-or-not, builds an `Alert` |
-| `buffer/` | saving and queuing ONLY (SQLite, sent/unsent tracking) — no comms |
-| `sender/` | owns communication setup, dequeues from `buffer/`, transmits, reports success back |
-| `alerts/` | `Alert` data model + serialization only |
+| `alerts/` | **done** — `Alert`/`AlertKind` data model + `route_status()` factory + serialization, no logic/I/O — see "done" section above |
+| `orchestrator/` | **done** — bridge stage + its own decision-loop thread (debounce/cooldown, periodic heartbeat); not yet run against a real multi-hour drive to validate the debounce/cooldown defaults in practice |
+| `buffer/` | **done** — WAL-mode SQLite queue, enqueue/fetch_unsent/mark_sent, `tmp_path`-tested including a real two-thread concurrency smoke test |
+| `sender/` | **done** as a Pi-side implementation — custom Bluetooth SPP PULL/ACK protocol, unit-tested against `FakeTransport`; **not** run against real ESP32 hardware/firmware (none exists in this repo) |
 
-Four of the six (`orchestrator/`, `buffer/`, `sender/`, `alerts/`) still don't exist as code —
-`model/` and `pipeline/` are both done now. What's otherwise in place: the container
-(Dockerfile, docker-compose.yml, two volumes for the model cache and the SQLite buffer — both
-artifacts baked in at build time, see "Model download strategy"), the packaging (`setup.py`
-mapping `src/` to the `cv_argus` import name), and a real entry point (`src/main.py` +
+What's otherwise in place: the container (Dockerfile, docker-compose.yml, two volumes for the
+model cache and the SQLite buffer — both artifacts baked in at build time, see "Model download
+strategy"), the packaging (`setup.py` mapping `src/` to the `cv_argus` import name, all six
+subpackages registered in `packages=[...]`), and a real entry point (`src/main.py` +
 `src/__main__.py`, run via `python -m cv_argus`, `python -m cv_argus.main`, or the
-`cv-argus-run` console script) now wired to actually build and run the fused `Pipeline` (see
-"`pipeline/` — done" above) rather than just verifying the environment. What's still missing to
-get an actual alert out of this end to end:
-`orchestrator/`, `buffer/`, `sender/`, `alerts/` — `LoggingOutputStage` is the sink until those
-exist. Design work on those remaining modules continues outside this repo — pick up from this
-file rather than re-deriving the plan from scratch.
+`cv-argus-run` console script) that builds and starts all three top-level components (Pipeline,
+`Orchestrator`, `SenderServer`) together — see `main.py`'s module docstring. **Real, stated
+limitations, not glossed over**: no ESP32 firmware/hardware exists anywhere in this project, so
+the Bluetooth link has never been exercised end to end against a real device; neither compose
+file wires actual Bluetooth device passthrough yet (`docker-compose.yml` defaults
+`SENDER_TRANSPORT=none` for exactly this reason — see "Open decisions"); and the
+debounce/cooldown/heartbeat constants in `constants.py` are reasoned-through defaults, not
+tuned against a real recorded drive.
 
 ## Tests
 
@@ -643,6 +749,22 @@ file rather than re-deriving the plan from scratch.
   grab-skip loop cv2-gated against a synthetic clip). `tests/test_bootstrap.py` covers the
   thread-pinning knobs (`configure()` only touches the vars when `CV_ARGUS_NUM_THREADS` is set,
   and never overwrites an existing value).
+- **`alerts/`, `buffer/`, `orchestrator/`, `sender/`** — all hermetic, no exceptions:
+  `test_alerts_models.py`/`test_alerts_serialization.py` (uuid shape, round-trips, unknown-`kind`
+  raises); `test_buffer_store.py` (schema, WAL pragma, enqueue/fetch/mark_sent semantics
+  including a real two-thread concurrency smoke test — all via `tmp_path`, never a fixed path);
+  `test_orchestrator_bridge.py`/`test_orchestrator_decision.py`/`test_orchestrator_lifecycle.py`
+  (the decision tests call `_on_detection`/`_maybe_heartbeat` directly against a fake `Buffer`
+  and a plain duck-typed stand-in for `DetectionResult` — deliberately **not** the real class,
+  since it would pull in `cv_argus.model`'s tensorflow dependency just to build a fake value);
+  `test_sender_protocol.py`/`test_sender_transport.py`/`test_sender_server.py` (pure grammar
+  tests, `FakeTransport`/`FakeListener` semantics, and the full PULL/ACK protocol over fakes
+  plus a real `tmp_path` `Buffer` — no real Bluetooth socket anywhere in the suite).
+  `test_main.py`'s `TestBuildSenderListener`/`TestBuildPipeline` cover the `SENDER_TRANSPORT`
+  env parsing and that the orchestrator bridge stage actually gets wired into the pipeline's
+  stage list, with every heavy constructor (bundle downloads, `FusedDrowsinessDetector.from_env`,
+  the MediaPipe/inference stages) monkeypatched out — same spirit as the existing
+  `test_mjpeg_builder_is_wired` test in that file.
 
 ## Working in this module
 
@@ -675,10 +797,19 @@ file rather than re-deriving the plan from scratch.
   `mediapipe`/`tensorflow`, register it in `pipeline/__init__.py`'s `_LAZY` dict rather than
   importing it eagerly, so `Stage`/`Pipeline`/`FrameContext` stay importable without the full
   stack installed (see that file's module docstring).
-- When building `orchestrator/`, `buffer/`, `sender/`, or `alerts/`, build against the small
-  interface described in their section above (a logging/no-op `Transport` implementation is
-  fine to start) rather than blocking on the still-open Bluetooth polling-shape question — see
-  "Open decisions" before assuming a simple push-based `Transport.send(alert) -> bool` shape.
+- `orchestrator/`, `buffer/`, `sender/`, and `alerts/` are done (see their "done" section
+  above) — don't reintroduce a simple push-based `Transport.send(alert) -> bool` shape if this
+  is ever revisited; the ESP32 is the polling side, confirmed and implemented, not still open.
+- **Never call `buffer.mark_sent()` anywhere except `SenderServer`'s post-ACK line** — that's
+  the one invariant the whole "never lose, duplicates are fine" design rests on (see the
+  "done" section's `sender/` paragraph). A tempting-looking shortcut (e.g. marking sent right
+  after streaming rows in a `PULL` response, "since the ESP32 basically always gets them") would
+  silently reintroduce exactly the alert-loss failure mode this design exists to avoid.
+- `docker-compose.yml`'s `SENDER_TRANSPORT` default is `none`, not `bluetooth`, even though
+  `main.py`'s own code-level default is `bluetooth` — see "Open decisions". Don't "fix" this by
+  flipping the compose default without also adding real Bluetooth device passthrough first;
+  that would make `docker compose up --build` crash at startup on any machine without a
+  Bluetooth adapter, which is the regression this default is specifically avoiding.
 - If asked to run `docker compose up --build` or similar: the build now succeeds with no `.env`
   at all (both Drive ids have checked-in defaults in `constants.py`). Rebuilding does **not**
   refresh an existing `model-cache` volume's contents (see "Model download strategy" → "Gotcha
