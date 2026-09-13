@@ -50,19 +50,22 @@ collections first.
 ## Running this module alone in Docker
 
 ```sh
-docker compose up --build
+docker compose up --build   # first run, or after a Dockerfile/requirements.txt change
+docker compose up           # every run after that — reuses the already-built image
 # -> http://localhost:8000/docs
 ```
 
 Starts this service plus its own local `mongo` container. `--reload` is on by default in this
-compose file (dev loop) — bind-mounts `./app` so edits apply without a rebuild.
+compose file (dev loop) — bind-mounts `./app` so edits apply without a rebuild, so you rarely
+need `--build` again once the image exists (`docker images` will show `backend-argus`'s image).
 
 ## Running the whole stack (backend + Mongo + ui-argus)
 
 From the **repo root** (not this directory):
 
 ```sh
-docker compose up --build
+docker compose up --build   # first run, or after a Dockerfile/requirements.txt change
+docker compose up           # every run after that
 # backend: http://localhost:8000/docs
 # frontend: http://localhost:5173
 ```

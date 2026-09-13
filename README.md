@@ -66,7 +66,8 @@ changes in either directory; this file stays at the overview level on purpose.
 
 ```sh
 cd src/cv-argus
-docker compose up --build
+docker compose up --build   # only needed the first time, or after a Dockerfile/dep change —
+                            # plain `docker compose up` after that reuses the built image
 ```
 
 Builds and deploys the CNN pipeline by default, reading from a webcam (`CAMERA_SOURCE`) or a
@@ -80,7 +81,7 @@ running it on the Pi 5's own CSI camera, a config-variable reference, and troubl
 ```sh
 cd src/ui-argus
 cp .env.example .env
-docker compose up --build
+docker compose up --build   # only needed the first time, or after a Dockerfile/dep change
 ```
 
 Opens a Vite dev server on http://localhost:5173 with hot reload (source is bind-mounted). For
