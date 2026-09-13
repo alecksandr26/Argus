@@ -22,11 +22,13 @@ No local Node/npm install needed; everything runs in the container.
 
 ```bash
 cp .env.example .env
-docker compose up --build
+docker compose up --build   # first run, or after a Dockerfile/package.json change
+docker compose up           # every run after that — reuses the already-built image
 ```
 
 Open http://localhost:5173. Source is bind-mounted, so edits under `src/` hot-reload without
-rebuilding the image.
+rebuilding the image — you'll rarely need `--build` again once the image exists (`docker images`
+will show `ui-argus`'s image).
 
 ## Quick start (local Node, no Docker)
 
