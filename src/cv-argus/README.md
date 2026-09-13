@@ -21,6 +21,28 @@ file IDs have checked-in defaults, so the build doesn't need one supplied.
 
 To actually **watch** it work instead of reading log lines, see "Demo" below.
 
+### Building vs. running — you don't need `--build` every time
+
+`--build` does two things: builds the image (or rebuilds it, if anything relevant changed) and
+then starts the container from it. **You only need it the first time, or after a change that
+needs a rebuild** (edits to `Dockerfile`, `requirements.txt`/`setup.py`, or a
+`CNN_MODEL_DRIVE_FILE_ID`/`FUSED_MODEL_DRIVE_FILE_ID` build arg — see `docker-compose.yml`'s
+comment at the top). Once `argus/cv-argus:dev` already exists (`docker images` will show it),
+just run:
+
+```sh
+docker compose up          # starts the existing image, no rebuild
+```
+
+Code under `src/` doesn't even need a rebuild to pick up edits — it's bind-mounted into the
+container (see the comment at the top of `docker-compose.yml`), so `docker compose up` alone is
+enough for day-to-day iteration on `cv_argus`'s Python code. Reach for `--build` again only when
+one of the rebuild triggers above actually applies; running it unconditionally just costs time
+re-checking Docker's build cache for no benefit. Add `-d` to either form to run detached
+(`docker compose logs -f` to reattach), and `docker compose down` to stop and remove the
+container (`down -v` also wipes the named volumes — see "Model download strategy" in
+`CLAUDE.md` for when that's actually needed).
+
 ## Prerequisites
 
 - Docker + Docker Compose (`docker compose`, the plugin form — not the old standalone
@@ -164,7 +186,8 @@ a live camera runs until stopped.
 ### On a laptop
 
 ```sh
-OUTPUTS=logging,mjpeg docker compose up --build
+OUTPUTS=logging,mjpeg docker compose up --build   # first run, or after a rebuild-triggering change
+OUTPUTS=logging,mjpeg docker compose up           # every run after that — reuses the built image
 ```
 
 Then open **`http://localhost:8080/stream`** in a browser. If your webcam isn't at
@@ -180,6 +203,9 @@ Uses the CSI camera via a separate overlay file that adds the right device passt
 ```sh
 OUTPUTS=logging,mjpeg docker compose -f docker-compose.yml -f docker-compose.pi.yml up --build
 ```
+
+(drop `--build` on later runs, same as above, once `argus/cv-argus:dev` already exists on the
+Pi)
 
 Then open **`http://<pi-ip>:8080/stream`** from any device's browser on the same network (find
 the Pi's IP with `hostname -I` on the Pi itself).
