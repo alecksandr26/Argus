@@ -5,7 +5,7 @@
 # Raspberry Pi OS (64-bit, Bookworm) is Debian Bookworm under the hood, so this same
 # Dockerfile builds and runs unmodified on both a dev machine (linux/amd64) and the
 # Raspberry Pi 5 (linux/arm64) — e.g. `docker buildx build --platform linux/amd64,linux/arm64`.
-FROM python:3.11-slim-bookworm
+FROM python:3.11-slim-bookworm AS base
 
 # Runtime libraries opencv-python-headless / mediapipe dlopen even when running headless:
 #   libgl1          - OpenCV's video/image codec paths link against GL
@@ -56,6 +56,27 @@ RUN pip install --no-cache-dir --no-deps -e .
 
 COPY docker-entrypoint.sh .
 RUN chmod +x docker-entrypoint.sh
+
+# --- test gate -----------------------------------------------------------------------------
+# Runs the hermetic pytest tier (no network/camera/Drive — see pyproject.toml's
+# `addopts = -m 'not docker'` and this module's own CLAUDE.md's "Tests" section) right here,
+# right after the package becomes importable and *before* the expensive part of the build (the
+# ~1GB model-artifact download from Drive below): a broken test fails fast, without paying for
+# that download first. `runtime` below is FROM `base`, not FROM this stage, and pulls back only
+# `/app/src` via `COPY --from=test` — a no-op content-wise (identical to what `base` already
+# has; this stage only additionally copied `tests/` alongside it) that exists purely to force
+# Docker to build and pass this stage before `runtime` can be built at all. `tests/` itself
+# never reaches the final image.
+FROM base AS test
+# pytest itself isn't in requirements.txt on purpose — that file is the exact, pinned dependency
+# list this image ships to the Pi, and pytest has no business being part of it. Installed here,
+# scoped to this discarded stage only, rather than added to requirements.txt.
+RUN pip install --no-cache-dir pytest
+COPY tests ./tests
+RUN pytest
+
+FROM base AS runtime
+COPY --from=test /app/src ./src
 
 # Model artifacts (the fused CNN-embedding/LSTM classifier this container deploys, the CNN
 # checkpoint it depends on as a frozen embedding backbone, and the two MediaPipe bundles both
