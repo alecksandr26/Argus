@@ -16,15 +16,21 @@ FROM base AS deps
 COPY package.json ./
 RUN npm install
 
-# --- checks (build/typecheck + lint gate) ----------------------------
-# No unit test suite exists in this module yet (see CLAUDE.md/INTEGRATION.md) — this stage
-# runs what genuinely exists instead of faking a test step: ESLint (`npm run lint`) and the
-# TypeScript build (`npm run build`, i.e. `tsc -b && vite build`). Both `dev` and `prod` below
-# depend on this stage passing — via `COPY --from=checks`/`FROM checks`, see each stage's own
-# comment — so a lint or typecheck failure fails those builds too, not just this one.
+# --- checks (lint + unit tests + typecheck/build gate) -----------------
+# Real unit tests now exist (Vitest + React Testing Library — see src/test/setup.ts and the
+# *.test.ts(x) files next to the components/utils they cover). Order matters a little: lint is
+# cheapest and fails fastest, tests next (fast, no bundling), the full typecheck+bundle
+# (`npm run build`, i.e. `tsc -b && vite build`) last since it's the slowest step and also
+# produces the `dist/` the `build`/`prod` stages below reuse. Both `dev` and `prod` depend on
+# this stage passing — via `COPY --from=checks`/`FROM checks`, see each stage's own comment —
+# so a lint, test, or typecheck failure fails those builds too, not just this one. Test files
+# themselves never reach either final image: nothing below copies them, and `npm run build`'s
+# Vite step only bundles what's actually reachable from `index.html`'s entry point, which no
+# `*.test.ts(x)` file is.
 FROM deps AS checks
 COPY . .
 RUN npm run lint
+RUN npm run test
 RUN npm run build
 
 # --- dev --------------------------------------------------------------
