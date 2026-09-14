@@ -1,0 +1,127 @@
+<mxfile host="Electron" agent="cv-argus-pipeline export" version="24.0.0">
+  <diagram name="Figure 1 - Inference Pipeline" id="fig1">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1"
+        arrows="1" fold="1" page="1" pageScale="1" pageWidth="1980" pageHeight="640" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+<mxCell id="f1-src" value="&lt;div style=&quot;font-family:IBM Plex Sans;font-size:14px;font-weight:600;color:#1B2029;&quot;&gt;Frame Source&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;camera / video file · 5 fps&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#8B93A3;strokeWidth=1.5;align=center;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="30" y="268" width="230" height="84" as="geometry" />
+    </mxCell>
+<mxCell id="f1-crop" value="&lt;div style=&quot;font-family:IBM Plex Sans;font-size:14px;font-weight:600;color:#1B2029;&quot;&gt;Face Detector Crop&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;BlazeFace · VIDEO mode&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#8B93A3;strokeWidth=1.5;align=center;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="320" y="268" width="250" height="84" as="geometry" />
+    </mxCell>
+<mxCell id="f1-lmk" value="&lt;div style=&quot;font-family:IBM Plex Sans;font-size:14px;font-weight:600;color:#1B2029;&quot;&gt;Face Landmarker&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;crop · IMAGE mode&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;GeometricRatioFeatureLayer&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;→ EAR/MAR + blendshapes ×10&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#8B93A3;strokeWidth=1.5;align=center;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="640" y="60" width="260" height="100" as="geometry" />
+    </mxCell>
+<mxCell id="f1-cnn" value="&lt;div style=&quot;font-family:IBM Plex Sans;font-size:14px;font-weight:600;color:#1B2029;&quot;&gt;Frozen CNN Embedder&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;07_cnn_training checkpoint&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;embedding_submodel()&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;→ 64-dim embedding&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;⚠ checkpoint parity vs. notebook 11: unverified&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#8B93A3;strokeWidth=1.5;align=center;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="640" y="460" width="260" height="100" as="geometry" />
+    </mxCell>
+<mxCell id="f1-fuse" value="&lt;div style=&quot;font-family:IBM Plex Sans;font-size:14px;font-weight:600;color:#1B2029;&quot;&gt;Fuse&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;→ 74-dim/frame&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3DDB4;strokeColor=#B5690A;strokeWidth=2.2;align=center;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="965" y="271" width="170" height="78" as="geometry" />
+    </mxCell>
+<mxCell id="f1-buf" value="&lt;div style=&quot;font-family:IBM Plex Sans;font-size:14px;font-weight:600;color:#1B2029;&quot;&gt;Rolling Window Buffer&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;≤100 frames, zero-pre-pad&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;per-stream state (numpy)&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3DDB4;strokeColor=#B5690A;strokeWidth=2.2;align=center;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="1190" y="263" width="230" height="94" as="geometry" />
+    </mxCell>
+<mxCell id="f1-lstm" value="&lt;div style=&quot;font-family:IBM Plex Sans;font-size:14px;font-weight:600;color:#1B2029;&quot;&gt;LSTM&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;traced · ~10ms/frame&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;⚠ single fold — not cross-validated&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3DDB4;strokeColor=#B5690A;strokeWidth=2.2;align=center;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="1490" y="271" width="210" height="78" as="geometry" />
+    </mxCell>
+<mxCell id="f1-nd" value="&lt;div style=&quot;font-family:IBM Plex Sans;font-size:14px;font-weight:600;color:#3A7A4E;&quot;&gt;Not Drowsy&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCECDF;strokeColor=#3A7A4E;strokeWidth=2;align=center;verticalAlign=middle;spacing=6;arcSize=50;" vertex="1" parent="1">
+      <mxGeometry x="1760" y="185" width="170" height="50" as="geometry" />
+    </mxCell>
+<mxCell id="f1-d" value="&lt;div style=&quot;font-family:IBM Plex Sans;font-size:14px;font-weight:600;color:#A8382A;&quot;&gt;Drowsy&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3DDD7;strokeColor=#A8382A;strokeWidth=2;align=center;verticalAlign=middle;spacing=6;arcSize=50;" vertex="1" parent="1">
+      <mxGeometry x="1760" y="385" width="170" height="50" as="geometry" />
+    </mxCell>
+<mxCell id="f1-e1" value="sampled frame (BGR)" style="html=1;endArrow=block;endFill=1;endSize=7;strokeColor=#8B93A3;strokeWidth=1.6;curved=1;rounded=0;fontFamily=IBM Plex Mono;fontSize=12;fontColor=#5B6272;" edge="1" parent="1" source="f1-src" target="f1-crop">
+      <mxGeometry relative="1" as="geometry"></mxGeometry>
+    </mxCell>
+<mxCell id="f1-e2" value="face crop (RGB) + bbox" style="html=1;endArrow=block;endFill=1;endSize=7;strokeColor=#8B93A3;strokeWidth=1.6;curved=1;rounded=0;fontFamily=IBM Plex Mono;fontSize=12;fontColor=#5B6272;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="f1-crop" target="f1-lmk">
+      <mxGeometry relative="1" as="geometry"></mxGeometry>
+    </mxCell>
+<mxCell id="f1-e3" value="" style="html=1;endArrow=block;endFill=1;endSize=7;strokeColor=#8B93A3;strokeWidth=1.6;curved=1;rounded=0;fontFamily=IBM Plex Mono;fontSize=12;fontColor=#5B6272;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="f1-crop" target="f1-cnn">
+      <mxGeometry relative="1" as="geometry"></mxGeometry>
+    </mxCell>
+<mxCell id="f1-e4" value="10 geo features" style="html=1;endArrow=block;endFill=1;endSize=7;strokeColor=#8B93A3;strokeWidth=1.6;curved=1;rounded=0;fontFamily=IBM Plex Mono;fontSize=12;fontColor=#5B6272;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="f1-lmk" target="f1-fuse">
+      <mxGeometry relative="1" as="geometry"></mxGeometry>
+    </mxCell>
+<mxCell id="f1-e5" value="64-dim embedding" style="html=1;endArrow=block;endFill=1;endSize=7;strokeColor=#8B93A3;strokeWidth=1.6;curved=1;rounded=0;fontFamily=IBM Plex Mono;fontSize=12;fontColor=#5B6272;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="f1-cnn" target="f1-fuse">
+      <mxGeometry relative="1" as="geometry"></mxGeometry>
+    </mxCell>
+<mxCell id="f1-e6" value="74-dim fused vector" style="html=1;endArrow=block;endFill=1;endSize=7;strokeColor=#8B93A3;strokeWidth=1.6;curved=1;rounded=0;fontFamily=IBM Plex Mono;fontSize=12;fontColor=#5B6272;" edge="1" parent="1" source="f1-fuse" target="f1-buf">
+      <mxGeometry relative="1" as="geometry"></mxGeometry>
+    </mxCell>
+<mxCell id="f1-e7" value="sequence (1,100,74)" style="html=1;endArrow=block;endFill=1;endSize=7;strokeColor=#8B93A3;strokeWidth=1.6;curved=1;rounded=0;fontFamily=IBM Plex Mono;fontSize=12;fontColor=#5B6272;" edge="1" parent="1" source="f1-buf" target="f1-lstm">
+      <mxGeometry relative="1" as="geometry"></mxGeometry>
+    </mxCell>
+<mxCell id="f1-e8" value="p(Drowsy) vs t*=0.57" style="html=1;endArrow=block;endFill=1;endSize=7;strokeColor=#8B93A3;strokeWidth=1.6;curved=1;rounded=0;fontFamily=IBM Plex Mono;fontSize=12;fontColor=#5B6272;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="f1-lstm" target="f1-nd">
+      <mxGeometry relative="1" as="geometry"></mxGeometry>
+    </mxCell>
+<mxCell id="f1-e9" value="" style="html=1;endArrow=block;endFill=1;endSize=7;strokeColor=#8B93A3;strokeWidth=1.6;curved=1;rounded=0;fontFamily=IBM Plex Mono;fontSize=12;fontColor=#5B6272;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="f1-lstm" target="f1-d">
+      <mxGeometry relative="1" as="geometry"></mxGeometry>
+    </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram name="Figure 2 - Orchestration &amp; Delivery" id="fig2">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1"
+        arrows="1" fold="1" page="1" pageScale="1" pageWidth="1650" pageHeight="870" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+<mxCell id="f2-boundary" value="cv-argus container&#10;3 peer threads, 1 process — share only buffer/'s SQLite"
+        style="rounded=1;arcSize=3;whiteSpace=wrap;html=1;fillColor=#E4E7EE;fillOpacity=35;strokeColor=#8B93A3;dashed=1;dashPattern=9 6;verticalAlign=top;align=left;spacing=10;fontFamily=IBM Plex Sans;fontSize=13;fontStyle=1;fontColor=#5B6272;"
+        vertex="1" parent="1">
+      <mxGeometry x="25" y="40" width="950" height="770" as="geometry" />
+    </mxCell>
+<mxCell id="f2-p1" value="&lt;div style=&quot;font-family:IBM Plex Sans;font-size:14px;font-weight:600;color:#1B2029;&quot;&gt;FusedInferenceStage&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;Fig. 1 output + demo sinks&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#8B93A3;strokeWidth=1.5;align=center;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="70" y="110" width="260" height="80" as="geometry" />
+    </mxCell>
+<mxCell id="f2-p2" value="&lt;div style=&quot;font-family:IBM Plex Sans;font-size:14px;font-weight:600;color:#1B2029;&quot;&gt;OrchestratorBridge&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;thin sink · always-on&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#8B93A3;strokeWidth=1.5;align=center;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="470" y="110" width="300" height="80" as="geometry" />
+    </mxCell>
+<mxCell id="f2-o1" value="&lt;div style=&quot;font-family:IBM Plex Sans;font-size:14px;font-weight:600;color:#1B2029;&quot;&gt;Orchestrator&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;own decision-loop thread&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;debounce 3×Drowsy(~0.6s) → cooldown 30s&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;heartbeat RouteStatus(OK) / 60s&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#8B93A3;strokeWidth=1.5;align=center;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="430" y="285" width="420" height="110" as="geometry" />
+    </mxCell>
+<mxCell id="f2-al" value="&lt;div style=&quot;font-family:IBM Plex Sans;font-size:14px;font-weight:600;color:#1B2029;&quot;&gt;alerts/ Alert envelope&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;kind · level · created_at_ms · payload&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#8B93A3;strokeWidth=1.5;align=center;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="490" y="423" width="300" height="74" as="geometry" />
+    </mxCell>
+<mxCell id="f2-buf" value="&lt;div style=&quot;font-family:IBM Plex Sans;font-size:14px;font-weight:600;color:#1B2029;&quot;&gt;buffer/ SQLite (WAL)&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;1 table · threading.Lock&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#8B93A3;strokeWidth=2.4;align=center;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="460" y="535" width="360" height="90" as="geometry" />
+    </mxCell>
+<mxCell id="f2-ss" value="&lt;div style=&quot;font-family:IBM Plex Sans;font-size:14px;font-weight:600;color:#1B2029;&quot;&gt;SenderServer&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;Bluetooth SPP server · own thread&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#8B93A3;strokeWidth=1.5;align=center;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="430" y="665" width="420" height="90" as="geometry" />
+    </mxCell>
+<mxCell id="f2-esp" value="&lt;div style=&quot;font-family:IBM Plex Sans;font-size:14px;font-weight:600;color:#1B2029;&quot;&gt;ESP32&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;Message Sender Orchestrator&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;⚠ not in this repo (no hw/fw)&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#8B93A3;strokeWidth=1.5;align=center;verticalAlign=middle;spacing=6;dashed=1;dashPattern=6 4;" vertex="1" parent="1">
+      <mxGeometry x="1060" y="665" width="240" height="90" as="geometry" />
+    </mxCell>
+<mxCell id="f2-be" value="&lt;div style=&quot;font-family:IBM Plex Sans;font-size:14px;font-weight:600;color:#1B2029;&quot;&gt;Backend&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;src/backend-argus&lt;/div&gt;&lt;div style=&quot;font-family:IBM Plex Mono;font-size:11.5px;color:#5B6272;margin-top:4px;&quot;&gt;FastAPI + MongoDB&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E4E7EE;strokeColor=#C7CBD6;strokeWidth=1.5;align=center;verticalAlign=middle;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="1340" y="665" width="240" height="90" as="geometry" />
+    </mxCell>
+<mxCell id="f2-e1" value="DetectionResult" style="html=1;endArrow=block;endFill=1;endSize=7;strokeColor=#8B93A3;strokeWidth=1.6;curved=1;rounded=0;fontFamily=IBM Plex Mono;fontSize=12;fontColor=#5B6272;" edge="1" parent="1" source="f2-p1" target="f2-p2">
+      <mxGeometry relative="1" as="geometry"></mxGeometry>
+    </mxCell>
+<mxCell id="f2-e2" value="put_nowait(detection)&#10;drop-on-full" style="html=1;endArrow=block;endFill=1;endSize=7;strokeColor=#8B93A3;strokeWidth=1.6;curved=1;rounded=0;fontFamily=IBM Plex Mono;fontSize=12;fontColor=#5B6272;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="f2-p2" target="f2-o1">
+      <mxGeometry relative="1" as="geometry"></mxGeometry>
+    </mxCell>
+<mxCell id="f2-e3" value="Alert.new() / route_status()" style="html=1;endArrow=block;endFill=1;endSize=7;strokeColor=#8B93A3;strokeWidth=1.6;curved=1;rounded=0;fontFamily=IBM Plex Mono;fontSize=12;fontColor=#5B6272;" edge="1" parent="1" source="f2-o1" target="f2-al">
+      <mxGeometry relative="1" as="geometry"></mxGeometry>
+    </mxCell>
+<mxCell id="f2-e4" value="enqueue()" style="html=1;endArrow=block;endFill=1;endSize=7;strokeColor=#8B93A3;strokeWidth=1.6;curved=1;rounded=0;fontFamily=IBM Plex Mono;fontSize=12;fontColor=#5B6272;" edge="1" parent="1" source="f2-al" target="f2-buf">
+      <mxGeometry relative="1" as="geometry"></mxGeometry>
+    </mxCell>
+<mxCell id="f2-e5" value="fetch_unsent() — oldest-first" style="html=1;endArrow=block;endFill=1;endSize=7;strokeColor=#8B93A3;strokeWidth=1.6;curved=1;rounded=0;fontFamily=IBM Plex Mono;fontSize=12;fontColor=#5B6272;" edge="1" parent="1" source="f2-buf" target="f2-ss">
+      <mxGeometry relative="1" as="geometry"></mxGeometry>
+    </mxCell>
+<mxCell id="f2-e6" value="mark_sent() only after ESP32 ACK" style="html=1;endArrow=block;endFill=1;endSize=7;strokeColor=#B5690A;strokeWidth=2.4;curved=1;rounded=0;fontFamily=IBM Plex Mono;fontSize=12;fontColor=#5B6272;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="f2-ss" target="f2-buf">
+      <mxGeometry relative="1" as="geometry"></mxGeometry>
+    </mxCell>
+<mxCell id="f2-e7" value="Bluetooth SPP: PULL n ⇆ rows ⇆ ACK ids&#10;(ESP32-initiated)" style="html=1;endArrow=block;endFill=1;endSize=7;strokeColor=#8B93A3;strokeWidth=1.6;curved=1;rounded=0;fontFamily=IBM Plex Mono;fontSize=12;fontColor=#5B6272;dashed=1;dashPattern=5 4;" edge="1" parent="1" source="f2-ss" target="f2-esp">
+      <mxGeometry relative="1" as="geometry"></mxGeometry>
+    </mxCell>
+<mxCell id="f2-e8" value="HTTP + device key (+GPS)" style="html=1;endArrow=block;endFill=1;endSize=7;strokeColor=#8B93A3;strokeWidth=1.6;curved=1;rounded=0;fontFamily=IBM Plex Mono;fontSize=12;fontColor=#5B6272;dashed=1;dashPattern=5 4;" edge="1" parent="1" source="f2-esp" target="f2-be">
+      <mxGeometry relative="1" as="geometry"></mxGeometry>
+    </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

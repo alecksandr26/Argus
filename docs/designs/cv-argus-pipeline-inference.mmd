@@ -1,0 +1,37 @@
+%%{init: {'theme':'base', 'themeVariables': {
+  'fontFamily': 'IBM Plex Mono, ui-monospace, monospace',
+  'primaryColor': '#ffffff',
+  'primaryBorderColor': '#8b93a3',
+  'primaryTextColor': '#1b2029',
+  'lineColor': '#8b93a3',
+  'tertiaryColor': '#eef0f4',
+  'edgeLabelBackground': '#eef0f4'
+}}}%%
+flowchart LR
+    A["Frame Source<br/>camera / video file · 5 fps"]
+    B["Face Detector Crop<br/>BlazeFace · VIDEO mode"]
+    C["Face Landmarker<br/>crop · IMAGE mode<br/>GeometricRatioFeatureLayer<br/>EAR/MAR + blendshapes x10"]
+    D["Frozen CNN Embedder<br/>07_cnn_training checkpoint<br/>embedding_submodel<br/>64-dim embedding"]
+    E["Fuse<br/>74-dim/frame"]
+    F["Rolling Window Buffer<br/>less-than-100 frames, zero-pre-pad<br/>per-stream state numpy"]
+    G["LSTM<br/>traced tf.function, ~10ms/frame"]
+    H(["Not Drowsy"])
+    I(["Drowsy"])
+
+    A -->|sampled frame BGR, 5fps| B
+    B -->|face crop RGB + bbox| C
+    B -->|face crop RGB + bbox| D
+    C -->|10 geo features| E
+    D -->|64-dim embedding| E
+    E -->|74-dim fused vector| F
+    F -->|sequence 1x100x74| G
+    G -->|"p(Drowsy) >= t* 0.57"| H
+    G -->|"p(Drowsy) < t*"| I
+
+    classDef default fill:#ffffff,stroke:#8b93a3,stroke-width:1.5px,color:#1b2029
+    classDef accent fill:#f3ddb4,stroke:#b5690a,stroke-width:2px,color:#1b2029
+    classDef ok fill:#dcecdf,stroke:#3a7a4e,stroke-width:2px,color:#3a7a4e
+    classDef danger fill:#f3ddd7,stroke:#a8382a,stroke-width:2px,color:#a8382a
+    class E,F,G accent
+    class H ok
+    class I danger
