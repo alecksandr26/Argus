@@ -4,10 +4,15 @@ __pycache__/
 .pytest_cache/
 .git
 .env
-# The test suite is never needed inside the image (nothing COPYs it in anyway); keeping it out
-# of the build context also stops an edit under tests/ from busting the Docker layer cache.
-tests/
+# tests/ now IS needed in the build context — the Dockerfile's `test` stage COPYs it in to run
+# the hermetic pytest suite as a build gate (see that stage's comment). Editing a test file now
+# does bust the Docker layer cache from that COPY onward — that's the intended behavior, not a
+# regression: it's exactly what forces the gate to actually re-run.
 .venv/
 models/
 *.keras
 *.task
+# scripts/output/ is local dataset-extraction output (gitignored, can reach double-digit GB) —
+# nothing in the Dockerfile ever COPYs `scripts/` in at all, so leaving it un-ignored here was
+# only bloating `Sending build context to Docker daemon` for no reason.
+scripts/output/
