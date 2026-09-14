@@ -62,6 +62,36 @@ diagram's name. This is a deliberate kept rename, not an unnoticed divergence fr
   client). Protected routes use `HTTPBearer()`, not `OAuth2PasswordBearer`, for the same reason.
 - No refresh-token flow in this pass — `JWT_EXPIRE_MINUTES` (default 480, one shift) is the only
   session-length control. Documented future work, not an oversight.
+- **Every `password` field on this API's boundary (`LoginRequest`, `UserCreate`, `UserUpdate`)
+  carries a SHA-256 hex digest of the real password, not the raw password itself.** `ui-argus`
+  computes this client-side via `crypto.subtle.digest` (`src/utils/crypto.ts`'s `sha256Hex`)
+  before the request ever leaves the browser; this backend then `hash_secret()`s (bcrypt) *that
+  digest* exactly like it would any other secret — `hash_secret`/`verify_secret` themselves
+  needed no code changes, only the semantic meaning of "password" changed everywhere it's
+  accepted. The contract is enforced, not just documented: `app/schemas/common.py`'s
+  `Sha256HexDigest` type (`Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]`) rejects
+  a non-conforming payload with `422` before it ever reaches `verify_secret`/`hash_secret`. This
+  is a defense-in-depth layer on top of TLS, not a replacement for it — and it has a useful side
+  effect: `crypto.subtle` is only available in a secure context (HTTPS or `localhost`) by browser
+  spec, so a production deployment served over plain HTTP simply can't compute this and login
+  fails outright, a deliberate nudge toward HTTPS rather than a bug to route around.
+
+### Root admin bootstrap
+
+Before this, there was no way to get the *first* `root_admin` into a real deployment at all:
+`POST /api/users` (the only account-creation endpoint) already requires an existing `root_admin`
+JWT to call, and `scripts/seed_dev_data.py` is a manual, destructive dev-only script nobody would
+run against production. `app/auth/bootstrap.py`'s `ensure_root_admin()` closes that gap — called
+from `app.main`'s `lifespan` on every startup, it creates one `root_admin` from the
+`ROOT_ADMIN_EMAIL`/`ROOT_ADMIN_PASSWORD`(+name/phone) env vars if no user exists at that email
+yet, idempotently (a restart is always a no-op once the account exists, and an existing user at
+that email — even a different role, even if the env vars later change — is left completely
+untouched, so a deliberately-rotated password is never silently reset just because the container
+restarted). It reproduces the exact `sha256(raw)` → `hash_secret()` pipeline a real browser login
+produces, computed server-side from the raw env-var password, so logging in afterward with that
+raw password actually works. Dev-safe-but-flagged defaults (`admin@argus.dev` / `changeme123`)
+deliberately match `scripts/seed_dev_data.py`'s own credentials, so a bare `docker compose up`
+and a later seed-script run agree rather than fight over the same account.
 
 ### RBAC — three roles
 
@@ -149,14 +179,36 @@ geolocation}`. Two things from that exchange shaped this backend's schema direct
   **nullable**, not required, in `app/models/alert.py`. Revisit if/when cv-argus starts
   populating them; no reason to block on that now.
 
+## Docker build test gate
+
+`Dockerfile` is multi-stage: a `test` stage runs the hermetic pytest tier (27 tests,
+`mongomock-motor`, no real Mongo — same `pytest` invocation as local dev) *during* `docker
+build`, not as a separate CI step — this project deliberately has no CI (no `.github/`, no
+GitHub Actions) by explicit choice, so the build itself is the only gate there is. `runtime` is
+`FROM base`, not `FROM
+test`, and pulls back only `/app/app` via `COPY --from=test /app/app ./app` — content-wise a
+no-op (`test`'s `/app/app` is identical to `base`'s; the stage only additionally copied
+`tests/`/`pyproject.toml` alongside it), but it forces Docker to build and pass the `test` stage
+before `runtime` can be built at all. That's the actual mechanism that makes a failing test fail
+`docker build` outright — a plain multi-stage `FROM` chain without an explicit `COPY --from=`
+dependency does **not** guarantee this (verified directly: the classic builder here will happily
+skip an unreferenced stage depending on file order and `--target`). `tests/`/`pyproject.toml`
+never reach the `runtime` image — confirmed by shelling into a built image and checking
+`/app/tests` doesn't exist. Verified both directions for real, not just reasoned through: a
+clean build passes all 27 tests then produces a working image; a deliberately-broken test
+(`assert False`) failed `docker build` outright with the real pytest output, no image produced.
+
 ## Current status
 
 Implemented and **verified end to end against real infrastructure**, not just written — Docker
 was available in the session that built this, so every layer below was actually run, not left
 as a "should work" claim:
 
-- The hermetic test suite passes (`pytest` from this directory, 27 tests, `mongomock-motor`
-  backing Beanie — no real Mongo needed).
+- The hermetic test suite passes (`pytest` from this directory, 32 tests, `mongomock-motor`
+  backing Beanie — no real Mongo needed; this count includes the root_admin bootstrap and
+  SHA-256-digest contract tests — see "Root admin bootstrap" above). **`docker build`/`docker
+  compose build` now run this same suite automatically as a build gate** — see "Docker build
+  test gate" above.
 - The opt-in `pytest -m mongo` tier (real MongoDB via testcontainers) also passes, confirming
   genuine `2dsphere` behavior, not just the mock's approximation.
 - `docker compose up --build` (this module's own compose file) boots a real `backend-argus` +

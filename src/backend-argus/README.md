@@ -59,6 +59,12 @@ Starts this service plus its own local `mongo` container. `--reload` is on by de
 compose file (dev loop) — bind-mounts `./app` so edits apply without a rebuild, so you rarely
 need `--build` again once the image exists (`docker images` will show `backend-argus`'s image).
 
+**`--build` (and plain `docker compose build`) now re-runs the hermetic pytest suite as part of
+the build itself** — `Dockerfile` is multi-stage, and the `runtime` stage genuinely depends on
+the `test` stage passing (not just a comment saying so; see `CLAUDE.md`'s "Docker build test
+gate" for the mechanism and how it's verified). A broken test fails `docker build` outright,
+before any image is produced — the test files themselves never end up in the built image either.
+
 ## Running the whole stack (backend + Mongo + ui-argus)
 
 From the **repo root** (not this directory):
@@ -87,12 +93,24 @@ defaults so nothing here is required to boot:
 | `JWT_SECRET` | `dev-secret-change-me` | HS256 signing secret — **change this outside local dev** |
 | `JWT_EXPIRE_MINUTES` | `480` | access-token lifetime (no refresh flow yet, see `CLAUDE.md`) |
 | `CORS_ORIGINS` | `http://localhost:5173` | comma-separated list of allowed browser origins |
+| `ROOT_ADMIN_EMAIL` | `admin@argus.dev` | email of the root_admin auto-created on startup if missing (see `CLAUDE.md`'s "Auth design") |
+| `ROOT_ADMIN_PASSWORD` | `changeme123` | **raw** password for that account — **change this outside local dev** |
+| `ROOT_ADMIN_FIRST_NAME` | `Root` | first name on the bootstrapped account |
+| `ROOT_ADMIN_LAST_NAME` | `Admin` | last name on the bootstrapped account |
+| `ROOT_ADMIN_PHONE_NUMBER` | `+00-000-0000` | phone number on the bootstrapped account (required field, no real use yet) |
+
+Note: `POST /api/auth/login` and `POST /api/users`'s `password` field is not the raw password —
+it's the SHA-256 hex digest of it, computed client-side (`crypto.subtle.digest`) before the
+request is sent; the backend bcrypt-hashes that digest. See `CLAUDE.md`'s "Auth design" for why.
 
 ## Verification checklist (what "done" looks like end to end)
 
 1. `pytest` passes (hermetic tier).
 2. `pytest -m mongo` passes with Docker available (real `2dsphere` behavior).
-3. `docker compose up --build` (this directory) boots; `GET /docs` loads.
+3. `docker compose up --build` (this directory) boots; `GET /docs` loads, and the configured
+   `ROOT_ADMIN_EMAIL` can log in with `ROOT_ADMIN_PASSWORD` with no seed script needed. This step
+   now also re-runs step 1's tests automatically as a build gate — see `CLAUDE.md`'s "Docker
+   build test gate".
 4. `docker compose up --build` from the repo root boots backend + Mongo + `ui-argus` together;
    the frontend at `http://localhost:5173` can reach `http://localhost:8000/docs` from the
    browser (CORS is configured for exactly that origin by default).
@@ -118,4 +136,3 @@ rationale, and `docs/roadmap.md` for how this fits the whole project's gaps:
 - No refresh-token flow.
 - No decided real-time push strategy for the live dashboard (currently: `ui-argus` would poll
   `GET /api/routes/active`, once it has an API client at all).
-- Not merged into `main` yet — this whole module currently lives on a local branch.
