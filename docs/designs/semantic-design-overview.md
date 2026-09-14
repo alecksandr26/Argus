@@ -6,13 +6,37 @@ detailed, canonical diagram — API-endpoint level, opened/edited in
 the same architecture: quick to read on GitHub, easy to diff, and safe to paste into the
 `borrador-proyecto-modular-argus.md` or a slide without exporting an image.
 
+This Mermaid block (below) is the source of truth for *this* simplified diagram. It's also
+exported as a small file family, same naming pattern as
+`docs/designs/cnn-lstm-mediapipe-pipeline.*`, so pick whichever format a given tool needs
+without re-deriving it by hand:
+
+- `semantic-design-overview.mmd` — the same Mermaid source as the fenced block below, as a bare
+  file (for tools that want to `include` or diff it directly rather than pull it out of markdown).
+- `semantic-design-overview.png` — a flat, high-resolution export (2725×2114px) rendered
+  straight from the `.mmd` via [mermaid.ink](https://mermaid.ink), so it's pixel-identical to
+  what the fenced block below renders — safe to drop into a Word document or slide.
+- `semantic-design-overview.drawio.xml` — an editable draw.io twin, **not** the same file as
+  `semantic-design.drawio.xml` above (mind the `-overview` suffix) — that one is the detailed,
+  hand-maintained canonical diagram; this one is a generated, same-colors/same-layout copy of
+  *this* simplified diagram for anyone who'd rather drag boxes around in diagrams.net than edit
+  Mermaid text. Built by extracting every node/cluster's real pixel position, size, shape, and
+  color straight from the rendered Mermaid SVG (script not checked in — one-off), so its layout
+  matches the `.png` almost exactly. Caveat: unlike the hand-built `semantic-design.drawio.xml`,
+  this was never opened in an actual draw.io renderer to confirm it looks right — validated only
+  structurally (well-formed XML, every edge/parent reference resolves), not visually.
+
+All three are generated from the Mermaid source and will drift out of sync with it if edited by
+hand afterward and not regenerated — treat the `.mmd` (or the fenced block below, which must
+match it) as the one to actually edit.
+
 `docs/designs/argus_diagrama_v2.png` is the **retired** AWS-serverless concept (IoT Core,
 Lambda, DynamoDB, Cognito) from the early, AWS-oriented `Argus_Definicion_Tecnica.docx.pdf`
 technical definition. It's kept for history only — nothing in this repo implements it, and it
 should not be read as a current design.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables': {'fontFamily':'IBM Plex Mono, monospace','fontSize':'20px','primaryColor':'#ffffff','primaryBorderColor':'#5b6673','primaryTextColor':'#1b2430','lineColor':'#5b6673','clusterBkg':'#f6f5ef','clusterBorder':'#cfccbd'},'flowchart':{'nodeSpacing':58,'rankSpacing':74,'padding':16,'curve':'basis'}}}%%
+%%{init: {'theme':'base','themeVariables': {'fontFamily':'IBM Plex Mono, monospace','fontSize':'26px','primaryColor':'#ffffff','primaryBorderColor':'#5b6673','primaryTextColor':'#1b2430','lineColor':'#5b6673','clusterBkg':'#f6f5ef','clusterBorder':'#cfccbd'},'flowchart':{'nodeSpacing':75,'rankSpacing':96,'padding':16,'curve':'basis'}}}%%
 flowchart TB
   subgraph EDGE["Truck Cabin — Edge"]
     CAM["Camera"] -- frames --> PI
@@ -67,17 +91,19 @@ flowchart TB
 Measured with `docs/designs/scripts/measure_diagram.py` (renders the diagram headlessly via
 mermaid.ink, parses the returned SVG's real node/cluster coordinates, sums their area against
 the canvas area — `python3 measure_diagram.py diagram.mmd`, where `diagram.mmd` is this fenced
-block's contents): base font has been bumped twice now, `13px → 16px → 20px`. The ESP32 and
-Docker Compose boxes were deliberately flattened by switching their internal direction from
-`TB` to `LR` — measured per-box aspect ratio (width:height) went from 1.55:1 → 2.50:1 for the
-ESP32 box and 1.47:1 → 2.07:1 for the Docker Compose box. That flattening pulled the *overall*
-diagram out to **1.55:1** / 66.6% fill (from 1.31:1 / 74.5% before flattening) — a real,
+block's contents): base font has been bumped three times now, `13px → 16px → 20px → 26px`. The
+ESP32 and Docker Compose boxes were deliberately flattened by switching their internal direction
+from `TB` to `LR` — measured per-box aspect ratio (width:height) went from 1.55:1 → 2.50:1 for
+the ESP32 box and 1.47:1 → 2.07:1 for the Docker Compose box. That flattening pulled the
+*overall* diagram to **1.29:1** / 66.9% fill (from 1.31:1 / 74.5% before flattening) — a real,
 accepted trade-off: those two boxes' shape was the explicit ask, not the whole-canvas ratio.
 `nodeSpacing`/`rankSpacing` were re-swept each time the font grew — every size change shifts how
 much clearance a cluster title needs before its first child box, and the script's per-cluster
-margin check has caught a real (if small, 1-3px) overlap regression at each of the last three
-font bumps. At `20px` the settled values are `nodeSpacing: 58`, `rankSpacing: 74`, both re-swept
-for a ≥7px margin rather than the bare minimum that happened to render clean once.
+margin check has caught a real (if small, 1-3px) overlap regression at every one of the last four
+font bumps. At `26px` the settled values are `nodeSpacing: 75`, `rankSpacing: 96`, both re-swept
+for a ≥8px margin rather than the bare minimum that happened to render clean once — worth
+re-running the script rather than trusting a value carried over from a smaller font size, since
+none of the earlier settled values stayed safe once the font grew again.
 
 Rejected along the way, all measured: pure `LR` (6.4:1, too wide for a document page); pure `TB`
 with every subgraph inheriting the outer direction (0.52:1, overcorrects into a tall strip); a
