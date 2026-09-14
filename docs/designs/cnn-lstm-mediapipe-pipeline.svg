@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1900 920" width="1900" height="920" role="img" aria-label="Pipeline diagram: a camera source is sampled at 5fps, MediaPipe Face Detector crops the face, then splits into a FaceLandmarker plus GeometricRatioFeatureLayer path producing a 10-dim vector, and a frozen CNN path producing a 64-dim embedding. The two fuse into a 74-dim vector per frame, filling a 100-timestep zero-pre-padded sliding window that a Norm-LSTM-Dropout-Dense classifier reads, thresholding p(Drowsy) at 0.57 to output Not Drowsy or Drowsy, which feeds the alert pipeline.">
+  <title>Fused CNN+LSTM drowsiness pipeline, MediaPipe stages included</title>
+  <desc>src/cv-argus's deployed model architecture: MediaPipe Face Detector + FaceLandmarker feeding a frozen-CNN-embedding + geometric-feature fusion into an LSTM classifier over a rolling window, thresholded at p(Drowsy)=0.57. See src/cv-argus/CLAUDE.md's "fused detector" section for the source of truth.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="arrowhead"></path>
+    </marker>
+    <style>
+      text{ font-family:'IBM Plex Sans',system-ui,sans-serif; fill:#17212B; }
+      .mono{ font-family:'IBM Plex Mono',ui-monospace,monospace; }
+      .title{ font-weight:600; }
+      .dim{ fill:#57697C; }
+      .italic{ font-style:italic; }
+      .stage{ fill:#FFFFFF; stroke:#B9C4D0; stroke-width:2; }
+      .fusehex{ fill:#E7EDF3; stroke:#2C6E8E; stroke-width:2.5; }
+      .diamond{ fill:#E7EDF3; stroke:#2C6E8E; stroke-width:2.5; }
+      .pill-safe{ fill:#FFFFFF; stroke:#2F8F6F; stroke-width:2.5; }
+      .pill-alert{ fill:#FFFFFF; stroke:#B23324; stroke-width:2.5; }
+      .cell-pad{ fill:none; stroke:#B9C4D0; stroke-width:1.5; stroke-dasharray:2,2; }
+      .cell-real{ fill:#2C6E8E; }
+      .arrow{ stroke:#57697C; stroke-width:2; fill:none; marker-end:url(#arrow); }
+      .arrow-dotted{ stroke:#57697C; stroke-width:2; fill:none; stroke-dasharray:5,4; marker-end:url(#arrow); }
+      .arrowhead{ fill:#57697C; }
+      .fork-dot{ fill:#2C6E8E; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1900" height="920" fill="#F4F7FA"/>
+
+  <!-- ===== connectors ===== -->
+  <line class="arrow" x1="260" y1="260" x2="470" y2="260"/>
+  <line class="arrow" x1="730" y1="260" x2="900" y2="260"/>
+  <line class="arrow" x1="1070" y1="260" x2="1180" y2="110"/>
+  <line class="arrow" x1="1070" y1="260" x2="1180" y2="460"/>
+  <line class="arrow" x1="1420" y1="110" x2="1500" y2="110"/>
+  <line class="arrow" x1="1620" y1="160" x2="1650" y2="210"/>
+  <line class="arrow" x1="1300" y1="410" x2="1650" y2="310"/>
+  <line class="arrow" x1="1650" y1="310" x2="1650" y2="570"/>
+  <line class="arrow" x1="1510" y1="650" x2="1420" y2="650"/>
+  <line class="arrow" x1="1180" y1="650" x2="945" y2="650"/>
+  <line class="arrow" x1="850" y1="555" x2="540" y2="480"/>
+  <line class="arrow" x1="850" y1="745" x2="540" y2="820"/>
+  <line class="arrow-dotted" x1="420" y1="520" x2="420" y2="595"/>
+  <line class="arrow-dotted" x1="420" y1="780" x2="420" y2="705"/>
+  <circle class="fork-dot" cx="1070" cy="260" r="5"/>
+
+  <!-- ===== arrow labels ===== -->
+  <text class="mono dim" x="345" y="338" text-anchor="middle" font-size="11">sampled @ 5 fps</text>
+  <text class="mono dim" x="345" y="352" text-anchor="middle" font-size="9">(SAMPLE_FPS, at the source)</text>
+  <text class="mono dim" x="815" y="338" text-anchor="middle" font-size="11">crop, margin 0.25</text>
+  <text class="mono dim" x="815" y="352" text-anchor="middle" font-size="11">BGR &#8594; RGB</text>
+  <text class="italic dim" x="1090" y="167" text-anchor="middle" font-size="11">landmarks path</text>
+  <text class="italic dim" x="1090" y="353" text-anchor="middle" font-size="11">embedding path</text>
+  <text class="mono dim" x="1460" y="26" text-anchor="middle" font-size="10">468 landmarks + blendshapes</text>
+  <text class="mono dim" x="1635" y="185" text-anchor="middle" font-size="10">10-dim vector</text>
+  <text class="mono dim" x="1475" y="360" text-anchor="middle" font-size="10">64-dim embedding</text>
+  <text class="mono dim" x="1665" y="425" text-anchor="start" font-size="10">74-dim fused vector</text>
+  <text class="mono dim" x="1665" y="440" text-anchor="start" font-size="9">(1 row / sampled frame)</text>
+  <text class="mono dim" x="1465" y="550" text-anchor="middle" font-size="10">window tensor</text>
+  <text class="mono dim" x="1465" y="563" text-anchor="middle" font-size="10">(100&#215;74) + mask</text>
+  <text class="mono dim" x="695" y="517" text-anchor="middle" font-size="11">p &lt; 0.57</text>
+  <text class="mono dim" x="695" y="783" text-anchor="middle" font-size="11">p &#8805; 0.57</text>
+
+  <!-- ===== B1 Source ===== -->
+  <rect class="stage" x="40" y="210" width="220" height="100" rx="12"/>
+  <text class="title" x="150" y="252" text-anchor="middle" font-size="14">Camera / video source</text>
+  <text class="mono dim" x="150" y="272" text-anchor="middle" font-size="10.5">cv2.VideoCapture / PiCamera2</text>
+
+  <!-- ===== B2 Face Detector ===== -->
+  <rect class="stage" x="470" y="210" width="260" height="100" rx="12"/>
+  <text class="title" x="600" y="252" text-anchor="middle" font-size="14">MediaPipe Face Detector</text>
+  <text class="mono dim" x="600" y="274" text-anchor="middle" font-size="10.5">BlazeFace &#183; VIDEO mode</text>
+
+  <!-- ===== B3 Face crop / fork ===== -->
+  <rect class="stage" x="900" y="215" width="170" height="90" rx="12"/>
+  <text class="title" x="985" y="256" text-anchor="middle" font-size="14">Face crop (RGB)</text>
+  <text class="italic dim" x="985" y="276" text-anchor="middle" font-size="10">(fork point)</text>
+
+  <!-- ===== B4 FaceLandmarker ===== -->
+  <rect class="stage" x="1180" y="60" width="240" height="100" rx="12"/>
+  <text class="title" x="1300" y="102" text-anchor="middle" font-size="14">MediaPipe FaceLandmarker</text>
+  <text class="mono dim" x="1300" y="122" text-anchor="middle" font-size="10.5">IMAGE mode, on the crop</text>
+
+  <!-- ===== B5 Geometric layer ===== -->
+  <rect class="stage" x="1500" y="60" width="240" height="100" rx="12"/>
+  <text class="title" x="1620" y="102" text-anchor="middle" font-size="13">GeometricRatioFeatureLayer</text>
+  <text class="mono dim" x="1620" y="124" text-anchor="middle" font-size="10.5">EAR / MAR + blendshapes</text>
+
+  <!-- ===== B6 Frozen CNN embedder ===== -->
+  <rect class="stage" x="1180" y="410" width="240" height="100" rx="12"/>
+  <text class="title" x="1300" y="452" text-anchor="middle" font-size="14">Frozen CNN embedder</text>
+  <text class="mono dim" x="1300" y="474" text-anchor="middle" font-size="10.5">07 checkpoint, features only</text>
+
+  <!-- ===== Fuse ===== -->
+  <polygon class="fusehex" points="1555,260 1602,210 1698,210 1745,260 1698,310 1602,310"/>
+  <text class="title" x="1650" y="252" text-anchor="middle" font-size="13">Fuse</text>
+  <text class="dim" x="1650" y="270" text-anchor="middle" font-size="11">(concat)</text>
+
+  <!-- ===== B8 Sliding window buffer ===== -->
+  <rect class="stage" x="1510" y="570" width="280" height="160" rx="12"/>
+  <text class="title" x="1650" y="598" text-anchor="middle" font-size="14">Sliding window buffer</text>
+  <text class="mono dim" x="1650" y="618" text-anchor="middle" font-size="10.5">100 &#215; 74 &#183; 20s @ 5fps window</text>
+  <rect class="cell-pad" x="1540" y="636" width="14" height="22"/>
+  <rect class="cell-pad" x="1557" y="636" width="14" height="22"/>
+  <rect class="cell-pad" x="1574" y="636" width="14" height="22"/>
+  <rect class="cell-pad" x="1591" y="636" width="14" height="22"/>
+  <text class="dim" x="1614" y="652" text-anchor="middle" font-size="12">&#8230;</text>
+  <rect class="cell-real" x="1630" y="636" width="14" height="22" rx="2"/>
+  <rect class="cell-real" x="1647" y="636" width="14" height="22" rx="2"/>
+  <rect class="cell-real" x="1664" y="636" width="14" height="22" rx="2"/>
+  <rect class="cell-real" x="1681" y="636" width="14" height="22" rx="2"/>
+  <rect class="cell-real" x="1698" y="636" width="14" height="22" rx="2"/>
+  <rect class="cell-real" x="1715" y="636" width="14" height="22" rx="2"/>
+  <rect class="cell-real" x="1732" y="636" width="14" height="22" rx="2"/>
+  <rect class="cell-real" x="1749" y="636" width="14" height="22" rx="2"/>
+  <rect class="cell-real" x="1766" y="636" width="14" height="22" rx="2"/>
+  <text class="mono dim" x="1650" y="692" text-anchor="middle" font-size="10">zero-pre-padded (oldest &#8594; out)</text>
+
+  <!-- ===== B9 LSTM classifier ===== -->
+  <rect class="stage" x="1180" y="595" width="240" height="110" rx="12"/>
+  <text class="title" x="1300" y="628" text-anchor="middle" font-size="14">Fused LSTM classifier</text>
+  <text class="mono dim" x="1300" y="650" text-anchor="middle" font-size="10.5">Norm &#8594; LSTM &#8594; Dropout &#8594; Dense</text>
+  <text class="mono dim" x="1300" y="722" text-anchor="middle" font-size="10">traced tf.function &#183; ~8&#8211;11 ms/frame</text>
+  <text class="mono dim" x="1300" y="735" text-anchor="middle" font-size="9">(recurrent_dropout=0.3, no cuDNN)</text>
+
+  <!-- ===== Threshold diamond ===== -->
+  <polygon class="diamond" points="850,555 945,650 850,745 755,650"/>
+  <text class="title" x="850" y="636" text-anchor="middle" font-size="13">p(Drowsy)</text>
+  <text class="title" x="850" y="656" text-anchor="middle" font-size="13">&#8805; t* ?</text>
+  <text class="mono dim" x="850" y="674" text-anchor="middle" font-size="10">t* = 0.57</text>
+
+  <!-- ===== Outcomes ===== -->
+  <rect class="pill-safe" x="300" y="440" width="240" height="80" rx="40"/>
+  <text class="title" x="420" y="474" text-anchor="middle" font-size="14" fill="#2F8F6F">Not Drowsy</text>
+  <text class="mono dim" x="420" y="494" text-anchor="middle" font-size="10">level 1 &#183; not-drowsy</text>
+
+  <rect class="pill-alert" x="300" y="780" width="240" height="80" rx="40"/>
+  <text class="title" x="420" y="814" text-anchor="middle" font-size="14" fill="#B23324">Drowsy</text>
+  <text class="mono dim" x="420" y="834" text-anchor="middle" font-size="10">level 2 &#183; drowsy</text>
+
+  <!-- ===== Trailing: downstream pipeline ===== -->
+  <rect class="stage" x="190" y="595" width="460" height="110" rx="12"/>
+  <text class="title" x="420" y="628" text-anchor="middle" font-size="14">Alert / status pipeline</text>
+  <text class="mono dim" x="420" y="648" text-anchor="middle" font-size="11">SQLite buffer &#8594; Bluetooth &#8594; ESP32</text>
+  <text class="italic dim" x="420" y="666" text-anchor="middle" font-size="10">(full flow: see semantic-design diagram)</text>
+</svg>
