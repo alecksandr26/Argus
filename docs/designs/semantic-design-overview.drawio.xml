@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net">
+  <diagram name="Page-1" id="argus-semantic-overview">
+    <mxGraphModel dx="2000" dy="1400" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="EDGE" parent="1" style="swimlane;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fontStyle=1;verticalAlign=top;align=center;startSize=40;fillColor=#f6f5ef;strokeColor=#cfccbd;fontColor=#1b2430;" value="Truck Cabin — Edge" vertex="1">
+          <mxGeometry x="319.5" y="8.0" width="2397.7" height="1327.0" as="geometry" />
+        </mxCell>
+        <mxCell id="CLOUD" parent="1" style="swimlane;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fontStyle=1;verticalAlign=top;align=center;startSize=40;fillColor=#f6f5ef;strokeColor=#cfccbd;fontColor=#1b2430;" value="Docker Compose — UI + Backend" vertex="1">
+          <mxGeometry x="299.1" y="1509.0" width="1060.1" height="596.5" as="geometry" />
+        </mxCell>
+        <mxCell id="PI" parent="EDGE" style="swimlane;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fontStyle=1;verticalAlign=top;align=center;startSize=40;fillColor=#f6f5ef;strokeColor=#cfccbd;fontColor=#1b2430;" value="Raspberry Pi 5 — AI + Orchestrator" vertex="1">
+          <mxGeometry x="47.5" y="254.0" width="2302.7" height="373.5" as="geometry" />
+        </mxCell>
+        <mxCell id="PERIPH" parent="EDGE" style="swimlane;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fontStyle=1;verticalAlign=top;align=center;startSize=40;fillColor=#f6f5ef;strokeColor=#cfccbd;fontColor=#1b2430;" value="ESP32 — Message Sender" vertex="1">
+          <mxGeometry x="634.1" y="801.5" width="1129.5" height="477.5" as="geometry" />
+        </mxCell>
+        <mxCell id="BACKEND" parent="CLOUD" style="swimlane;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fontStyle=1;verticalAlign=top;align=center;startSize=40;fillColor=#e3f3f0;strokeColor=#1f7a6c;fontColor=#123a33;" value="Backend — FastAPI + Beanie" vertex="1">
+          <mxGeometry x="60.5" y="83.5" width="413.7" height="412.0" as="geometry" />
+        </mxCell>
+        <mxCell id="API" parent="BACKEND" style="rounded=0;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#e3f3f0;strokeColor=#1f7a6c;fontColor=#123a33;" value="/api: auth, users, trucks,&#10;drivers, alerts, routes" vertex="1">
+          <mxGeometry x="74.8" y="73.0" width="264.0" height="266.0" as="geometry" />
+        </mxCell>
+        <mxCell id="DB" parent="CLOUD" style="shape=datastore;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#e3f3f0;strokeColor=#1f7a6c;fontColor=#123a33;" value="MongoDB" vertex="1">
+          <mxGeometry x="773.7" y="31.2" width="187.8" height="125.2" as="geometry" />
+        </mxCell>
+        <mxCell id="UI" parent="CLOUD" style="rounded=0;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#e3f3f0;strokeColor=#1f7a6c;fontColor=#123a33;" value="UI&#10;React + Leaflet" vertex="1">
+          <mxGeometry x="735.6" y="215.0" width="264.0" height="149.0" as="geometry" />
+        </mxCell>
+        <mxCell id="OSRM" parent="CLOUD" style="rounded=0;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#f0f0f0;strokeColor=#aaaaaa;fontColor=#888888;;dashed=1;" value="OSRM&#10;(deferred)" vertex="1">
+          <mxGeometry x="757.6" y="439.0" width="220.0" height="110.0" as="geometry" />
+        </mxCell>
+        <mxCell id="GRIP" parent="PERIPH" style="rounded=0;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#fdf1de;strokeColor=#b9761f;fontColor=#3a2a12;" value="Grip Sensor" vertex="1">
+          <mxGeometry x="68.3" y="47.5" width="235.6" height="71.0" as="geometry" />
+        </mxCell>
+        <mxCell id="ESP" parent="PERIPH" style="rounded=0;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#fdf1de;strokeColor=#b9761f;fontColor=#3a2a12;" value="ESP32&#10;orchestrator" vertex="1">
+          <mxGeometry x="432.7" y="183.8" width="251.2" height="110.0" as="geometry" />
+        </mxCell>
+        <mxCell id="PANIC" parent="PERIPH" style="rounded=0;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#fdf1de;strokeColor=#b9761f;fontColor=#3a2a12;" value="Panic Button" vertex="1">
+          <mxGeometry x="60.5" y="203.2" width="251.2" height="71.0" as="geometry" />
+        </mxCell>
+        <mxCell id="GPS" parent="PERIPH" style="rounded=0;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#fdf1de;strokeColor=#b9761f;fontColor=#3a2a12;" value="GPS Module" vertex="1">
+          <mxGeometry x="76.1" y="359.0" width="220.0" height="71.0" as="geometry" />
+        </mxCell>
+        <mxCell id="ALARM" parent="PERIPH" style="rounded=0;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#fdf1de;strokeColor=#b9761f;fontColor=#3a2a12;" value="Alarm Speaker" vertex="1">
+          <mxGeometry x="805.0" y="47.5" width="264.0" height="110.0" as="geometry" />
+        </mxCell>
+        <mxCell id="AEB" parent="PERIPH" style="rounded=0;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#fdf1de;strokeColor=#b9761f;fontColor=#3a2a12;" value="CAN Bus / AEB" vertex="1">
+          <mxGeometry x="805.0" y="320.0" width="264.0" height="110.0" as="geometry" />
+        </mxCell>
+        <mxCell id="MP" parent="PI" style="rounded=0;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#fff1b8;strokeColor=#c98a12;fontColor=#4a350a;" value="MediaPipe&#10;Detector + Landmarker" vertex="1">
+          <mxGeometry x="60.5" y="128.0" width="264.0" height="149.0" as="geometry" />
+        </mxCell>
+        <mxCell id="CNN" parent="PI" style="rounded=0;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#fff1b8;strokeColor=#c98a12;fontColor=#4a350a;" value="Frozen CNN&#10;64-dim embedding" vertex="1">
+          <mxGeometry x="445.5" y="47.5" width="264.0" height="149.0" as="geometry" />
+        </mxCell>
+        <mxCell id="LSTM" parent="PI" style="rounded=0;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#fff1b8;strokeColor=#c98a12;fontColor=#4a350a;" value="LSTM&#10;rolling window" vertex="1">
+          <mxGeometry x="830.5" y="128.0" width="264.0" height="149.0" as="geometry" />
+        </mxCell>
+        <mxCell id="CLS" parent="PI" style="rounded=1;absoluteArcSize=1;arcSize=47;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#fff1b8;strokeColor=#c98a12;fontColor=#4a350a;" value="Not Drowsy · Drowsy" vertex="1">
+          <mxGeometry x="1215.5" y="155.5" width="239.5" height="94.0" as="geometry" />
+        </mxCell>
+        <mxCell id="ORCH" parent="PI" style="rounded=0;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#fdf1de;strokeColor=#b9761f;fontColor=#3a2a12;" value="Alert / RouteStatus&#10;Orchestrator" vertex="1">
+          <mxGeometry x="1576.0" y="128.0" width="264.0" height="149.0" as="geometry" />
+        </mxCell>
+        <mxCell id="BUF" parent="PI" style="shape=datastore;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#fdf1de;strokeColor=#b9761f;fontColor=#3a2a12;" value="SQLite&#10;Buffer Queue" vertex="1">
+          <mxGeometry x="1988.2" y="100.9" width="304.9" height="203.2" as="geometry" />
+        </mxCell>
+        <mxCell id="CAM" parent="EDGE" style="rounded=0;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#fdf1de;strokeColor=#b9761f;fontColor=#3a2a12;" value="Camera" vertex="1">
+          <mxGeometry x="1120.0" y="48.0" width="157.6" height="71.0" as="geometry" />
+        </mxCell>
+        <mxCell id="USERS" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fontFamily=IBM Plex Mono;fontSize=22;fillColor=#ffffff;strokeColor=#5b6673;fontColor=#1b2430;" value="root_admin · guardian ·&#10;truck_driver" vertex="1">
+          <mxGeometry x="8.0" y="973.8" width="264.0" height="149.0" as="geometry" />
+        </mxCell>
+        <mxCell id="e1000" parent="1" source="CAM" target="PI" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1000label" parent="e1000" connectable="0" vertex="1" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;fontFamily=IBM Plex Mono;fontSize=17;fontColor=#1b2430;labelBackgroundColor=#ffffff;" value="frames">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+        <mxCell id="e1001" parent="1" source="MP" target="CNN" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1002" parent="1" source="CNN" target="LSTM" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1003" parent="1" source="LSTM" target="CLS" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1004" parent="1" source="MP" target="LSTM" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;exitX=0.5;exitY=1;entryX=0.5;entryY=1;dashed=1;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1004label" parent="e1004" connectable="0" vertex="1" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;fontFamily=IBM Plex Mono;fontSize=17;fontColor=#1b2430;labelBackgroundColor=#ffffff;" value="EAR/MAR + blendshapes">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+        <mxCell id="e1005" parent="1" source="CLS" target="ORCH" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1006" parent="1" source="ORCH" target="BUF" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1006label" parent="e1006" connectable="0" vertex="1" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;fontFamily=IBM Plex Mono;fontSize=17;fontColor=#1b2430;labelBackgroundColor=#ffffff;" value="alert">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+        <mxCell id="e1007" parent="1" source="GRIP" target="ESP" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1008" parent="1" source="PANIC" target="ESP" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1009" parent="1" source="GPS" target="ESP" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1010" parent="1" source="ESP" target="ALARM" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1011" parent="1" source="ESP" target="AEB" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1012" parent="1" source="BUF" target="ESP" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;dashed=1;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1012label" parent="e1012" connectable="0" vertex="1" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;fontFamily=IBM Plex Mono;fontSize=17;fontColor=#1b2430;labelBackgroundColor=#ffffff;" value="Bluetooth poll">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+        <mxCell id="e1013" parent="1" source="ESP" target="BACKEND" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;dashed=1;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1013label" parent="e1013" connectable="0" vertex="1" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;fontFamily=IBM Plex Mono;fontSize=17;fontColor=#1b2430;labelBackgroundColor=#ffffff;" value="HTTPS + API key">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+        <mxCell id="e1014" parent="1" source="BACKEND" target="DB" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1015" parent="1" source="BACKEND" target="UI" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;startArrow=block;startFill=1;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1016" parent="1" source="BACKEND" target="OSRM" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;dashed=1;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1016label" parent="e1016" connectable="0" vertex="1" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;fontFamily=IBM Plex Mono;fontSize=17;fontColor=#1b2430;labelBackgroundColor=#ffffff;" value="route/ETA">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+        <mxCell id="e1017" parent="1" source="USERS" target="UI" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontFamily=IBM Plex Mono;fontSize=18;endArrow=block;endFill=1;strokeColor=#5b6673;fontColor=#1b2430;" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
