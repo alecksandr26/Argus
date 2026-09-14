@@ -3,11 +3,12 @@ from __future__ import annotations
 from pydantic import BaseModel, EmailStr
 
 from app.models.common import Role
+from app.schemas.common import Sha256HexDigest
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: Sha256HexDigest
 
 
 class LoginUser(BaseModel):

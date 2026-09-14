@@ -123,8 +123,13 @@ fussier than a USB webcam.
 
 Three parts of the planned architecture exist as code so far: the training notebook, the
 `cv-argus` edge module, and now the `backend-argus` cloud backend (all below). The frontend
-(`ui-argus`, below) exists too, still on fixture data rather than the real API. The ESP32
-firmware and OSRM described in "Planned end-to-end system architecture" don't exist yet. See
+(`ui-argus`, below) exists too — its login screen is now wired to the real backend (session
+storage, route guarding, a root_admin bootstrap), while every other screen is still on fixture
+data rather than the real API. `src/it-argus/` (below) is a fourth, newer piece: Playwright
+integration tests exercising `ui-argus` and `backend-argus` together, not part of the originally
+planned architecture but added once there was a real seam between two modules worth testing as
+one. The ESP32 firmware and OSRM described in "Planned end-to-end system architecture" don't
+exist yet. See
 `docs/roadmap.md` for the full, up-to-date gap list across every module (including what's built
 but not yet merged into `main`) — read that before assuming something is missing or done.
 
@@ -189,6 +194,15 @@ but not yet merged into `main`) — read that before assuming something is missi
   here. A new root-level `docker-compose.yml` (alongside each module's own) wires this backend +
   MongoDB + `ui-argus` together for local integration testing; no OSRM service in it yet, per the
   "still deferred" note above.
+- `src/it-argus/` — **Playwright** browser tests driving the real `ui-argus` dev server against
+  the real `backend-argus` + MongoDB together, the seam neither module's own unit tests exercise
+  (the backend's mock the browser away, the frontend's mock `fetch` away). Its own fully
+  self-contained `docker-compose.yml` (own Mongo, own backend/UI builds, no host ports, real
+  healthchecks) rather than an overlay on the root one — see that module's `CLAUDE.md` for why.
+  Currently covers the login flow (root_admin bootstrap login, wrong-password error, an
+  unauthenticated deep link redirecting to `/login` and back after signing in, sign-out) — the
+  first real thing connecting `ui-argus` and `src/backend-argus`, and meant to grow alongside
+  future backend-connected `ui-argus` screens, not a one-off.
 - `docs/argus-descripción-proyecto.pdf` — project description/proposal.
 - `docs/criteria/` — academic thesis/grading-criteria documents (this is a school "trabajo de
   grado" project); `Formato_Proyecto_Modular V2.docx` is the report template being filled in.

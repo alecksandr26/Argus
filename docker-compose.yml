@@ -24,6 +24,14 @@ services:
       - MONGO_DB=${MONGO_DB:-argus}
       - JWT_SECRET=${JWT_SECRET:-dev-secret-change-me}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173}
+      # First root_admin, auto-created on startup if missing (app/auth/bootstrap.py) — see
+      # src/backend-argus/CLAUDE.md's "Auth design". Defaults match scripts/seed_dev_data.py's
+      # own dev credentials on purpose; never use them past local dev.
+      - ROOT_ADMIN_EMAIL=${ROOT_ADMIN_EMAIL:-admin@argus.dev}
+      - ROOT_ADMIN_PASSWORD=${ROOT_ADMIN_PASSWORD:-changeme123}
+      - ROOT_ADMIN_FIRST_NAME=${ROOT_ADMIN_FIRST_NAME:-Root}
+      - ROOT_ADMIN_LAST_NAME=${ROOT_ADMIN_LAST_NAME:-Admin}
+      - ROOT_ADMIN_PHONE_NUMBER=${ROOT_ADMIN_PHONE_NUMBER:-+00-000-0000}
     ports:
       - "8000:8000"
     volumes:

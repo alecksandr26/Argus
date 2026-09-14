@@ -19,35 +19,37 @@ nothing here invents new ones except where explicitly flagged as a gap.
 These aren't per-page — they're infrastructure every page below depends on, and none of it
 exists yet:
 
-1. **No API client.** There's no `fetch` wrapper, no `axios` instance, no generated client —
-   `VITE_API_BASE_URL` is defined in `.env.example` but nothing reads it yet. Whatever gets
-   built should probably live under a new `src/api/` (e.g. `src/api/client.ts` for the base
-   request wrapper, one file per resource — `src/api/trucks.ts`, `src/api/alerts.ts`, etc.).
-   Whether to add a caching/data-fetching layer on top (TanStack Query is the common choice —
-   it would materially simplify the loading/error/refetch handling every table screen below
-   needs) is an open decision, not made here. **Coordinate fields must be normalised at this
-   boundary**: every `Alert.coordinates`, `Status_Route.current_coordinates` and
-   `Route.destination_coordinates` from the API goes through `normalizeCoordinates()` in
-   `src/utils/geo.ts` before it reaches a component. It already handles `{lat,lon}` /
-   `{lat,lng}` / `"lat,lon"` / bare GeoJSON position / GeoJSON `Point` — MongoDB's `2dsphere`
-   index stores points as GeoJSON `{ type:'Point', coordinates:[lng,lat] }` (longitude first),
-   which is neither the `{lat,lon}` shape `src/types.ts` declares nor the `[lat,lng]` order
-   Leaflet wants, so this conversion is not optional. Rationale:
-   `docs/designs/frontend-map-and-coordinates.md`.
-2. **No TypeScript types for the API shapes.** Nothing in `src/` models `User`, `Truck`,
-   `Driver`, `Route`, `Status_Route`, or `Alert` yet. These should mirror the backend's Pydantic
-   models once they exist (see the top-level `CLAUDE.md`'s ER model reference,
-   `docs/designs/ER-model.drawio.xml`) rather than being hand-guessed independently — the
-   entity/field names there are the source of truth to copy field names from.
-3. **No auth/session state.** No `AuthContext`, no token storage, nothing reads or writes a
-   session anywhere. This blocks everything below marked "needs auth" — there is no logged-in
-   user object anywhere in the app right now, not even a hardcoded stand-in.
-4. **No route guarding.** `src/App.tsx` currently makes every route public — `/fleet` is
-   reachable without logging in. Add a `ProtectedRoute` wrapper (redirect to `/login` when
-   unauthenticated) once #3 exists, and a role check on top of it — `src/types.ts`'s `Role`
-   now matches `src/backend-argus`'s `Role` enum exactly (`root_admin` / `guardian` /
-   `truck_driver`, see that module's `CLAUDE.md`), so the role list itself is no longer an
-   open question, only the guarding logic is unbuilt.
+1. **~~No API client~~ — resolved for login, the pattern exists now.** `src/api/client.ts`
+   (`apiFetch`, base URL from `VITE_API_BASE_URL`, `Authorization: Bearer` support, FastAPI
+   `detail` error normalization, a `setUnauthorizedHandler` hook for session-expiry) and
+   `src/api/auth.ts` (`login()`) are real, and every other resource follows the same pattern —
+   `src/api/trucks.ts`, `src/api/alerts.ts`, etc. still don't exist. Whether to add a
+   caching/data-fetching layer on top (TanStack Query is the common choice — it would materially
+   simplify the loading/error/refetch handling every table screen below needs) is still an open
+   decision, not made here. **Coordinate fields must be normalised at this boundary**: every
+   `Alert.coordinates`, `Status_Route.current_coordinates` and `Route.destination_coordinates`
+   from the API goes through `normalizeCoordinates()` in `src/utils/geo.ts` before it reaches a
+   component. It already handles `{lat,lon}` / `{lat,lng}` / `"lat,lon"` / bare GeoJSON position
+   / GeoJSON `Point` — MongoDB's `2dsphere` index stores points as GeoJSON
+   `{ type:'Point', coordinates:[lng,lat] }` (longitude first), which is neither the `{lat,lon}`
+   shape `src/types.ts` declares nor the `[lat,lng]` order Leaflet wants, so this conversion is
+   not optional. Rationale: `docs/designs/frontend-map-and-coordinates.md`.
+2. **Resolved.** `src/types.ts` models `User`, `Truck`, `Driver`, `Route`, `Status_Route`,
+   `Alert`, and now `LoginUser`/`LoginResponse` too, mirroring `src/backend-argus`'s Pydantic
+   schemas field-for-field — see that module's `CLAUDE.md` for the full table.
+3. **~~No auth/session state~~ — resolved.** `src/context/AuthContext.tsx` (`AuthProvider` +
+   `useAuth()`) holds `{ token, user }` in `localStorage` (key `argus.session`) and is the single
+   source of truth for the logged-in user — `Sidebar.tsx`'s footer reads it instead of the
+   retired `CURRENT_USER` fixture.
+4. **~~No route guarding~~ — resolved for authentication, not yet for role.**
+   `src/components/ProtectedRoute.tsx` gates the whole `AppLayout` route tree in `App.tsx`
+   behind a session (redirecting to `/login`, and back to the originally-requested page on
+   success). What's still open: a **role** check on top of that — `src/types.ts`'s `Role`
+   matches `src/backend-argus`'s `Role` enum exactly (`root_admin` / `guardian` /
+   `truck_driver`), so the role list itself isn't an open question, but `Sidebar.tsx` still
+   renders both nav-groups unconditionally regardless of the logged-in user's role — there's no
+   confirmed spec yet for which items each role should see, so this pass deliberately didn't
+   guess at one.
 5. **No real-time strategy decided.** The Control Tower dashboard's mockup shows a live
    alert feed and live truck positions ("EN VIVO"). Polling `GET /api/alerts` on an interval
    is the simplest option; a WebSocket/SSE push is the more genuine real-time fit and the one
@@ -68,9 +70,9 @@ exists yet:
 
 | Screen (file) | Endpoint(s) | Currently | Missing |
 |---|---|---|---|
-| `src/pages/Login.tsx` | `POST /api/auth/login` | Controlled form; submit routes to `/` with no auth | Real submit handler, error display, on success: store session (#3 above) and redirect by role |
-| `src/App.tsx` (routing shell) | — | Every route public, no session read; `AppLayout` layout route wraps the in-app screens | `ProtectedRoute` wrapper + role-based redirect after login (#4 above) |
-| `src/components/Sidebar.tsx` | — | Ported; shows **both** role nav-groups and fills the footer from the `CURRENT_USER` fixture | Read the logged-in user's name/initials/role from session state; hide the nav-group the role can't see |
+| `src/pages/Login.tsx` | `POST /api/auth/login` | **Done.** Real submit handler (SHA-256 pre-hash, see `CLAUDE.md`'s "Auth"), inline error display, on success stores the session and redirects back to the originally-requested page (or `/`) | Redirect-by-*role* specifically has nothing to redirect to yet — there's only one post-login destination (`/`), not separate per-role landing pages |
+| `src/App.tsx` (routing shell) | — | **Done.** `ProtectedRoute` gates the whole `AppLayout` tree behind a session; `/login` stays outside it | Role-based route restrictions (not just "logged in or not") once individual screens need them |
+| `src/components/Sidebar.tsx` | — | Footer now reads the logged-in user's name/initials/role from `AuthContext`; sign-out clears the session | Still shows **both** role nav-groups unconditionally — hiding the one a role can't see needs a confirmed spec first, not guessed here |
 | `src/pages/LiveOps.tsx` | `GET /api/routes/active` | Stat tiles / alert feed computed from fixtures; a real `react-leaflet` map (`FleetMap`) with one truck marker per `statusRoutes[]` row, positioned from `current_coordinates`; feed severity filter works; rows link to `/alerts/:id` | Fetching + the real-time strategy from gap #5 (feed `FleetMap` markers from live data; add a `useMap()` child effect to re-fit bounds as the fleet moves). **The "no endpoint lists all active routes" gap this row used to flag is now resolved**: `src/backend-argus` added `GET /api/routes/active`, returning in-progress routes each embedded with their latest status + truck/driver refs specifically for this screen — see that module's `CLAUDE.md` for why it's a dedicated endpoint rather than `?status=active` |
 | `src/pages/AlertTriage.tsx` | `GET /api/alerts/:id`, `PUT /api/alerts/:id` | Looks the alert up in fixtures by `:alertId` (`useParams`); "not found" state; review checkbox + notes are local state, "Save" flips a local flag | Fetch on mount; `PUT` `reviewed_by_operator`/`operator_notes` from the checkbox + textarea; **also unresolved**: `Alert.media_url` — how/where captured clips are stored and served (S3? the backend directly?) isn't decided anywhere yet, so the media placeholder has nothing real to point at |
 | `src/pages/Fleet.tsx` | `GET/POST/PUT/DELETE /api/trucks` | Table from fixtures with client-side search; row-select → edit panel; add/edit mutate a local `useState` copy | Swap the fixture import for a fetch; point the panel's submit at `POST`/`PUT`, add a delete affordance |

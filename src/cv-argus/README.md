@@ -323,13 +323,21 @@ logging_output          wait = time queued   proc ≈ 0       e2e = grab-to-here
 ```sh
 cd src/cv-argus
 pip install -e .          # once -- maps src/ to the cv_argus import name (see setup.py)
-pytest                    # the full unit suite
+pip install pytest        # not in requirements.txt on purpose -- see CLAUDE.md's "Tests"
+pytest                    # the full unit suite (223 tests)
 ```
 
 The default run is **hermetic** — no network, no camera, no Google Drive, no model download.
 Every downloader test either exercises the skip-if-cached path or monkeypatches `gdown` /
 `urllib`. It needs `tensorflow` + `mediapipe` + `opencv` installed (the same deps the app
 needs); `pip install -e .` pulls them in.
+
+**This same suite now also runs automatically inside `docker build`/`docker compose build`**,
+as a real build gate, not a separate manual step — placed right before the expensive ~1GB
+model-artifact download from Drive, so a broken test fails the build fast rather than paying for
+that download first. See `CLAUDE.md`'s "Tests" section for the full mechanism and how it's
+verified both to pass and to actually block a broken build. Nothing extra to run yourself here —
+it's just what `docker compose up --build` already does.
 `tests/` mirrors `src/`: `test_model_*`, `test_pipeline_*` (including `test_pipeline_latency.py`
 for the `StageStats` instrumentation), `test_alerts_*`, `test_buffer_*`, `test_orchestrator_*`,
 `test_sender_*`, and `test_main.py`. `FusedDrowsinessDetector` is tested with **stub** model

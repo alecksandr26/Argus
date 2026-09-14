@@ -1,23 +1,40 @@
 import { useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, type Location } from 'react-router-dom'
 import Icon from '../components/Icon'
-import { CURRENT_USER } from '../data/fixtures'
+import { useAuth } from '../context/AuthContext'
+import { ApiError } from '../api/client'
 
 /**
- * Mockup: "Login" artboard. No real auth yet (INTEGRATION.md gap #3) — submit
- * just routes to the dashboard. The form is controlled so the submit handler
- * has somewhere real to plug `POST /api/auth/login` in later.
+ * Real login: submits to `POST /api/auth/login` via `useAuth().login()` (which pre-hashes the
+ * password client-side, see `src/utils/crypto.ts`). On success, redirects back to whatever page
+ * `ProtectedRoute` originally bounced the user from (`location.state.from`), falling back to `/`
+ * — there's no per-role landing page to redirect to yet, so `/` isn't a shortcut, it's the only
+ * option that exists.
  */
 export default function Login() {
   const navigate = useNavigate()
-  const [email, setEmail] = useState(CURRENT_USER.email)
-  const [password, setPassword] = useState('demo-password')
-  const [keepSignedIn, setKeepSignedIn] = useState(true)
+  const location = useLocation()
+  const { login } = useAuth()
 
-  function onSubmit(e: FormEvent) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [keepSignedIn, setKeepSignedIn] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  async function onSubmit(e: FormEvent) {
     e.preventDefault()
-    // TODO(INTEGRATION.md #3): POST /api/auth/login, store session, redirect by role.
-    navigate('/')
+    setError(null)
+    setLoading(true)
+    try {
+      await login(email, password)
+      const from = (location.state as { from?: Location } | null)?.from
+      navigate(from ? `${from.pathname}${from.search}` : '/', { replace: true })
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not sign in. Please try again.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -114,6 +131,22 @@ export default function Login() {
             />
           </label>
 
+          {error && (
+            <div
+              role="alert"
+              style={{
+                fontSize: 12.5,
+                color: 'var(--danger, #e5484d)',
+                background: 'color-mix(in oklch, var(--danger, #e5484d) 12%, transparent)',
+                border: '1px solid color-mix(in oklch, var(--danger, #e5484d) 35%, transparent)',
+                borderRadius: 8,
+                padding: '8px 10px',
+              }}
+            >
+              {error}
+            </div>
+          )}
+
           <div
             style={{
               display: 'flex',
@@ -147,9 +180,10 @@ export default function Login() {
           <button
             type="submit"
             className="btn btn--accent btn--block"
+            disabled={loading}
             style={{ marginTop: 6, padding: 12, fontSize: 14 }}
           >
-            Sign in
+            {loading ? 'Signing in…' : 'Sign in'}
           </button>
         </div>
 

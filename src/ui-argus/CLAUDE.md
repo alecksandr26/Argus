@@ -55,20 +55,72 @@ follow the ER model. If the copy ever needs to go back to Spanish, it's all in t
   and the coordinate-adapter decision, with the Google Maps / Amazon Location rejection
   reasoning): `docs/designs/frontend-map-and-coordinates.md`.
 
+## Auth
+
+Login (`src/pages/Login.tsx`) is wired to the real `POST /api/auth/login` — see
+`src/backend-argus/CLAUDE.md`'s "Auth design" for the full server-side picture. The pieces on
+this side:
+
+- **`src/utils/crypto.ts`'s `sha256Hex`**: the password is SHA-256-hashed client-side (Web
+  Crypto's `crypto.subtle.digest`) before it's sent — the backend then bcrypts *that* digest, not
+  the raw password. This is defense-in-depth on top of TLS, not a replacement for it, and it has
+  a real, deliberate consequence: `crypto.subtle` only exists in a secure context (HTTPS or
+  `localhost`) by browser spec, so login simply cannot work on a plain-HTTP production origin —
+  a forcing function toward HTTPS, not a bug.
+- **`src/api/client.ts`**: the one `apiFetch` wrapper every backend call goes through (base URL
+  from `VITE_API_BASE_URL`, `Authorization: Bearer` when a token is given, FastAPI `detail`
+  error normalization). It also exposes `setUnauthorizedHandler` — a callback fired on any `401`
+  — which `AuthContext` uses to clear a stale session the moment any authenticated call rejects
+  it, not only when the app first loads with none.
+- **`src/context/AuthContext.tsx`**: the single source of truth for "who's logged in" — a
+  `{ token, user }` session held in `localStorage` (key `argus.session`), exposed via
+  `useAuth()`.
+- **`src/components/ProtectedRoute.tsx`**: mounted once, above the whole `AppLayout` route tree
+  in `App.tsx` — gates every current and future in-app screen behind a session in one place,
+  rather than a per-page check. Redirects to `/login` carrying the originally-requested location
+  as router state, so a successful login sends the user back to whatever page they were headed
+  to (a deep link, or a session that went stale mid-use) instead of always landing at `/`.
+- **Deliberately not done yet**: per-role nav-group hiding in `Sidebar.tsx` (both groups still
+  render regardless of role — no confirmed spec for which items each role should see, so this
+  pass only swapped the data source from the `CURRENT_USER` fixture to the real session, not
+  added new hiding logic), and the "keep me signed in" checkbox is inert UI (not wired to a
+  session/localStorage-vs-sessionStorage split). Creating other admin/guardian accounts stays
+  possible only via `POST /api/users` directly (curl/Swagger) — no Access panel screen exists
+  yet, tracked in `INTEGRATION.md`.
+
 ## Docker architecture
 
 Multi-stage `Dockerfile`, mirroring `src/cv-argus`'s Docker-first pattern but simpler — this
 is a plain frontend with no native-wheel/glibc-vs-musl concerns, so it uses Alpine rather than
 `cv-argus`'s Debian slim base:
 
+- **`deps`**: `npm install`, cached separately so it only re-runs when `package*.json` change.
+- **`checks`** (the lint/test/typecheck gate): `COPY . .` then `npm run lint` → `npm run test`
+  → `npm run build` (`tsc -b && vite build`) — see "Testing" below for what `npm run test`
+  actually runs. Both `dev` and `prod` below depend on this stage *passing*, not just on it
+  existing: `dev` is `FROM deps`, not `FROM checks` (so it doesn't inherit `checks`' `dist/`
+  output), and instead does `COPY --from=checks /app/package.json ./package.json` — a no-op
+  content-wise (`deps` already effectively has that file), but it forces Docker to build and
+  pass `checks` before `dev` can be built at all. `build` is simply `FROM checks` directly
+  (no extra commands — `checks` already produced `dist/` as part of the gate, so this is just
+  the named waypoint `prod` copies it from). Verified directly, not assumed: a plain multi-stage
+  `FROM` chain **without** an explicit `COPY --from=`/`FROM checks` dependency does not
+  guarantee an unreferenced stage actually builds — the classic builder here will skip it
+  depending on file order and `--target`, so the dependency has to be real, not just
+  positional.
 - **`dev` target** (what `docker-compose.yml` builds): source is bind-mounted over the image
   rather than copied in, so Vite's dev server picks up edits immediately. `vite.config.ts`
   forces `server.watch.usePolling` on unconditionally, since a Docker Desktop bind mount
   (macOS/Windows) crosses a VM boundary that doesn't always propagate inotify events —
   polling costs a little CPU but works everywhere, which a conditional/env-gated setting
-  wouldn't guarantee.
-- **`build` target**: runs `npm run build`, produces `dist/`. Not run directly — only the base
-  for `prod`.
+  wouldn't guarantee. `server.allowedHosts` is also set to `true` — Vite otherwise 403s any
+  request whose `Host` header isn't `localhost`/an IP/an explicit allow-list entry (a
+  DNS-rebinding guard), which silently broke `src/it-argus`'s Playwright tests the first time
+  they ran against this server under a different hostname (a real bug that testing caught, not
+  a preemptive guess — see that module's `CLAUDE.md`). Disabling it is fine specifically because
+  this server is dev-only; `prod` is a static nginx bundle with no such check.
+- **`build` target**: `FROM checks` (see above) — provides `dist/` for `prod`, not a second
+  build.
 - **`prod` target** (the Dockerfile's default): the `dist/` bundle served by nginx
   (`nginx.conf` adds the SPA `try_files … /index.html` fallback react-router's client-side
   routes need). The repo-root `docker-compose.yml` that now exists (alongside `src/backend-argus`)
@@ -76,6 +128,60 @@ is a plain frontend with no native-wheel/glibc-vs-musl concerns, so it uses Alpi
   (backend + Mongo + `ui-argus` dev server), not a production deploy. There's still no
   `docker-compose.prod.yml` using this `prod` target; write one when an actual production
   deployment (nginx-served bundle, not the Vite dev server) is needed, not before.
+
+Neither final image (`dev`'s bind-mount source copy aside) carries test-only files — `checks`'
+`tests`/`*.test.ts(x)` files are never separately `COPY`'d into anything downstream, and Vite's
+build only bundles what's actually reachable from `index.html`'s entry point, which no test
+file is; confirmed by diffing the production bundle's module count (103, unchanged) before and
+after the test suite was added.
+
+## Testing
+
+**Vitest + React Testing Library**, added after this module went its first several sessions
+with zero tests (see git history / `docs/roadmap.md` if that gap is ever in question again).
+Deliberately not Jest — Vitest shares Vite's config/transform pipeline directly (no separate
+babel/ts-jest setup to keep in sync with `vite.config.ts`), and is the standard pairing for a
+Vite app.
+
+- **Config lives in `vite.config.ts`'s `test` block**, via `defineConfig` imported from
+  `'vitest/config'` (a drop-in superset of plain `'vite'`'s `defineConfig` that also types the
+  `test` block) — not a separate `vitest.config.ts`. `environment: 'jsdom'` (every test mounts
+  real React components). `globals: false` — every test file imports `describe`/`it`/`expect`/
+  etc. explicitly from `'vitest'` rather than relying on ambient globals, so no `tsconfig`
+  `"types"` edit was needed to make them typecheck.
+- **`src/test/setup.ts`** (the `setupFiles` entry) does two things: imports
+  `'@testing-library/jest-dom/vitest'` (registers the DOM matchers — `toBeInTheDocument`,
+  `toHaveClass`, etc. — against Vitest's `expect`, and ambiently types them, no separate
+  `.d.ts` needed), and calls `afterEach(cleanup)` explicitly. **That second line matters**:
+  React Testing Library normally auto-registers its own cleanup via a global `afterEach`, but
+  `globals: false` means no test-framework globals are injected, so without this line every
+  `render()` in a file would stay mounted into the same `jsdom` `document.body` and leak into
+  the next test in that file (multiple-match query errors, flaky selectors) — hit and fixed in
+  the same session this was added, not a hypothetical.
+- **53 tests across 9 files** (real, currently passing, run inside `docker build` — see "Docker
+  architecture" above): `utils/status.test.ts`, `utils/format.test.ts`, `utils/geo.test.ts`
+  (the coordinate-shape adapter — covers all 5 accepted shapes plus its error paths, anchoring
+  the real API boundary), `utils/crypto.test.ts` (`sha256Hex` against a known digest, hex-pattern/
+  determinism checks), `components/StatusPill.test.tsx`, `components/RecordTable.test.tsx`
+  (rendering, empty state, click-to-select, `aria-selected`), `components/SearchBox.test.tsx`,
+  `components/Sidebar.test.tsx` (nav links, `aria-current`, "soon" badges, sign-out — now wrapped
+  in `AuthProvider` with a seeded `localStorage` session instead of the retired `CURRENT_USER`
+  fixture), `pages/Login.test.tsx` (controlled inputs, checkbox toggle, and — new — real
+  success/failure login flows via `vi.stubGlobal('fetch', ...)`, asserting on `localStorage` and
+  navigation). Every other test still renders against fixtures/props directly; `Login`/`Sidebar`
+  are the first to exercise a real (mocked) network + session path.
+- **Not yet covered**: `AppLayout`, `PageHeader`, `Icon`, `FleetMap` (would need a
+  `react-leaflet` mocking strategy — not attempted yet), `ProtectedRoute`/`AuthContext`
+  themselves in isolation (covered indirectly through `Login`/`Sidebar`, not directly), and the
+  four remaining pages (`LiveOps`, `AlertTriage`, `Fleet`, `Drivers`, `TravelManagement`). Extend
+  this suite alongside `src/api/*` as the other screens are wired up, per the user's own steer —
+  tests should catch auth/request-shaping bugs as they're introduced, not after.
+- **`src/test/setup.ts` polyfills `crypto.subtle`** via Node's `webcrypto` — jsdom provides
+  `window.crypto` but not `.subtle`, which `sha256Hex` (and therefore the real `Login` submit
+  path) needs; without this, any test exercising it throws immediately. Also clears
+  `localStorage` in `afterEach` for the same leakage reason `cleanup()` is already there.
+- Run locally with `npm run test` (`vitest run` — single pass, not watch mode; there is no
+  separate `npm run test:watch` script yet).
 
 ## Current status
 
@@ -90,9 +196,12 @@ revisions of this file said exactly that hadn't happened yet — it has now. `ty
 names (`reviewed_by_operator`, the 3→2-role `Role` enum, binary `not_drowsy`/`drowsy` AI
 scores) — see that module's `CLAUDE.md` for the full old→new field table.
 
-There is still no `package-lock.json` committed — the Dockerfile's `deps` stage uses
-`npm install` rather than `npm ci` until one is generated and committed (see the Dockerfile's
-comment on this). All six mockup screens are ported and render fake data from fixtures.
+**`package-lock.json` now exists** (generated the first time `npm install` actually ran, adding
+the Vitest test deps below) **but is not committed yet** — a deliberate pause, not an oversight:
+switching the Dockerfile's `deps` stage from `npm install` to `npm ci` is a real behavior change
+(strict, reproducible installs vs. permissive resolution) worth a deliberate yes rather than a
+side effect of adding tests. See "Next steps" below. All six mockup screens are ported and
+render fake data from fixtures.
 
 What exists now:
 - `App.tsx` mounts `AppLayout` (sidebar + `<Outlet/>`) as a layout route around the five
@@ -134,17 +243,22 @@ What exists now:
   classes (`.pill`, `.btn`, `.data-table`, `.input`, `.panel`, …); screens keep inline styles
   for one-off layout, matching how the mockups themselves are written.
 
-Still not done: **auth, role-gating, and anything that talks to a backend** — the sidebar
-shows both role nav-groups because there's no session to gate on, `Login` doesn't
-authenticate, and every "Guardar"/"Crear" mutates local state only. All of it is tracked in
-`INTEGRATION.md`.
+**Auth is now real** (see the "Auth" section above): `Login` calls the real backend, a session
+is stored, and every in-app route is gated behind it via `ProtectedRoute`. Still not done:
+**per-role nav gating** (the sidebar still shows both role nav-groups — there's a session now,
+but no confirmed spec for which items each role should see) and **everything else that talks to
+a backend** — every screen besides `Login` still mutates `src/data/fixtures.ts`-derived local
+state only ("Guardar"/"Crear" included). All of it is tracked in `INTEGRATION.md`.
 
 ## Next steps (not started)
 
-- Generate and commit `package-lock.json` on the first real `npm install` (it will also pin
-  `leaflet` / `react-leaflet` / `@types/leaflet`), then switch the Dockerfile's `deps` stage
-  from `npm install` to `npm ci`.
-- **Everything backend-connectivity-related** — the API client, auth/session, per-screen
-  fetches, the real-time strategy for the live dashboard, and known gaps in the committed API
-  list itself — is tracked in `INTEGRATION.md`, not here, so it doesn't drift out of sync in
-  two places. Read that file before wiring any screen up to the backend.
+- **Commit `package-lock.json`** (it now exists, generated by this session's `npm install` —
+  see "Current status" above) and switch the Dockerfile's `deps` stage from `npm install` to
+  `npm ci` once that's done — currently paused on an explicit decision, not forgotten.
+- Extend the Vitest suite (see "Testing" above) to the still-uncovered components/pages, and
+  alongside `src/api/*` as the remaining screens are wired up, not after.
+- **Everything backend-connectivity-related beyond login** — per-screen fetches for Fleet/
+  Drivers/Routes/Alerts, per-role nav gating, the real-time strategy for the live dashboard, an
+  Access/Users panel, and known gaps in the committed API list itself — is tracked in
+  `INTEGRATION.md`, not here, so it doesn't drift out of sync in two places. Read that file
+  before wiring any screen up to the backend.

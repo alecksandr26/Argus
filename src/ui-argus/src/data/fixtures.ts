@@ -17,7 +17,6 @@ import type {
   Route,
   StatusRoute,
   Truck,
-  User,
 } from '../types'
 
 /**
@@ -25,17 +24,6 @@ import type {
  * same on every load — a moving `Date.now()` would make the demo drift.
  */
 export const MOCK_NOW = new Date('2026-08-24T07:14:40-06:00')
-
-export const CURRENT_USER: User = {
-  id_user: 'usr-01',
-  email: 'ana.torres@argus-flotas.mx',
-  role: 'guardian',
-  first_name: 'Ana',
-  last_name: 'Torres',
-  phone_number: '55 1002 4471',
-  is_active: true,
-  last_login: '2026-08-24T05:58:12-06:00',
-}
 
 export const drivers: Driver[] = [
   {

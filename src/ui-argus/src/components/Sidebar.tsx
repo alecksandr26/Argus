@@ -1,14 +1,14 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import Icon, { type IconName } from './Icon'
-import { CURRENT_USER } from '../data/fixtures'
+import { useAuth } from '../context/AuthContext'
 
 /**
- * The nav rail from the mockups' `Sidebar` component. The mockup gated the two
- * nav groups behind a `role` prop (`sc-if`); until auth/session state exists
- * (INTEGRATION.md gaps #3/#4) there's no logged-in role to gate on, so both
- * groups are shown and the single fixture user (`CURRENT_USER`) fills the
- * footer. When auth lands: read role from session and hide the group the user
- * can't see, and drive the footer from the real user.
+ * The nav rail from the mockups' `Sidebar` component. The footer now reads the real logged-in
+ * user from `AuthContext` (INTEGRATION.md gap #3) instead of the retired `CURRENT_USER` fixture.
+ * The mockup gated the two nav groups behind a `role` prop (`sc-if`); this pass only swaps the
+ * data source, it does not add that gating — there's no confirmed spec yet for which nav items
+ * each role should see, so both groups still render unconditionally (real future work, tracked
+ * in INTEGRATION.md, not guessed here).
  */
 
 interface NavItem {
@@ -96,7 +96,10 @@ function Group({ title, items }: { title: string; items: NavItem[] }) {
 
 export default function Sidebar() {
   const navigate = useNavigate()
-  const u = CURRENT_USER
+  const { session, logout } = useAuth()
+  // `Sidebar` only ever renders inside `AppLayout`, which `ProtectedRoute` already guarantees
+  // has a session — this fallback just satisfies TypeScript's null-narrowing, not a real state.
+  const u = session?.user ?? { first_name: '?', last_name: '?', role: 'guardian' as const }
   const initials = (u.first_name[0] + u.last_name[0]).toUpperCase()
   const roleLabel =
     u.role === 'guardian'
@@ -164,7 +167,10 @@ export default function Sidebar() {
       </div>
 
       <button
-        onClick={() => navigate('/login')}
+        onClick={() => {
+          logout()
+          navigate('/login')
+        }}
         style={{
           display: 'flex',
           alignItems: 'center',

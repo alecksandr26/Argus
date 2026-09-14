@@ -13,6 +13,15 @@ export default defineConfig({
     host: true,
     port: 5173,
     strictPort: true,
+    // Vite's dev server otherwise rejects any request whose Host header isn't `localhost`, an
+    // IP, or an explicitly listed name (a DNS-rebinding guard) — a real bug this caused, not a
+    // hypothetical: src/it-argus's Playwright browser runs inside a container that reaches this
+    // server via its internal Docker DNS name (`http://ui-argus:5173`), which isn't `localhost`
+    // and got silently 403'd, no error visible except "the page never loaded". Since this
+    // server is dev-only (production is nginx serving a static build, see the Dockerfile's
+    // `prod` target), disabling the check entirely is simpler than enumerating every hostname a
+    // dev/test container might reach this under.
+    allowedHosts: true,
     // Bind-mounted source on Docker Desktop (macOS/Windows) crosses a VM boundary that
     // doesn't always propagate inotify file-change events, so Vite's default watcher can
     // silently miss edits. Polling costs a little CPU but works everywhere, native Linux

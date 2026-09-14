@@ -715,9 +715,34 @@ tuned against a real recorded drive.
 ## Tests
 
 `tests/` is a `pytest` suite mirroring `src/` (`test_model_*`, `test_pipeline_*`,
-`test_main.py`, `test_constants.py`). Run it with `pytest` from `src/cv-argus/` after
-`pip install -e .`. Config lives in `pyproject.toml`'s `[tool.pytest.ini_options]`.
+`test_main.py`, `test_constants.py`) — 223 tests as of this writing. Run it with `pytest` from
+`src/cv-argus/` after `pip install -e .`. Config lives in `pyproject.toml`'s
+`[tool.pytest.ini_options]`. **`pytest` itself is deliberately not in `requirements.txt`** —
+that file is the exact, pinned dependency list this image ships to the Pi, and a test runner has
+no business being part of it; install it separately (`pip install pytest`) for local runs.
 
+- **`docker build`/`docker compose build` now run this same hermetic suite automatically, as a
+  build gate** — `Dockerfile` is multi-stage: a `test` stage (`pip install pytest` scoped to
+  just this stage, `COPY tests`, `RUN pytest`) sits right after the package becomes importable
+  (`pip install -e .`) but *before* the expensive part of the build, the ~1GB model-artifact
+  download from Drive — a broken test fails fast, without paying for that download first.
+  `runtime` is `FROM base`, not `FROM test`, and pulls back only `/app/src` via `COPY
+  --from=test /app/src ./src` — content-wise a no-op (identical to what `base` already has;
+  `test` only additionally copied `tests/` alongside it), but it forces Docker to build and pass
+  `test` before `runtime` can be built at all, without `tests/` itself ever reaching the
+  deployed image. Verified both directions for real: a clean build runs all 223 tests then
+  continues into the real model download and produces a working image; a deliberately-broken
+  test failed `docker build` outright, before the Drive download ever started. Also verified the
+  **full** build (real Drive downloads) still succeeds end to end after this restructuring, not
+  just the fast `--target test` path.
+- **`.dockerignore` had a real, unrelated bug this surfaced**: `scripts/output/` (this module's
+  local dataset-extraction output, gitignored, can reach double-digit GB) wasn't excluded, even
+  though the Dockerfile never `COPY`s `scripts/` in at all — every `docker build` was sending a
+  **16.43GB** build context to the daemon for nothing. Fixed by excluding `scripts/output/`;
+  context dropped to ~1MB. Also removed `tests/` from `.dockerignore` — it used to be excluded
+  on purpose (nothing copied it in, and it kept test edits from busting the layer cache); now
+  that the `test` stage above needs it in the build context, editing a test file busting the
+  cache from that `COPY` onward is the intended behavior, not a regression.
 - **The default run is hermetic** — no network, no camera, no Google Drive, no model
   download. That's a hard rule, not an aspiration: every `model/downloader.py` /
   `pipeline/downloader.py` test either exercises the skip-if-cached branch or monkeypatches

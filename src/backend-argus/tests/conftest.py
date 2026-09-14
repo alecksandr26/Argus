@@ -7,6 +7,8 @@ CLAUDE.md's "Tests" section for the convention this follows).
 """
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -18,6 +20,13 @@ from app.main import app
 from app.models.common import Role
 from app.models.truck import Truck
 from app.models.user import User
+
+
+def sha256_hex(raw: str) -> str:
+    """Every password field on the API now carries the SHA-256 hex digest of the real password
+    (see `app/schemas/common.py`'s `Sha256HexDigest` docstring), not the raw password — tests
+    that log in or create users need to send this instead of a literal password string."""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 @pytest_asyncio.fixture
@@ -40,7 +49,7 @@ async def api_client(mongo_client):
 async def root_admin(mongo_client) -> User:
     user = User(
         email="admin@example.com",
-        password_hash=hash_secret("password123"),
+        password_hash=hash_secret(sha256_hex("password123")),
         role=Role.ROOT_ADMIN,
         first_name="Root",
         last_name="Admin",
@@ -54,7 +63,7 @@ async def root_admin(mongo_client) -> User:
 async def guardian(mongo_client) -> User:
     user = User(
         email="guardian@example.com",
-        password_hash=hash_secret("password123"),
+        password_hash=hash_secret(sha256_hex("password123")),
         role=Role.GUARDIAN,
         first_name="Guard",
         last_name="Ian",
@@ -68,7 +77,7 @@ async def guardian(mongo_client) -> User:
 async def truck_driver_user(mongo_client) -> User:
     user = User(
         email="driver@example.com",
-        password_hash=hash_secret("password123"),
+        password_hash=hash_secret(sha256_hex("password123")),
         role=Role.TRUCK_DRIVER,
         first_name="Truck",
         last_name="Driver",

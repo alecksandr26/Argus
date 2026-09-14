@@ -22,6 +22,18 @@ class Settings(BaseSettings):
     # Comma-separated in the environment; split into a list for FastAPI's CORSMiddleware.
     cors_origins: str = "http://localhost:5173"
 
+    # The very first root_admin, auto-created on startup if no user exists at this email yet
+    # (see app/auth/bootstrap.py) — otherwise there's no way to get a first admin into a real
+    # deployment at all, short of manually running scripts/seed_dev_data.py. Defaults match that
+    # script's own dev credentials so a bare `docker compose up` and a seed-script run agree.
+    # `root_admin_password` is the *raw* password, same as a human would type into the login
+    # form — unsafe past local dev, same caveat as `jwt_secret` above.
+    root_admin_email: str = "admin@argus.dev"
+    root_admin_password: str = "changeme123"
+    root_admin_first_name: str = "Root"
+    root_admin_last_name: str = "Admin"
+    root_admin_phone_number: str = "+00-000-0000"
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
