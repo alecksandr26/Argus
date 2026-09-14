@@ -16,21 +16,34 @@ FROM base AS deps
 COPY package.json ./
 RUN npm install
 
+# --- checks (build/typecheck + lint gate) ----------------------------
+# No unit test suite exists in this module yet (see CLAUDE.md/INTEGRATION.md) — this stage
+# runs what genuinely exists instead of faking a test step: ESLint (`npm run lint`) and the
+# TypeScript build (`npm run build`, i.e. `tsc -b && vite build`). Both `dev` and `prod` below
+# depend on this stage passing — via `COPY --from=checks`/`FROM checks`, see each stage's own
+# comment — so a lint or typecheck failure fails those builds too, not just this one.
+FROM deps AS checks
+COPY . .
+RUN npm run lint
+RUN npm run build
+
 # --- dev --------------------------------------------------------------
 # Target used by docker-compose.yml for local development: source is bind-mounted over
 # this layer (see that file), so Vite's dev server sees edits immediately and this image
 # only has to provide node_modules and the toolchain, not a copy of src/ that would
-# instantly go stale.
+# instantly go stale. `COPY --from=checks` re-pulls a file `deps` already effectively has
+# (package.json) purely to force a real build dependency on `checks` succeeding first, without
+# inheriting checks' extra `dist/` output.
 FROM deps AS dev
+COPY --from=checks /app/package.json ./package.json
 COPY . .
 EXPOSE 5173
 CMD ["npm", "run", "dev"]
 
 # --- build ------------------------------------------------------------
-# Produces the static bundle (dist/) consumed by the "prod" stage below.
-FROM deps AS build
-COPY . .
-RUN npm run build
+# `checks` already ran the real build (`npm run build`) as part of the gate above — this
+# stage is just the named waypoint `prod` copies `dist/` from, not a second build.
+FROM checks AS build
 
 # --- prod -------------------------------------------------------------
 # Default target (`docker build .` with no --target): a static bundle behind nginx, meant
