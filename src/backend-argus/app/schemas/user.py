@@ -6,11 +6,12 @@ from typing import Optional
 from pydantic import BaseModel, EmailStr
 
 from app.models.common import Role
+from app.schemas.common import Sha256HexDigest
 
 
 class UserCreate(BaseModel):
     email: EmailStr
-    password: str
+    password: Sha256HexDigest
     role: Role
     first_name: str
     last_name: str
@@ -20,7 +21,7 @@ class UserCreate(BaseModel):
 
 class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
-    password: Optional[str] = None
+    password: Optional[Sha256HexDigest] = None
     role: Optional[Role] = None
     first_name: Optional[str] = None
     last_name: Optional[str] = None

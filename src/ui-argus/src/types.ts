@@ -16,6 +16,26 @@
 
 export type Role = 'root_admin' | 'guardian' | 'truck_driver'
 
+/**
+ * `POST /api/auth/login`'s response shapes (`src/backend-argus/app/schemas/auth.py`'s
+ * `LoginUser`/`LoginResponse`), used by `src/context/AuthContext.tsx` for the stored session.
+ * `LoginUser` is deliberately a subset of `User` (no `phone_number`/`is_active`/`last_login`) —
+ * mirror the backend exactly rather than reusing `User` here.
+ */
+export interface LoginUser {
+  id_user: string
+  email: string
+  role: Role
+  first_name: string
+  last_name: string
+}
+
+export interface LoginResponse {
+  access_token: string
+  token_type: string
+  user: LoginUser
+}
+
 export interface User {
   id_user: string
   email: string

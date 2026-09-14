@@ -11,6 +11,7 @@ Safe to re-run — it clears the seeded collections first rather than accumulati
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from datetime import datetime, timedelta, timezone
 
 from app.auth.security import generate_device_api_key, hash_secret
@@ -33,6 +34,15 @@ from app.models.truck import Truck
 from app.models.user import User
 
 
+def _password_hash(raw: str) -> str:
+    """Every password field on the API now carries a SHA-256 hex digest of the real password
+    (computed client-side in the browser, see `app/schemas/common.py`'s `Sha256HexDigest`
+    docstring), not the raw password itself. This script writes `User.password_hash` directly
+    rather than going through that API, so it has to reproduce the same digest-then-bcrypt
+    pipeline by hand for a subsequent real login with `raw` to actually succeed."""
+    return hash_secret(hashlib.sha256(raw.encode("utf-8")).hexdigest())
+
+
 async def seed() -> None:
     await init_db()
 
@@ -43,7 +53,7 @@ async def seed() -> None:
 
     admin = User(
         email="admin@argus.dev",
-        password_hash=hash_secret("changeme123"),
+        password_hash=_password_hash("changeme123"),
         role=Role.ROOT_ADMIN,
         first_name="Ana",
         last_name="Torres",
@@ -51,7 +61,7 @@ async def seed() -> None:
     )
     guardian = User(
         email="guardian@argus.dev",
-        password_hash=hash_secret("changeme123"),
+        password_hash=_password_hash("changeme123"),
         role=Role.GUARDIAN,
         first_name="Luis",
         last_name="Mendoza",

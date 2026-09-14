@@ -1,0 +1,86 @@
+# Self-contained integration-test stack — deliberately its OWN `mongo` + `backend-argus` +
+# `ui-argus` + `it-argus`, not an overlay on the repo-root docker-compose.yml. This stack's needs
+# keep diverging from the dev stack's (a clean database per run, no host ports so it can run
+# alongside an already-running dev `docker compose up`, healthchecks the dev stack doesn't need)
+# — that's an accepted, explicit tradeoff for keeping this free to diverge, not an oversight; the
+# two files can and will drift apart in shape over time.
+#
+# Run with: docker compose up --build --abort-on-container-exit
+services:
+  mongo:
+    image: mongo:7
+    volumes:
+      # A named volume scoped to *this* compose project (Compose prefixes volume names with the
+      # project name by default) — never the dev stack's `mongo-data` — so every IT run starts
+      # from a clean database. That matters here: tests assert on the root_admin bootstrap step.
+      - it-mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  backend-argus:
+    build:
+      context: ../backend-argus
+    environment:
+      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_DB=argus
+      # The browser under test loads the page as `http://localhost:5173` (see `it-argus`'s
+      # `network_mode` comment below for why), so that's the Origin header it actually
+      # presents — this happens to match backend-argus's own default, kept explicit here anyway
+      # for the same self-documenting reason every other var in this file is spelled out.
+      - CORS_ORIGINS=http://localhost:5173
+      # Bootstrap defaults (see app/auth/bootstrap.py) left at their checked-in values on
+      # purpose — tests/auth.spec.ts logs in with exactly these.
+      - ROOT_ADMIN_EMAIL=admin@argus.dev
+      - ROOT_ADMIN_PASSWORD=changeme123
+    # No published host ports — nothing outside this compose project needs to reach this
+    # service, and staying off 8000 means this stack can run alongside an already-running dev
+    # `docker compose up` without a port collision.
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  ui-argus:
+    build:
+      context: ../ui-argus
+      target: dev
+    environment:
+      # Reachable as `http://backend-argus:8000` from the browser under test — see `it-argus`'s
+      # `network_mode` below for why that browser can resolve this Docker-internal name at all.
+      - VITE_API_BASE_URL=http://backend-argus:8000
+    depends_on:
+      backend-argus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:5173', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  it-argus:
+    build:
+      context: .
+    # Shares ui-argus's network namespace instead of getting its own — found necessary by
+    # actually running this, not decided upfront: `src/utils/crypto.ts`'s `sha256Hex` (the real
+    # login path) needs `crypto.subtle`, which browsers only expose in a "secure context"
+    # (HTTPS, or the host `localhost`) — a request to the internal DNS name `http://ui-argus:5173`
+    # is neither, and login silently failed with `crypto.subtle is unavailable`. Sharing
+    # ui-argus's network namespace makes `http://localhost:5173` (a genuinely secure context)
+    # resolve straight to it — the same DNS visibility ui-argus already has still lets the page's
+    # own `fetch` calls reach `http://backend-argus:8000` correctly. `IT_BASE_URL` is therefore
+    # unset here — playwright.config.ts's default (`http://localhost:5173`) is already correct
+    # for this case, not just the "run locally against an already-up dev stack" case.
+    network_mode: "service:ui-argus"
+    depends_on:
+      ui-argus:
+        condition: service_healthy
+
+volumes:
+  it-mongo-data:
