@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1650 870" width="1650" height="870">
+<rect x="0" y="0" width="1650" height="870" fill="#eef0f4"/>
+
+<style>
+  text{font-family:'IBM Plex Sans',sans-serif;}
+  .box{fill:#ffffff; stroke:#8b93a3; stroke-width:1.5;}
+  .box-accent{fill:#f3ddb4; stroke:#b5690a; stroke-width:2.2;}
+  .box-hub{fill:#ffffff; stroke:#8b93a3; stroke-width:2.4;}
+  .box-dashed{fill:#ffffff; stroke:#8b93a3; stroke-width:1.5; stroke-dasharray:7 5;}
+  .box-dim{fill:#e4e7ee; stroke:#c7cbd6; stroke-width:1.5;}
+  .pill-ok{fill:#dcecdf; stroke:#3a7a4e; stroke-width:2;}
+  .pill-danger{fill:#f3ddd7; stroke:#a8382a; stroke-width:2;}
+  .boundary{fill:#e4e7ee; fill-opacity:.35; stroke:#8b93a3; stroke-width:1.5; stroke-dasharray:9 6;}
+  .t-title{font-family:'IBM Plex Sans'; font-weight:600; font-size:14.5px; fill:#1b2029;}
+  .t-title-lg{font-family:'IBM Plex Sans'; font-weight:600; font-size:15.5px; fill:#1b2029;}
+  .t-sub{font-family:'IBM Plex Mono'; font-size:12.5px; fill:#5b6272;}
+  .t-boundary-title{font-family:'IBM Plex Sans'; font-weight:600; font-size:13.5px; fill:#5b6272;}
+  .t-boundary-sub{font-family:'IBM Plex Mono'; font-size:12px; fill:#5b6272;}
+  .t-badge{font-family:'IBM Plex Sans'; font-weight:600; font-size:15px;}
+  .t-badge-ok{fill:#3a7a4e;}
+  .t-badge-danger{fill:#a8382a;}
+  .lbl{font-family:'IBM Plex Mono'; font-size:15px; fill:#5b6272;}
+  .lbl-accent{font-family:'IBM Plex Mono'; font-size:15px; fill:#b5690a; font-weight:600;}
+  .caveat{font-family:'IBM Plex Mono'; font-size:12px; fill:#5b6272;}
+  .edge{stroke:#8b93a3; stroke-width:1.6; fill:none; marker-end:url(#arrowM);}
+  .edge-dashed{stroke:#8b93a3; stroke-width:1.6; fill:none; stroke-dasharray:6 5; marker-end:url(#arrowM);}
+  .edge-accent{stroke:#b5690a; stroke-width:2.4; fill:none; marker-end:url(#arrowMA);}
+  .edge2{stroke:#8b93a3; stroke-width:1.6; fill:none; marker-end:url(#arrowM);}
+  .edge2-dashed{stroke:#8b93a3; stroke-width:1.6; fill:none; stroke-dasharray:6 5; marker-end:url(#arrowM);}
+  .edge2-accent{stroke:#b5690a; stroke-width:2.4; fill:none; marker-end:url(#arrowMA);}
+  .arrowhead{fill:#8b93a3;}
+  .arrowhead-accent{fill:#b5690a;}
+  .caveat-mark{fill:#a8382a;}
+  line,path{stroke-linejoin:miter; stroke-linecap:butt;}
+</style>
+
+
+  <defs>
+    <marker id="arrowM" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <polygon points="0,0 10,5 0,10" class="arrowhead"/>
+    </marker>
+    <marker id="arrowMA" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <polygon points="0,0 10,5 0,10" class="arrowhead-accent"/>
+    </marker>
+  </defs>
+
+  <rect class="boundary" x="25" y="40" width="950" height="770" rx="14"/>
+  <text x="55" y="65" class="t-boundary-title">cv-argus container</text>
+  <text x="55" y="83" class="t-boundary-sub">3 peer threads, 1 process — share only buffer/'s SQLite</text>
+
+  <!-- boxes drawn first so arrows and labels always sit on top of them, never behind -->
+  <!-- P1 -->
+  <rect class="box" x="70" y="110" width="260" height="80" rx="10"/>
+  <text x="200" y="145" text-anchor="middle" class="t-title">FusedInferenceStage</text>
+  <text x="200" y="166" text-anchor="middle" class="t-sub">Fig. 1 output + demo sinks</text>
+
+  <!-- P2 -->
+  <rect class="box" x="470" y="110" width="300" height="80" rx="10"/>
+  <text x="620" y="145" text-anchor="middle" class="t-title">OrchestratorBridge</text>
+  <text x="620" y="166" text-anchor="middle" class="t-sub">thin sink · always-on</text>
+
+  <!-- O1 -->
+  <rect class="box" x="430" y="285" width="420" height="110" rx="10"/>
+  <text x="640" y="313" text-anchor="middle" class="t-title-lg">Orchestrator</text>
+  <text x="640" y="333" text-anchor="middle" class="t-sub">own decision-loop thread</text>
+  <text x="640" y="351" text-anchor="middle" class="t-sub">debounce 3×Drowsy(~0.6s) → cooldown 30s</text>
+  <text x="640" y="369" text-anchor="middle" class="t-sub">heartbeat RouteStatus(OK) / 60s</text>
+
+  <!-- AL -->
+  <rect class="box" x="490" y="423" width="300" height="74" rx="10"/>
+  <text x="640" y="453" text-anchor="middle" class="t-title">alerts/ Alert envelope</text>
+  <text x="640" y="474" text-anchor="middle" class="t-sub">kind · level · created_at_ms · payload</text>
+
+  <!-- BUF (hub) -->
+  <rect class="box-hub" x="460" y="535" width="360" height="90" rx="10"/>
+  <text x="640" y="570" text-anchor="middle" class="t-title">buffer/ SQLite (WAL)</text>
+  <text x="640" y="591" text-anchor="middle" class="t-sub">1 table · threading.Lock</text>
+
+  <!-- SS -->
+  <rect class="box" x="430" y="665" width="420" height="90" rx="10"/>
+  <text x="640" y="700" text-anchor="middle" class="t-title-lg">SenderServer</text>
+  <text x="640" y="721" text-anchor="middle" class="t-sub">Bluetooth SPP server · own thread</text>
+
+  <!-- ESP32 (dashed, external) -->
+  <rect class="box-dashed" x="1060" y="665" width="240" height="90" rx="10"/>
+  <text x="1180" y="694" text-anchor="middle" class="t-title">ESP32</text>
+  <text x="1180" y="713" text-anchor="middle" class="t-sub">Message Sender Orchestrator</text>
+  <text x="1180" y="731" text-anchor="middle" class="caveat"><tspan class="caveat-mark">!</tspan> not in this repo (no hw/fw)</text>
+
+  <!-- Backend (dim, separate module) -->
+  <rect class="box-dim" x="1340" y="665" width="240" height="90" rx="10"/>
+  <text x="1460" y="694" text-anchor="middle" class="t-title">Backend</text>
+  <text x="1460" y="713" text-anchor="middle" class="t-sub">src/backend-argus</text>
+  <text x="1460" y="731" text-anchor="middle" class="t-sub">FastAPI + MongoDB</text>
+
+  <!-- edges + labels drawn last so they're never hidden behind a box -->
+  <line x1="330" y1="150" x2="464" y2="150" class="edge2"/>
+  <text x="397" y="120" text-anchor="middle" class="lbl">DetectionResult</text>
+
+  <path d="M 620 190 C 620 234.5 640 234.5 640 279" class="edge2"/>
+  <text x="700" y="231" text-anchor="middle" class="lbl">put_nowait(detection)</text>
+  <text x="700" y="253" text-anchor="middle" class="lbl">drop-on-full</text>
+
+  <line x1="640" y1="395" x2="640" y2="417" class="edge2"/>
+  <text x="700" y="412" text-anchor="middle" class="lbl">Alert.new() / route_status()</text>
+
+  <line x1="640" y1="497" x2="640" y2="529" class="edge2"/>
+  <text x="700" y="519" text-anchor="middle" class="lbl">enqueue()</text>
+
+  <line x1="640" y1="625" x2="640" y2="659" class="edge2"/>
+  <text x="700" y="648" text-anchor="middle" class="lbl">fetch_unsent() — oldest-first</text>
+
+  <path d="M 430 710 C 260 710 260 580 458 580" class="edge2-accent"/>
+  <text x="170" y="637" text-anchor="middle" class="lbl-accent">mark_sent() only</text>
+  <text x="170" y="657" text-anchor="middle" class="lbl-accent">after ESP32 ACK</text>
+
+  <line x1="850" y1="710" x2="1054" y2="710" class="edge2-dashed"/>
+  <text x="952" y="620" text-anchor="middle" class="lbl">PULL n &lt;-&gt; rows &lt;-&gt; ACK ids</text>
+  <text x="952" y="642" text-anchor="middle" class="lbl">Bluetooth SPP, ESP32-initiated</text>
+
+  <line x1="1300" y1="710" x2="1334" y2="710" class="edge2-dashed"/>
+  <text x="1317" y="620" text-anchor="middle" class="lbl">HTTP + device</text>
+  <text x="1317" y="642" text-anchor="middle" class="lbl">key (+GPS)</text>
+
+</svg>
