@@ -1,0 +1,39 @@
+%%{init: {'theme':'base', 'themeVariables': {'fontFamily':'IBM Plex Sans, sans-serif','primaryColor':'#FFFFFF','primaryBorderColor':'#B9C4D0','primaryTextColor':'#17212B','lineColor':'#57697C','tertiaryColor':'#F4F7FA'}, 'flowchart': {'curve':'basis'}}}%%
+flowchart LR
+  A["Camera / video source<br/>cv2.VideoCapture / PiCamera2"]
+  B["MediaPipe Face Detector<br/>BlazeFace &middot; VIDEO mode"]
+  C["Face crop RGB<br/>fork point"]
+  D["MediaPipe FaceLandmarker<br/>IMAGE mode, on the crop"]
+  E["GeometricRatioFeatureLayer<br/>EAR / MAR + blendshapes"]
+  F["Frozen CNN embedder<br/>07 checkpoint, features only"]
+  G{{"Fuse (concat)"}}
+  H["Sliding window buffer<br/>100 &times; 74 &middot; 20s @ 5fps window<br/>zero-pre-padded"]
+  I["Fused LSTM classifier<br/>Norm &rarr; LSTM &rarr; Dropout &rarr; Dense"]
+  J{"p(Drowsy) &ge; t*?<br/>t* = 0.57"}
+  K(["Not Drowsy<br/>level 1 &middot; not-drowsy"])
+  L(["Drowsy<br/>level 2 &middot; drowsy"])
+  M["Alert / status pipeline<br/>SQLite buffer &rarr; Bluetooth &rarr; ESP32"]
+
+  A -->|"sampled @ 5 fps"| B
+  B -->|"crop margin 0.25, BGR&rarr;RGB"| C
+  C -->|"landmarks path"| D
+  C -->|"embedding path"| F
+  D -->|"468 landmarks + blendshapes"| E
+  E -->|"10-dim vector"| G
+  F -->|"64-dim embedding"| G
+  G -->|"74-dim fused vector / frame"| H
+  H -->|"window tensor 100&times;74 + mask"| I
+  I -->|"p(Drowsy)"| J
+  J -->|"p &lt; 0.57"| K
+  J -->|"p &ge; 0.57"| L
+  K -.-> M
+  L -.-> M
+
+  classDef stage fill:#FFFFFF,stroke:#B9C4D0,stroke-width:2px,color:#17212B
+  classDef fuseNode fill:#E7EDF3,stroke:#2C6E8E,stroke-width:2.5px,color:#17212B
+  classDef safeNode fill:#FFFFFF,stroke:#2F8F6F,stroke-width:2.5px,color:#2F8F6F
+  classDef alertNode fill:#FFFFFF,stroke:#B23324,stroke-width:2.5px,color:#B23324
+  class A,B,C,D,E,F,H,I,M stage
+  class G,J fuseNode
+  class K safeNode
+  class L alertNode

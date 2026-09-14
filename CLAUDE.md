@@ -203,7 +203,11 @@ but not yet merged into `main`) — read that before assuming something is missi
   `argmax`. Source of truth is `src/cv-argus/CLAUDE.md`'s "fused detector" section and
   `src/cv-argus/src/constants.py` (`FUSED_MODEL_EMBED_DIM`, `FUSED_MODEL_NUM_GEO_FEATURES`,
   `FUSED_MODEL_MAX_TIMESTEPS`, `FUSED_MODEL_THRESHOLD`) — re-derive dimensions/thresholds from
-  there, not from this diagram, if either changes.
+  there, not from this diagram, if either changes. The `.svg` is the source of truth for this
+  diagram; `cnn-lstm-mediapipe-pipeline.png` (flat export), `.drawio` (same layout/colors/curved
+  connectors, editable in diagrams.net), and `.mmd` (a Mermaid port, lower style fidelity but
+  renders anywhere Mermaid does, GitHub included) are generated from it and can drift out of
+  sync with the `.svg` if only one is edited by hand later.
 - `docs/references/` — background research papers on drowsiness/microsleep detection that
   inform feature and model choices.
 
