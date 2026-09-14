@@ -195,6 +195,15 @@ but not yet merged into `main`) — read that before assuming something is missi
 - `docs/designs/semantic-design*` — draw.io system architecture diagram; source of truth for
   the planned end-to-end architecture summarized above (`semantic-design` is the raw XML,
   `semantic-design.drawio.png` a rendered export — re-render after editing the XML).
+- `docs/designs/cnn-lstm-mediapipe-pipeline.svg` — model-level diagram of what `src/cv-argus`
+  actually deploys today, scoped to the model itself rather than the full edge/cloud system:
+  both MediaPipe stages (Face Detector crop, then FaceLandmarker run on that crop) feeding a
+  frozen-CNN-embedding + `GeometricRatioFeatureLayer` fusion into the LSTM classifier's
+  zero-pre-padded 100-frame window, thresholded at `p(Drowsy) >= t*` (`t* = 0.57`) rather than
+  `argmax`. Source of truth is `src/cv-argus/CLAUDE.md`'s "fused detector" section and
+  `src/cv-argus/src/constants.py` (`FUSED_MODEL_EMBED_DIM`, `FUSED_MODEL_NUM_GEO_FEATURES`,
+  `FUSED_MODEL_MAX_TIMESTEPS`, `FUSED_MODEL_THRESHOLD`) — re-derive dimensions/thresholds from
+  there, not from this diagram, if either changes.
 - `docs/references/` — background research papers on drowsiness/microsleep detection that
   inform feature and model choices.
 
