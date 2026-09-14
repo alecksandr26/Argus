@@ -1,0 +1,41 @@
+%%{init: {'theme':'base', 'themeVariables': {
+  'fontFamily': 'IBM Plex Mono, ui-monospace, monospace',
+  'primaryColor': '#ffffff',
+  'primaryBorderColor': '#8b93a3',
+  'primaryTextColor': '#1b2029',
+  'lineColor': '#8b93a3',
+  'tertiaryColor': '#eef0f4',
+  'edgeLabelBackground': '#eef0f4'
+}}}%%
+flowchart TD
+    subgraph CV["cv-argus container -- 3 peer threads, 1 process"]
+        direction TB
+        P1["FusedInferenceStage<br/>Fig. 1 output + demo sinks"]
+        P2["OrchestratorBridge<br/>thin sink · always-on"]
+        O1["Orchestrator<br/>own decision-loop thread<br/>debounce 3x Drowsy ~0.6s, cooldown 30s<br/>heartbeat RouteStatus OK /60s"]
+        AL["alerts/ Alert envelope<br/>kind · level · created_at_ms · payload"]
+        BUF["buffer/ SQLite WAL<br/>1 table · threading.Lock"]
+        SS["SenderServer<br/>Bluetooth SPP server · own thread"]
+
+        P1 -->|DetectionResult| P2
+        P2 -->|"put_nowait(detection), drop-on-full"| O1
+        O1 -->|"Alert.new() / route_status()"| AL
+        AL -->|enqueue| BUF
+        BUF -->|"fetch_unsent, oldest-first"| SS
+        SS -.->|mark_sent only after ESP32 ACK| BUF
+    end
+
+    ESP["ESP32<br/>Message Sender Orchestrator<br/>not in this repo -- no hw/fw"]
+    BE["Backend<br/>src/backend-argus<br/>FastAPI + MongoDB"]
+
+    SS -.->|"Bluetooth SPP: PULL/ACK, ESP32-initiated"| ESP
+    ESP -.->|"HTTP + device key, GPS attached"| BE
+
+    classDef default fill:#ffffff,stroke:#8b93a3,stroke-width:1.5px,color:#1b2029
+    classDef hub stroke-width:3px
+    classDef dashedBox stroke-dasharray: 6 4
+    classDef dim fill:#e4e7ee,stroke:#c7cbd6,color:#1b2029
+    class BUF hub
+    class ESP dashedBox
+    class BE dim
+    linkStyle 5 stroke:#b5690a,stroke-width:2.4px,color:#b5690a

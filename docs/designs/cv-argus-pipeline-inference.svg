@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1980 640" width="1980" height="640">
+<rect x="0" y="0" width="1980" height="640" fill="#eef0f4"/>
+
+<style>
+  text{font-family:'IBM Plex Sans',sans-serif;}
+  .box{fill:#ffffff; stroke:#8b93a3; stroke-width:1.5;}
+  .box-accent{fill:#f3ddb4; stroke:#b5690a; stroke-width:2.2;}
+  .box-hub{fill:#ffffff; stroke:#8b93a3; stroke-width:2.4;}
+  .box-dashed{fill:#ffffff; stroke:#8b93a3; stroke-width:1.5; stroke-dasharray:7 5;}
+  .box-dim{fill:#e4e7ee; stroke:#c7cbd6; stroke-width:1.5;}
+  .pill-ok{fill:#dcecdf; stroke:#3a7a4e; stroke-width:2;}
+  .pill-danger{fill:#f3ddd7; stroke:#a8382a; stroke-width:2;}
+  .boundary{fill:#e4e7ee; fill-opacity:.35; stroke:#8b93a3; stroke-width:1.5; stroke-dasharray:9 6;}
+  .t-title{font-family:'IBM Plex Sans'; font-weight:600; font-size:14.5px; fill:#1b2029;}
+  .t-title-lg{font-family:'IBM Plex Sans'; font-weight:600; font-size:15.5px; fill:#1b2029;}
+  .t-sub{font-family:'IBM Plex Mono'; font-size:12.5px; fill:#5b6272;}
+  .t-boundary-title{font-family:'IBM Plex Sans'; font-weight:600; font-size:13.5px; fill:#5b6272;}
+  .t-boundary-sub{font-family:'IBM Plex Mono'; font-size:12px; fill:#5b6272;}
+  .t-badge{font-family:'IBM Plex Sans'; font-weight:600; font-size:15px;}
+  .t-badge-ok{fill:#3a7a4e;}
+  .t-badge-danger{fill:#a8382a;}
+  .lbl{font-family:'IBM Plex Mono'; font-size:15px; fill:#5b6272;}
+  .lbl-accent{font-family:'IBM Plex Mono'; font-size:15px; fill:#b5690a; font-weight:600;}
+  .caveat{font-family:'IBM Plex Mono'; font-size:12px; fill:#5b6272;}
+  .edge{stroke:#8b93a3; stroke-width:1.6; fill:none; marker-end:url(#arrowM);}
+  .edge-dashed{stroke:#8b93a3; stroke-width:1.6; fill:none; stroke-dasharray:6 5; marker-end:url(#arrowM);}
+  .edge-accent{stroke:#b5690a; stroke-width:2.4; fill:none; marker-end:url(#arrowMA);}
+  .edge2{stroke:#8b93a3; stroke-width:1.6; fill:none; marker-end:url(#arrowM);}
+  .edge2-dashed{stroke:#8b93a3; stroke-width:1.6; fill:none; stroke-dasharray:6 5; marker-end:url(#arrowM);}
+  .edge2-accent{stroke:#b5690a; stroke-width:2.4; fill:none; marker-end:url(#arrowMA);}
+  .arrowhead{fill:#8b93a3;}
+  .arrowhead-accent{fill:#b5690a;}
+  .caveat-mark{fill:#a8382a;}
+  line,path{stroke-linejoin:miter; stroke-linecap:butt;}
+</style>
+
+
+  <defs>
+    <marker id="arrowM" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <polygon points="0,0 10,5 0,10" class="arrowhead"/>
+    </marker>
+    <marker id="arrowMA" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <polygon points="0,0 10,5 0,10" class="arrowhead-accent"/>
+    </marker>
+  </defs>
+
+  <!-- boxes drawn first so arrows and labels always sit on top of them, never behind -->
+  <!-- B1 source -->
+  <rect class="box" x="30" y="268" width="230" height="84" rx="10"/>
+  <text x="145" y="302" text-anchor="middle" class="t-title">Frame Source</text>
+  <text x="145" y="324" text-anchor="middle" class="t-sub">camera / video file · 5 fps</text>
+
+  <!-- B2 crop -->
+  <rect class="box" x="320" y="268" width="250" height="84" rx="10"/>
+  <text x="445" y="302" text-anchor="middle" class="t-title">Face Detector Crop</text>
+  <text x="445" y="324" text-anchor="middle" class="t-sub">BlazeFace · VIDEO mode</text>
+
+  <!-- B3 top: landmarker -->
+  <rect class="box" x="640" y="60" width="260" height="100" rx="10"/>
+  <text x="770" y="86" text-anchor="middle" class="t-title">Face Landmarker</text>
+  <text x="770" y="104" text-anchor="middle" class="t-sub">crop · IMAGE mode</text>
+  <text x="770" y="122" text-anchor="middle" class="t-sub">GeometricRatioFeatureLayer</text>
+  <text x="770" y="140" text-anchor="middle" class="t-sub">→ EAR/MAR + blendshapes ×10</text>
+
+  <!-- B3 bottom: frozen CNN -->
+  <rect class="box" x="640" y="460" width="260" height="100" rx="10"/>
+  <text x="770" y="486" text-anchor="middle" class="t-title">Frozen CNN Embedder</text>
+  <text x="770" y="504" text-anchor="middle" class="t-sub">07_cnn_training checkpoint</text>
+  <text x="770" y="522" text-anchor="middle" class="t-sub">embedding_submodel()</text>
+  <text x="770" y="540" text-anchor="middle" class="t-sub">→ 64-dim embedding</text>
+  <text x="770" y="582" text-anchor="middle" class="caveat"><tspan class="caveat-mark">!</tspan> checkpoint parity vs. notebook 11: unverified</text>
+
+  <!-- B4 fuse (accent) -->
+  <rect class="box-accent" x="965" y="271" width="170" height="78" rx="10"/>
+  <text x="1050" y="303" text-anchor="middle" class="t-title">Fuse</text>
+  <text x="1050" y="325" text-anchor="middle" class="t-sub">→ 74-dim/frame</text>
+
+  <!-- B5 buffer (accent) -->
+  <rect class="box-accent" x="1190" y="263" width="230" height="94" rx="10"/>
+  <text x="1305" y="293" text-anchor="middle" class="t-title">Rolling Window Buffer</text>
+  <text x="1305" y="313" text-anchor="middle" class="t-sub">≤100 frames, zero-pre-pad</text>
+  <text x="1305" y="331" text-anchor="middle" class="t-sub">per-stream state (numpy)</text>
+
+  <!-- B6 lstm (accent) -->
+  <rect class="box-accent" x="1490" y="271" width="210" height="78" rx="10"/>
+  <text x="1595" y="303" text-anchor="middle" class="t-title">LSTM</text>
+  <text x="1595" y="325" text-anchor="middle" class="t-sub">traced · ~10ms/frame</text>
+  <text x="1595" y="372" text-anchor="middle" class="caveat"><tspan class="caveat-mark">!</tspan> single fold — not cross-validated</text>
+
+  <!-- badges -->
+  <rect class="pill-ok" x="1760" y="185" width="170" height="50" rx="25"/>
+  <text x="1845" y="216" text-anchor="middle" class="t-badge t-badge-ok">Not Drowsy</text>
+  <rect class="pill-danger" x="1760" y="385" width="170" height="50" rx="25"/>
+  <text x="1845" y="416" text-anchor="middle" class="t-badge t-badge-danger">Drowsy</text>
+
+  <!-- edges + labels drawn last so they're never hidden behind a box -->
+  <line x1="260" y1="310" x2="316" y2="310" class="edge"/>
+  <text x="290" y="245" text-anchor="middle" class="lbl">sampled frame (BGR)</text>
+
+  <!-- both branches now leave from the crop box's own top/bottom edge, not a cramped point on its side -->
+  <path d="M 445 268 C 445 180 546 110 636 110" class="edge"/>
+  <path d="M 445 352 C 445 440 546 510 636 510" class="edge"/>
+  <text x="500" y="205" text-anchor="middle" class="lbl">face crop (RGB) + bbox</text>
+
+  <!-- leave from the source box's own right edge, arrive at fuse's top/bottom edge -->
+  <path d="M 900 110 C 975 110 1050 188.5 1050 267" class="edge"/>
+  <text x="910" y="195" text-anchor="middle" class="lbl">10 geo features</text>
+  <path d="M 900 510 C 975 510 1050 431.5 1050 353" class="edge"/>
+  <text x="910" y="435" text-anchor="middle" class="lbl">64-dim embedding</text>
+
+  <line x1="1135" y1="310" x2="1186" y2="310" class="edge"/>
+  <text x="1163" y="245" text-anchor="middle" class="lbl">74-dim fused vector</text>
+
+  <line x1="1420" y1="310" x2="1486" y2="310" class="edge"/>
+  <text x="1455" y="245" text-anchor="middle" class="lbl">sequence (1,100,74)</text>
+
+  <!-- leave from the LSTM box's own top/bottom edge, one per badge, instead of both crowding out of its right side -->
+  <path d="M 1595 271 C 1595 230 1700 210 1756 210" class="edge"/>
+  <path d="M 1595 349 C 1595 390 1700 410 1756 410" class="edge"/>
+  <text x="1745" y="150" text-anchor="middle" class="lbl">p(Drowsy) vs t*=0.57</text>
+
+  <text x="1845" y="460" text-anchor="middle" class="lbl">→ continues in Fig. 2</text>
+
+</svg>
