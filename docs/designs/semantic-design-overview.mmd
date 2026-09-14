@@ -1,0 +1,50 @@
+%%{init: {'theme':'base','themeVariables': {'fontFamily':'IBM Plex Mono, monospace','fontSize':'26px','primaryColor':'#ffffff','primaryBorderColor':'#5b6673','primaryTextColor':'#1b2430','lineColor':'#5b6673','clusterBkg':'#f6f5ef','clusterBorder':'#cfccbd'},'flowchart':{'nodeSpacing':75,'rankSpacing':96,'padding':16,'curve':'basis'}}}%%
+flowchart TB
+  subgraph EDGE["Truck Cabin — Edge"]
+    CAM["Camera"] -- frames --> PI
+
+    subgraph PI["Raspberry Pi 5 — AI + Orchestrator"]
+      direction LR
+      MP["MediaPipe<br/>Detector + Landmarker"] --> CNN["Frozen CNN<br/>64-dim embedding"] --> LSTM["LSTM<br/>rolling window"] --> CLS(["Not Drowsy · Drowsy"])
+      MP -. "EAR/MAR + blendshapes" .-> LSTM
+      CLS --> ORCH["Alert / RouteStatus<br/>Orchestrator"]
+      ORCH -- alert --> BUF[("SQLite<br/>Buffer Queue")]
+    end
+
+    subgraph PERIPH["ESP32 — Message Sender"]
+      direction LR
+      GRIP["Grip Sensor"] --> ESP
+      PANIC["Panic Button"] --> ESP
+      GPS["GPS Module"] --> ESP
+      ESP["ESP32<br/>orchestrator"] --> ALARM["Alarm Speaker"]
+      ESP --> AEB["CAN Bus / AEB"]
+    end
+
+    BUF -. "Bluetooth poll" .-> ESP
+  end
+
+  ESP -. "HTTPS + API key" .-> BACKEND
+
+  subgraph CLOUD["Docker Compose — UI + Backend"]
+    direction LR
+    subgraph BACKEND["Backend — FastAPI + Beanie"]
+      API["/api: auth, users, trucks,<br/>drivers, alerts, routes"]
+    end
+    BACKEND --> DB[("MongoDB")]
+    BACKEND <--> UI["UI<br/>React + Leaflet"]
+    BACKEND -. "route/ETA" .-> OSRM["OSRM<br/>(deferred)"]
+  end
+
+  USERS["root_admin · guardian ·<br/>truck_driver"] --> UI
+
+  classDef edgeNode fill:#fdf1de,stroke:#b9761f,color:#3a2a12,stroke-width:1px;
+  classDef cvNode fill:#fff1b8,stroke:#c98a12,color:#4a350a,stroke-width:1.5px;
+  classDef cloudNode fill:#e3f3f0,stroke:#1f7a6c,color:#123a33,stroke-width:1px;
+  classDef actorNode fill:#ffffff,stroke:#5b6673,color:#1b2430,stroke-width:1px;
+  classDef futureNode fill:#f0f0f0,stroke:#aaaaaa,color:#888888,stroke-width:1px,stroke-dasharray: 4 3;
+
+  class CAM,ORCH,BUF,GRIP,PANIC,GPS,ESP,ALARM,AEB edgeNode
+  class MP,CNN,LSTM,CLS cvNode
+  class BACKEND,API,DB,UI cloudNode
+  class OSRM futureNode
+  class USERS actorNode
