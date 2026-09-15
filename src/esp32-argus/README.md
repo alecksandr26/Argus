@@ -14,10 +14,10 @@ HTTP with its own GPS reading attached.
 
 ## 1. Bluetooth SPP client — pulling from `cv-argus`
 
-`cv-argus`'s `sender/` module (on branch `worktree-cv-argus-alert-pipeline` — not merged yet,
-but fully implemented and unit-tested against a fake transport) runs a Bluetooth SPP **server**
-on the Pi. This device is the **client**: it connects, and initiates every exchange — the Pi
-never pushes. Exact grammar (`src/cv-argus/src/sender/protocol.py`):
+`cv-argus`'s `sender/` module (merged to `main` — fully implemented and unit-tested against a
+fake transport) runs a Bluetooth SPP **server** on the Pi. This device is the **client**: it
+connects, and initiates every exchange — the Pi never pushes. Exact grammar
+(`src/cv-argus/src/sender/protocol.py`):
 
 ```
 you  -> Pi:   PULL <n>\n
@@ -55,10 +55,10 @@ again on your next `PULL`. Rows are delivered at-least-once, never silently drop
 
 ## 2. HTTP relay to `backend-argus`
 
-`backend-argus` (branch `worktree-backend-argus` — also not merged yet, but real, tested code)
-already has endpoints built and auth designed specifically anticipating this device as the
-caller — see `src/backend-argus/CLAUDE.md`'s "Device (ESP32) auth" section for the full
-rationale. What you need to do:
+`backend-argus` (merged to `main` — real, tested code) already has endpoints built and auth
+designed specifically anticipating this device as the caller — see
+`src/backend-argus/CLAUDE.md`'s "Device (ESP32) auth" section for the full rationale. What you
+need to do:
 
 - **Auth**: send `X-Device-Api-Key: <key>` on every request. The key is per-truck, generated
   once via `POST /api/trucks/{id}/rotate-key` (an admin action, not something this firmware
