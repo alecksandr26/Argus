@@ -8,6 +8,17 @@ el estilo de cada párrafo existente en vez de reconstruir el documento desde ce
 
 Uso: python3 fill_report.py
 Genera: docs/criteria/ReporteArgusINCO_final.docx
+
+Para exportar el PDF final, NO uses `soffice --convert-to pdf` a secas: por defecto
+comprime las imágenes a JPEG de 300 DPI (~780px de ancho para las figuras de este
+documento), lo que se ve pixelado al hacer zoom aunque los PNG de origen sean de alta
+resolución. Usa:
+
+    soffice --headless --convert-to \
+      'pdf:writer_pdf_Export:{"MaxImageResolution":{"type":"long","value":"1200"},
+       "ReduceImageResolution":{"type":"boolean","value":"false"},
+       "Quality":{"type":"long","value":"95"}}' \
+      --outdir docs/criteria docs/criteria/ReporteArgusINCO_final.docx
 """
 import docx
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -155,6 +166,14 @@ def insert_table_after(anchor, data, col_widths_in, header=True):
         jc = OxmlElement("w:jc")
         tblPr.append(jc)
     jc.set(qn("w:val"), "left")
+    # Belt-and-suspenders against w:jc alone: pin zero indent explicitly too, in case
+    # Word's own default table indent (rather than jc) is what's driving position.
+    tblInd = tblPr.find(qn("w:tblInd"))
+    if tblInd is None:
+        tblInd = OxmlElement("w:tblInd")
+        tblPr.append(tblInd)
+    tblInd.set(qn("w:type"), "dxa")
+    tblInd.set(qn("w:w"), "0")
     # Sanity check: tblGrid must sum to exactly tblW, and every cell in a column must
     # share that column's width — otherwise Word (unlike LibreOffice) can render a
     # column as collapsed/missing. Fail loudly here instead of discovering it visually.
@@ -179,10 +198,10 @@ def insert_column_figure_after(anchor, image_path, caption, width_in=2.6):
     """Figures stay inside a single column (no section-break-to-1-column trick — that
     rendered fine in LibreOffice's PDF export but broke in real Word, and the user wants
     these as small as possible anyway, accepting reduced legibility)."""
-    p_img = new_paragraph_after(anchor, style="Normal", align=WD_ALIGN_PARAGRAPH.CENTER)
+    p_img = new_paragraph_after(anchor, style="Normal", align=WD_ALIGN_PARAGRAPH.LEFT)
     run = p_img.add_run()
     run.add_picture(image_path, width=Inches(width_in))
-    p_cap = new_paragraph_after(p_img, style="Normal", align=WD_ALIGN_PARAGRAPH.CENTER,
+    p_cap = new_paragraph_after(p_img, style="Normal", align=WD_ALIGN_PARAGRAPH.LEFT,
                                  text=caption, size=8, bold=True)
     return p_cap
 
@@ -227,7 +246,7 @@ for _p in (P[3], P[4], P[5]):
     widen_paragraph(_p)
 set_text(P[3], "erick.carrillo4982@alumnos.udg.mx")
 set_text(P[4], "Paulino.suarez8804@alumnos.udg.mx  ·  rafael.pulido4119@alumnos.udg.mx")
-set_text(P[5], "[correo del asesor — completar]")
+set_text(P[5], "mario.ruz@academicos.udg.mx")
 # P[6] "FIRMA DE VISTO BUENO DEL ASESOR" se deja como etiqueta estructural.
 
 RESUMEN = (
