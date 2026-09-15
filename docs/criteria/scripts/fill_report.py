@@ -537,6 +537,8 @@ mod3 = insert_column_figure_after(
     mod3, f"{DESIGNS}/cnn-lstm-mediapipe-pipeline.png",
     "Fig. 2 — Pipeline del modelo desplegado: MediaPipe (Face Detector + FaceLandmarker) → "
     "CNN congelada + GeometricRatioFeatureLayer → fusión → LSTM (t*=0.57).",
+    width_in=2.15,  # más angosta que Fig. 1: su relación de aspecto 2.77:1 (vs. 1.29:1 de
+                     # Fig. 1) dejaba muy poco margen a la derecha dentro de la columna en Word
 )
 
 # ================================= IV. RESULTADOS OBTENIDOS DEL PROYECTO ===
