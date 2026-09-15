@@ -70,19 +70,26 @@ pieces of this section that remain pure design, not implemented anywhere in this
   sequences, so it's a non-recurrent baseline alongside RandomForest rather than a like-for-like
   challenger to the LSTM on the same task. If `docs/document/borrador-proyecto-modular-
   argus.md` still frames the windowed DNN-vs-LSTM question as open, treat this file as the more
-  current status. A
-  steering-wheel grip sensor feeds the same decision orchestration node.
+  current status.
   Outgoing alert/status events are written to a local **SQLite queue/buffer** — this is the
   edge-side alert queue only, separate from the cloud database below — so nothing is lost when
   connectivity drops (this satisfies the "Memoria Local (Buffer)" MVP requirement — buffered
   events are auto-resent once a connection is available).
 - A separate **ESP32 ("Message Sender Orchestrator")** reads that buffer and owns everything
   actuation- and safety-critical: it drives the **alarm speaker**, the **CAN Bus/AEB actuator**
-  (preventive autonomous braking), reads the **panic button** and **geolocation module**, polls
-  the Pi's SQLite buffer over **Bluetooth** (the ESP32 initiates periodic pulls of unsent
-  records — the Pi doesn't push), and is the device that talks to the backend over **HTTP** —
-  authenticated with a per-truck device API key rather than a user login, now that
-  `src/backend-argus` exists (see that module's `CLAUDE.md`, "Device (ESP32) auth").
+  (preventive autonomous braking), reads the **panic button**, the **geolocation module**, and
+  the **steering-wheel grip sensor**, polls the Pi's SQLite buffer over **Bluetooth** (the ESP32
+  initiates periodic pulls of unsent records — the Pi doesn't push), and is the device that talks
+  to the backend over **HTTP** — authenticated with a per-truck device API key rather than a user
+  login, now that `src/backend-argus` exists (see that module's `CLAUDE.md`, "Device (ESP32)
+  auth"). The grip sensor does **not** feed the Pi's AI-orchestrator decision node — it, the panic
+  button, and geolocation all wire directly to the ESP32 (see
+  `docs/designs/semantic-design-overview.md`), independent of the camera pipeline. This makes the
+  ESP32 the actual fusion point for drowsiness + grip: it **fuses** the Pi's relayed drowsiness
+  classification with its own live grip reading via a documented debounce/escalation/recovery
+  state machine (not a plain 1:1 relay of every drowsiness alert it pulls) — see
+  `src/esp32-argus/README.md`'s fusion section for the full decision spec, and
+  `src/cv-argus/src/orchestrator/fusion_contract.py` for its typed reference contract.
 - Deliberate split: the Pi *decides* (heavy AI inference, containerizable, can be redeployed via
   OTA), the ESP32 *acts* (bare-metal/real-time, must not depend on a Linux/Docker boot cycle
   completing). Don't move CAN-bus/alarm/panic-button logic onto the Pi — keep that boundary.

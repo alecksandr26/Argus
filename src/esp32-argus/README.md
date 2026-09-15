@@ -73,17 +73,20 @@ don't guess a wrong answer into firmware code):**
 
 | Backend field (`AlertCreate`) | Source | Status |
 |---|---|---|
-| `ai_metadata.scores.not_drowsy`/`.drowsy` | `payload.probabilities[0]`/`[1]` | ✅ direct |
+| `ai_metadata.scores.not_drowsy`/`.drowsy` | `payload.probabilities[0]`/`[1]` | ✅ direct — required (and only meaningful) when `source == "fusion"`; the whole `ai_metadata` object is omitted/`null` for a `panic_button` alert, not just its sub-fields |
 | `coordinates`, `speed_at_event` | your own GPS/speed reading | ✅ direct (this device's job — `geolocation` is always `null` from cv-argus, see section 3) |
 | `id_route` | — | ❓ **undefined.** `cv-argus`'s `Alert.source_id` is a camera/stream id, not a route id. Nothing today tells this device which `Route` document a given truck's alert belongs to. Needs a real answer before this can be built — e.g. this device queries the backend for "the truck's current in-progress route" and caches it, or `cv-argus`/the Pi gets extended to carry route context. Not solved anywhere yet. |
-| `severity_level` (`critical`/`medium`/`low`) | — | ❓ **undefined.** `cv-argus` only produces a binary `level` (1/2) and raw probabilities, not a 3-way severity. Needs a threshold/mapping decision. |
+| `severity_level` (`critical`/`medium`/`low`) | thresholds on `payload.probabilities[1]` (`p(Drowsy)`), fused with the local grip reading | ✅ **recommended, not undefined anymore** — see section 5's fusion matrix below. Short version: `p(Drowsy) >= 0.57` (matches `src/cv-argus`'s own `FUSED_MODEL_THRESHOLD` decision boundary) counts as the fusion matrix's `Drowsy` state, `< 0.57` as `Not Drowsy`; combined with `good`/`bad` grip per the matrix, never derived from `p(Drowsy)` alone. |
+| `source` (`fusion`/`panic_button`) | which decision path fired | ✅ `"fusion"` for every drowsiness+grip-evaluated alert (section 5); `"panic_button"` for a direct panic-button press (section 5, unconditional `critical`, no debounce) |
+| `grip_status` (`good`/`bad`) | your own grip-sensor reading at the moment of the fusion decision | ✅ required (and only meaningful) when `source == "fusion"`; `null` for `panic_button` |
+| `related_alert_id` | the original alert's `id_alert`, when this POST is an escalation | ✅ set only when escalating a still-open incident (section 5) — omit/`null` for a fresh alert |
 | `alert_type` | `payload.class_name`, probably | reasonable default, not formally decided |
-| `ai_metadata.model`, `.clip_seconds` | — | already nullable on the backend precisely because cv-argus doesn't produce these — safe to omit |
+| `ai_metadata.model`, `.clip_seconds` | — | these two sub-fields are nullable *within* `ai_metadata` (cv-argus doesn't produce either) — not the same as `ai_metadata` itself being optional, which depends on `source` (above) |
 
 | Backend field (`StatusRouteCreate`) | Source | Status |
 |---|---|---|
 | `current_coordinates` | your own GPS reading | ✅ direct |
-| `vigilance` | — | ❓ likely derived from the truck's most recent `drowsiness` alert level, not from the `route_status` record itself (which carries no drowsiness info) — undefined |
+| `vigilance` (`critical`/`medium`/`low`) | mirrors the `severity_level` most recently posted to `POST /api/alerts` for this truck's current route | ✅ **recommended, not undefined anymore** — same `Severity` scale as `Alert.severity_level` now (backend-argus's severity-taxonomy unification), so no separate mapping table is needed; default to `low` if no alert has been posted yet this route. |
 | `current_speed`, `odometer` | — | ❓ **undefined.** `cv-argus`'s `route_status` payload is only `{"status": "OK"}` — no speed/odometer data at all. This device needs its own source for these (CAN bus/OBD reading), not cv-argus. |
 
 ## 3. Geolocation — this device's responsibility, not cv-argus's
@@ -98,15 +101,59 @@ sent you.
 Per the root `CLAUDE.md` and `semantic-design.drawio.xml`, this device owns all of the
 following, and **none of them have any code anywhere in this repo yet**:
 
-- **Grip sensor** (steering wheel) — feeds the decision-making loop; exact signal/threshold not
-  defined.
+- **Grip sensor** (steering wheel) — feeds this device's own fusion decision loop; see section 5
+  for the full spec (exact GPIO signal/debounce hardware details still not defined, but the
+  decision algorithm itself now is).
 - **Panic button** — triggers an alert directly; not routed through `cv-argus`'s orchestrator at
-  all (that module's own docs say so explicitly).
+  all (that module's own docs say so explicitly), and bypasses the fusion loop entirely (section
+  5) — unconditional `critical`, no debounce.
 - **CAN bus / AEB actuator** — preventive autonomous braking.
 - **Alarm speaker** — in-cabin audible alert.
 
-None of these have a defined signal format, GPIO pin mapping, or firmware interaction pattern
-yet — this is genuinely from-scratch hardware-integration work.
+None of these have a defined GPIO pin mapping or firmware interaction pattern yet — this is
+genuinely from-scratch hardware-integration work. The grip sensor's *decision* algorithm (what to
+do with its reading once you have one) is now specified in section 5, which is the part that
+doesn't depend on which physical sensor/GPIO pin ends up producing that reading.
+
+## 5. Grip sensor + drowsiness fusion — this device's own decision loop
+
+This is the fused severity decision this device computes from two inputs it alone has both of:
+the Pi's relayed drowsiness classification (section 1) and its own live grip-sensor reading.
+Modeled explicitly on `cv-argus`'s own `orchestrator/orchestrator.py` debounce/cooldown design —
+same vocabulary (debounce, escalation, recovery), extended to a joint two-signal state instead of
+the camera alone. A typed, executable reference for everything below lives in
+`src/cv-argus/src/orchestrator/fusion_contract.py` (not wired into the Pi's running pipeline —
+a contract reference, not part of `cv-argus`'s own decision loop) — translate its `BASE_MATRIX`
+and the three `FusionConfig` windows into firmware 1:1 rather than re-deriving them.
+
+**Base severity matrix** — both signals bad → `critical`, both good → `low`, either one alone bad
+→ `medium`:
+
+| | Good grip | Bad/low grip |
+|---|---|---|
+| **Not Drowsy** (`p(Drowsy) < 0.57`) | `low` | `medium` |
+| **Drowsy** (`p(Drowsy) >= 0.57`) | `medium` | `critical` |
+
+**Three timing windows** (proposed defaults, same order of magnitude as `cv-argus`'s own 30s
+`ORCHESTRATOR_ALERT_COOLDOWN_SECONDS` — not tuned against a real drive yet, tune deliberately once
+one exists):
+
+- **Debounce** (~5s) — the combined `(drowsy, grip)` state must hold this long before it first
+  triggers a `POST /api/alerts` at that severity, so one noisy frame or a momentary
+  hand-off-wheel gear shift doesn't fire an alert.
+- **Escalation** (~20s) — an open `medium` incident that hasn't returned to `low` within this
+  window escalates to `critical`: **`POST /api/alerts` again**, a new row with `related_alert_id`
+  set to the original `medium` alert's `id_alert` — never a `PUT` mutating the original's
+  `severity_level` in place, since `Alert` is an append-only event record on the backend.
+- **Recovery** (~10s) — once both signals return to good and hold for this long, mark the open
+  incident resolved: `PUT /api/alerts/{id}` with `{"resolved_at": "<now, ISO 8601>"}`, using the
+  device API key (this device may set `resolved_at` this way, but not
+  `reviewed_by_operator`/`operator_notes` — those are human-review-only, see
+  `src/backend-argus/CLAUDE.md`'s "Device (ESP32) auth").
+
+**Panic button bypasses all of the above** — a press is always `POST /api/alerts` with
+`source: "panic_button"`, `severity_level: "critical"`, `ai_metadata`/`grip_status` both
+omitted/`null`, immediately, with no debounce and no interaction with any open fusion incident.
 
 ## Why Bluetooth, not the CAN bus/UART, for the Pi link
 
