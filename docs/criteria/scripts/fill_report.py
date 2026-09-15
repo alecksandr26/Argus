@@ -247,7 +247,16 @@ for _p in (P[3], P[4], P[5]):
 set_text(P[3], "erick.carrillo4982@alumnos.udg.mx")
 set_text(P[4], "Paulino.suarez8804@alumnos.udg.mx  ·  rafael.pulido4119@alumnos.udg.mx")
 set_text(P[5], "mario.ruz@academicos.udg.mx")
-# P[6] "FIRMA DE VISTO BUENO DEL ASESOR" se deja como etiqueta estructural.
+# P[6]: la plantilla trae "FIRMA DE VISTO BUENO DEL ASESOR" como texto en negrita y
+# subrayado — sin espacio en blanco real para firmar encima. Se cambia por una línea en
+# blanco (subrayado real, no negrita) con una etiqueta pequeña debajo, como una línea de
+# firma convencional.
+set_text(P[6], "_" * 32)
+for r in P[6].runs:
+    r.bold = False
+    r.underline = False
+new_paragraph_after(P[6], "Firma de Visto Bueno del Asesor", style="Normal",
+                     align=WD_ALIGN_PARAGRAPH.CENTER, size=8, bold=False, italic=True)
 
 RESUMEN = (
     "El autotransporte de carga mueve el 57% de las mercancías de México, pero la fatiga y "
