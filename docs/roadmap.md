@@ -7,12 +7,15 @@ across `main` and the branches in flight as of this writing. Update this file as
 don't let it drift the way some of the per-module docs briefly did (see the "documentation
 itself" section at the bottom for that story).
 
-## Read this first: merged vs. not merged
+## Read this first: what's on `main` now
 
 Both pieces this section used to describe as unmerged are now in `main` — `src/backend-argus`
 and `src/cv-argus`'s `alerts/`/`buffer/`/`orchestrator/`/`sender/` modules (merged in commits
-`6a3a855`, `645ef05`, `dea719c`; sections 1 and 3 below are now corrected to say so directly
-rather than still describing branches that no longer exist).
+`6a3a855`, `645ef05`, `dea719c`; their feature branches are gone), plus a second wave of work
+also since merged: a real-API/RBAC rebuild of `ui-argus` (Access/Profile screens, four roles),
+and a `backend-argus` schema change unifying `Alert`/`Status_Route` onto one shared `Severity`
+scale with a fused `source` (`fusion`/`panic_button`) field for grip-sensor input. Sections 1–4
+below are corrected to describe this as `main`'s actual current state, not branches in flight.
 
 Everything below distinguishes "missing from the project" (nobody has built it) from "missing
 from what's built" (it's real code, just not everything it needs yet).
@@ -41,6 +44,12 @@ and the alert pipeline — `alerts/` (Alert/AlertKind data model + serialization
 heartbeat), `sender/` (a custom Bluetooth SPP protocol — see section 2 below — fully implemented
 and unit-tested against a fake transport, `FakeTransport`).
 
+`orchestrator/` also now has `fusion_contract.py` — a typed reference contract (enums, dataclasses,
+a severity matrix, and stubbed debounce/escalation/recovery timing) for the ESP32's drowsy+grip
+fusion decision, added alongside the severity-taxonomy work in sections 2–4. It's a contract
+reference only, not wired into `main.py` or `Orchestrator` itself — `cv-argus`'s own decision loop
+is unchanged and still camera-only.
+
 **Missing:**
 - Never run against real Raspberry Pi 5 hardware — only a desktop-CPU Docker container so far.
 - Neither `docker-compose.yml` nor `docker-compose.pi.yml` passes through a real Bluetooth
@@ -55,7 +64,9 @@ and unit-tested against a fake transport, `FakeTransport`).
 - Debounce/cooldown/heartbeat constants are reasoned defaults, not tuned against a real
   multi-hour recorded drive.
 - Grip sensor / panic button / CAN bus / alarm speaker / geolocation: **not this module's job at
-  all** — see section 2. `cv-argus`'s own `CLAUDE.md` says so explicitly.
+  all** — see section 2. `cv-argus`'s own `CLAUDE.md` says so explicitly. The grip+drowsy fusion
+  *algorithm* is now fully specified (`src/esp32-argus/README.md` section 5,
+  `fusion_contract.py` above) even though the hardware/firmware itself still doesn't exist.
 
 ## 2. ESP32 firmware — missing entirely
 
@@ -69,7 +80,7 @@ diagram and explicitly out of `cv-argus`'s scope.
 **What it needs to implement, against contracts that already exist and are already tested:**
 
 1. **Bluetooth SPP client**, speaking the exact protocol `cv-argus/src/sender/protocol.py`
-   already implements server-side (see `src/esp32-argus/README.md`, new, for the full grammar).
+   already implements server-side (see `src/esp32-argus/README.md` for the full grammar).
 2. **HTTP relay to `backend-argus`**, using a per-truck device API key (`X-Device-Api-Key`
    header) against `POST /api/alerts` and `POST /api/routes/{id}/status` — this auth scheme was
    built specifically anticipating this caller; see `src/backend-argus/CLAUDE.md`'s "Device
@@ -77,11 +88,18 @@ diagram and explicitly out of `cv-argus`'s scope.
 3. **Attaching real GPS coordinates** to every record it relays — `cv-argus` never populates
    `geolocation` itself (no GPS on the Pi in this design); the ESP32 is expected to fill
    `coordinates`/`current_coordinates` before the HTTP call, not after.
-4. **Grip sensor, panic button, CAN bus/AEB actuator, alarm speaker** GPIO/UART integration —
-   entirely new hardware-interfacing work, no existing code to build on.
+4. **The drowsy+grip fusion decision loop** — no longer an open design question:
+   `src/esp32-argus/README.md` section 5 now specifies the full algorithm (severity matrix,
+   debounce/escalation/recovery timing windows, how an escalation posts a new linked alert
+   instead of mutating the original, how recovery sets `resolved_at`), with a typed reference
+   implementation at `src/cv-argus/src/orchestrator/fusion_contract.py` to translate 1:1 into
+   firmware. What's still missing is purely the hardware-interfacing side: the grip sensor's
+   physical GPIO signal, and the panic button/CAN-bus-AEB-actuator/alarm-speaker
+   GPIO/UART integration — genuinely new hardware work with no existing code to build on, but no
+   longer an *algorithm* gap.
 
-New `src/esp32-argus/README.md` documents the exact protocol/contract details so this can start
-without re-deriving them from `cv-argus`'s and `backend-argus`'s source.
+`src/esp32-argus/README.md` documents the exact protocol/contract/fusion details so this can
+start without re-deriving them from `cv-argus`'s and `backend-argus`'s source.
 
 ## 3. `backend-argus`
 
@@ -96,9 +114,17 @@ phone/password without needing `/api/users` access. A device-API-key auth path f
 `GET /api/routes/active` for the live dashboard, and a `SEED_DEMO_DATA` env var that
 idempotently seeds a demo fleet (admin/operator + guardian accounts, trucks, drivers, routes) on
 startup — verified against a real Mongo container: no duplicates on repeat runs, all seeded
-accounts actually log in. Verified: hermetic pytest tier passes (46 tests as of this change), a
-full Docker stack (backend + Mongo + `ui-argus`) has previously booted and round-tripped real
-HTTP calls.
+accounts actually log in. Verified: hermetic pytest tier passes, a full Docker stack (backend +
+Mongo + `ui-argus`) has previously booted and round-tripped real HTTP calls.
+
+**Also done:** the severity-taxonomy unification — `StatusRoute.vigilance` and
+`Alert.severity_level` previously used two separately-named, mismatched 3-tier enums; both now
+share one `Severity` enum (`critical`/`medium`/`low`). `Alert` gained `source`
+(`fusion`/`panic_button`), `grip_status`, `related_alert_id` (escalation linking), and
+`resolved_at` (recovery tracking) so a grip-sensor/panic-button-driven alert doesn't need to fake
+CV scores — see `src/backend-argus/CLAUDE.md`'s "Coordination note" and "Why
+`Status_Route.vigilance`" sections. Covered by a dedicated set of tests on top of the existing
+suite (the new validator and the resolve-vs-review device-key authorization split).
 
 **Missing** (see its own `CLAUDE.md`'s "Future work" for the full detail):
 - `Report`, `Device`, `Geofence` entities — in the ER diagram, deliberately deferred (no
@@ -120,6 +146,13 @@ Add/Save controls) rather than just letting a write attempt 403 with no explanat
 screens: **`Access.tsx`** (root_admin/admin user management, role-aware — an admin session only
 ever sees/creates guardian accounts) and **`Profile.tsx`** (self-service profile edit for any
 role). Full per-screen status: `src/ui-argus/INTEGRATION.md`.
+
+The Live Operations dashboard and Alert Triage screen also match `backend-argus`'s unified
+severity scale — tiles/legend/badges relabeled to Low/Medium/Critical everywhere (previously a
+leftover 3-way `normal`/`low_vigilance`/`critical` vigilance split that didn't match `Alert`'s
+own `critical`/`medium`/`low` scale, itself a remnant of the pre-binary-migration UI). Alert
+Triage also now handles `ai_metadata: null` (a `panic_button` alert has no camera score) and
+surfaces `grip_status`/`source`/escalation links/`resolved_at`.
 
 **Still missing/open:**
 - No Reports panel, no Geofence management, no dedicated Truck Driver screen — none of these
@@ -177,3 +210,13 @@ defaulting into whichever option is fastest to start.
   (`Argus_Definicion_Tecnica.docx.pdf`, dated separately). The borrador doc already demotes the
   AWS version to "possible future direction if time permits, not a commitment" — this roadmap
   only tracks the real, canonical architecture.
+- This file's own "merged vs. not merged" section had gone stale — `src/backend-argus` and
+  `src/cv-argus`'s `alerts`/`buffer`/`orchestrator`/`sender` modules were both already merged to
+  `main` (their feature branches no longer even exist), but this file still framed them as
+  sitting on branches. Fixed alongside the severity-taxonomy/grip-fusion updates above — a
+  reminder to actually check `git log`/`git branch` against a merge claim here rather than
+  trusting the last time this file was written.
+- Root `CLAUDE.md` had a stale sentence claiming the steering-wheel grip sensor "feeds the same
+  decision orchestration node" as the Pi's AI orchestrator — every other doc (this file included,
+  now) agrees grip wires to the ESP32 only, which is the actual fusion point since it's the only
+  device with both the camera classification and the grip reading. Fixed.
