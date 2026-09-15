@@ -20,12 +20,12 @@ from app.geo import to_geojson, Coordinates
 from app.models import DOCUMENT_MODELS
 from app.models.alert import Alert, AlertAiMetadata
 from app.models.common import (
-    AlertSeverity,
+    AlertSource,
     DriverStatus,
     Role,
     RouteStatus,
+    Severity,
     TruckStatus,
-    Vigilance,
 )
 from app.models.driver import Driver
 from app.models.route import Route
@@ -114,19 +114,49 @@ async def seed() -> None:
         current_coordinates=to_geojson(Coordinates(lat=19.6, lon=-99.8)),
         current_speed=87.5,
         odometer=152340.2,
-        vigilance=Vigilance.NORMAL,
+        vigilance=Severity.LOW,
     )
     await status.insert()
 
-    alert = Alert(
+    # A fused drowsy+grip alert (source=fusion carries both signals that produced its severity —
+    # see fusion_contract.py's BASE_MATRIX: Drowsy + good grip -> medium).
+    medium_alert = Alert(
         id_route=str(route.id),
         alert_type="drowsiness",
-        severity_level=AlertSeverity.MEDIUM,
+        severity_level=Severity.MEDIUM,
+        source=AlertSource.FUSION,
         ai_metadata=AlertAiMetadata(scores={"not_drowsy": 0.21, "drowsy": 0.79}),
+        grip_status="good",
         coordinates=to_geojson(Coordinates(lat=19.9, lon=-100.1)),
         speed_at_event=82.0,
     )
-    await alert.insert()
+    await medium_alert.insert()
+
+    # That incident escalating (grip also went bad and neither improved within the escalation
+    # window) -> a new, linked critical alert, not a mutation of the medium one above.
+    critical_alert = Alert(
+        id_route=str(route.id),
+        alert_type="drowsiness",
+        severity_level=Severity.CRITICAL,
+        source=AlertSource.FUSION,
+        ai_metadata=AlertAiMetadata(scores={"not_drowsy": 0.08, "drowsy": 0.92}),
+        grip_status="bad",
+        related_alert_id=str(medium_alert.id),
+        coordinates=to_geojson(Coordinates(lat=19.9, lon=-100.1)),
+        speed_at_event=79.0,
+    )
+    await critical_alert.insert()
+
+    # A panic-button alert: unconditional critical, no camera/grip evaluation at all.
+    panic_alert = Alert(
+        id_route=str(route.id),
+        alert_type="Panic button pressed",
+        severity_level=Severity.CRITICAL,
+        source=AlertSource.PANIC_BUTTON,
+        coordinates=to_geojson(Coordinates(lat=19.95, lon=-100.2)),
+        speed_at_event=85.0,
+    )
+    await panic_alert.insert()
 
     print("Seeded dev data:")
     print("  root_admin login: admin@argus.dev / changeme123")

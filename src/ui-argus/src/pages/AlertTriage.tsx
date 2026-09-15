@@ -9,6 +9,17 @@ import {
 } from '../data/fixtures'
 import { clock, pct, relativeTime, shortDate } from '../utils/format'
 import { severity } from '../utils/status'
+import type { AlertSource, GripStatus } from '../types'
+
+const SOURCE_LABEL: Record<AlertSource, string> = {
+  fusion: 'Camera + grip sensor (fused)',
+  panic_button: 'Driver-activated panic button',
+}
+
+const GRIP_LABEL: Record<GripStatus, string> = {
+  good: 'Good',
+  bad: 'Bad',
+}
 
 /**
  * Mockup: "Control Tower — Alert triage". Looks the alert up by the `:alertId`
@@ -71,15 +82,18 @@ export default function AlertTriage() {
 
   const sev = severity[alert.severity_level]
   // Binary Not Drowsy / Drowsy scheme (root CLAUDE.md's drowsiness-class migration) — the old
-  // 3-way Alert/Low vigilance/Drowsy split is retired.
-  const scores = [
-    {
-      label: 'Not drowsy',
-      value: alert.ai_metadata.scores.not_drowsy,
-      color: 'var(--good)',
-    },
-    { label: 'Drowsy', value: alert.ai_metadata.scores.drowsy, color: 'var(--bad)' },
-  ]
+  // 3-way Alert/Low vigilance/Drowsy split is retired. `ai_metadata` is null for a
+  // panic_button alert (no camera evaluation happened) — see types.ts's doc comment.
+  const scores = alert.ai_metadata
+    ? [
+        {
+          label: 'Not drowsy',
+          value: alert.ai_metadata.scores.not_drowsy,
+          color: 'var(--good)',
+        },
+        { label: 'Drowsy', value: alert.ai_metadata.scores.drowsy, color: 'var(--bad)' },
+      ]
+    : []
 
   function save() {
     // TODO(INTEGRATION.md): PUT /api/alerts/:id { reviewed_by_operator, operator_notes }
@@ -159,21 +173,40 @@ export default function AlertTriage() {
             </div>
           </div>
         </div>
-        <span
-          className={
-            sev.tone === 'neutral' ? 'pill' : `pill pill--${sev.tone}`
-          }
-          style={{ padding: '6px 14px', fontSize: 11.5 }}
-        >
-          {sev.label.toUpperCase()} SEVERITY
-        </span>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+          <span
+            className={
+              sev.tone === 'neutral' ? 'pill' : `pill pill--${sev.tone}`
+            }
+            style={{ padding: '6px 14px', fontSize: 11.5 }}
+          >
+            {sev.label.toUpperCase()} SEVERITY
+          </span>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            {alert.related_alert_id && (
+              <Link
+                to={`/alerts/${alert.related_alert_id}`}
+                className="pill"
+                style={{ fontSize: 10.5, padding: '3px 9px', textDecoration: 'none' }}
+              >
+                Escalated from #{alert.related_alert_id}
+              </Link>
+            )}
+            <span
+              className={alert.resolved_at ? 'pill' : 'pill pill--warn'}
+              style={{ fontSize: 10.5, padding: '3px 9px' }}
+            >
+              {alert.resolved_at ? `Resolved ${clock(alert.resolved_at)}` : 'Ongoing'}
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* context strip */}
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(4, minmax(0,1fr))',
+          gridTemplateColumns: 'repeat(5, minmax(0,1fr))',
           gap: 14,
         }}
       >
@@ -197,6 +230,7 @@ export default function AlertTriage() {
         <Ctx label="Speed at event">
           <span className="mono">{alert.speed_at_event} km/h</span>
         </Ctx>
+        <Ctx label="Source">{SOURCE_LABEL[alert.source]}</Ctx>
       </div>
 
       <div style={{ flex: 1, display: 'flex', gap: 18, minHeight: 0 }}>
@@ -259,7 +293,7 @@ export default function AlertTriage() {
                 color: 'var(--text-soft)',
               }}
             >
-              {alert.ai_metadata.clip_seconds != null && alert.ai_metadata.clip_seconds > 0
+              {alert.ai_metadata?.clip_seconds != null && alert.ai_metadata.clip_seconds > 0
                 ? `Captured clip · 00:0${alert.ai_metadata.clip_seconds}`
                 : 'No clip'}
             </span>
@@ -279,43 +313,81 @@ export default function AlertTriage() {
           </div>
 
           <div className="panel" style={{ padding: '14px 16px' }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>
-              Model output ({alert.ai_metadata.model ?? 'unknown'})
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {scores.map((s) => (
-                <div key={s.label}>
+            {alert.ai_metadata ? (
+              <>
+                <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>
+                  Model output ({alert.ai_metadata.model ?? 'unknown'})
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {scores.map((s) => (
+                    <div key={s.label}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          fontSize: 11.5,
+                          color: 'var(--text-soft)',
+                          marginBottom: 3,
+                        }}
+                      >
+                        <span>{s.label}</span>
+                        <span>{pct(s.value)}</span>
+                      </div>
+                      <div
+                        style={{
+                          height: 6,
+                          borderRadius: 4,
+                          background: 'var(--surface-3)',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: pct(s.value),
+                            height: '100%',
+                            background: s.color,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {alert.grip_status && (
                   <div
                     style={{
                       display: 'flex',
                       justifyContent: 'space-between',
+                      alignItems: 'center',
                       fontSize: 11.5,
                       color: 'var(--text-soft)',
-                      marginBottom: 3,
+                      marginTop: 10,
+                      paddingTop: 10,
+                      borderTop: '1px solid var(--border-soft)',
                     }}
                   >
-                    <span>{s.label}</span>
-                    <span>{pct(s.value)}</span>
+                    <span>Steering-wheel grip</span>
+                    <span
+                      className={
+                        alert.grip_status === 'bad' ? 'pill pill--bad' : 'pill'
+                      }
+                      style={{ fontSize: 10.5, padding: '3px 9px' }}
+                    >
+                      {GRIP_LABEL[alert.grip_status]}
+                    </span>
                   </div>
-                  <div
-                    style={{
-                      height: 6,
-                      borderRadius: 4,
-                      background: 'var(--surface-3)',
-                      overflow: 'hidden',
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: pct(s.value),
-                        height: '100%',
-                        background: s.color,
-                      }}
-                    />
-                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>
+                  Trigger source
                 </div>
-              ))}
-            </div>
+                <div style={{ fontSize: 12, color: 'var(--text-soft)' }}>
+                  {SOURCE_LABEL[alert.source]} — no camera/grip evaluation happens for this
+                  alert type.
+                </div>
+              </>
+            )}
           </div>
         </div>
 
