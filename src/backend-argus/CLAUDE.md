@@ -45,8 +45,17 @@ The ER diagram names Status_Route's live drowsiness reading `operative_status`, 
 field name `Truck`, `Driver`, and `Route` each already use for their own, differently-enumerated
 status field. Reusing that name for a fourth, unrelated enum would be a real ambiguity — "which
 `operative_status`?" — not just an inconsistency, so this backend keeps `ui-argus`'s already-used
-name `vigilance` (enum: `normal` / `low_vigilance` / `critical`) instead of reverting to the
-diagram's name. This is a deliberate kept rename, not an unnoticed divergence from the diagram.
+name `vigilance` instead of reverting to the diagram's name. This is a deliberate kept rename,
+not an unnoticed divergence from the diagram.
+
+As of the severity-taxonomy unification, this field's enum is the same `Severity` type
+`Alert.severity_level` uses (`critical`/`medium`/`low`) rather than its own separately-named
+3-tier scale — previously `Status_Route.vigilance` was a distinct `Vigilance` enum
+(`normal`/`low_vigilance`/`critical`) that didn't even share label names with `Alert`'s
+`AlertSeverity`, so status and alerts couldn't be compared on one scale. See
+`app/models/common.py`'s `Severity` docstring for the retired `Vigilance` enum's old values and
+their mapping onto the new one (`normal -> low`, `low_vigilance -> medium`, `critical ->
+critical`).
 
 ## Auth design
 
@@ -211,6 +220,10 @@ Instead, `Truck.device_api_key_hash` holds a bcrypt-hashed, per-truck static key
 - Both endpoints also accept a `root_admin`/`guardian` JWT as a fallback (manual testing/demo
   seeding without real hardware, e.g. `scripts/seed_dev_data.py`), via the same
   `authorize_device_or_user()` call trying the device key first and the JWT second.
+- `PUT /api/alerts/{id}` (`review_alert`) accepts a device key too, but scoped to `resolved_at`
+  only — a device marking a fused incident's recovery (see `fusion_contract.py`'s recovery
+  window) is not the same authorization as a human review, so a device-key request that also
+  tries to set `reviewed_by_operator`/`operator_notes` gets a `403`, not silently ignored.
 
 ## Geo design
 
@@ -255,6 +268,19 @@ geolocation}`. Two things from that exchange shaped this backend's schema direct
   doesn't expose a version string per-alert) — hence `AlertAiMetadata.model`/`clip_seconds` are
   **nullable**, not required, in `app/models/alert.py`. Revisit if/when cv-argus starts
   populating them; no reason to block on that now.
+- `Alert.source` (`fusion`/`panic_button`) distinguishes alerts derived from cv-argus's
+  `kind: "drowsiness"` envelope (via the ESP32's fused decision) from ESP32-native
+  `panic_button` events that never touch cv-argus at all. Critically, `cv-argus`'s own envelope
+  is now one **input** to the ESP32's fusion decision (combined with its own live grip reading),
+  not something relayed 1:1 into a backend `Alert` — see `src/esp32-argus/README.md`'s fusion
+  section and `src/cv-argus/src/orchestrator/fusion_contract.py`'s reference decision logic.
+  `ai_metadata` and the new `grip_status` field are populated (and required) only when
+  `source == "fusion"`; both are `null` for `panic_button`, which is unconditionally `critical`
+  with no camera/grip evaluation at all. `related_alert_id` links an escalated alert back to the
+  incident it escalated from (a new row, not a mutation — `Alert` stays append-only), and
+  `resolved_at` records recovery — settable via `PUT /api/alerts/{id}` by either a
+  guardian/root_admin (who may also set `reviewed_by_operator`/`operator_notes`) or, for
+  `resolved_at` only, the device key for the alert's own truck.
 
 ## Docker build test gate
 

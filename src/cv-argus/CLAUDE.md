@@ -314,7 +314,13 @@ src/
 │                   # thread): debounce/cooldown before raising an Alert, a periodic
 │                   # RouteStatus("OK") heartbeat otherwise — the "Alert/RouteStatus
 │                   # Orchestration (Decision Making)" box in the design diagram. Builds
-│                   # records via alerts/ and calls buffer/.enqueue().
+│                   # records via alerts/ and calls buffer/.enqueue(). Also holds
+│                   # fusion_contract.py — the typed contract + reference decision logic for
+│                   # the ESP32's drowsy+grip fusion (matrix + debounce/escalation/recovery
+│                   # windows). A contract reference only: not wired into main.py, and
+│                   # Orchestrator itself is unchanged — it still only ever sees the camera
+│                   # signal. See that file's own docstring and the root CLAUDE.md's ESP32
+│                   # bullet.
 ├── buffer/         # DONE — Buffer (store.py): a single SQLite table (WAL mode), enqueue/
 │                   # fetch_unsent/mark_sent/unsent_count/close — the "Queue Message Local
 │                   # Buffer (SQLite)" box in the design diagram, and the answer to "what

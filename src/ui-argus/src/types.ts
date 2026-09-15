@@ -117,8 +117,11 @@ export interface Route {
   updated_at: string
 }
 
-/** Live per-route telemetry — one row per active Route, newest wins. */
-export type LiveVigilance = 'normal' | 'low_vigilance' | 'critical'
+/** The one shared severity scale for both live status and alerts (backend-argus's `Severity`) —
+ * previously two separate, mismatched 3-tier enums (`StatusRoute` had its own `normal`/
+ * `low_vigilance`/`critical`, `Alert` had `critical`/`medium`/`low`). Unified so a truck's live
+ * status and its alert history are directly comparable. */
+export type AlertSeverity = 'critical' | 'medium' | 'low'
 
 export interface StatusRoute {
   id_status_route: string
@@ -126,8 +129,10 @@ export interface StatusRoute {
   current_coordinates: Coordinates
   current_speed: number
   odometer: number
-  /** Drowsiness class coming off the edge pipeline (see top-level CLAUDE.md). */
-  vigilance: LiveVigilance
+  /** Shares `AlertSeverity`'s exact scale — see that type's doc comment. Mirrors the most
+   * recently posted `Alert.severity_level` for this truck's route (see
+   * `src/esp32-argus/README.md`'s fusion section), not a separate drowsiness-only reading. */
+  vigilance: AlertSeverity
   timestamp: string
 }
 
@@ -143,7 +148,15 @@ export interface RouteWithStatus extends Route {
   driver_full_name: string | null
 }
 
-export type AlertSeverity = 'critical' | 'medium' | 'low'
+/** Which decision path produced an `Alert`: the ESP32's fused drowsy+grip evaluation, or the
+ * panic button (unconditional `critical`, no debounce) — see `src/esp32-argus/README.md`'s
+ * fusion section and `src/cv-argus/src/orchestrator/fusion_contract.py`'s reference decision
+ * logic. */
+export type AlertSource = 'fusion' | 'panic_button'
+
+/** The grip sensor's contribution to a `fusion` alert — `null` for `panic_button` alerts, since
+ * no camera/grip evaluation happens for those. */
+export type GripStatus = 'good' | 'bad'
 
 export interface AlertAiMetadata {
   /** Which model produced the classification, for the triage readout. Nullable: the deployed
@@ -163,7 +176,19 @@ export interface Alert {
   id_route: string
   alert_type: string
   severity_level: AlertSeverity
-  ai_metadata: AlertAiMetadata
+  source: AlertSource
+  /** Required (non-null) when `source === 'fusion'`, `null` when `source === 'panic_button'` —
+   * see backend-argus's `validate_source_ai_metadata`. */
+  ai_metadata: AlertAiMetadata | null
+  /** Required (non-null) when `source === 'fusion'`, `null` when `source === 'panic_button'`. */
+  grip_status: GripStatus | null
+  /** Set when this alert is an escalation of a still-open incident (e.g. a `medium` fusion
+   * alert that didn't improve within the escalation window) — points back at the original
+   * alert's `id_alert` rather than that alert being mutated in place. */
+  related_alert_id: string | null
+  /** Set once the underlying condition recovers (both signals good, held for the recovery
+   * window) — `null` while the incident is still open. */
+  resolved_at: string | null
   media_url: string | null
   coordinates: Coordinates
   speed_at_event: number

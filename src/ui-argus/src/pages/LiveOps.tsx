@@ -9,7 +9,7 @@ import { listDrivers } from '../api/drivers'
 import { listTrucks } from '../api/trucks'
 import { ApiError } from '../api/client'
 import { longDay, relativeTime } from '../utils/format'
-import { severity, vigilance } from '../utils/status'
+import { severity } from '../utils/status'
 import { toLatLng } from '../utils/geo'
 import type { AlertSeverity, Driver, RouteWithStatus, Truck } from '../types'
 
@@ -85,14 +85,14 @@ export default function LiveOps() {
   const truckById = useMemo(() => new Map(trucks.map((t) => [t.id_truck, t])), [trucks])
 
   const tiles = useMemo(() => {
-    const counts = { normal: 0, low_vigilance: 0, critical: 0 }
+    const counts = { low: 0, medium: 0, critical: 0 }
     for (const r of activeRoutes) {
       if (r.latest_status) counts[r.latest_status.vigilance]++
     }
     return {
       onRoute: activeRoutes.length,
-      normal: counts.normal,
-      low: counts.low_vigilance,
+      low: counts.low,
+      medium: counts.medium,
       critical: counts.critical,
     }
   }, [activeRoutes])
@@ -103,7 +103,7 @@ export default function LiveOps() {
         .filter((r) => r.latest_status)
         .map((r) => {
           const s = r.latest_status!
-          const v = vigilance[s.vigilance]
+          const v = severity[s.vigilance]
           return {
             id: s.id_status_route,
             position: toLatLng(s.current_coordinates),
@@ -192,15 +192,15 @@ export default function LiveOps() {
         }}
       >
         <Tile label="Trucks on route" value={tiles.onRoute} />
-        <Tile label="Normal status" value={tiles.normal} color="var(--good)" />
+        <Tile label="Low severity" value={tiles.low} color="var(--good)" />
         <Tile
-          label="Low vigilance"
-          value={tiles.low}
+          label="Medium severity"
+          value={tiles.medium}
           color="var(--warn)"
           border="var(--warn)"
         />
         <Tile
-          label="Drowsiness — critical"
+          label="Critical severity"
           value={tiles.critical}
           color="var(--bad)"
           border="var(--bad)"
@@ -294,7 +294,7 @@ export default function LiveOps() {
                       background: toneColor[t],
                     }}
                   />
-                  {['Normal', 'Low vigilance', 'Critical'][i]}
+                  {['Low', 'Medium', 'Critical'][i]}
                 </span>
               ))}
             </div>

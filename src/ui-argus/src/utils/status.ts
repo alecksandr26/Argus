@@ -7,7 +7,6 @@
 import type {
   AlertSeverity,
   DriverStatus,
-  LiveVigilance,
   Role,
   RouteStatus,
   TruckStatus,
@@ -42,12 +41,8 @@ export const routeStatus: Record<RouteStatus, Badge> = {
   cancelled: { label: 'Cancelled', tone: 'warn' },
 }
 
-export const vigilance: Record<LiveVigilance, Badge> = {
-  normal: { label: 'Normal', tone: 'good' },
-  low_vigilance: { label: 'Low vigilance', tone: 'warn' },
-  critical: { label: 'Critical', tone: 'bad' },
-}
-
+/** Shared by `StatusRoute.vigilance` and `Alert.severity_level` — one severity scale, one label
+ * map, instead of the two separate (and previously mismatched) maps this used to be. */
 export const severity: Record<AlertSeverity, Badge> = {
   critical: { label: 'Critical', tone: 'bad' },
   medium: { label: 'Medium', tone: 'warn' },
