@@ -34,12 +34,12 @@ from app.geo import to_geojson, Coordinates
 from app.models import DOCUMENT_MODELS
 from app.models.alert import Alert, AlertAiMetadata
 from app.models.common import (
-    AlertSeverity,
+    AlertSource,
     DriverStatus,
     Role,
     RouteStatus,
+    Severity,
     TruckStatus,
-    Vigilance,
 )
 from app.models.driver import Driver
 from app.models.route import Route
@@ -173,8 +173,39 @@ async def _seed_routes_and_alerts(trucks: list[Truck], drivers: list[Driver]) ->
         current_coordinates=to_geojson(Coordinates(lat=19.6, lon=-99.8)),
         current_speed=87.5,
         odometer=152340.2,
-        vigilance=Vigilance.NORMAL,
+        vigilance=Severity.LOW,
     ).insert()
+
+    # A recovered incident on route1: a fused medium alert (Drowsy + good grip, per
+    # fusion_contract.py's BASE_MATRIX) that escalated to critical once grip also went bad,
+    # then recovered — demonstrates `related_alert_id`/`resolved_at`, which the single-alert
+    # routes below don't exercise.
+    medium_alert = Alert(
+        id_route=str(route1.id),
+        alert_type="drowsiness",
+        severity_level=Severity.MEDIUM,
+        source=AlertSource.FUSION,
+        ai_metadata=AlertAiMetadata(scores={"not_drowsy": 0.21, "drowsy": 0.79}),
+        grip_status="good",
+        coordinates=to_geojson(Coordinates(lat=19.6, lon=-99.8)),
+        speed_at_event=85.0,
+    )
+    await medium_alert.insert()
+    critical_alert = Alert(
+        id_route=str(route1.id),
+        alert_type="drowsiness",
+        severity_level=Severity.CRITICAL,
+        source=AlertSource.FUSION,
+        ai_metadata=AlertAiMetadata(scores={"not_drowsy": 0.08, "drowsy": 0.92}),
+        grip_status="bad",
+        related_alert_id=str(medium_alert.id),
+        coordinates=to_geojson(Coordinates(lat=19.6, lon=-99.8)),
+        speed_at_event=83.0,
+        resolved_at=now - timedelta(minutes=20),
+        reviewed_by_operator=True,
+        operator_notes="Driver alert, grip recovered — pulled over briefly then resumed.",
+    )
+    await critical_alert.insert()
 
     route2 = Route(
         id_driver=str(drivers[2].id),
@@ -193,15 +224,27 @@ async def _seed_routes_and_alerts(trucks: list[Truck], drivers: list[Driver]) ->
         current_coordinates=to_geojson(Coordinates(lat=25.5, lon=-100.9)),
         current_speed=91.0,
         odometer=88210.4,
-        vigilance=Vigilance.CRITICAL,
+        vigilance=Severity.CRITICAL,
     ).insert()
     await Alert(
         id_route=str(route2.id),
         alert_type="drowsiness",
-        severity_level=AlertSeverity.CRITICAL,
+        severity_level=Severity.CRITICAL,
+        source=AlertSource.FUSION,
         ai_metadata=AlertAiMetadata(scores={"not_drowsy": 0.09, "drowsy": 0.91}),
+        grip_status="bad",
         coordinates=to_geojson(Coordinates(lat=25.5, lon=-100.9)),
         speed_at_event=91.0,
+    ).insert()
+    # A panic-button event on the same route — independent of the drowsiness pipeline entirely
+    # (no camera/grip evaluation), demonstrating `AlertSource.PANIC_BUTTON`.
+    await Alert(
+        id_route=str(route2.id),
+        alert_type="Panic button pressed",
+        severity_level=Severity.CRITICAL,
+        source=AlertSource.PANIC_BUTTON,
+        coordinates=to_geojson(Coordinates(lat=25.48, lon=-100.95)),
+        speed_at_event=88.0,
     ).insert()
 
     route3 = Route(
@@ -231,8 +274,10 @@ async def _seed_routes_and_alerts(trucks: list[Truck], drivers: list[Driver]) ->
     await Alert(
         id_route=str(route4.id),
         alert_type="drowsiness",
-        severity_level=AlertSeverity.MEDIUM,
+        severity_level=Severity.MEDIUM,
+        source=AlertSource.FUSION,
         ai_metadata=AlertAiMetadata(scores={"not_drowsy": 0.21, "drowsy": 0.79}),
+        grip_status="good",
         coordinates=to_geojson(Coordinates(lat=32.6, lon=-115.4)),
         speed_at_event=82.0,
         reviewed_by_operator=True,

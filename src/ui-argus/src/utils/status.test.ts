@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { isActiveRoute, truckStatus, driverStatus, routeStatus, vigilance, severity } from './status'
+import { isActiveRoute, truckStatus, driverStatus, routeStatus, severity } from './status'
 
 describe('status maps', () => {
   it('cover every value with a label and a tone', () => {
-    for (const map of [truckStatus, driverStatus, routeStatus, vigilance, severity]) {
+    for (const map of [truckStatus, driverStatus, routeStatus, severity]) {
       for (const badge of Object.values(map)) {
         expect(badge.label).toBeTruthy()
         expect(['good', 'warn', 'bad', 'neutral']).toContain(badge.tone)
@@ -15,7 +15,6 @@ describe('status maps', () => {
     expect(truckStatus.alert.tone).toBe('bad')
     expect(driverStatus.on_route_alert.tone).toBe('bad')
     expect(routeStatus.in_progress_alert.tone).toBe('bad')
-    expect(vigilance.critical.tone).toBe('bad')
     expect(severity.critical.tone).toBe('bad')
   })
 })

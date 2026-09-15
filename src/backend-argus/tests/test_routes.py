@@ -72,7 +72,7 @@ async def test_active_routes_embeds_latest_status(api_client, root_admin, sample
             "current_coordinates": {"lat": 19.5, "lon": -99.5},
             "current_speed": 90.0,
             "odometer": 1000.0,
-            "vigilance": "normal",
+            "vigilance": "low",
         },
         headers=headers,
     )

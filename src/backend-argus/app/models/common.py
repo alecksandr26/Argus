@@ -80,22 +80,33 @@ class RouteStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-class Vigilance(str, Enum):
-    """Status_Route's live drowsiness reading.
+class Severity(str, Enum):
+    """The one shared severity scale for both `Status_Route.vigilance` (a live, continuous
+    reading) and `Alert.severity_level` (a discrete event) — previously two separately-named,
+    mismatched 3-tier enums (`Vigilance`: `normal`/`low_vigilance`/`critical`, and this class's
+    old name `AlertSeverity`: `critical`/`medium`/`low`), unified so status and alerts can
+    actually be compared on one scale. `Status_Route` keeps the field name `vigilance` (see
+    the backend CLAUDE.md's "Why `Status_Route.vigilance`, not `operative_status`" section for
+    why that name itself is kept distinct from `Truck`/`Driver`/`Route`'s own `operative_status`
+    fields) — only the *type* is now shared, not the field name.
 
-    The ER diagram names this field `operative_status`, but that name is kept distinct here
-    (as `vigilance`, matching `ui-argus/src/types.ts`) on purpose: `Truck`, `Driver`, and `Route`
-    each already have their own, differently-enumerated `operative_status` field, and reusing
-    the name for a fourth, unrelated enum on `Status_Route` would be a real ambiguity, not just
-    a style choice.
+    Retired `Vigilance`'s values map onto this one order-preserving (least-severe ->
+    most-severe): `normal -> low`, `low_vigilance -> medium`, `critical -> critical`. Any old
+    Mongo document still carrying a `Vigilance` string needs that translation applied by hand.
     """
 
-    NORMAL = "normal"
-    LOW_VIGILANCE = "low_vigilance"
-    CRITICAL = "critical"
-
-
-class AlertSeverity(str, Enum):
     CRITICAL = "critical"
     MEDIUM = "medium"
     LOW = "low"
+
+
+class AlertSource(str, Enum):
+    """Which decision path produced an `Alert`. Every alert is either the ESP32's fused
+    drowsy+grip evaluation, or the panic button (unconditional `critical`, no debounce) — see
+    `src/esp32-argus/README.md`'s fusion section and `src/cv-argus/src/orchestrator/
+    fusion_contract.py`'s reference decision logic. `ai_metadata`/`grip_status` on `Alert` are
+    required together when `source == FUSION`, and both `None` when `source == PANIC_BUTTON`.
+    """
+
+    FUSION = "fusion"
+    PANIC_BUTTON = "panic_button"
