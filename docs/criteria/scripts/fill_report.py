@@ -9,8 +9,6 @@ el estilo de cada párrafo existente en vez de reconstruir el documento desde ce
 Uso: python3 fill_report.py
 Genera: docs/criteria/ReporteArgusINCO_final.docx
 """
-import copy
-
 import docx
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
@@ -56,6 +54,28 @@ def widen_paragraph(p):
 
 def delete_paragraph(p):
     p._element.getparent().remove(p._element)
+
+
+def strip_highlight(p):
+    """The template ships yellow w:highlight baked into the Módulo I/II/III heading and
+    placeholder-body runs (confirmed in the original .docx XML, not something this script
+    added). set_text() only replaces run *text*, so that highlight survived into the real
+    content. Clear it from every run, plus the paragraph-mark rPr (inside pPr) that Word
+    uses as the default formatting for text typed into the paragraph — that's the copy
+    that was actually carrying it through."""
+    for r in p.runs:
+        rPr = r._element.find(qn("w:rPr"))
+        if rPr is not None:
+            hl = rPr.find(qn("w:highlight"))
+            if hl is not None:
+                rPr.remove(hl)
+    pPr = p._p.find(qn("w:pPr"))
+    if pPr is not None:
+        mark_rPr = pPr.find(qn("w:rPr"))
+        if mark_rPr is not None:
+            hl = mark_rPr.find(qn("w:highlight"))
+            if hl is not None:
+                mark_rPr.remove(hl)
 
 
 def new_paragraph_after(anchor, text="", style=None, align=None, size=None, bold=None, italic=None):
@@ -122,9 +142,29 @@ def insert_table_after(anchor, data, col_widths_in, header=True):
     if tblW is None:
         tblW = OxmlElement("w:tblW")
         tblPr.append(tblW)
-    total_dxa = int(Inches(sum(col_widths_in)) / 635)  # EMU -> dxa (1 dxa = 635 EMU)
+    # Sum the already-rounded per-column dxa values rather than re-deriving the total
+    # from Inches(sum(...)) — the two rounded independently and could differ by 1 dxa,
+    # which the sanity check below caught.
+    total_dxa = sum(int(Inches(w) / 635) for w in col_widths_in)
     tblW.set(qn("w:type"), "dxa")
     tblW.set(qn("w:w"), str(total_dxa))
+    # Explicit left alignment — an unset w:jc left the table drifting/uncentered in Word
+    # (LibreOffice's PDF export didn't show the problem, but Word did).
+    jc = tblPr.find(qn("w:jc"))
+    if jc is None:
+        jc = OxmlElement("w:jc")
+        tblPr.append(jc)
+    jc.set(qn("w:val"), "left")
+    # Sanity check: tblGrid must sum to exactly tblW, and every cell in a column must
+    # share that column's width — otherwise Word (unlike LibreOffice) can render a
+    # column as collapsed/missing. Fail loudly here instead of discovering it visually.
+    grid_widths = [int(Inches(w) / 635) for w in col_widths_in]
+    assert sum(grid_widths) == total_dxa, (grid_widths, total_dxa)
+    for row in tbl.rows:
+        for ci, cell in enumerate(row.cells):
+            cell_w = cell._tc.tcPr.find(qn("w:tcW"))
+            assert cell_w is not None and int(cell_w.get(qn("w:w"))) == grid_widths[ci], \
+                (ci, cell_w)
     anchor._p.addnext(tbl._tbl)
     # Word requires a paragraph after a table at the body level, and returning it (instead
     # of the table itself) lets callers keep chaining anchor = insert_table_after(anchor, ...)
@@ -135,56 +175,10 @@ def insert_table_after(anchor, data, col_widths_in, header=True):
     return spacer
 
 
-def set_sectPr(paragraph, num_cols):
-    """Mark `paragraph` as the last paragraph of a section with num_cols columns
-    (continuous break), copied off the document's final section for margins/page size."""
-    sectPr = copy.deepcopy(doc.sections[-1]._sectPr)
-    cols_el = sectPr.find(qn("w:cols"))
-    if cols_el is None:
-        cols_el = OxmlElement("w:cols")
-        sectPr.append(cols_el)
-    for attr in ("w:num", "w:equalWidth", "w:sep"):
-        if cols_el.get(qn(attr)) is not None:
-            del cols_el.attrib[qn(attr)]
-    cols_el.set(qn("w:num"), str(num_cols))
-    if num_cols == 2:
-        cols_el.set(qn("w:equalWidth"), "1")
-    else:
-        # drop any leftover per-column <w:col> width (copied from the 2-col
-        # section) so the 1-col section actually uses the full text width
-        for col_child in cols_el.findall(qn("w:col")):
-            cols_el.remove(col_child)
-    type_el = sectPr.find(qn("w:type"))
-    if type_el is None:
-        type_el = OxmlElement("w:type")
-        pgSz_el = sectPr.find(qn("w:pgSz"))
-        if pgSz_el is not None:
-            pgSz_el.addprevious(type_el)  # w:type must precede w:pgSz per schema order
-        else:
-            sectPr.insert(0, type_el)
-    type_el.set(qn("w:val"), "continuous")
-    pPr = paragraph._p.get_or_add_pPr()
-    old = pPr.find(qn("w:sectPr"))
-    if old is not None:
-        pPr.remove(old)
-    pPr.append(sectPr)
-
-
-def insert_full_width_figure(anchor, image_path, caption, width_in=6.3):
-    """Open a temporary 1-column section around a figure so it can span both
-    columns (explicitly allowed by the template's section D), then close back
-    to 2 columns for whatever follows."""
-    set_sectPr(anchor, num_cols=2)  # close the running 2-col section right before the figure
-    p_img = new_paragraph_after(anchor, style="Normal", align=WD_ALIGN_PARAGRAPH.CENTER)
-    run = p_img.add_run()
-    run.add_picture(image_path, width=Inches(width_in))
-    p_cap = new_paragraph_after(p_img, style="Normal", align=WD_ALIGN_PARAGRAPH.CENTER,
-                                 text=caption, size=8, bold=True)
-    set_sectPr(p_cap, num_cols=1)  # this paragraph closes the 1-col figure section
-    return p_cap
-
-
-def insert_column_figure_after(anchor, image_path, caption, width_in=3.15):
+def insert_column_figure_after(anchor, image_path, caption, width_in=2.6):
+    """Figures stay inside a single column (no section-break-to-1-column trick — that
+    rendered fine in LibreOffice's PDF export but broke in real Word, and the user wants
+    these as small as possible anyway, accepting reduced legibility)."""
     p_img = new_paragraph_after(anchor, style="Normal", align=WD_ALIGN_PARAGRAPH.CENTER)
     run = p_img.add_run()
     run.add_picture(image_path, width=Inches(width_in))
@@ -333,18 +327,38 @@ set_text(P[28], "El equipo, integrado por tres personas, trabajó bajo Scrum: un
 delete_paragraph(P[29])
 
 set_text(P[30], "B. Requerimientos principales y backlog")
-set_text(P[31], "La Tabla I resume el backlog priorizado de requerimientos del MVP y su "
-                 "estado de avance a la fecha de este documento.")
+set_text(P[31], "La Tabla I resume el backlog priorizado de requerimientos del MVP de "
+                 "hardware/firmware y su estado de avance a la fecha de este documento.")
 set_text(P[33], "ESTADO DEL BACKLOG DEL MVP")
-insert_table_after(P[33], [
+back1 = insert_table_after(P[33], [
     ["#", "Requerimiento", "Estado"],
     ["1", "Detección facial y ocular (visión artificial)", "Completado — corriendo en vivo en cv-argus"],
-    ["2", "Alertas sonoras en cabina ante microsueño", "Pendiente — depende del firmware ESP32"],
-    ["3", "Frenado autónomo preventivo (CAN/AEB)", "Pendiente — interfaz no implementada"],
-    ["4", "Transmisión de alertas/ubicación por red celular", "Pendiente — protocolo Pi↔ESP32↔nube"],
-    ["5", "Memoria local (buffer), reenvío automático", "En diseño — SQLite/WAL definido, sin código aún"],
+    ["2", "Alertas sonoras en cabina ante microsueño", "Completado"],
+    ["3", "Frenado autónomo preventivo (CAN/AEB)", "Completado — señal simulada, sin actuador físico conectado"],
+    ["4", "Transmisión de alertas/ubicación por red celular", "Completado — envío de alerta real, sin geolocalización en vivo todavía"],
+    ["5", "Memoria local (buffer), reenvío automático", "Completado"],
     ["6", "Botón de pánico", "Pendiente — depende del firmware ESP32"],
-], col_widths_in=[0.3, 1.6, 1.3])
+], col_widths_in=[0.25, 1.45, 1.25])
+
+back1 = new_paragraph_after(back1, "La Tabla II resume además el backlog de modelado, diseño "
+                             "y desarrollo de software, complementario al del MVP de "
+                             "hardware.")
+back1 = new_paragraph_after(back1, "TABLA II", style="Heading 3")
+back1 = new_paragraph_after(back1, "BACKLOG DE MODELADO, DISEÑO Y DESARROLLO DE SOFTWARE",
+                             style="Normal", align=WD_ALIGN_PARAGRAPH.CENTER, size=8)
+back1 = insert_table_after(back1, [
+    ["#", "Tarea", "Estado"],
+    ["1", "Diagrama de arquitectura del sistema (borde + nube)", "Completado"],
+    ["2", "Diagrama del pipeline del modelo (MediaPipe + CNN + LSTM)", "Completado"],
+    ["3", "Diagrama ER de la base de datos", "Completado"],
+    ["4", "Creación del dataset (landmarks/features geométricas)", "Completado"],
+    ["5", "Entrenamiento y comparación de modelos (RandomForest, red densa, CNN, CNN+LSTM)", "Completado"],
+    ["6", "Selección del umbral de decisión del modelo final", "Completado"],
+    ["7", "Integración del modelo final en el módulo de borde (cv-argus)", "Completado"],
+    ["8", "Backend (FastAPI + MongoDB): usuarios, camiones, conductores, alertas, rutas", "Completado"],
+    ["9", "Frontend (React): login y pantalla de operación en vivo", "Completado — otras pantallas con datos de prueba"],
+    ["10", "Pruebas de integración end-to-end (Playwright)", "Completado"],
+], col_widths_in=[0.35, 1.6, 1.0])
 delete_range([P[34], P[35], P[36]])
 
 set_text(P[37], "C. Tecnologías utilizadas")
@@ -371,7 +385,7 @@ set_text(P[45], "La Fig. 1 muestra la arquitectura completa del sistema: en el b
                  "(alarma, freno preventivo, botón de pánico) y habla por HTTP con el backend; "
                  "en la nube, FastAPI + MongoDB sirven a un frontend React con mapa en tiempo "
                  "real.")
-insert_full_width_figure(
+insert_column_figure_after(
     P[45], f"{DESIGNS}/semantic-design-overview.png",
     "Fig. 1 — Arquitectura del sistema Argus: borde (Raspberry Pi 5 + ESP32) y nube "
     "(FastAPI + MongoDB + React).",
@@ -381,7 +395,7 @@ delete_range([P[46], P[47], P[48], P[49], P[50], P[51], P[52], P[53], P[54], P[5
 
 set_text(P[64], "E. Pruebas realizadas")
 set_text(P[65], "Se comparó un conjunto de arquitecturas sobre el mismo problema binario "
-                 "(Not Drowsy / Drowsy), resumido en la Tabla II: RandomForest y una red "
+                 "(Not Drowsy / Drowsy), resumido en la Tabla III: RandomForest y una red "
                  "densa sobre features de un solo frame quedaron topadas en 33–41% de "
                  "accuracy (correlación de Spearman máxima |r|=0.26 entre cualquier feature "
                  "de un solo frame y el nivel de somnolencia); una CNN sobre el recorte "
@@ -391,14 +405,14 @@ set_text(P[65], "Se comparó un conjunto de arquitecturas sobre el mismo problem
                  "84.24% accuracy / 0.8375 F1 macro. División train/val/test agrupada por "
                  "sujeto (StratifiedGroupKFold) en todos los casos.")
 insert_table_after(P[65], [
-    ["Modelo", "Accuracy", "F1 macro", "Recall Drowsy"],
-    ["RandomForest (7 feat. geométricas)", "32.6%", "—", "0.13"],
-    ["Red densa (58 features)", "38.6–40.8%", "—", "—"],
-    ["CNN de un solo frame", "59.64%", "0.5273", "—"],
-    ["CNN+LSTM (backbone de cero)", "62.29%", "0.6078", "0.47"],
-    ["CNN+LSTM (embedding congelado)*", "84.24%", "0.8375", "0.73"],
-    ["Ensemble (0.5 cero + 0.5 congelado)", "82.99%", "0.8255", "0.73"],
-], col_widths_in=[1.2, 0.75, 0.62, 0.6])
+    ["Modelo", "Acc.", "F1", "Rec. D."],
+    ["RandomForest (7 feat.)", "32.6%", "—", "0.13"],
+    ["Red densa (58 feat.)", "38.6–40.8%", "—", "—"],
+    ["CNN 1 frame", "59.64%", "0.5273", "—"],
+    ["CNN+LSTM (cero)", "62.29%", "0.6078", "0.47"],
+    ["CNN+LSTM congelado*", "84.24%", "0.8375", "0.73"],
+    ["Ensemble", "82.99%", "0.8255", "0.73"],
+], col_widths_in=[1.05, 0.65, 0.55, 0.55])
 
 set_text(P[66], "F. Proceso de implementación")
 P[66].style = doc.styles["Heading 2"]
@@ -416,6 +430,8 @@ delete_range(P[70:91])  # instructivo "H. Referencias bibliográficas" + 12 ejem
 
 # ===================================== MÓDULO I — Gestión de la Tecnología de IT ===
 # (contenido de Arquitectura y Programación de Sistemas)
+for _p in (P[91], P[92], P[93], P[94], P[95], P[96]):
+    strip_highlight(_p)  # template ships these 6 paragraphs pre-highlighted yellow
 set_text(P[92], "1.1 Lenguajes: Python en todo el pipeline de IA (ecosistema maduro de "
                  "MediaPipe/TensorFlow/OpenCV). C en el firmware ESP32 (estándar para ese "
                  "microcontrolador; suficiente para GPS por UART y control de GPIO).")
@@ -468,7 +484,7 @@ mod3 = add_bullets_after(P[96], [
     "frame quedaron topadas en 33–41% de accuracy — el techo lo explica la correlación de "
     "Spearman máxima de |r|=0.26 entre cualquier feature de un solo frame y el nivel de "
     "somnolencia. Fusionar el embedding congelado con las features geométricas y alimentarlo "
-    "a una LSTM sobre una ventana llevó el resultado a 84.24% / 0.8375 F1 macro (Tabla II), "
+    "a una LSTM sobre una ventana llevó el resultado a 84.24% / 0.8375 F1 macro (Tabla III), "
     "confirmando que el contexto temporal revela algo que un solo frame no puede, "
     "estructuralmente, ver.",
     "La clasificación final no usa argmax sino un umbral de decisión (t*=0.57) elegido en "
@@ -478,17 +494,21 @@ mod3 = add_bullets_after(P[96], [
     "BlazeFace, ligeras y cuantizables para CPU/NPU sin GPU dedicada — la única opción "
     "evaluada con inferencia en tiempo real ya validada en hardware de borde de bajo costo.",
 ])
-mod3 = new_paragraph_after(mod3, "La Tabla III y la Fig. 2 muestran el desempeño medido del "
-                                  "modelo final sobre 1,440 ventanas de prueba de 10 sujetos "
-                                  "nunca vistos en entrenamiento.")
-mod3 = insert_table_after(mod3, [
-    ["Clase", "Prec.", "Rec.", "F1", "Sop."],
-    ["Not Drowsy", "0.80", "0.94", "0.87", "780"],
-    ["Drowsy", "0.91", "0.73", "0.81", "660"],
-    ["accuracy", "", "", "0.8424", "1440"],
-    ["macro avg", "0.86", "0.83", "0.8375", "1440"],
-], col_widths_in=[0.85, 0.5, 0.5, 0.65, 0.45])
-mod3 = insert_full_width_figure(
+mod3 = new_paragraph_after(mod3, "La Fig. 2 muestra el pipeline del modelo desplegado. Sobre "
+                                  "1,440 ventanas de prueba de 10 sujetos nunca vistos en "
+                                  "entrenamiento (780 Not Drowsy / 660 Drowsy): Not Drowsy "
+                                  "alcanzó precisión 0.80 y recall 0.94 (F1 0.87); Drowsy, "
+                                  "precisión 0.91 y recall 0.73 (F1 0.81) — el recall más bajo "
+                                  "de las dos clases es, deliberadamente, el error que más "
+                                  "cuesta reducir dado el criterio de seguridad de la Sección "
+                                  "III-B.")
+# Nota: una tabla independiente para este desglose por clase se intentó en varias formas
+# (distintos anchos, encabezados abreviados, hasta una copia exacta de la Tabla III que sí
+# funciona en su propia posición) y en esta posición del documento LibreOffice seguía
+# recortando/desplazando la última columna de forma no determinista — causa no identificada,
+# no reproducible variando el contenido de la tabla. Se optó por texto corrido en vez de
+# seguir persiguiendo el bug.
+mod3 = insert_column_figure_after(
     mod3, f"{DESIGNS}/cnn-lstm-mediapipe-pipeline.png",
     "Fig. 2 — Pipeline del modelo desplegado: MediaPipe (Face Detector + FaceLandmarker) → "
     "CNN congelada + GeometricRatioFeatureLayer → fusión → LSTM (t*=0.57).",
@@ -502,7 +522,7 @@ RESULTADOS = (
     "— el embedding congelado de esa CNN fusionado con features geométricas y alimentado a "
     "una LSTM sobre una ventana de hasta 20 segundos — que alcanzó 84.24% accuracy, 0.8375 F1 "
     "macro sobre sujetos nunca vistos, casi el doble del F1 de la CNN de un solo frame "
-    "(Tabla II, Tabla III). El modelo final se empaquetó como un par de artefactos Keras "
+    "(Tabla III). El modelo final se empaquetó como un par de artefactos Keras "
     "reproducibles (la CNN congelada + la LSTM de fusión) y se integró en cv-argus: corrió de "
     "punta a punta contra una cámara en vivo y contra video grabado, con una ventana "
     "deslizante ligera manteniendo el estado entre frames. De los seis módulos planeados en "
