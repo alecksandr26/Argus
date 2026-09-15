@@ -5,7 +5,7 @@ from datetime import datetime
 from pydantic import BaseModel
 
 from app.geo import Coordinates
-from app.models.common import Vigilance
+from app.models.common import Severity
 
 
 class StatusRouteCreate(BaseModel):
@@ -18,7 +18,7 @@ class StatusRouteCreate(BaseModel):
     current_coordinates: Coordinates
     current_speed: float
     odometer: float
-    vigilance: Vigilance = Vigilance.NORMAL
+    vigilance: Severity = Severity.LOW
 
 
 class StatusRouteOut(BaseModel):
@@ -27,5 +27,5 @@ class StatusRouteOut(BaseModel):
     current_coordinates: Coordinates
     current_speed: float
     odometer: float
-    vigilance: Vigilance
+    vigilance: Severity
     timestamp: datetime

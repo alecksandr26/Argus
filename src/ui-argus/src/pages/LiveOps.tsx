@@ -11,7 +11,7 @@ import {
   truckById,
 } from '../data/fixtures'
 import { longDay, relativeTime } from '../utils/format'
-import { isActiveRoute, severity, vigilance } from '../utils/status'
+import { isActiveRoute, severity } from '../utils/status'
 import { toLatLng } from '../utils/geo'
 import type { AlertSeverity } from '../types'
 
@@ -34,12 +34,12 @@ export default function LiveOps() {
 
   const tiles = useMemo(() => {
     const active = routes.filter((r) => isActiveRoute(r.operative_status))
-    const counts = { normal: 0, low_vigilance: 0, critical: 0 }
+    const counts = { low: 0, medium: 0, critical: 0 }
     for (const s of statusRoutes) counts[s.vigilance]++
     return {
       onRoute: active.length,
-      normal: counts.normal,
-      low: counts.low_vigilance,
+      low: counts.low,
+      medium: counts.medium,
       critical: counts.critical,
     }
   }, [])
@@ -50,7 +50,7 @@ export default function LiveOps() {
         const route = routeById(s.id_route)
         const truck = route && truckById(route.id_truck)
         const driver = route && driverById(route.id_driver)
-        const v = vigilance[s.vigilance]
+        const v = severity[s.vigilance]
         return {
           id: s.id_status_route,
           // Fixture data is already `Coordinates`; when this comes from the API
@@ -136,15 +136,15 @@ export default function LiveOps() {
         }}
       >
         <Tile label="Trucks on route" value={tiles.onRoute} />
-        <Tile label="Normal status" value={tiles.normal} color="var(--good)" />
+        <Tile label="Low severity" value={tiles.low} color="var(--good)" />
         <Tile
-          label="Low vigilance"
-          value={tiles.low}
+          label="Medium severity"
+          value={tiles.medium}
           color="var(--warn)"
           border="var(--warn)"
         />
         <Tile
-          label="Drowsiness — critical"
+          label="Critical severity"
           value={tiles.critical}
           color="var(--bad)"
           border="var(--bad)"
@@ -238,7 +238,7 @@ export default function LiveOps() {
                       background: toneColor[t],
                     }}
                   />
-                  {['Normal', 'Low vigilance', 'Critical'][i]}
+                  {['Low', 'Medium', 'Critical'][i]}
                 </span>
               ))}
             </div>

@@ -7,7 +7,7 @@ from beanie import Document
 from pydantic import Field
 
 from ..geo import GeoJSONPoint
-from .common import Vigilance
+from .common import Severity
 
 
 class StatusRoute(Document):
@@ -19,7 +19,7 @@ class StatusRoute(Document):
     current_coordinates: GeoJSONPoint
     current_speed: float
     odometer: float
-    vigilance: Vigilance = Vigilance.NORMAL
+    vigilance: Severity = Severity.LOW
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     class Settings:
