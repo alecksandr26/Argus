@@ -130,7 +130,7 @@ fussier than a USB webcam.
 Three parts of the planned architecture exist as code so far: the training notebook, the
 `cv-argus` edge module, and now the `backend-argus` cloud backend (all below). The frontend
 (`ui-argus`, below) exists too, and **every screen now calls the real backend** — Fleet,
-Drivers, Routes & trips, Live operations, and Alert triage all fetch real data (session storage,
+Drivers, Routes, Live operations, and Alert triage all fetch real data (session storage,
 route guarding, and login were the first pieces wired; the rest followed in the same later
 pass), plus two new screens, Access (root_admin/admin user management) and Profile
 (self-service account edit), that didn't exist as fixture-era mockups at all. `src/it-argus/`

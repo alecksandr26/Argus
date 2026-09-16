@@ -6,7 +6,7 @@ import type { Role } from '../types'
 /**
  * The nav rail from the mockups' `Sidebar` component. The footer reads the real logged-in user
  * from `AuthContext`. Each `NavItem` now carries an optional `roles` allow-list, filtered
- * per-group before render: `Fleet`/`Drivers`/`Routes & trips` are visible to `root_admin`/
+ * per-group before render: `Fleet`/`Drivers`/`Routes` are visible to `root_admin`/
  * `admin`/`guardian` (guardian's view is read-only — enforced inside those pages, not by
  * hiding the nav item) but not `truck_driver`; `Access` is `root_admin`/`admin` only (an
  * `admin` session only ever manages guardian accounts there, see `Access.tsx`). Items with no
@@ -27,7 +27,7 @@ const MONITORING: NavItem[] = [
 ]
 
 const OPERATIONS: NavItem[] = [
-  { to: '/routes', label: 'Routes & trips', icon: 'route', roles: ['root_admin', 'admin', 'guardian'] },
+  { to: '/routes', label: 'Routes', icon: 'route', roles: ['root_admin', 'admin', 'guardian'] },
 ]
 
 const RESOURCES: NavItem[] = [
