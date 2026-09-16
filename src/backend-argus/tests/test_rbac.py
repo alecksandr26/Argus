@@ -30,6 +30,101 @@ async def test_truck_driver_cannot_list_users(api_client, truck_driver_user):
 
 
 @pytest.mark.asyncio
+async def test_admin_can_create_truck_driver_and_route(api_client, admin_user):
+    truck_resp = await api_client.post(
+        "/api/trucks",
+        json={"plate_number": "ADM-1", "brand": "B", "model": "M", "company_number": "C-ADM"},
+        headers=auth_headers(admin_user),
+    )
+    assert truck_resp.status_code == 201
+
+    driver_resp = await api_client.post(
+        "/api/drivers",
+        json={
+            "first_name": "Admin",
+            "last_name": "Made",
+            "license_number": "L-ADM",
+            "license_expiration": "2030-01-01",
+            "phone_number": "+1-555-3333",
+            "emergency_contact_name": "C",
+            "emergency_contact_phone": "+1-555-4444",
+            "blood_type": "O+",
+        },
+        headers=auth_headers(admin_user),
+    )
+    assert driver_resp.status_code == 201
+
+    route_resp = await api_client.post(
+        "/api/routes",
+        json={
+            "id_driver": driver_resp.json()["id_driver"],
+            "id_truck": truck_resp.json()["id_truck"],
+            "origin_name": "A",
+            "destination_name": "B",
+            "destination_coordinates": {"lat": 19.0, "lon": -99.0},
+            "estimated_departure": "2030-01-01T00:00:00Z",
+        },
+        headers=auth_headers(admin_user),
+    )
+    assert route_resp.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_admin_cannot_review_alerts(api_client, admin_user, root_admin):
+    truck_resp = await api_client.post(
+        "/api/trucks",
+        json={"plate_number": "ADM-2", "brand": "B", "model": "M", "company_number": "C-ADM2"},
+        headers=auth_headers(root_admin),
+    )
+    driver_resp = await api_client.post(
+        "/api/drivers",
+        json={
+            "first_name": "A",
+            "last_name": "B",
+            "license_number": "L-ADM2",
+            "license_expiration": "2030-01-01",
+            "phone_number": "+1-555-5555",
+            "emergency_contact_name": "C",
+            "emergency_contact_phone": "+1-555-6666",
+            "blood_type": "O+",
+        },
+        headers=auth_headers(root_admin),
+    )
+    route_resp = await api_client.post(
+        "/api/routes",
+        json={
+            "id_driver": driver_resp.json()["id_driver"],
+            "id_truck": truck_resp.json()["id_truck"],
+            "origin_name": "A",
+            "destination_name": "B",
+            "destination_coordinates": {"lat": 19.0, "lon": -99.0},
+            "estimated_departure": "2030-01-01T00:00:00Z",
+        },
+        headers=auth_headers(root_admin),
+    )
+    alert_resp = await api_client.post(
+        "/api/alerts",
+        json={
+            "id_route": route_resp.json()["id_route"],
+            "alert_type": "drowsiness",
+            "severity_level": "medium",
+            "ai_metadata": {"scores": {"not_drowsy": 0.2, "drowsy": 0.8}},
+            "coordinates": {"lat": 19.1, "lon": -99.1},
+            "speed_at_event": 80.0,
+        },
+        headers=auth_headers(root_admin),
+    )
+    alert_id = alert_resp.json()["id_alert"]
+
+    resp = await api_client.put(
+        f"/api/alerts/{alert_id}",
+        json={"reviewed_by_operator": True, "operator_notes": "n/a"},
+        headers=auth_headers(admin_user),
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_any_authenticated_role_can_read_trucks(api_client, truck_driver_user, sample_truck):
     resp = await api_client.get("/api/trucks", headers=auth_headers(truck_driver_user))
     assert resp.status_code == 200

@@ -1,12 +1,10 @@
 /**
- * Small formatting helpers shared across screens. Relative times are computed
- * against `MOCK_NOW` (not the wall clock) so the fake data reads consistently —
- * swap the base for `new Date()` once timestamps come from a live backend.
+ * Small formatting helpers shared across screens. Relative times default to the real wall
+ * clock (`new Date()`) now that every screen fetches live backend data — the optional `now`
+ * param stays purely for tests to pin a fixed reference time.
  */
 
-import { MOCK_NOW } from '../data/fixtures'
-
-export function relativeTime(iso: string, now: Date = MOCK_NOW): string {
+export function relativeTime(iso: string, now: Date = new Date()): string {
   const deltaMs = now.getTime() - new Date(iso).getTime()
   const s = Math.round(deltaMs / 1000)
   if (s < 0) return 'in the future'
@@ -28,8 +26,8 @@ const clockFmt = new Intl.DateTimeFormat('en-US', {
   hour12: false,
 })
 
-/** "06:30" — or "Yesterday 22:00" / "Aug 23 22:00" when not today relative to MOCK_NOW. */
-export function clock(iso: string | null, now: Date = MOCK_NOW): string {
+/** "06:30" — or "Yesterday 22:00" / "Aug 23 22:00" when not today relative to `now`. */
+export function clock(iso: string | null, now: Date = new Date()): string {
   if (!iso) return '—'
   const d = new Date(iso)
   const sameDay = d.toDateString() === now.toDateString()
@@ -59,7 +57,7 @@ const dayFmt = new Intl.DateTimeFormat('en-US', {
 })
 
 /** "Monday, August 24" */
-export function longDay(d: Date = MOCK_NOW): string {
+export function longDay(d: Date = new Date()): string {
   return dayFmt.format(d)
 }
 
@@ -67,8 +65,8 @@ export function pct(n: number): string {
   return `${Math.round(n * 100)}%`
 }
 
-/** Days until an ISO date, relative to MOCK_NOW. Negative = past. */
-export function daysUntil(iso: string, now: Date = MOCK_NOW): number {
+/** Days until an ISO date, relative to `now`. Negative = past. */
+export function daysUntil(iso: string, now: Date = new Date()): number {
   return Math.round(
     (new Date(iso).getTime() - now.getTime()) / (1000 * 60 * 60 * 24),
   )

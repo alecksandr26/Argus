@@ -14,7 +14,16 @@
  * backend's `Role` enum exactly (see below).
  */
 
-export type Role = 'root_admin' | 'guardian' | 'truck_driver'
+/**
+ * `root_admin`: owner/bootstrap account, full control including user management.
+ * `admin`: operations role (schedule routes, manage the truck/driver roster) — a scoped
+ * exception lets it also create/manage `guardian`-role accounts only (see
+ * `src/backend-argus/app/routers/users.py`'s per-route scoping); it cannot see or touch
+ * `root_admin`/other `admin` accounts at all.
+ * `guardian`: read-only safety monitoring + alert review.
+ * `truck_driver`: receives alerts/status.
+ */
+export type Role = 'root_admin' | 'admin' | 'guardian' | 'truck_driver'
 
 /**
  * `POST /api/auth/login`'s response shapes (`src/backend-argus/app/schemas/auth.py`'s
@@ -120,6 +129,18 @@ export interface StatusRoute {
   /** Drowsiness class coming off the edge pipeline (see top-level CLAUDE.md). */
   vigilance: LiveVigilance
   timestamp: string
+}
+
+/**
+ * `GET /api/routes/active`'s response shape — a `Route` embedding its newest `Status_Route`
+ * snapshot plus light truck/driver refs, built specifically for `LiveOps.tsx` so it doesn't
+ * need a follow-up fetch per marker. See `src/backend-argus/CLAUDE.md`'s "routes/active"
+ * section.
+ */
+export interface RouteWithStatus extends Route {
+  latest_status: StatusRoute | null
+  truck_plate_number: string | null
+  driver_full_name: string | null
 }
 
 export type AlertSeverity = 'critical' | 'medium' | 'low'

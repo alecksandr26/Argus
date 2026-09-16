@@ -22,6 +22,10 @@ interface AuthContextValue {
   session: Session | null
   login: (email: string, password: string) => Promise<void>
   logout: () => void
+  /** Patches the stored session's user fields (name/email) after a successful self-service
+   * profile edit (`Profile.tsx`'s `PUT /api/auth/me`), so the sidebar footer reflects the
+   * change without requiring a re-login. */
+  updateSessionUser: (patch: Partial<LoginUser>) => void
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -74,7 +78,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const value = useMemo(() => ({ session, login, logout }), [session, login, logout])
+  const updateSessionUser = useCallback((patch: Partial<LoginUser>) => {
+    setSession((prev) => {
+      if (!prev) return prev
+      const next: Session = { ...prev, user: { ...prev.user, ...patch } }
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+      } catch {
+        // Storage inaccessible — in-memory state still updates for this page load.
+      }
+      return next
+    })
+  }, [])
+
+  const value = useMemo(
+    () => ({ session, login, logout, updateSessionUser }),
+    [session, login, logout, updateSessionUser],
+  )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

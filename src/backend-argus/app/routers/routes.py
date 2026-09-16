@@ -79,7 +79,7 @@ async def list_active_routes() -> list[RouteWithStatus]:
     "",
     response_model=RouteOut,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_role(Role.ROOT_ADMIN))],
+    dependencies=[Depends(require_role(Role.ROOT_ADMIN, Role.ADMIN))],
 )
 async def create_route(body: RouteCreate) -> RouteOut:
     route = Route(
@@ -104,7 +104,7 @@ async def get_route(route_id: str) -> RouteOut:
 @router.put(
     "/{route_id}",
     response_model=RouteOut,
-    dependencies=[Depends(require_role(Role.ROOT_ADMIN))],
+    dependencies=[Depends(require_role(Role.ROOT_ADMIN, Role.ADMIN))],
 )
 async def update_route(route_id: str, body: RouteUpdate) -> RouteOut:
     route = await _get_or_404(route_id)
@@ -121,7 +121,7 @@ async def update_route(route_id: str, body: RouteUpdate) -> RouteOut:
 @router.delete(
     "/{route_id}",
     response_model=Message,
-    dependencies=[Depends(require_role(Role.ROOT_ADMIN))],
+    dependencies=[Depends(require_role(Role.ROOT_ADMIN, Role.ADMIN))],
 )
 async def delete_route(route_id: str) -> Message:
     route = await _get_or_404(route_id)

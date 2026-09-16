@@ -9,15 +9,15 @@ itself" section at the bottom for that story).
 
 ## Read this first: merged vs. not merged
 
-Two significant pieces of work exist as real, tested code but are **not in `main` yet**:
-
-- `src/backend-argus` (FastAPI + MongoDB backend) — on branch `worktree-backend-argus`.
-- `src/cv-argus`'s `alerts/`, `buffer/`, `orchestrator/`, `sender/` modules — on branch
-  `worktree-cv-argus-alert-pipeline`.
+**Update**: both pieces this section used to describe as unmerged are now in `main` —
+`src/backend-argus` and `src/cv-argus`'s `alerts/`/`buffer/`/`orchestrator/`/`sender/` modules.
+This section's "not merged yet" framing was stale (the merges happened in commits `6a3a855`,
+`645ef05`, `dea719c`); flagged here rather than silently rewritten so the correction itself is
+visible. Sections 1 and 3 below still describe what those modules contain — read the "done" bullets
+there as simply "done, in `main`," not "done, on a branch."
 
 Everything below distinguishes "missing from the project" (nobody has built it) from "missing
-from what's merged" (it's built and tested, just sitting on a branch) — merging those two
-branches closes a lot of what might otherwise look like an open gap.
+from what's built" (it's real code, just not everything it needs yet).
 
 ## Módulo 3 (Sistemas Distribuidos) grading reality check
 
@@ -88,32 +88,49 @@ without re-deriving them from `cv-argus`'s and `backend-argus`'s source.
 
 ## 3. `backend-argus`
 
-**Done, not merged** (`worktree-backend-argus`): FastAPI + MongoDB (Beanie) covering User,
-Truck, Driver, Route, Status_Route, Alert + `/api/auth/login`. Real RBAC (three roles), a
-device-API-key auth path for the ESP32, `GET /api/routes/active` for the live dashboard.
-Verified in the session that built it: hermetic + real-Mongo test tiers both pass, a full Docker
-stack (backend + Mongo + `ui-argus`) booted and round-tripped real HTTP calls.
+**Done, in `main`**: FastAPI + MongoDB (Beanie) covering User, Truck, Driver, Route,
+Status_Route, Alert + `/api/auth/login`. **RBAC is now four roles, not three** — `admin` was
+added as a deliberate product decision: an operations role with write access on Truck/Driver/
+Route, plus one narrow, server-enforced exception to otherwise-zero user-management access (it
+may create/edit/deactivate `guardian`-role accounts only — see that module's `CLAUDE.md`'s "RBAC
+— four roles" for exactly how it's scoped, including why non-guardian targets 404 rather than
+403). Also new: self-service `GET`/`PUT /api/auth/me` so any role can edit their own email/name/
+phone/password without needing `/api/users` access. A device-API-key auth path for the ESP32,
+`GET /api/routes/active` for the live dashboard. Verified: hermetic pytest tier passes (44 tests
+as of this change), a full Docker stack (backend + Mongo + `ui-argus`) has previously booted and
+round-tripped real HTTP calls.
 
-**Missing, even once merged** (see its own `CLAUDE.md`'s "Future work" for the full detail):
+**Missing** (see its own `CLAUDE.md`'s "Future work" for the full detail):
 - `Report`, `Device`, `Geofence` entities — in the ER diagram, deliberately deferred (no
   consumer/committed endpoint yet).
 - Real "own truck/route only" scoping for the `truck_driver` role — the ER model has no
   `User`↔`Driver`/`Truck` link to scope by, so this role currently gets unscoped read access.
 - No refresh-token flow — `JWT_EXPIRE_MINUTES` is the only session-length control.
-- No decided real-time push strategy for the live dashboard (currently: poll
-  `GET /api/routes/active`).
+- No decided real-time push strategy for the live dashboard (currently: `ui-argus` polls
+  `GET /api/routes/active` every 7s).
 
 ## 4. `ui-argus`
 
-Six screens built and (as of this session) build-verified for the first time — but still purely
-a mockup: no auth, no API client, no route guarding, every "Guardar"/"Crear" mutates local state
-only. Full per-screen breakdown already tracked in `src/ui-argus/INTEGRATION.md` — read that
-instead of duplicating it here. Headline gaps:
-- No `src/api/*` client exists at all; `VITE_API_BASE_URL` is defined but unused.
-- No Reports panel, no Access/Users panel, no Geofence management, no dedicated Truck Driver
-  screen — none of these were in the first UI pass (no committed API/table effort behind them).
+**Every screen now calls the real backend** — the fixture-era gap this section used to describe
+is closed; `src/data/fixtures.ts` is deleted. `src/api/*` has one client module per resource
+(`auth`, `me`, `users`, `trucks`, `drivers`, `routes`, `alerts`), all built on `src/api/client.ts`.
+Role-based UI gating is real too: `RequireRole` gates `/access`, `Sidebar.tsx`'s nav items are
+filtered per role, and `Fleet`/`Drivers`/`TravelManagement` render read-only for `guardian` (no
+Add/Save controls) rather than just letting a write attempt 403 with no explanation. Two new
+screens: **`Access.tsx`** (root_admin/admin user management, role-aware — an admin session only
+ever sees/creates guardian accounts) and **`Profile.tsx`** (self-service profile edit for any
+role). Full per-screen status: `src/ui-argus/INTEGRATION.md`.
+
+**Still missing/open:**
+- No Reports panel, no Geofence management, no dedicated Truck Driver screen — none of these
+  were in the first UI pass (no committed API/table effort behind them).
 - `Alert.media_url` — where captured clips are stored/served (S3? the backend directly?) isn't
   decided anywhere.
+- OSRM integration for `TravelManagement.tsx`'s create form (`destination_coordinates`/
+  `estimated_arrival` are still stubbed).
+- No caching/data-fetching layer (TanStack Query or similar) — every screen does its own
+  `useEffect` fetch, no shared cache/refetch-on-focus.
+- A real-time push mechanism for `LiveOps.tsx` (currently polling, see backend section above).
 
 ## 5. Testing / E2E / integration strategy — the real open question
 

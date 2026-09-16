@@ -8,6 +8,7 @@ import type {
   AlertSeverity,
   DriverStatus,
   LiveVigilance,
+  Role,
   RouteStatus,
   TruckStatus,
 } from '../types'
@@ -56,3 +57,16 @@ export const severity: Record<AlertSeverity, Badge> = {
 /** True when a route currently counts as "on the road" for dashboard tallies. */
 export const isActiveRoute = (s: RouteStatus): boolean =>
   s === 'in_progress' || s === 'in_progress_alert'
+
+export const userStatus: Record<'active' | 'inactive', Badge> = {
+  active: { label: 'Active', tone: 'good' },
+  inactive: { label: 'Inactive', tone: 'neutral' },
+}
+
+/** Display name for each `Role` — used by `Access.tsx`'s table/role picker. */
+export const roleLabel: Record<Role, string> = {
+  root_admin: 'Root admin',
+  admin: 'Admin',
+  guardian: 'Guardian',
+  truck_driver: 'Truck driver',
+}

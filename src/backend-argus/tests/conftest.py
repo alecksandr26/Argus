@@ -74,6 +74,20 @@ async def guardian(mongo_client) -> User:
 
 
 @pytest_asyncio.fixture
+async def admin_user(mongo_client) -> User:
+    user = User(
+        email="admin-role@example.com",
+        password_hash=hash_secret(sha256_hex("password123")),
+        role=Role.ADMIN,
+        first_name="Fleet",
+        last_name="Operator",
+        phone_number="+1-555-0003",
+    )
+    await user.insert()
+    return user
+
+
+@pytest_asyncio.fixture
 async def truck_driver_user(mongo_client) -> User:
     user = User(
         email="driver@example.com",
