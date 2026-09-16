@@ -129,13 +129,16 @@ fussier than a USB webcam.
 
 Three parts of the planned architecture exist as code so far: the training notebook, the
 `cv-argus` edge module, and now the `backend-argus` cloud backend (all below). The frontend
-(`ui-argus`, below) exists too — its login screen is now wired to the real backend (session
-storage, route guarding, a root_admin bootstrap), while every other screen is still on fixture
-data rather than the real API. `src/it-argus/` (below) is a fourth, newer piece: Playwright
-integration tests exercising `ui-argus` and `backend-argus` together, not part of the originally
-planned architecture but added once there was a real seam between two modules worth testing as
-one. The ESP32 firmware and OSRM described in "Planned end-to-end system architecture" don't
-exist yet. See
+(`ui-argus`, below) exists too, and **every screen now calls the real backend** — Fleet,
+Drivers, Routes & trips, Live operations, and Alert triage all fetch real data (session storage,
+route guarding, and login were the first pieces wired; the rest followed in the same later
+pass), plus two new screens, Access (root_admin/admin user management) and Profile
+(self-service account edit), that didn't exist as fixture-era mockups at all. `src/it-argus/`
+(below) is a fourth, newer piece: Playwright integration tests exercising `ui-argus` and
+`backend-argus` together — its own test coverage is still just the login flow (unchanged since
+it was added), even though the real connection between the two modules has grown well past
+login since. The ESP32 firmware and OSRM described in "Planned end-to-end system architecture"
+don't exist yet. See
 `docs/roadmap.md` for the full, up-to-date gap list across every module (including what's built
 but not yet merged into `main`) — read that before assuming something is missing or done.
 
@@ -183,23 +186,25 @@ but not yet merged into `main`) — read that before assuming something is missi
   be ported verbatim, etc.) that would otherwise need re-deriving from the notebook each session.
 - `src/backend-argus/` — the cloud backend: **FastAPI + MongoDB (via Beanie)**, covering
   exactly six of the ER diagram's nine entities — **User, Truck, Driver, Route, Status_Route,
-  Alert** — plus `/api/auth/login`. `Report`, `Device`, `Geofence` are in the ER diagram but
-  deliberately out of scope (no consumer/committed endpoint for them yet). Fixes a handful of
-  ER-diagram typos/inconsistencies (`blod_type`→`blood_type`, `reviwed_by_operator`→
-  `reviewed_by_operator`, `Id_Route`→`id_route`, `updated_at` everywhere) — this module's
-  `CLAUDE.md` is now the authoritative field-name reference, not the diagram. Password/device-key
-  hashing via `bcrypt` directly and JWT via `PyJWT` (not `passlib`/`python-jose` — both
-  unmaintained); a per-truck device API key (not a user login) authenticates the ESP32's writes
-  to `/api/alerts`/`/api/routes/:id/status`, since cv-argus itself never calls this backend
-  directly (alerts flow cv-argus → SQLite → Bluetooth → ESP32 → HTTP → here, per `cv-argus`'s own
-  `CLAUDE.md`). Coordinates store as MongoDB GeoJSON internally but serialize as `{lat, lon}` at
-  the API boundary, matching `ui-argus/src/types.ts` exactly. Has a `README.md` (quick start,
-  Docker, config vars, verification checklist) and a `CLAUDE.md` (full design rationale, RBAC
-  table, known gaps — e.g. no `User`↔`Driver`/`Truck` link yet, so `truck_driver`-role
-  "own-data-only" scoping isn't real yet either); read that `CLAUDE.md` before changing anything
-  here. A new root-level `docker-compose.yml` (alongside each module's own) wires this backend +
-  MongoDB + `ui-argus` together for local integration testing; no OSRM service in it yet, per the
-  "still deferred" note above.
+  Alert** — plus `/api/auth/login` and a self-service `/api/auth/me`. `Report`, `Device`,
+  `Geofence` are in the ER diagram but deliberately out of scope (no consumer/committed endpoint
+  for them yet). Fixes a handful of ER-diagram typos/inconsistencies (`blod_type`→`blood_type`,
+  `reviwed_by_operator`→`reviewed_by_operator`, `Id_Route`→`id_route`, `updated_at` everywhere)
+  — this module's `CLAUDE.md` is now the authoritative field-name reference, not the diagram.
+  Password/device-key hashing via `bcrypt` directly and JWT via `PyJWT` (not `passlib`/
+  `python-jose` — both unmaintained); a per-truck device API key (not a user login) authenticates
+  the ESP32's writes to `/api/alerts`/`/api/routes/:id/status`, since cv-argus itself never calls
+  this backend directly (alerts flow cv-argus → SQLite → Bluetooth → ESP32 → HTTP → here, per
+  `cv-argus`'s own `CLAUDE.md`). Coordinates store as MongoDB GeoJSON internally but serialize as
+  `{lat, lon}` at the API boundary, matching `ui-argus/src/types.ts` exactly. A `SEED_DEMO_DATA`
+  env var idempotently seeds a demo fleet (admin/operator + guardian accounts, trucks, drivers,
+  routes) on startup — safe to leave on in local dev, never in a real deployment. Has a
+  `README.md` (quick start, Docker, demo seeding, config vars, verification checklist) and a
+  `CLAUDE.md` (full design rationale, the four-role RBAC table, known gaps — e.g. no
+  `User`↔`Driver`/`Truck` link yet, so `truck_driver`-role "own-data-only" scoping isn't real yet
+  either); read that `CLAUDE.md` before changing anything here. A root-level `docker-compose.yml`
+  (alongside each module's own) wires this backend + MongoDB + `ui-argus` together for local
+  integration testing; no OSRM service in it yet, per the "still deferred" note above.
 - `src/it-argus/` — **Playwright** browser tests driving the real `ui-argus` dev server against
   the real `backend-argus` + MongoDB together, the seam neither module's own unit tests exercise
   (the backend's mock the browser away, the frontend's mock `fetch` away). Its own fully
