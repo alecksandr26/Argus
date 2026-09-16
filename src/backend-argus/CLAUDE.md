@@ -112,6 +112,28 @@ raw password actually works. Dev-safe-but-flagged defaults (`admin@argus.dev` / 
 deliberately match `scripts/seed_dev_data.py`'s own credentials, so a bare `docker compose up`
 and a later seed-script run agree rather than fight over the same account.
 
+### Startup demo seeding — `SEED_DEMO_DATA`
+
+`ensure_root_admin()` above only ever creates one account — enough to get into a fresh
+deployment, but not enough to actually demo the fleet screens (Fleet/Drivers/TravelManagement/
+LiveOps all show empty tables with no data). `scripts/seed_dev_data.py`'s `seed()` was refactored
+to support two modes sharing one dataset definition (a handful of admin/operator and guardian
+users, five trucks spanning every `TruckStatus`, five drivers, four routes across every
+`RouteStatus`, and a couple of alerts):
+
+- `reset=True` (the manual `python -m scripts.seed_dev_data` default): wipes every collection
+  first, then inserts the full set fresh — deterministic, but destructive. Unchanged from before,
+  still an explicit, manual action.
+- `reset=False`: additive/idempotent — checks each user/truck/driver by its natural unique key
+  (email/plate_number/license_number) and skips it if already present; only adds the demo
+  routes/status/alerts if `Route` is currently empty (routes have no natural unique key to dedupe
+  by otherwise). This is what `app.main`'s `lifespan` calls, right after `ensure_root_admin()`,
+  when `settings.seed_demo_data` (`SEED_DEMO_DATA` env var, default `false`) is true — reusing
+  `app.state.mongo_client` rather than opening a second connection. Safe to leave the env var on
+  permanently in a dev `docker-compose.yml`: restarting the container never re-wipes or
+  duplicates anything, it just fills in whatever's missing. Never set this in a real deployment —
+  it's a convenience for local/demo environments only.
+
 ### RBAC — four roles
 
 `Role` (`root_admin` / `admin` / `guardian` / `truck_driver`). The first three originally read
