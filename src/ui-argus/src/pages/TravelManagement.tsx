@@ -14,10 +14,12 @@ import { isActiveRoute, routeStatus } from '../utils/status'
 import type { Driver, Route, Truck } from '../types'
 
 /**
- * "Administration — Routes & trips" against the real `GET/POST /api/routes`. The mockup's note
- * that distance/ETA "are computed with OSRM on confirm" is still deferred (INTEGRATION.md) —
- * `destination_coordinates`/`estimated_arrival` stay stubbed on create, unchanged from before.
- * The create panel is `root_admin`/`admin` only; a `guardian` sees the route table read-only.
+ * "Administration — Routes & trips" (the mockup's original label) against the real
+ * `GET/POST /api/routes`. The deployed page titles this "Routes" instead, since the entity it
+ * manages is `Route` alone. The mockup's note that distance/ETA "are computed with OSRM on
+ * confirm" is still deferred (INTEGRATION.md) — `destination_coordinates`/`estimated_arrival`
+ * stay stubbed on create, unchanged from before. The create panel is `root_admin`/`admin` only;
+ * a `guardian` sees the route table read-only.
  */
 
 type NewRoute = {
@@ -192,7 +194,7 @@ export default function TravelManagement() {
         }}
       >
         <PageHeader
-          title="Routes & trips"
+          title="Routes"
           subtitle={`${inProgress} trips in progress · ${scheduled} scheduled`}
           actions={
             <SearchBox

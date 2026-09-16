@@ -67,7 +67,7 @@ describe('Sidebar', () => {
       '/drivers',
     )
     expect(
-      screen.getByRole('link', { name: /Routes & trips/ }),
+      screen.getByRole('link', { name: /Routes/ }),
     ).toHaveAttribute('href', '/routes')
   })
 
@@ -106,7 +106,7 @@ describe('Sidebar', () => {
     ).not.toHaveAttribute('aria-current')
   })
 
-  it('hides Fleet/Drivers/Routes & trips from a truck_driver session', () => {
+  it('hides Fleet/Drivers/Routes from a truck_driver session', () => {
     localStorage.setItem(
       'argus.session',
       JSON.stringify({
@@ -117,7 +117,7 @@ describe('Sidebar', () => {
     renderSidebar()
     expect(screen.queryByRole('link', { name: /^Fleet$/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: /Drivers/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: /Routes & trips/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Routes/ })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Live operations/ })).toBeInTheDocument()
   })
 
