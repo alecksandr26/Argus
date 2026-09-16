@@ -62,6 +62,24 @@ Each of `notebook/`, `src/cv-argus/`, and `src/ui-argus/` has its own `CLAUDE.md
 conventions, what's been measured vs. what's still aspirational) — read those before making
 changes in either directory; this file stays at the overview level on purpose.
 
+## Running the whole cloud stack (backend + Mongo + web frontend)
+
+```sh
+cp .env.example .env   # optional — every var has a checked-in default in docker-compose.yml
+docker compose up --build   # from this repo root
+```
+
+Boots `backend-argus` (http://localhost:8000/docs) + MongoDB + `ui-argus` (http://localhost:5173)
+together — the actual integration stack, now that both modules exist and are wired to each
+other. **Note**: this root-level `.env` is separate from `src/backend-argus/.env` — this compose
+file doesn't read that one at all, only its own directory's `.env` (or `VAR=value docker compose
+up`/a shell `export`). Log in with the bootstrapped root_admin (`admin@argus.dev` /
+`changeme123` by default), or set `SEED_DEMO_DATA=true` in this `.env` for a full demo fleet
+(admin/operator + guardian accounts, several trucks/drivers/routes) seeded on startup — see
+`src/backend-argus/README.md`'s "Seeding demo data" for the full picture. See
+`src/backend-argus/CLAUDE.md` and `src/ui-argus/CLAUDE.md`/`INTEGRATION.md` for what's actually
+implemented and wired versus still open.
+
 ## Running the edge pipeline
 
 ```sh
