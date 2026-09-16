@@ -82,7 +82,7 @@ this side:
   as router state, so a successful login sends the user back to whatever page they were headed
   to (a deep link, or a session that went stale mid-use) instead of always landing at `/`.
 - **Now done**: per-role nav gating. `Sidebar.tsx`'s `NavItem` type carries an optional `roles`
-  allow-list, filtered per-group before render — `Fleet`/`Drivers`/`Routes & trips` are visible
+  allow-list, filtered per-group before render — `Fleet`/`Drivers`/`Routes` are visible
   to `root_admin`/`admin`/`guardian` (read-only for guardian, enforced inside those pages, not
   by hiding the nav item) but not `truck_driver`; `Access` is `root_admin`/`admin` only. A
   second component, `src/components/RequireRole.tsx`, adds a route-level version of the same
@@ -169,7 +169,7 @@ Vite app.
   `components/StatusPill.test.tsx`, `components/RecordTable.test.tsx`,
   `components/SearchBox.test.tsx`, `components/Sidebar.test.tsx` (extended with role-gating
   cases: `Access` hidden from a guardian session but visible, un-"soon", for `root_admin`;
-  `Fleet`/`Drivers`/`Routes & trips` hidden from `truck_driver`), `pages/Login.test.tsx` — plus
+  `Fleet`/`Drivers`/`Routes` hidden from `truck_driver`), `pages/Login.test.tsx` — plus
   four new ones added alongside the backend-wiring pass: `components/RequireRole.test.tsx`
   (allowed role renders the gated route, disallowed/no session redirects),
   `pages/Access.test.tsx` (root_admin sees every role in the create form; an admin session's

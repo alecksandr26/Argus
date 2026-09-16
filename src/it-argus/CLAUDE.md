@@ -86,7 +86,7 @@ deep link redirecting to `/login` and back after signing in, and sign-out re-pro
 Getting there surfaced two real bugs this module's own existence was the point of catching (see
 "Docker Compose" above for the network/secure-context one) — proof this harness earns its cost,
 not just a plan for one. **Nothing else is covered yet — and this is now a real gap, not a
-future hypothetical**: every `ui-argus` screen (Fleet, Drivers, Routes & trips, Live operations,
+future hypothetical**: every `ui-argus` screen (Fleet, Drivers, Routes, Live operations,
 Alert triage, plus the new Access and Profile screens) is wired to the real `backend-argus` API
 now, with real role-based gating (a 4th `admin` role, `RequireRole`, read-only views for roles
 without write access) that this suite exercises none of. Extending this suite to cover at least
