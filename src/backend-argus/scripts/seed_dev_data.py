@@ -67,8 +67,17 @@ async def seed() -> None:
         last_name="Mendoza",
         phone_number="+52-555-0101",
     )
+    operator = User(
+        email="operator@argus.dev",
+        password_hash=_password_hash("changeme123"),
+        role=Role.ADMIN,
+        first_name="Sofia",
+        last_name="Reyes",
+        phone_number="+52-555-0102",
+    )
     await admin.insert()
     await guardian.insert()
+    await operator.insert()
 
     truck = Truck(
         plate_number="ARG-4471",
@@ -130,6 +139,7 @@ async def seed() -> None:
 
     print("Seeded dev data:")
     print("  root_admin login: admin@argus.dev / changeme123")
+    print("  admin login:      operator@argus.dev / changeme123")
     print("  guardian login:   guardian@argus.dev / changeme123")
     print(f"  truck {truck.plate_number} device API key (save this, shown once): {device_key}")
 

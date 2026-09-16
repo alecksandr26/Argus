@@ -34,7 +34,7 @@ async def list_drivers() -> list[DriverOut]:
     "",
     response_model=DriverOut,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_role(Role.ROOT_ADMIN))],
+    dependencies=[Depends(require_role(Role.ROOT_ADMIN, Role.ADMIN))],
 )
 async def create_driver(body: DriverCreate) -> DriverOut:
     driver = Driver(**body.model_dump())
@@ -50,7 +50,7 @@ async def get_driver(driver_id: str) -> DriverOut:
 @router.put(
     "/{driver_id}",
     response_model=DriverOut,
-    dependencies=[Depends(require_role(Role.ROOT_ADMIN))],
+    dependencies=[Depends(require_role(Role.ROOT_ADMIN, Role.ADMIN))],
 )
 async def update_driver(driver_id: str, body: DriverUpdate) -> DriverOut:
     driver = await _get_or_404(driver_id)
@@ -63,7 +63,7 @@ async def update_driver(driver_id: str, body: DriverUpdate) -> DriverOut:
 @router.delete(
     "/{driver_id}",
     response_model=Message,
-    dependencies=[Depends(require_role(Role.ROOT_ADMIN))],
+    dependencies=[Depends(require_role(Role.ROOT_ADMIN, Role.ADMIN))],
 )
 async def delete_driver(driver_id: str) -> Message:
     driver = await _get_or_404(driver_id)

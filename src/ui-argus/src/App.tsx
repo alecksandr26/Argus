@@ -1,24 +1,26 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import AppLayout from './components/AppLayout'
 import ProtectedRoute from './components/ProtectedRoute'
+import RequireRole from './components/RequireRole'
 import Login from './pages/Login'
 import LiveOps from './pages/LiveOps'
 import AlertTriage from './pages/AlertTriage'
 import Fleet from './pages/Fleet'
 import Drivers from './pages/Drivers'
 import TravelManagement from './pages/TravelManagement'
+import Access from './pages/Access'
+import Profile from './pages/Profile'
 
 /**
- * Route skeleton for the two MVP roles this app serves — Control Tower
- * (Guardian/Monitor) and Administration/Logistics (Root/Admin/Operator) —
- * see the "Argus — Mockups de UI" design canvas for what each screen looks
- * like and CLAUDE.md for why this specific screen set was prioritized.
+ * Route skeleton covering all four roles — Control Tower (`guardian`, read-only + alert
+ * review), Administration/Logistics (`root_admin` full control, `admin` scoped to trucks/
+ * drivers/routes), and `truck_driver` — see the "Argus — Mockups de UI" design canvas for what
+ * each screen looks like and CLAUDE.md for why this specific screen set was prioritized.
  *
- * `ProtectedRoute` gates the whole `AppLayout` tree behind a real session
- * (INTEGRATION.md gap #4) — `Login` stays outside it. The screens themselves
- * still render fake data from `src/data/fixtures.ts` except for the session
- * user itself; wiring the rest of them to the real API is tracked per-screen
- * in INTEGRATION.md.
+ * `ProtectedRoute` gates the whole `AppLayout` tree behind a real session; `RequireRole` adds a
+ * second, narrower gate on top for `/access` (root_admin/admin only — see `Sidebar.tsx` for the
+ * matching nav-visibility rules and `Access.tsx`/`Fleet.tsx`/`Drivers.tsx`/`TravelManagement.tsx`
+ * for per-role read vs. write UI). `Login` stays outside both gates.
  */
 export default function App() {
   return (
@@ -36,6 +38,14 @@ export default function App() {
             <Route path="/fleet" element={<Fleet />} />
             <Route path="/drivers" element={<Drivers />} />
             <Route path="/routes" element={<TravelManagement />} />
+
+            {/* Any authenticated role */}
+            <Route path="/profile" element={<Profile />} />
+
+            {/* root_admin + admin only (admin scoped to guardian accounts, see Access.tsx) */}
+            <Route element={<RequireRole roles={['root_admin', 'admin']} />}>
+              <Route path="/access" element={<Access />} />
+            </Route>
           </Route>
         </Route>
 

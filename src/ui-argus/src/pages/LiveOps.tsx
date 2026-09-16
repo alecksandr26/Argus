@@ -1,19 +1,28 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import FleetMap, { type FleetMapMarker } from '../components/FleetMap'
-import {
-  alerts as allAlerts,
-  driverById,
-  routeById,
-  routes,
-  statusRoutes,
-  truckById,
-} from '../data/fixtures'
+import { useAuth } from '../context/AuthContext'
+import { listActiveRoutes } from '../api/routes'
+import { listAlerts } from '../api/alerts'
+import { listDrivers } from '../api/drivers'
+import { listTrucks } from '../api/trucks'
+import { ApiError } from '../api/client'
 import { longDay, relativeTime } from '../utils/format'
-import { isActiveRoute, severity, vigilance } from '../utils/status'
+import { severity, vigilance } from '../utils/status'
 import { toLatLng } from '../utils/geo'
-import type { AlertSeverity } from '../types'
+import type { AlertSeverity, Driver, RouteWithStatus, Truck } from '../types'
+
+/**
+ * Live operations dashboard against the real API. `GET /api/routes/active` (built specifically
+ * for this screen — see `src/backend-argus/CLAUDE.md`) feeds the map/stat tiles;
+ * `GET /api/alerts` feeds the feed. Polling on an interval is the interim real-time strategy
+ * `INTEGRATION.md` gap #5 names as acceptable pending a real push mechanism (WebSocket/SSE).
+ * Drivers/trucks are fetched once (not polled) purely to resolve names for alerts whose route
+ * isn't currently active — active routes already embed their own names.
+ */
+
+const POLL_MS = 7000
 
 const toneColor = {
   good: 'var(--good)',
@@ -30,60 +39,107 @@ const FILTERS: { key: AlertSeverity | 'all'; label: string }[] = [
 ]
 
 export default function LiveOps() {
+  const { session } = useAuth()
+  const token = session!.token
+
   const [filter, setFilter] = useState<AlertSeverity | 'all'>('all')
+  const [activeRoutes, setActiveRoutes] = useState<RouteWithStatus[]>([])
+  const [alerts, setAlerts] = useState<Awaited<ReturnType<typeof listAlerts>>>([])
+  const [drivers, setDrivers] = useState<Driver[]>([])
+  const [trucks, setTrucks] = useState<Truck[]>([])
+  const [error, setError] = useState<string | null>(null)
+
+  // Drivers/trucks resolve names for alerts on routes that are no longer active — fetched once.
+  useEffect(() => {
+    listDrivers(token).then(setDrivers).catch(() => {})
+    listTrucks(token).then(setTrucks).catch(() => {})
+  }, [token])
+
+  useEffect(() => {
+    let cancelled = false
+    const poll = () => {
+      Promise.all([listActiveRoutes(token), listAlerts(token)])
+        .then(([routes, alertRows]) => {
+          if (cancelled) return
+          setActiveRoutes(routes)
+          setAlerts(alertRows)
+          setError(null)
+        })
+        .catch((err) => {
+          if (!cancelled) setError(err instanceof ApiError ? err.message : 'Failed to load live data')
+        })
+    }
+    poll()
+    const id = setInterval(poll, POLL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [token])
+
+  const routeById = useMemo(
+    () => new Map(activeRoutes.map((r) => [r.id_route, r])),
+    [activeRoutes],
+  )
+  const driverById = useMemo(() => new Map(drivers.map((d) => [d.id_driver, d])), [drivers])
+  const truckById = useMemo(() => new Map(trucks.map((t) => [t.id_truck, t])), [trucks])
 
   const tiles = useMemo(() => {
-    const active = routes.filter((r) => isActiveRoute(r.operative_status))
     const counts = { normal: 0, low_vigilance: 0, critical: 0 }
-    for (const s of statusRoutes) counts[s.vigilance]++
+    for (const r of activeRoutes) {
+      if (r.latest_status) counts[r.latest_status.vigilance]++
+    }
     return {
-      onRoute: active.length,
+      onRoute: activeRoutes.length,
       normal: counts.normal,
       low: counts.low_vigilance,
       critical: counts.critical,
     }
-  }, [])
+  }, [activeRoutes])
 
   const markers = useMemo<FleetMapMarker[]>(
     () =>
-      statusRoutes.map((s) => {
-        const route = routeById(s.id_route)
-        const truck = route && truckById(route.id_truck)
-        const driver = route && driverById(route.id_driver)
-        const v = vigilance[s.vigilance]
-        return {
-          id: s.id_status_route,
-          // Fixture data is already `Coordinates`; when this comes from the API
-          // it will have been run through `normalizeCoordinates` at the boundary.
-          position: toLatLng(s.current_coordinates),
-          plate: truck?.plate_number ?? '—',
-          driver: driver ? `${driver.first_name} ${driver.last_name}` : '—',
-          origin: route?.origin_name ?? '—',
-          destination: route?.destination_name ?? '—',
-          speedKmh: s.current_speed,
-          vigilanceLabel: v.label,
-          tone: v.tone,
-          timestamp: s.timestamp,
-        }
-      }),
-    [],
+      activeRoutes
+        .filter((r) => r.latest_status)
+        .map((r) => {
+          const s = r.latest_status!
+          const v = vigilance[s.vigilance]
+          return {
+            id: s.id_status_route,
+            position: toLatLng(s.current_coordinates),
+            plate: r.truck_plate_number ?? '—',
+            driver: r.driver_full_name ?? '—',
+            origin: r.origin_name,
+            destination: r.destination_name,
+            speedKmh: s.current_speed,
+            vigilanceLabel: v.label,
+            tone: v.tone,
+            timestamp: s.timestamp,
+          }
+        }),
+    [activeRoutes],
   )
 
   const feed = useMemo(() => {
-    const rows = [...allAlerts].sort(
+    const rows = [...alerts].sort(
       (a, b) => +new Date(b.timestamp) - +new Date(a.timestamp),
     )
     return (filter === 'all' ? rows : rows.filter((a) => a.severity_level === filter)).map(
       (a) => {
-        const route = routeById(a.id_route)
-        const driver = route && driverById(route.id_driver)
-        const truck = route && truckById(route.id_truck)
-        return { alert: a, route, driver, truck }
+        const route = routeById.get(a.id_route)
+        const driver = route ? driverById.get(route.id_driver) : undefined
+        const truck = route ? truckById.get(route.id_truck) : undefined
+        return {
+          alert: a,
+          originDestination: route ? `${route.origin_name} → ${route.destination_name}` : null,
+          plate: route?.truck_plate_number ?? truck?.plate_number ?? null,
+          driverName: route?.driver_full_name ?? (driver ? `${driver.first_name} ${driver.last_name}` : null),
+        }
       },
     )
-  }, [filter])
+  }, [alerts, filter, routeById, driverById, truckById])
 
-  const todayCount = allAlerts.length
+  const todayCount = alerts.length
 
   return (
     <div
@@ -116,12 +172,12 @@ export default function LiveOps() {
                 width: 7,
                 height: 7,
                 borderRadius: '50%',
-                background: 'var(--good)',
-                boxShadow: '0 0 0 3px var(--good-soft)',
+                background: error ? 'var(--bad)' : 'var(--good)',
+                boxShadow: `0 0 0 3px ${error ? 'var(--bad-soft)' : 'var(--good-soft)'}`,
               }}
             />
             <span style={{ fontSize: 12, color: 'var(--text-soft)' }}>
-              Fleet connection stable
+              {error ?? 'Fleet connection stable'}
             </span>
           </div>
         }
@@ -302,7 +358,7 @@ export default function LiveOps() {
               overflowY: 'auto',
             }}
           >
-            {feed.map(({ alert, route, driver, truck }) => {
+            {feed.map(({ alert, originDestination, plate, driverName }) => {
               const sev = severity[alert.severity_level]
               const resolved = alert.reviewed_by_operator
               return (
@@ -369,10 +425,7 @@ export default function LiveOps() {
                         marginTop: 3,
                       }}
                     >
-                      {truck?.plate_number ?? '—'} ·{' '}
-                      {driver
-                        ? `${driver.first_name} ${driver.last_name}`
-                        : '—'}
+                      {plate ?? '—'} · {driverName ?? '—'}
                     </div>
                     <div
                       style={{
@@ -381,10 +434,7 @@ export default function LiveOps() {
                         marginTop: 1,
                       }}
                     >
-                      {route
-                        ? `${route.origin_name} → ${route.destination_name}`
-                        : '—'}{' '}
-                      · {relativeTime(alert.timestamp)}
+                      {originDestination ?? '—'} · {relativeTime(alert.timestamp)}
                     </div>
                   </div>
                 </Link>

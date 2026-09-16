@@ -76,7 +76,23 @@ describe('Sidebar', () => {
     expect(screen.getByRole('link', { name: /Trip history/ })).toHaveTextContent(
       'soon',
     )
-    expect(screen.getByRole('link', { name: /Access/ })).toHaveTextContent('soon')
+  })
+
+  it('hides Access from a guardian session, but shows it (not "soon") for root_admin', () => {
+    renderSidebar()
+    expect(screen.queryByRole('link', { name: /Access/ })).not.toBeInTheDocument()
+
+    localStorage.setItem(
+      'argus.session',
+      JSON.stringify({
+        token: 'a-test-token',
+        user: { ...SESSION_USER, role: 'root_admin' },
+      }),
+    )
+    renderSidebar()
+    const access = screen.getAllByRole('link', { name: /Access/ }).at(-1)!
+    expect(access).toHaveAttribute('href', '/access')
+    expect(access).not.toHaveTextContent('soon')
   })
 
   it('highlights the active route', () => {
@@ -88,6 +104,21 @@ describe('Sidebar', () => {
     expect(
       screen.getByRole('link', { name: /Live operations/ }),
     ).not.toHaveAttribute('aria-current')
+  })
+
+  it('hides Fleet/Drivers/Routes & trips from a truck_driver session', () => {
+    localStorage.setItem(
+      'argus.session',
+      JSON.stringify({
+        token: 'a-test-token',
+        user: { ...SESSION_USER, role: 'truck_driver' },
+      }),
+    )
+    renderSidebar()
+    expect(screen.queryByRole('link', { name: /^Fleet$/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Drivers/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Routes & trips/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Live operations/ })).toBeInTheDocument()
   })
 
   it('clears the session and navigates to /login when the sign-out control is clicked', async () => {

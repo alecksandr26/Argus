@@ -1,92 +1,58 @@
-# INTEGRATION.md — backend connectivity: what's missing and where it plugs in
+# INTEGRATION.md — backend connectivity: what's wired and what's still open
 
-A map of every point in `ui-argus` where backend code needs to land, for whoever wires this
-frontend up to `src/backend-argus` (the FastAPI backend — now real code, not just a plan). All
-of this is still genuinely missing on the frontend side, despite the backend existing — this
-is a checklist, not a status report on work in progress here.
+A map of every point in `ui-argus` where backend code lands, for whoever touches this frontend
+next. Originally written when every screen still rendered `src/data/fixtures.ts`; that fixture
+file is now deleted and every screen fetches the real `src/backend-argus` API. This doc now
+tracks what's genuinely still open, not a checklist of what's missing.
 
-**As of the screen port:** every screen below is a real component rendering fake data from
-`src/data/fixtures.ts` (shapes in `src/types.ts`, now reconciled field-for-field with
-`src/backend-argus`'s Pydantic schemas — see that module's `CLAUDE.md` for the old ER-diagram
-names vs. the corrected ones actually implemented). The "Currently" column reflects the fixture
-state. Wiring a screen up = swap its `fixtures` import for an `src/api/*` call and delete the
-local-state mutation; the component structure stays. Endpoints referenced below are
-`src/backend-argus`'s real router paths (see that module's `CLAUDE.md`'s "Routes per resource");
-nothing here invents new ones except where explicitly flagged as a gap.
+## Cross-cutting gaps — status
 
-## Cross-cutting gaps (touch every screen, not just one)
-
-These aren't per-page — they're infrastructure every page below depends on, and none of it
-exists yet:
-
-1. **~~No API client~~ — resolved for login, the pattern exists now.** `src/api/client.ts`
-   (`apiFetch`, base URL from `VITE_API_BASE_URL`, `Authorization: Bearer` support, FastAPI
-   `detail` error normalization, a `setUnauthorizedHandler` hook for session-expiry) and
-   `src/api/auth.ts` (`login()`) are real, and every other resource follows the same pattern —
-   `src/api/trucks.ts`, `src/api/alerts.ts`, etc. still don't exist. Whether to add a
-   caching/data-fetching layer on top (TanStack Query is the common choice — it would materially
-   simplify the loading/error/refetch handling every table screen below needs) is still an open
-   decision, not made here. **Coordinate fields must be normalised at this boundary**: every
-   `Alert.coordinates`, `Status_Route.current_coordinates` and `Route.destination_coordinates`
-   from the API goes through `normalizeCoordinates()` in `src/utils/geo.ts` before it reaches a
-   component. It already handles `{lat,lon}` / `{lat,lng}` / `"lat,lon"` / bare GeoJSON position
-   / GeoJSON `Point` — MongoDB's `2dsphere` index stores points as GeoJSON
-   `{ type:'Point', coordinates:[lng,lat] }` (longitude first), which is neither the `{lat,lon}`
-   shape `src/types.ts` declares nor the `[lat,lng]` order Leaflet wants, so this conversion is
-   not optional. Rationale: `docs/designs/frontend-map-and-coordinates.md`.
-2. **Resolved.** `src/types.ts` models `User`, `Truck`, `Driver`, `Route`, `Status_Route`,
-   `Alert`, and now `LoginUser`/`LoginResponse` too, mirroring `src/backend-argus`'s Pydantic
-   schemas field-for-field — see that module's `CLAUDE.md` for the full table.
-3. **~~No auth/session state~~ — resolved.** `src/context/AuthContext.tsx` (`AuthProvider` +
-   `useAuth()`) holds `{ token, user }` in `localStorage` (key `argus.session`) and is the single
-   source of truth for the logged-in user — `Sidebar.tsx`'s footer reads it instead of the
-   retired `CURRENT_USER` fixture.
-4. **~~No route guarding~~ — resolved for authentication, not yet for role.**
-   `src/components/ProtectedRoute.tsx` gates the whole `AppLayout` route tree in `App.tsx`
-   behind a session (redirecting to `/login`, and back to the originally-requested page on
-   success). What's still open: a **role** check on top of that — `src/types.ts`'s `Role`
-   matches `src/backend-argus`'s `Role` enum exactly (`root_admin` / `guardian` /
-   `truck_driver`), so the role list itself isn't an open question, but `Sidebar.tsx` still
-   renders both nav-groups unconditionally regardless of the logged-in user's role — there's no
-   confirmed spec yet for which items each role should see, so this pass deliberately didn't
-   guess at one.
-5. **No real-time strategy decided.** The Control Tower dashboard's mockup shows a live
-   alert feed and live truck positions ("EN VIVO"). Polling `GET /api/alerts` on an interval
-   is the simplest option; a WebSocket/SSE push is the more genuine real-time fit and the one
-   that would actually exercise this project's "Sistemas Distribuidos" grading requirement
-   (see the top-level `CLAUDE.md`) — but nothing in the committed API list
-   (`semantic-design.drawio.xml`) specifies either yet. This needs a decision made with
-   whoever builds the backend, not assumed unilaterally on the frontend side. The map itself
-   now exists (`src/components/FleetMap.tsx`, `react-leaflet`, fixture-fed) — so the remaining
-   work here is the data source and refresh mechanism, not the map. Note `react-leaflet`'s
-   `MapContainer` `center`/`zoom`/`bounds` are init-only; `Marker` `position` *is* reactive,
-   so live positions move markers for free, but a `useMap()` child effect is needed to re-fit
-   the viewport when the fleet moves.
-6. **CORS** — resolved: `src/backend-argus`'s `CORSMiddleware` allows `http://localhost:5173`
-   (the Vite dev server origin) by default (`CORS_ORIGINS` config var), so this no longer needs
-   separate follow-up once the fetches below are wired up.
+1. **Resolved.** `src/api/client.ts` (`apiFetch`) plus one module per resource:
+   `src/api/{auth,me,users,trucks,drivers,routes,alerts}.ts`, all following the same pattern
+   (`token` param, `ApiError` on non-2xx). **Still open**: whether to add a caching/data-fetching
+   layer on top (TanStack Query) — every screen still does its own `useEffect` fetch into local
+   `useState`, no shared cache. **Coordinate normalization**: `routes.ts`/`alerts.ts` run every
+   `Route.destination_coordinates`/`Status_Route.current_coordinates`/`Alert.coordinates`
+   response through `normalizeCoordinates()` (`src/utils/geo.ts`) once, at the API-client layer,
+   per that file's own documented contract — components never see the raw wire shape.
+2. **Resolved.** `src/types.ts` mirrors `src/backend-argus`'s Pydantic schemas field-for-field,
+   including `RouteWithStatus` (the `GET /api/routes/active` shape) and the 4-role `Role` union.
+3. **Resolved.** `src/context/AuthContext.tsx` — session in `localStorage`, plus
+   `updateSessionUser()` so `Profile.tsx`'s self-edit reflects into the sidebar footer without a
+   re-login.
+4. **Resolved**, for both authentication and role. `src/components/ProtectedRoute.tsx` gates on
+   session; a new `src/components/RequireRole.tsx` adds a narrower per-route role gate (used for
+   `/access`). `src/components/Sidebar.tsx`'s `NavItem`s each carry an optional `roles` allow-list
+   and are filtered before render — see the per-screen table below for exactly who sees what.
+5. **Still open — polling, not push.** `LiveOps.tsx` polls `GET /api/routes/active` +
+   `GET /api/alerts` every 7s (`POLL_MS`). A WebSocket/SSE push would be the more genuine
+   real-time fit (and the one that exercises this project's "Sistemas Distribuidos" grading
+   requirement) but nothing in the committed API list specifies one yet — unchanged from before,
+   still a decision for whoever owns the backend next.
+6. **Resolved.** CORS already allowed the dev origin; no follow-up needed once fetches landed.
 
 ## Per-screen breakdown
 
-| Screen (file) | Endpoint(s) | Currently | Missing |
-|---|---|---|---|
-| `src/pages/Login.tsx` | `POST /api/auth/login` | **Done.** Real submit handler (SHA-256 pre-hash, see `CLAUDE.md`'s "Auth"), inline error display, on success stores the session and redirects back to the originally-requested page (or `/`) | Redirect-by-*role* specifically has nothing to redirect to yet — there's only one post-login destination (`/`), not separate per-role landing pages |
-| `src/App.tsx` (routing shell) | — | **Done.** `ProtectedRoute` gates the whole `AppLayout` tree behind a session; `/login` stays outside it | Role-based route restrictions (not just "logged in or not") once individual screens need them |
-| `src/components/Sidebar.tsx` | — | Footer now reads the logged-in user's name/initials/role from `AuthContext`; sign-out clears the session | Still shows **both** role nav-groups unconditionally — hiding the one a role can't see needs a confirmed spec first, not guessed here |
-| `src/pages/LiveOps.tsx` | `GET /api/routes/active` | Stat tiles / alert feed computed from fixtures; a real `react-leaflet` map (`FleetMap`) with one truck marker per `statusRoutes[]` row, positioned from `current_coordinates`; feed severity filter works; rows link to `/alerts/:id` | Fetching + the real-time strategy from gap #5 (feed `FleetMap` markers from live data; add a `useMap()` child effect to re-fit bounds as the fleet moves). **The "no endpoint lists all active routes" gap this row used to flag is now resolved**: `src/backend-argus` added `GET /api/routes/active`, returning in-progress routes each embedded with their latest status + truck/driver refs specifically for this screen — see that module's `CLAUDE.md` for why it's a dedicated endpoint rather than `?status=active` |
-| `src/pages/AlertTriage.tsx` | `GET /api/alerts/:id`, `PUT /api/alerts/:id` | Looks the alert up in fixtures by `:alertId` (`useParams`); "not found" state; review checkbox + notes are local state, "Save" flips a local flag | Fetch on mount; `PUT` `reviewed_by_operator`/`operator_notes` from the checkbox + textarea; **also unresolved**: `Alert.media_url` — how/where captured clips are stored and served (S3? the backend directly?) isn't decided anywhere yet, so the media placeholder has nothing real to point at |
-| `src/pages/Fleet.tsx` | `GET/POST/PUT/DELETE /api/trucks` | Table from fixtures with client-side search; row-select → edit panel; add/edit mutate a local `useState` copy | Swap the fixture import for a fetch; point the panel's submit at `POST`/`PUT`, add a delete affordance |
-| `src/pages/Drivers.tsx` | `GET/POST/PUT/DELETE /api/drivers` | Same shape as Fleet | Same as Fleet |
-| `src/pages/TravelManagement.tsx` | `GET/POST/PUT/DELETE /api/routes` | Route table from fixtures with search; "New route" form creates a `scheduled` row in local state | Fetch + real `POST`; the "computed with OSRM on confirm" note means the create submit calls OSRM (directly or backend-proxied — not decided) for `destination_coordinates`/`estimated_arrival` before saving — currently stubbed to `{lat:0,lon:0}` / `null` |
+| Screen (file) | Endpoint(s) | Status |
+|---|---|---|
+| `src/pages/Login.tsx` | `POST /api/auth/login` | Done (unchanged from before this pass). |
+| `src/pages/Profile.tsx` (**new**) | `GET`/`PUT /api/auth/me` | Done. Self-service email/name/phone/password edit for any authenticated role. No role/is_active control anywhere on this page — the backend schema doesn't even accept those fields on this endpoint. |
+| `src/pages/Access.tsx` (**new**) | `GET/POST/PUT/DELETE /api/users` | Done, role-aware. `root_admin` sees/manages every account; an `admin` session only ever sees/creates/edits **guardian** accounts (mirrors the backend's own scoping — the role `<select>` is locked to `guardian` for an admin actor). "Deactivate" (`PUT is_active:false`) and "Delete permanently" (`DELETE`, a real hard delete) are two distinct, separately-labeled buttons. Route-gated to `root_admin`/`admin` via `RequireRole`. |
+| `src/App.tsx` / `src/components/Sidebar.tsx` | — | Done. `/access` (root_admin/admin) and `/profile` (everyone) routes added; nav items filtered by role — `Fleet`/`Drivers`/`Routes & trips` visible to `root_admin`/`admin`/`guardian` (guardian's copy is read-only, enforced inside those pages — see below), hidden from `truck_driver`; `Access` visible only to `root_admin`/`admin`. |
+| `src/pages/LiveOps.tsx` | `GET /api/routes/active`, `GET /api/alerts` | Done. Polls both every 7s; markers/stat tiles come from `RouteWithStatus.latest_status`; alert feed resolves truck/driver names from active routes first, falling back to a one-time `GET /api/drivers`/`GET /api/trucks` fetch for alerts on routes that are no longer active. |
+| `src/pages/AlertTriage.tsx` | `GET /api/alerts/:id`, `GET /api/routes/:id`, `PUT /api/alerts/:id` | Done. Loading and "not found" are now genuinely distinct states. Review checkbox/notes/Save are `root_admin`/`guardian` only (matches `review_alert`'s real RBAC) — `admin`/`truck_driver` see a read-only summary instead. **Still unresolved**: `Alert.media_url` storage/serving (S3? the backend directly?) isn't decided anywhere, so the media placeholder still has nothing real to point at. |
+| `src/pages/Fleet.tsx` | `GET/POST/PUT /api/trucks` | Done. Write access (`Add truck` + edit Save) is `root_admin`/`admin` only; a `guardian` still sees the table and can open a row, but the panel renders read-only (disabled inputs, no Save). No delete affordance in the UI yet even though `DELETE /api/trucks/:id` exists server-side — not needed for the current workflow. |
+| `src/pages/Drivers.tsx` | `GET/POST/PUT /api/drivers` | Same shape and same gating as Fleet. |
+| `src/pages/TravelManagement.tsx` | `GET/POST /api/routes` | Done for create + list; write access (the "New route" panel) is `root_admin`/`admin` only, hidden entirely for `guardian`. **Still stubbed**: `destination_coordinates`/`estimated_arrival` are hardcoded (`{lat:0,lon:0}` / `null`) pending OSRM integration — unchanged from before, still out of scope for this pass. No edit/delete UI yet. |
 
 ## Explicitly not in scope yet
 
-Carried over from the earlier UI prioritization (see the top-level `CLAUDE.md` and the design
-canvas) — no page, route, or mockup exists for these, so there's nothing to wire up:
-
-- **Access Panel (`/api/users`)** — planned, root-only, not built.
 - **Reports Panel** — cut; no committed API/table effort behind it yet.
 - **Geofence management** — in the ER model, never appeared in the committed API list at all.
+- **OSRM integration** — `TravelManagement.tsx`'s create form still stubs
+  `destination_coordinates`/`estimated_arrival`; per the top-level `CLAUDE.md`, OSRM itself isn't
+  part of any Docker Compose stack yet either.
+- **A real-time push mechanism** for `LiveOps.tsx` (see cross-cutting gap #5).
 
-If any of these get prioritized later, this doc should grow a row for them rather than the
-work happening undocumented.
+If any of these get prioritized later, this doc should grow a row for them rather than the work
+happening undocumented.
