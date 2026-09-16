@@ -1,24 +1,27 @@
 # ui-argus
 
-The Argus web frontend — a React + TypeScript app (Vite) serving the two MVP roles,
-**Control Tower** (live monitoring) and **Administration / Logistics** (fleet/driver/route
-management). See `CLAUDE.md` in this directory for why it's built this way, and the
-top-level `CLAUDE.md` for how this fits the rest of Argus.
+The Argus web frontend — a React + TypeScript app (Vite) serving all four roles: **Control
+Tower** (`guardian`, read-only monitoring + alert review), **Administration / Logistics**
+(`root_admin` full control, `admin` scoped to trucks/drivers/routes), and `truck_driver`. See
+`CLAUDE.md` in this directory for why it's built this way, and the top-level `CLAUDE.md` for how
+this fits the rest of Argus.
 
-**Current status: login is wired to the real backend; the other five screens still run on fake
-data.** `Login` calls `POST /api/auth/login` for real (client-side SHA-256 pre-hash, see
-`CLAUDE.md`'s "Auth" section), stores the session, and every in-app route is now gated behind it
-via `ProtectedRoute` — the live-ops dashboard, alert triage, and the Fleet/Drivers/Routes CRUD
-screens are real components that still read from `src/data/fixtures.ts` for their own data,
-search filters, row selection, edit panels and create forms all working against local state. The
-live-ops dashboard has a real interactive map (**react-leaflet** + OpenStreetMap tiles, keyless)
-with a truck marker per live-status row. UI copy is in English (the design canvas is in Spanish;
-translated on request). What's **not** there yet: role-gating of the nav itself (both role groups
-still render), and any real backend call beyond login.
-`npm install`, lint, typecheck, build, and a real Vitest unit-test suite (53 tests) have all
-been run for real — see "Running the tests" below and CLAUDE.md's "Current status"/"Testing"
-sections — and **`INTEGRATION.md` for the checklist of where backend-connectivity code needs to
-land** (per screen, plus the cross-cutting gaps — real-time strategy, per-role nav gating).
+**Current status: every screen calls the real backend.** `src/data/fixtures.ts` is deleted —
+`Login`, `Fleet`, `Drivers`, `TravelManagement`, `LiveOps`, and `AlertTriage` all fetch from
+`src/backend-argus` via `src/api/*`, and two screens that never had fixture data at all now
+exist: **`Access`** (root_admin/admin user management — an admin session is scoped server-side
+to guardian accounts only) and **`Profile`** (self-service email/name/phone/password edit for
+any role). Role-based gating is real: `RequireRole` gates `/access`, `Sidebar.tsx`'s nav items
+are filtered per role, and `Fleet`/`Drivers`/`TravelManagement` render read-only (no Add/Save)
+for a `guardian` session instead of letting a write attempt fail with an unexplained 403. The
+live-ops dashboard polls `GET /api/routes/active` + `GET /api/alerts` every 7s for its map/feed
+(the interim real-time strategy — see `INTEGRATION.md` for the still-open WebSocket/SSE
+question). UI copy is in English (the design canvas is in Spanish; translated on request).
+`npm install`, lint, typecheck, build, and the full Vitest suite (65 tests across 13 files) have
+all been run for real against this exact code — see "Running the tests" below and `CLAUDE.md`'s
+"Current status"/"Testing" sections (including a real environment gotcha worth reading before
+you hit it yourself) — and **`INTEGRATION.md` for what's still genuinely open** (OSRM, a
+real-time push mechanism, `Alert.media_url` storage).
 
 ## Quick start (Docker — recommended)
 
@@ -61,14 +64,24 @@ npm install    # once
 npm run test
 ```
 
-53 tests across 9 files (Vitest + React Testing Library + jsdom) — component rendering/
-interaction (`RecordTable`, `SearchBox`, `Sidebar`, `StatusPill`, `Login`) and pure utility logic
-(`status.ts`, `format.ts`, `geo.ts`'s coordinate-shape adapter, `crypto.ts`'s `sha256Hex`).
-`Login`/`Sidebar` now mock `fetch`/seed `localStorage` to exercise the real auth flow end to
-end — everything else still renders against fixtures/props directly. See `CLAUDE.md`'s
-"Testing" section for what each file covers, what isn't covered yet, and a real gotcha hit while
-setting this up (React Testing Library's auto-cleanup needing an explicit `afterEach`, and
-jsdom's missing `crypto.subtle` needing a Node `webcrypto` polyfill in `src/test/setup.ts`).
+65 tests across 13 files (Vitest + React Testing Library + jsdom) — component rendering/
+interaction (`RecordTable`, `SearchBox`, `Sidebar`, `StatusPill`, `Login`, `RequireRole`) and
+pure utility logic (`status.ts`, `format.ts`, `geo.ts`'s coordinate-shape adapter, `crypto.ts`'s
+`sha256Hex`), plus real (mocked-`fetch`) network/role-gating flows: `Access.test.tsx`,
+`Profile.test.tsx`, and `Fleet.test.tsx` (write-gating: `root_admin` gets an editable panel,
+`guardian` gets a read-only one). See `CLAUDE.md`'s "Testing" section for what each file covers,
+what isn't covered yet, and two real gotchas hit while building this out (React Testing
+Library's auto-cleanup needing an explicit `afterEach`; jsdom's missing `crypto.subtle` needing
+a Node `webcrypto` polyfill in `src/test/setup.ts`).
+
+**Two environment gotchas, not code bugs — read this before assuming `npm run test` is broken**:
+this project needs **Node ≥22.14** (older Node 20.x hits an `ERR_REQUIRE_ESM` crash from a
+broken `html-encoding-sniffer`/`@exodus/bytes` combo in the committed lockfile — ESLint/`tsc`/
+the build are unaffected, only Vitest's jsdom environment). Separately, if this checkout lives
+under a Windows-mounted path in WSL2 (`/mnt/c/Users/...`), Vitest's workers may simply time out
+trying to start at all — run (or at least test) from a native Linux filesystem path instead if
+you hit `Timeout waiting for worker to respond` with zero tests actually running. See
+`CLAUDE.md`'s "Current status" for the full diagnosis of both.
 
 **This suite now also runs automatically inside `docker build`/`docker compose build`**, as a
 real gate — the `checks` stage runs `npm run lint` → `npm run test` → `npm run build` in order,
@@ -104,23 +117,24 @@ docker run --rm -p 8080:80 argus/ui-argus:prod
 - **Edits under `src/` aren't showing up in the Docker dev server** — this shouldn't happen
   (`vite.config.ts` forces polling specifically so bind-mount edits are always picked up); if
   it does, restart the container rather than digging into it first.
-- **`npm ci` instead of `npm install`** — the Dockerfile deliberately uses `npm install`.
-  `package-lock.json` now exists locally (generated by the first real `npm install`, when the
-  test tooling was added) but isn't committed yet — a deliberate pause on that specific decision,
-  not an oversight (see the Dockerfile's comment, and `CLAUDE.md`'s "Next steps"). Once it's
-  committed, switch the Dockerfile's `deps` stage to `npm ci` for reproducible installs.
+- **`npm ci` instead of `npm install`** — the Dockerfile still uses `npm install`.
+  `package-lock.json` **is committed** (since the "adding unit tests for UI" commit) — switching
+  the Dockerfile's `deps` stage to `npm ci` for reproducible installs is a real, small remaining
+  step, not blocked on anything anymore; see `CLAUDE.md`'s "Next steps".
+- **`npm run test` hangs or crashes outright** — see the two environment gotchas called out in
+  "Running the tests" above (Node version, WSL2 `/mnt/c` path) before assuming it's a code bug.
 
 ## Missing / not yet built
 
 Short pointer, not a duplicate — see `INTEGRATION.md` for the full per-screen breakdown, and
 `docs/roadmap.md` for how this fits the whole project's gaps:
 
-- Login, session storage, and route guarding are real now (`src/api/*`, `src/context/
-  AuthContext.tsx`, `src/components/ProtectedRoute.tsx`) — every other screen still reads
-  `src/data/fixtures.ts` for its own data, and the sidebar still shows both role nav-groups
-  unconditionally (no per-role nav gating yet, tracked in `INTEGRATION.md`).
-- No Reports panel, no Access/Users panel (creating other admins/guardians is only possible via
-  `POST /api/users` directly, not through the UI yet), no Geofence management, no dedicated
-  Truck Driver screen.
+- No Reports panel, no Geofence management, no dedicated Truck Driver screen — none of these
+  were in the first UI pass (no committed API/table effort behind them). Access (Users) and
+  Profile, previously in this same "not built" list, are done now.
 - `Alert.media_url`'s storage/serving story (S3? the backend directly?) isn't decided anywhere.
-- No real-time strategy decided for the live dashboard (polling vs. WebSocket/SSE).
+- No real-time push mechanism for the live dashboard — currently polling every 7s.
+- OSRM integration for `TravelManagement`'s create form — `destination_coordinates`/
+  `estimated_arrival` are still stubbed.
+- No shared data-fetching/caching layer (TanStack Query or similar) — every screen does its own
+  `useEffect` fetch.

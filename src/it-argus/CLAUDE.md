@@ -85,6 +85,11 @@ the full stack (its own Mongo, `backend-argus`, `ui-argus`) and all 4 specs in
 deep link redirecting to `/login` and back after signing in, and sign-out re-protecting a route.
 Getting there surfaced two real bugs this module's own existence was the point of catching (see
 "Docker Compose" above for the network/secure-context one) — proof this harness earns its cost,
-not just a plan for one. Nothing else is covered yet — extend this suite alongside `ui-argus`'s
-other screens as they get wired to the real backend (see that module's `INTEGRATION.md`), the
-same way its own Vitest suite is meant to grow alongside `src/api/*`.
+not just a plan for one. **Nothing else is covered yet — and this is now a real gap, not a
+future hypothetical**: every `ui-argus` screen (Fleet, Drivers, Routes & trips, Live operations,
+Alert triage, plus the new Access and Profile screens) is wired to the real `backend-argus` API
+now, with real role-based gating (a 4th `admin` role, `RequireRole`, read-only views for roles
+without write access) that this suite exercises none of. Extending this suite to cover at least
+one full round-trip per role — an alert actually landing on a guardian's dashboard, an admin
+being blocked from `/access`'s root_admin-only actions — is the natural next step, the same way
+`ui-argus`'s own Vitest suite is meant to grow alongside `src/api/*`.
