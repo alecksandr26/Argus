@@ -110,6 +110,30 @@ const PATHS = {
       strokeLinejoin="round"
     />
   ),
+  settings: (
+    <>
+      <circle cx="12" cy="12" r="3.2" />
+      <path
+        d="M12 3v2.4M12 18.6V21M4.2 4.2l1.7 1.7M18.1 18.1l1.7 1.7M3 12h2.4M18.6 12H21M4.2 19.8l1.7-1.7M18.1 5.9l1.7-1.7"
+        strokeLinecap="round"
+      />
+    </>
+  ),
+  edit: <path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3Z" strokeLinejoin="round" />,
+  trash: (
+    <path
+      d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-9 0 1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  ),
+  'user-plus': (
+    <>
+      <circle cx="9" cy="8" r="3.4" />
+      <path d="M2.5 20c1.2-3.6 3.6-5 6.5-5s5.3 1.4 6.5 5" strokeLinecap="round" />
+      <path d="M19 8v6M16 11h6" strokeLinecap="round" />
+    </>
+  ),
 } satisfies Record<string, ReactNode>
 
 export type IconName = keyof typeof PATHS

@@ -1,40 +1,110 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import Icon from '../components/Icon'
-import {
-  alertById,
-  driverById,
-  routeById,
-  truckById,
-} from '../data/fixtures'
+import { useAuth } from '../context/AuthContext'
+import { getAlert, reviewAlert } from '../api/alerts'
+import { getRoute } from '../api/routes'
+import { listDrivers } from '../api/drivers'
+import { listTrucks } from '../api/trucks'
+import { ApiError } from '../api/client'
 import { clock, pct, relativeTime, shortDate } from '../utils/format'
 import { severity } from '../utils/status'
+import type { Alert, Driver, Route, Truck } from '../types'
 
 /**
- * Mockup: "Control Tower — Alert triage". Looks the alert up by the `:alertId`
- * route param. The review checkbox + notes are local state and "Save" only
- * flips a local `saved` flag — wiring is `PUT /api/alerts/:id` with
- * `reviewed_by_operator` / `operator_notes` (INTEGRATION.md, AlertTriage row).
+ * "Control Tower — Alert triage" against the real `GET`/`PUT /api/alerts/:id`. Loading and
+ * "not found" are now genuinely distinct states (they were conflated in the fixture-era
+ * version). Review controls (checkbox/notes/Save) are `root_admin`/`guardian` only — matches
+ * `review_alert`'s real backend `require_role`; `admin`/`truck_driver` see a read-only summary.
  */
 export default function AlertTriage() {
   const { alertId } = useParams()
-  const alert = alertId ? alertById(alertId) : undefined
+  const { session } = useAuth()
+  const token = session!.token
+  const canReview = session!.user.role === 'root_admin' || session!.user.role === 'guardian'
 
-  const ctx = useMemo(() => {
-    if (!alert) return null
-    const route = routeById(alert.id_route)
-    return {
-      route,
-      driver: route && driverById(route.id_driver),
-      truck: route && truckById(route.id_truck),
-    }
-  }, [alert])
+  const [alert, setAlert] = useState<Alert | null>(null)
+  const [route, setRoute] = useState<Route | null>(null)
+  const [driver, setDriver] = useState<Driver | null>(null)
+  const [truck, setTruck] = useState<Truck | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [notFound, setNotFound] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  const [reviewed, setReviewed] = useState(alert?.reviewed_by_operator ?? false)
-  const [notes, setNotes] = useState(alert?.operator_notes ?? '')
+  const [reviewed, setReviewed] = useState(false)
+  const [notes, setNotes] = useState('')
   const [saved, setSaved] = useState(false)
+  const [saving, setSaving] = useState(false)
 
-  if (!alert) {
+  useEffect(() => {
+    if (!alertId) {
+      setLoading(false)
+      setNotFound(true)
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+    setNotFound(false)
+    getAlert(alertId, token)
+      .then(async (a) => {
+        if (cancelled) return
+        setAlert(a)
+        setReviewed(a.reviewed_by_operator)
+        setNotes(a.operator_notes)
+        const [r, drivers, trucks] = await Promise.all([
+          getRoute(a.id_route, token),
+          listDrivers(token),
+          listTrucks(token),
+        ])
+        if (cancelled) return
+        setRoute(r)
+        setDriver(drivers.find((d) => d.id_driver === r.id_driver) ?? null)
+        setTruck(trucks.find((t) => t.id_truck === r.id_truck) ?? null)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        if (err instanceof ApiError && err.status === 404) {
+          setNotFound(true)
+        } else {
+          setError(err instanceof ApiError ? err.message : 'Failed to load alert')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [alertId, token])
+
+  async function save() {
+    if (!alert) return
+    setSaving(true)
+    setError(null)
+    try {
+      const updated = await reviewAlert(
+        alert.id_alert,
+        { reviewed_by_operator: reviewed, operator_notes: notes },
+        token,
+      )
+      setAlert(updated)
+      setSaved(true)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to save review')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div style={{ padding: '24px 28px', color: 'var(--text-faint)', fontSize: 13 }}>
+        Loading alert…
+      </div>
+    )
+  }
+
+  if (notFound || !alert) {
     return (
       <div style={{ padding: '24px 28px' }}>
         <Link
@@ -81,11 +151,6 @@ export default function AlertTriage() {
     { label: 'Drowsy', value: alert.ai_metadata.scores.drowsy, color: 'var(--bad)' },
   ]
 
-  function save() {
-    // TODO(INTEGRATION.md): PUT /api/alerts/:id { reviewed_by_operator, operator_notes }
-    setSaved(true)
-  }
-
   return (
     <div
       style={{
@@ -110,6 +175,12 @@ export default function AlertTriage() {
         <Icon name="chevron-left" size={14} />
         Back to Live operations
       </Link>
+
+      {error && (
+        <div role="alert" style={{ color: 'var(--danger, #e5484d)', fontSize: 13 }}>
+          {error}
+        </div>
+      )}
 
       <div
         style={{
@@ -179,20 +250,14 @@ export default function AlertTriage() {
       >
         <Ctx label="Truck">
           <span className="mono">
-            {ctx?.truck
-              ? `${ctx.truck.plate_number} · ${ctx.truck.company_number}`
-              : '—'}
+            {truck ? `${truck.plate_number} · ${truck.company_number}` : '—'}
           </span>
         </Ctx>
         <Ctx label="Driver">
-          {ctx?.driver
-            ? `${ctx.driver.first_name} ${ctx.driver.last_name}`
-            : '—'}
+          {driver ? `${driver.first_name} ${driver.last_name}` : '—'}
         </Ctx>
         <Ctx label="Route">
-          {ctx?.route
-            ? `${ctx.route.origin_name} → ${ctx.route.destination_name}`
-            : '—'}
+          {route ? `${route.origin_name} → ${route.destination_name}` : '—'}
         </Ctx>
         <Ctx label="Speed at event">
           <span className="mono">{alert.speed_at_event} km/h</span>
@@ -332,86 +397,103 @@ export default function AlertTriage() {
             overflowY: 'auto',
           }}
         >
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
-              Immediate actions
+          {canReview && (
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+                Immediate actions
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <button
+                  className="btn btn--danger"
+                  style={{ justifyContent: 'flex-start' }}
+                >
+                  <Icon name="siren" size={16} strokeWidth={1.8} />
+                  Trigger in-cab alarm
+                </button>
+                <button className="btn" style={{ justifyContent: 'flex-start' }}>
+                  <Icon name="phone" size={16} />
+                  Contact the driver
+                </button>
+                <button className="btn" style={{ justifyContent: 'flex-start' }}>
+                  <Icon name="building" size={16} />
+                  Notify logistics
+                </button>
+              </div>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <button
-                className="btn btn--danger"
-                style={{ justifyContent: 'flex-start' }}
-              >
-                <Icon name="siren" size={16} strokeWidth={1.8} />
-                Trigger in-cab alarm
-              </button>
-              <button className="btn" style={{ justifyContent: 'flex-start' }}>
-                <Icon name="phone" size={16} />
-                Contact the driver
-              </button>
-              <button className="btn" style={{ justifyContent: 'flex-start' }}>
-                <Icon name="building" size={16} />
-                Notify logistics
-              </button>
-            </div>
-          </div>
+          )}
 
-          <div style={{ height: 1, background: 'var(--border-soft)' }} />
+          {canReview && <div style={{ height: 1, background: 'var(--border-soft)' }} />}
 
           <div>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
               Operator review
             </div>
-            <label
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                fontSize: 12.5,
-                color: 'var(--text-soft)',
-                marginBottom: 10,
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={reviewed}
-                onChange={(e) => {
-                  setReviewed(e.target.checked)
-                  setSaved(false)
-                }}
-                style={{
-                  accentColor: 'var(--accent)',
-                  width: 14,
-                  height: 14,
-                }}
-              />
-              Mark alert as reviewed
-            </label>
-            <textarea
-              className="input"
-              rows={5}
-              placeholder="Operator notes — what was observed, what action was taken…"
-              value={notes}
-              onChange={(e) => {
-                setNotes(e.target.value)
-                setSaved(false)
-              }}
-            />
-          </div>
-
-          <button
-            className="btn btn--accent btn--block"
-            style={{ marginTop: 'auto', padding: 12 }}
-            onClick={save}
-            disabled={saved}
-          >
-            {saved ? (
+            {canReview ? (
               <>
-                <Icon name="check" size={15} strokeWidth={2} /> Saved
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    fontSize: 12.5,
+                    color: 'var(--text-soft)',
+                    marginBottom: 10,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={reviewed}
+                    onChange={(e) => {
+                      setReviewed(e.target.checked)
+                      setSaved(false)
+                    }}
+                    style={{
+                      accentColor: 'var(--accent)',
+                      width: 14,
+                      height: 14,
+                    }}
+                  />
+                  Mark alert as reviewed
+                </label>
+                <textarea
+                  className="input"
+                  rows={5}
+                  placeholder="Operator notes — what was observed, what action was taken…"
+                  value={notes}
+                  onChange={(e) => {
+                    setNotes(e.target.value)
+                    setSaved(false)
+                  }}
+                />
               </>
             ) : (
-              'Save and close alert'
+              <div style={{ fontSize: 12.5, color: 'var(--text-soft)' }}>
+                <p style={{ margin: '0 0 8px' }}>
+                  {reviewed ? 'Reviewed' : 'Not yet reviewed'}
+                </p>
+                {notes && <p style={{ margin: 0, color: 'var(--text-faint)' }}>{notes}</p>}
+              </div>
             )}
-          </button>
+          </div>
+
+          {canReview && (
+            <button
+              className="btn btn--accent btn--block"
+              style={{ marginTop: 'auto', padding: 12 }}
+              onClick={save}
+              disabled={saved || saving}
+            >
+              {saving ? (
+                'Saving…'
+              ) : saved ? (
+                <>
+                  <Icon name="check" size={15} strokeWidth={2} /> Saved
+                </>
+              ) : (
+                'Save and close alert'
+              )}
+            </button>
+          )}
         </div>
       </div>
     </div>

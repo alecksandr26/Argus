@@ -76,6 +76,25 @@ diagram's name. This is a deliberate kept rename, not an unnoticed divergence fr
   spec, so a production deployment served over plain HTTP simply can't compute this and login
   fails outright, a deliberate nudge toward HTTPS rather than a bug to route around.
 
+### Self-service profile — `GET`/`PUT /api/auth/me`
+
+`/api/users/*` is entirely `root_admin`/scoped-`admin`-gated — even `GET` — so there was no way
+for a `guardian`/`truck_driver` (or anyone) to view or edit their *own* email/name/phone/
+password. These two routes live in `app/routers/auth.py`, not `users.py`, specifically because
+`users.py`'s auth check needed to stay a per-route `Depends(require_role(...))` (see "RBAC" above)
+and adding a third, role-unrestricted route to that same router would be an easy place to
+accidentally weaken that scoping later. Both routes are gated by `Depends(get_current_user)`
+only — any authenticated role, no `/api/users` access needed:
+
+- `GET /api/auth/me` returns the caller's own full `UserOut` (safe — it's read-only and it's
+  their own data).
+- `PUT /api/auth/me` takes a new `MeUpdate` schema (`app/schemas/auth.py`) that has **no**
+  `role`/`is_active` fields defined on it at all — not permission-checked, structurally
+  impossible to send. A `role`/`is_active` key in the raw JSON body is silently dropped by
+  Pydantic rather than erroring, so self-service profile editing can never be used to escalate
+  privilege or reactivate a deactivated account; both stay exclusively `root_admin`'s (or, for
+  guardians, a scoped `admin`'s) job via `/api/users/{id}`.
+
 ### Root admin bootstrap
 
 Before this, there was no way to get the *first* `root_admin` into a real deployment at all:
@@ -93,17 +112,34 @@ raw password actually works. Dev-safe-but-flagged defaults (`admin@argus.dev` / 
 deliberately match `scripts/seed_dev_data.py`'s own credentials, so a bare `docker compose up`
 and a later seed-script run agree rather than fight over the same account.
 
-### RBAC — three roles
+### RBAC — four roles
 
-`Role` (`root_admin` / `guardian` / `truck_driver`) reads directly off the root `CLAUDE.md`'s
-"Three actor roles" bullet, replacing `ui-argus`'s placeholder `'guard' | 'admin'` guess (its
-`src/types.ts` doc comment flagged this as unreconciled pending a real backend).
+`Role` (`root_admin` / `admin` / `guardian` / `truck_driver`). The first three originally read
+directly off the root `CLAUDE.md`'s "Three actor roles" bullet; `admin` was added later as a
+deliberate product decision (an operations role — schedules routes, manages the truck/driver
+roster — distinct from `root_admin`'s full control and `guardian`'s read-only monitoring), not
+something any design doc anticipated in advance.
 
 | Role | Users | Trucks/Drivers | Routes | Status_Route | Alerts |
 |---|---|---|---|---|---|
-| `root_admin` | full CRUD | full CRUD | full CRUD | read | full CRUD |
+| `root_admin` | full CRUD (any role) | full CRUD | full CRUD | read | full CRUD |
+| `admin` | scoped: create/view/edit/deactivate **`guardian`-role accounts only** — see below | full CRUD | full CRUD | read | none |
 | `guardian` | none | read-only | read-only | read-only | read + review (`PUT`) only |
 | `truck_driver` | none | read | read | read | read |
+
+**`admin`'s user-management scope is narrow and enforced server-side, not just by convention**:
+`app/routers/users.py` moved its auth check from a router-level `dependencies=[...]` (whose
+return value isn't injectable) to a per-route `actor: User = Depends(require_role(Role.ROOT_ADMIN,
+Role.ADMIN))` parameter, so every handler can reason about *whose* request this is:
+
+- `list_users`/`get_user`/`update_user`/`delete_user`: an `admin` actor touching a
+  non-`guardian` target (including another `admin`, or `root_admin` itself) gets **404**, not
+  403 — this is deliberate: an `admin` shouldn't even be able to detect that another admin/
+  root_admin account exists by probing ids, not just be blocked from editing it.
+- `create_user`/`update_user`: an `admin` actor supplying a non-`guardian` `role` (on create, or
+  trying to change an existing guardian's role away from `guardian` on update) gets **403** —
+  can't use this endpoint to create or promote an account into `admin`/`root_admin`.
+- `root_admin` is completely unrestricted on all of the above, always.
 
 **Known RBAC gap, not hidden**: the plan called for `truck_driver` to see only *their own*
 truck/route/alerts, but the ER diagram has no `User` → `Driver`/`Truck` link to scope by — a

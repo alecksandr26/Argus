@@ -1,17 +1,19 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import PageHeader from '../components/PageHeader'
 import SearchBox from '../components/SearchBox'
 import RecordTable, { type Column } from '../components/RecordTable'
 import StatusPill from '../components/StatusPill'
 import Icon from '../components/Icon'
-import { drivers as seedDrivers } from '../data/fixtures'
+import { useAuth } from '../context/AuthContext'
+import { createDriver, listDrivers, updateDriver } from '../api/drivers'
+import { ApiError } from '../api/client'
 import { daysUntil, shortDate } from '../utils/format'
 import { driverStatus } from '../utils/status'
 import type { Driver, DriverStatus } from '../types'
 
 /**
- * Mockup: "Administration — Drivers". CRUD over the `Driver` entity in local
- * state, same pattern as Fleet. Wiring target: `GET/POST/PUT/DELETE /api/drivers`.
+ * "Administration — Drivers". CRUD over the `Driver` entity against the real
+ * `GET/POST/PUT /api/drivers`, same read-only-for-guardian pattern as `Fleet.tsx`.
  */
 
 const STATUS_OPTIONS: DriverStatus[] = [
@@ -61,10 +63,35 @@ const toDraft = (d: Driver): Draft => ({
 })
 
 export default function Drivers() {
-  const [list, setList] = useState<Driver[]>(seedDrivers)
+  const { session } = useAuth()
+  const token = session!.token
+  const canWrite = session!.user.role === 'root_admin' || session!.user.role === 'admin'
+
+  const [list, setList] = useState<Driver[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [draft, setDraft] = useState<Draft | null>(null)
   const [mode, setMode] = useState<'edit' | 'create' | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    listDrivers(token)
+      .then((drivers) => {
+        if (!cancelled) setList(drivers)
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof ApiError ? err.message : 'Failed to load drivers')
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [token])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -94,25 +121,35 @@ export default function Drivers() {
     setDraft(null)
     setMode(null)
   }
-  function save() {
+  async function save() {
     if (!draft) return
-    const now = new Date().toISOString()
-    if (mode === 'create') {
-      const id = `drv-${Math.random().toString(36).slice(2, 7)}`
-      setList((prev) => [
-        { ...draft, id_driver: id, created_at: now, updated_at: now },
-        ...prev,
-      ])
-    } else {
-      setList((prev) =>
-        prev.map((d) =>
-          d.id_driver === draft.id_driver
-            ? { ...d, ...draft, updated_at: now }
-            : d,
-        ),
-      )
+    setSaving(true)
+    setError(null)
+    const input = {
+      first_name: draft.first_name,
+      last_name: draft.last_name,
+      license_number: draft.license_number,
+      license_expiration: draft.license_expiration,
+      phone_number: draft.phone_number,
+      emergency_contact_name: draft.emergency_contact_name,
+      emergency_contact_phone: draft.emergency_contact_phone,
+      blood_type: draft.blood_type,
+      operative_status: draft.operative_status,
     }
-    closePanel()
+    try {
+      if (mode === 'create') {
+        const created = await createDriver(input, token)
+        setList((prev) => [created, ...prev])
+      } else {
+        const updated = await updateDriver(draft.id_driver, input, token)
+        setList((prev) => prev.map((d) => (d.id_driver === updated.id_driver ? updated : d)))
+      }
+      closePanel()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to save driver')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const columns: Column<Driver>[] = [
@@ -189,13 +226,21 @@ export default function Drivers() {
                 onChange={setQuery}
                 placeholder="Search name or license…"
               />
-              <button className="btn btn--accent" onClick={startCreate}>
-                <Icon name="plus" size={15} strokeWidth={2} />
-                Add driver
-              </button>
+              {canWrite && (
+                <button className="btn btn--accent" onClick={startCreate}>
+                  <Icon name="plus" size={15} strokeWidth={2} />
+                  Add driver
+                </button>
+              )}
             </>
           }
         />
+
+        {error && (
+          <div role="alert" style={{ color: 'var(--danger, #e5484d)', fontSize: 13 }}>
+            {error}
+          </div>
+        )}
 
         <RecordTable
           columns={columns}
@@ -203,7 +248,7 @@ export default function Drivers() {
           getId={(d) => d.id_driver}
           selectedId={draft?.id_driver}
           onSelect={selectRow}
-          emptyLabel="No driver matches the search."
+          emptyLabel={loading ? 'Loading drivers…' : 'No driver matches the search.'}
         />
       </div>
 
@@ -211,6 +256,8 @@ export default function Drivers() {
         <EditPanel
           draft={draft}
           mode={mode}
+          readOnly={!canWrite}
+          saving={saving}
           onChange={setDraft}
           onCancel={closePanel}
           onSave={save}
@@ -223,12 +270,16 @@ export default function Drivers() {
 function EditPanel({
   draft,
   mode,
+  readOnly,
+  saving,
   onChange,
   onCancel,
   onSave,
 }: {
   draft: Draft
   mode: 'edit' | 'create' | null
+  readOnly: boolean
+  saving: boolean
   onChange: (d: Draft) => void
   onCancel: () => void
   onSave: () => void
@@ -257,7 +308,7 @@ function EditPanel({
         }}
       >
         <span style={{ fontSize: 14, fontWeight: 600 }}>
-          {mode === 'create' ? 'New driver' : 'Edit driver'}
+          {readOnly ? 'View driver' : mode === 'create' ? 'New driver' : 'Edit driver'}
         </span>
         <button
           onClick={onCancel}
@@ -314,6 +365,7 @@ function EditPanel({
           <input
             className="input"
             value={draft.first_name}
+            disabled={readOnly}
             onChange={(e) => set({ first_name: e.target.value })}
           />
         </label>
@@ -322,6 +374,7 @@ function EditPanel({
           <input
             className="input"
             value={draft.last_name}
+            disabled={readOnly}
             onChange={(e) => set({ last_name: e.target.value })}
           />
         </label>
@@ -332,6 +385,7 @@ function EditPanel({
           <input
             className="input mono"
             value={draft.license_number}
+            disabled={readOnly}
             onChange={(e) => set({ license_number: e.target.value })}
           />
         </label>
@@ -341,6 +395,7 @@ function EditPanel({
             className="input mono"
             type="date"
             value={draft.license_expiration}
+            disabled={readOnly}
             onChange={(e) => set({ license_expiration: e.target.value })}
           />
         </label>
@@ -350,6 +405,7 @@ function EditPanel({
         <input
           className="input mono"
           value={draft.phone_number}
+          disabled={readOnly}
           onChange={(e) => set({ phone_number: e.target.value })}
         />
       </label>
@@ -370,6 +426,7 @@ function EditPanel({
           <input
             className="input"
             value={draft.emergency_contact_name}
+            disabled={readOnly}
             onChange={(e) =>
               set({ emergency_contact_name: e.target.value })
             }
@@ -380,6 +437,7 @@ function EditPanel({
           <input
             className="input mono"
             value={draft.emergency_contact_phone}
+            disabled={readOnly}
             onChange={(e) =>
               set({ emergency_contact_phone: e.target.value })
             }
@@ -392,6 +450,7 @@ function EditPanel({
           <input
             className="input mono"
             value={draft.blood_type}
+            disabled={readOnly}
             onChange={(e) => set({ blood_type: e.target.value })}
           />
         </label>
@@ -400,6 +459,7 @@ function EditPanel({
           <select
             className="input"
             value={draft.operative_status}
+            disabled={readOnly}
             onChange={(e) =>
               set({ operative_status: e.target.value as DriverStatus })
             }
@@ -415,11 +475,13 @@ function EditPanel({
 
       <div style={{ display: 'flex', gap: 10, marginTop: 'auto' }}>
         <button className="btn btn--block" onClick={onCancel}>
-          Cancel
+          {readOnly ? 'Close' : 'Cancel'}
         </button>
-        <button className="btn btn--accent btn--block" onClick={onSave}>
-          {mode === 'create' ? 'Create driver' : 'Save changes'}
-        </button>
+        {!readOnly && (
+          <button className="btn btn--accent btn--block" onClick={onSave} disabled={saving}>
+            {saving ? 'Saving…' : mode === 'create' ? 'Create driver' : 'Save changes'}
+          </button>
+        )}
       </div>
     </div>
   )

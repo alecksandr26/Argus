@@ -40,14 +40,20 @@ class TimestampedDocument(Document):
 
 
 class Role(str, Enum):
-    """The three actor roles named in the root CLAUDE.md's "Three actor roles" bullet.
+    """The four actor roles.
 
-    Replaces `ui-argus`'s placeholder `'guard' | 'admin'` guess (its `src/types.ts` doc comment
-    flagged these as unreconciled with the backend) — these three names read directly off the
-    root CLAUDE.md prose rather than inventing new terms.
+    `ROOT_ADMIN`/`GUARDIAN`/`TRUCK_DRIVER` read directly off the root CLAUDE.md's original
+    "Three actor roles" bullet. `ADMIN` was added later, deliberately: an operations role
+    (schedules routes, manages the truck/driver roster) distinct from `ROOT_ADMIN` (the
+    owner/bootstrap account, the only role with user-management access) and from `GUARDIAN`
+    (read-only safety monitoring + alert review). `ADMIN` has a narrow, scoped exception to
+    "no user-management access": it may create/manage `GUARDIAN`-role accounts only — see
+    `app/routers/users.py`'s per-route scoping for the enforcement. No design doc predates this
+    role; it was a deliberate decision, not a diagram correction like the other three names.
     """
 
     ROOT_ADMIN = "root_admin"
+    ADMIN = "admin"
     GUARDIAN = "guardian"
     TRUCK_DRIVER = "truck_driver"
 

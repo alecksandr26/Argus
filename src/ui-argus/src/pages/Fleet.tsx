@@ -1,18 +1,21 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import PageHeader from '../components/PageHeader'
 import SearchBox from '../components/SearchBox'
 import RecordTable, { type Column } from '../components/RecordTable'
 import StatusPill from '../components/StatusPill'
 import Icon from '../components/Icon'
-import { trucks as seedTrucks } from '../data/fixtures'
+import { useAuth } from '../context/AuthContext'
+import { createTruck, listTrucks, updateTruck } from '../api/trucks'
+import { ApiError } from '../api/client'
 import { relativeTime } from '../utils/format'
 import { truckStatus } from '../utils/status'
 import type { Truck, TruckStatus } from '../types'
 
 /**
- * Mockup: "Administration — Fleet". CRUD over the `Truck` entity, all in local
- * state — the list starts from the fixtures and "Save" mutates a `useState`
- * copy. Wiring target: `GET/POST/PUT/DELETE /api/trucks` (INTEGRATION.md).
+ * "Administration — Fleet". CRUD over the `Truck` entity against the real
+ * `GET/POST/PUT /api/trucks`. Write access (add/edit) is `root_admin`/`admin` only — a
+ * `guardian` still sees this screen (INTEGRATION.md), just in a read-only view: the panel
+ * opens for browsing but its inputs are disabled and there's no Save button.
  */
 
 const STATUS_OPTIONS: TruckStatus[] = [
@@ -56,10 +59,35 @@ const toDraft = (t: Truck): Draft => ({
 })
 
 export default function Fleet() {
-  const [list, setList] = useState<Truck[]>(seedTrucks)
+  const { session } = useAuth()
+  const token = session!.token
+  const canWrite = session!.user.role === 'root_admin' || session!.user.role === 'admin'
+
+  const [list, setList] = useState<Truck[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [draft, setDraft] = useState<Draft | null>(null)
   const [mode, setMode] = useState<'edit' | 'create' | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    listTrucks(token)
+      .then((trucks) => {
+        if (!cancelled) setList(trucks)
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof ApiError ? err.message : 'Failed to load fleet')
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [token])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -91,38 +119,33 @@ export default function Fleet() {
     setMode(null)
   }
 
-  function save() {
+  async function save() {
     if (!draft) return
-    const now = new Date().toISOString()
-    if (mode === 'create') {
-      const id = `trk-${Math.random().toString(36).slice(2, 7)}`
-      setList((prev) => [
-        {
-          ...draft,
-          id_truck: id,
-          raspberry_pi_mac: draft.raspberry_pi_mac || null,
-          esp32_id: draft.esp32_id || null,
-          created_at: now,
-          updated_at: now,
-        },
-        ...prev,
-      ])
-    } else {
-      setList((prev) =>
-        prev.map((t) =>
-          t.id_truck === draft.id_truck
-            ? {
-                ...t,
-                ...draft,
-                raspberry_pi_mac: draft.raspberry_pi_mac || null,
-                esp32_id: draft.esp32_id || null,
-                updated_at: now,
-              }
-            : t,
-        ),
-      )
+    setSaving(true)
+    setError(null)
+    const input = {
+      plate_number: draft.plate_number,
+      brand: draft.brand,
+      model: draft.model,
+      company_number: draft.company_number,
+      raspberry_pi_mac: draft.raspberry_pi_mac || null,
+      esp32_id: draft.esp32_id || null,
+      operative_status: draft.operative_status,
     }
-    closePanel()
+    try {
+      if (mode === 'create') {
+        const created = await createTruck(input, token)
+        setList((prev) => [created, ...prev])
+      } else {
+        const updated = await updateTruck(draft.id_truck, input, token)
+        setList((prev) => prev.map((t) => (t.id_truck === updated.id_truck ? updated : t)))
+      }
+      closePanel()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to save truck')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const columns: Column<Truck>[] = [
@@ -198,13 +221,21 @@ export default function Fleet() {
                 onChange={setQuery}
                 placeholder="Search plate or model…"
               />
-              <button className="btn btn--accent" onClick={startCreate}>
-                <Icon name="plus" size={15} strokeWidth={2} />
-                Add truck
-              </button>
+              {canWrite && (
+                <button className="btn btn--accent" onClick={startCreate}>
+                  <Icon name="plus" size={15} strokeWidth={2} />
+                  Add truck
+                </button>
+              )}
             </>
           }
         />
+
+        {error && (
+          <div role="alert" style={{ color: 'var(--danger, #e5484d)', fontSize: 13 }}>
+            {error}
+          </div>
+        )}
 
         <RecordTable
           columns={columns}
@@ -212,7 +243,7 @@ export default function Fleet() {
           getId={(t) => t.id_truck}
           selectedId={draft?.id_truck}
           onSelect={selectRow}
-          emptyLabel="No truck matches the search."
+          emptyLabel={loading ? 'Loading fleet…' : 'No truck matches the search.'}
         />
       </div>
 
@@ -220,6 +251,8 @@ export default function Fleet() {
         <EditPanel
           draft={draft}
           mode={mode}
+          readOnly={!canWrite}
+          saving={saving}
           onChange={setDraft}
           onCancel={closePanel}
           onSave={save}
@@ -232,12 +265,16 @@ export default function Fleet() {
 function EditPanel({
   draft,
   mode,
+  readOnly,
+  saving,
   onChange,
   onCancel,
   onSave,
 }: {
   draft: Draft
   mode: 'edit' | 'create' | null
+  readOnly: boolean
+  saving: boolean
   onChange: (d: Draft) => void
   onCancel: () => void
   onSave: () => void
@@ -265,7 +302,7 @@ function EditPanel({
         }}
       >
         <span style={{ fontSize: 14, fontWeight: 600 }}>
-          {mode === 'create' ? 'New truck' : 'Edit truck'}
+          {readOnly ? 'View truck' : mode === 'create' ? 'New truck' : 'Edit truck'}
         </span>
         <button
           onClick={onCancel}
@@ -299,6 +336,7 @@ function EditPanel({
         <input
           className="input mono"
           value={draft.plate_number}
+          disabled={readOnly}
           onChange={(e) => set({ plate_number: e.target.value })}
         />
       </label>
@@ -308,6 +346,7 @@ function EditPanel({
           <input
             className="input"
             value={draft.brand}
+            disabled={readOnly}
             onChange={(e) => set({ brand: e.target.value })}
           />
         </label>
@@ -316,6 +355,7 @@ function EditPanel({
           <input
             className="input"
             value={draft.model}
+            disabled={readOnly}
             onChange={(e) => set({ model: e.target.value })}
           />
         </label>
@@ -325,6 +365,7 @@ function EditPanel({
         <input
           className="input mono"
           value={draft.company_number}
+          disabled={readOnly}
           onChange={(e) => set({ company_number: e.target.value })}
         />
       </label>
@@ -345,6 +386,7 @@ function EditPanel({
           className="input mono"
           placeholder="B8:27:EB:…"
           value={draft.raspberry_pi_mac}
+          disabled={readOnly}
           onChange={(e) => set({ raspberry_pi_mac: e.target.value })}
         />
       </label>
@@ -354,6 +396,7 @@ function EditPanel({
           className="input mono"
           placeholder="ESP32-…"
           value={draft.esp32_id}
+          disabled={readOnly}
           onChange={(e) => set({ esp32_id: e.target.value })}
         />
       </label>
@@ -363,6 +406,7 @@ function EditPanel({
         <select
           className="input"
           value={draft.operative_status}
+          disabled={readOnly}
           onChange={(e) =>
             set({ operative_status: e.target.value as TruckStatus })
           }
@@ -377,11 +421,13 @@ function EditPanel({
 
       <div style={{ display: 'flex', gap: 10, marginTop: 'auto' }}>
         <button className="btn btn--block" onClick={onCancel}>
-          Cancel
+          {readOnly ? 'Close' : 'Cancel'}
         </button>
-        <button className="btn btn--accent btn--block" onClick={onSave}>
-          {mode === 'create' ? 'Create truck' : 'Save changes'}
-        </button>
+        {!readOnly && (
+          <button className="btn btn--accent btn--block" onClick={onSave} disabled={saving}>
+            {saving ? 'Saving…' : mode === 'create' ? 'Create truck' : 'Save changes'}
+          </button>
+        )}
       </div>
     </div>
   )

@@ -73,7 +73,7 @@ flowchart TB
     BACKEND -. "route/ETA" .-> OSRM["OSRM<br/>(deferred)"]
   end
 
-  USERS["root_admin · guardian ·<br/>truck_driver"] --> UI
+  USERS["root_admin · admin ·<br/>guardian · truck_driver"] --> UI
 
   classDef edgeNode fill:#fdf1de,stroke:#b9761f,color:#3a2a12,stroke-width:1px;
   classDef cvNode fill:#fff1b8,stroke:#c98a12,color:#4a350a,stroke-width:1.5px;

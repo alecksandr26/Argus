@@ -106,9 +106,15 @@ pieces of this section that remain pure design, not implemented anywhere in this
   OSRM route-line rendering is still deferred. The map-library choice — react-leaflet over
   Google Maps / Amazon Location — and how backend coordinates get normalized are written up in
   `docs/designs/frontend-map-and-coordinates.md`.)
-- Three actor roles, now a settled enum matching `src/backend-argus`'s `Role`: **`root_admin`**
-  (manage users, trips, reports), **`guardian`** (monitor trips/alerts), **`truck_driver`**
-  (receives alerts/status) — see that module's `CLAUDE.md` for the RBAC table.
+- **Four actor roles** (grew from three — `admin` was added later as a deliberate product
+  decision, not something any design doc anticipated), a settled enum matching
+  `src/backend-argus`'s `Role`: **`root_admin`** (the owner/bootstrap account — manages users of
+  any role, trips, reports), **`admin`** (an operations role scheduling routes and managing the
+  truck/driver roster, with one narrow, server-enforced exception to otherwise-zero
+  user-management access: it may create/edit/deactivate `guardian`-role accounts only, never
+  `root_admin`/other-`admin` accounts), **`guardian`** (read-only monitoring + alert review),
+  **`truck_driver`** (receives alerts/status) — see `src/backend-argus/CLAUDE.md`'s RBAC table
+  for the full per-resource matrix and exactly how `admin`'s scoping is enforced.
 
 When implementing the edge side, containerize the Pi's AI-orchestrator service (reproducible
 MediaPipe/TensorFlow/OpenCV versions, easy redeploys) but pass through specific devices

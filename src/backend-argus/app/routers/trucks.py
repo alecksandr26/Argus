@@ -38,7 +38,7 @@ async def list_trucks() -> list[TruckOut]:
     "",
     response_model=TruckOut,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_role(Role.ROOT_ADMIN))],
+    dependencies=[Depends(require_role(Role.ROOT_ADMIN, Role.ADMIN))],
 )
 async def create_truck(body: TruckCreate) -> TruckOut:
     truck = Truck(**body.model_dump())
@@ -54,7 +54,7 @@ async def get_truck(truck_id: str) -> TruckOut:
 @router.put(
     "/{truck_id}",
     response_model=TruckOut,
-    dependencies=[Depends(require_role(Role.ROOT_ADMIN))],
+    dependencies=[Depends(require_role(Role.ROOT_ADMIN, Role.ADMIN))],
 )
 async def update_truck(truck_id: str, body: TruckUpdate) -> TruckOut:
     truck = await _get_or_404(truck_id)
@@ -67,7 +67,7 @@ async def update_truck(truck_id: str, body: TruckUpdate) -> TruckOut:
 @router.delete(
     "/{truck_id}",
     response_model=Message,
-    dependencies=[Depends(require_role(Role.ROOT_ADMIN))],
+    dependencies=[Depends(require_role(Role.ROOT_ADMIN, Role.ADMIN))],
 )
 async def delete_truck(truck_id: str) -> Message:
     truck = await _get_or_404(truck_id)

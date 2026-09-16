@@ -2,25 +2,26 @@
 
 This file explains why `ui-argus` is built the way it is. See `README.md` in this directory
 for practical "how do I run this" instructions, and the top-level `CLAUDE.md` for how this
-module fits the rest of Argus (the ER model, `src/backend-argus`, the three actor roles).
+module fits the rest of Argus (the ER model, `src/backend-argus`, the four actor roles).
 
 ## What this is
 
 The Argus web frontend: a single React app serving every MVP role by role-based navigation
 (one login, `role` on the `User` entity decides what's visible) rather than separate portal
 apps per role — see the "Argus — Mockups de UI" design canvas for the actual screen designs
-this scaffold follows, and the conversation that produced it for why Reports, Access (Users),
-and Geofences were cut from the first UI pass (no committed API/table effort yet for those). The
-screens built so far are shaped around the `root_admin`/`guardian` roles' workflows (fleet,
-drivers, routes, alerts); `truck_driver` has a `Role` value and shows up in role-label logic
-(`Sidebar.tsx`) but no dedicated screen exists yet — per the root `CLAUDE.md`, that role mainly
-*receives* alerts/status rather than manages the fleet, so it may not need one.
+this scaffold follows. Reports and Geofences are still cut (no committed API/table effort yet
+for those); **Access (Users) is no longer cut** — `Access.tsx` now exists, root_admin/admin
+only. The screens are shaped around `root_admin`/`admin`/`guardian` workflows (fleet, drivers,
+routes, alerts, user management); `truck_driver` has a `Role` value and shows up in role-label
+logic (`Sidebar.tsx`) but no dedicated screen exists yet — per the root `CLAUDE.md`, that role
+mainly *receives* alerts/status rather than manages the fleet, so it may not need one. Every
+role, including `truck_driver`, does get `Profile.tsx` — the self-service account page.
 
-**UI copy and route paths are in English** (`/fleet`, `/drivers`, `/routes`, `/alerts/:id`),
-even though the design canvas is in Spanish — translated on request. Domain field names still
-follow the ER model. If the copy ever needs to go back to Spanish, it's all in the
-`src/pages/*` / `src/components/*` JSX and `src/utils/status.ts` (the label map), plus
-`src/data/fixtures.ts` for the fake alert text.
+**UI copy and route paths are in English** (`/fleet`, `/drivers`, `/routes`, `/alerts/:id`,
+`/access`, `/profile`), even though the design canvas is in Spanish — translated on request.
+Domain field names still follow the ER model. If the copy ever needs to go back to Spanish,
+it's all in the `src/pages/*` / `src/components/*` JSX and `src/utils/status.ts` (the label
+map).
 
 ## Stack choices
 
@@ -80,13 +81,17 @@ this side:
   rather than a per-page check. Redirects to `/login` carrying the originally-requested location
   as router state, so a successful login sends the user back to whatever page they were headed
   to (a deep link, or a session that went stale mid-use) instead of always landing at `/`.
-- **Deliberately not done yet**: per-role nav-group hiding in `Sidebar.tsx` (both groups still
-  render regardless of role — no confirmed spec for which items each role should see, so this
-  pass only swapped the data source from the `CURRENT_USER` fixture to the real session, not
-  added new hiding logic), and the "keep me signed in" checkbox is inert UI (not wired to a
-  session/localStorage-vs-sessionStorage split). Creating other admin/guardian accounts stays
-  possible only via `POST /api/users` directly (curl/Swagger) — no Access panel screen exists
-  yet, tracked in `INTEGRATION.md`.
+- **Now done**: per-role nav gating. `Sidebar.tsx`'s `NavItem` type carries an optional `roles`
+  allow-list, filtered per-group before render — `Fleet`/`Drivers`/`Routes & trips` are visible
+  to `root_admin`/`admin`/`guardian` (read-only for guardian, enforced inside those pages, not
+  by hiding the nav item) but not `truck_driver`; `Access` is `root_admin`/`admin` only. A
+  second component, `src/components/RequireRole.tsx`, adds a route-level version of the same
+  check (used to gate `/access` directly, in case someone types the URL rather than clicking
+  the nav item). Creating other accounts is now a real screen too — `Access.tsx`
+  (`root_admin`/`admin`, root_admin sees/creates any role, `admin` is scoped server-side to
+  guardian accounts only) — no more curl/Swagger required.
+- **Still not done**: the "keep me signed in" checkbox is inert UI (not wired to a
+  session/localStorage-vs-sessionStorage split).
 
 ## Docker architecture
 
@@ -158,24 +163,26 @@ Vite app.
   `render()` in a file would stay mounted into the same `jsdom` `document.body` and leak into
   the next test in that file (multiple-match query errors, flaky selectors) — hit and fixed in
   the same session this was added, not a hypothetical.
-- **53 tests across 9 files** (real, currently passing, run inside `docker build` — see "Docker
-  architecture" above): `utils/status.test.ts`, `utils/format.test.ts`, `utils/geo.test.ts`
-  (the coordinate-shape adapter — covers all 5 accepted shapes plus its error paths, anchoring
-  the real API boundary), `utils/crypto.test.ts` (`sha256Hex` against a known digest, hex-pattern/
-  determinism checks), `components/StatusPill.test.tsx`, `components/RecordTable.test.tsx`
-  (rendering, empty state, click-to-select, `aria-selected`), `components/SearchBox.test.tsx`,
-  `components/Sidebar.test.tsx` (nav links, `aria-current`, "soon" badges, sign-out — now wrapped
-  in `AuthProvider` with a seeded `localStorage` session instead of the retired `CURRENT_USER`
-  fixture), `pages/Login.test.tsx` (controlled inputs, checkbox toggle, and — new — real
-  success/failure login flows via `vi.stubGlobal('fetch', ...)`, asserting on `localStorage` and
-  navigation). Every other test still renders against fixtures/props directly; `Login`/`Sidebar`
-  are the first to exercise a real (mocked) network + session path.
+- **13 test files** (real; see "Current status" below for the environment caveat on actually
+  running them): the original 9 — `utils/status.test.ts`, `utils/format.test.ts`,
+  `utils/geo.test.ts` (the coordinate-shape adapter), `utils/crypto.test.ts`,
+  `components/StatusPill.test.tsx`, `components/RecordTable.test.tsx`,
+  `components/SearchBox.test.tsx`, `components/Sidebar.test.tsx` (extended with role-gating
+  cases: `Access` hidden from a guardian session but visible, un-"soon", for `root_admin`;
+  `Fleet`/`Drivers`/`Routes & trips` hidden from `truck_driver`), `pages/Login.test.tsx` — plus
+  four new ones added alongside the backend-wiring pass: `components/RequireRole.test.tsx`
+  (allowed role renders the gated route, disallowed/no session redirects),
+  `pages/Access.test.tsx` (root_admin sees every role in the create form; an admin session's
+  role picker is locked to `guardian`; the two destructive actions — Deactivate vs. Delete
+  permanently — are both present and distinct), `pages/Profile.test.tsx` (loads/edits the
+  caller's own fields via `GET`/`PUT /api/auth/me`, asserts the request body never carries a
+  `role`/`is_active` key), `pages/Fleet.test.tsx` (write-gating: `root_admin` sees an editable
+  panel with "Add truck", `guardian` sees a read-only "View truck" panel with disabled inputs
+  and no Save button).
 - **Not yet covered**: `AppLayout`, `PageHeader`, `Icon`, `FleetMap` (would need a
-  `react-leaflet` mocking strategy — not attempted yet), `ProtectedRoute`/`AuthContext`
-  themselves in isolation (covered indirectly through `Login`/`Sidebar`, not directly), and the
-  four remaining pages (`LiveOps`, `AlertTriage`, `Fleet`, `Drivers`, `TravelManagement`). Extend
-  this suite alongside `src/api/*` as the other screens are wired up, per the user's own steer —
-  tests should catch auth/request-shaping bugs as they're introduced, not after.
+  `react-leaflet` mocking strategy — not attempted yet), `Drivers.test.tsx`/
+  `TravelManagement.test.tsx` (same write-gating shape as `Fleet.test.tsx`, not yet duplicated),
+  `LiveOps`/`AlertTriage` (the two data-heaviest pages — multiple parallel fetches each).
 - **`src/test/setup.ts` polyfills `crypto.subtle`** via Node's `webcrypto` — jsdom provides
   `window.crypto` but not `.subtle`, which `sha256Hex` (and therefore the real `Login` submit
   path) needs; without this, any test exercising it throws immediately. Also clears
@@ -185,80 +192,61 @@ Vite app.
 
 ## Current status
 
-**Build-verified, as of the `src/backend-argus` change**: `docker compose up --build` (both this
-module's own compose file and the new repo-root one) has been run for real — `npm install`
-(181 packages, 0 vulnerabilities), `npx tsc --noEmit`, and `npm run build` (Vite production
-build, 103 modules) all pass cleanly, and the dev server serves `http://localhost:5173`
-correctly inside the container. This was this module's first-ever real toolchain run; earlier
-revisions of this file said exactly that hadn't happened yet — it has now. `types.ts`/
-`fixtures.ts` and a few consuming components (`AlertTriage.tsx`, `LiveOps.tsx`,
-`Sidebar.tsx`) were updated in that same session to match `src/backend-argus`'s corrected field
-names (`reviewed_by_operator`, the 3→2-role `Role` enum, binary `not_drowsy`/`drowsy` AI
-scores) — see that module's `CLAUDE.md` for the full old→new field table.
+**Every screen now calls the real backend.** `src/data/fixtures.ts` is deleted — `Fleet`,
+`Drivers`, `TravelManagement`, `LiveOps`, and `AlertTriage` all fetch from `src/backend-argus`
+via `src/api/*`, and two new screens (`Access.tsx`, `Profile.tsx`) exist that never had fixture
+data at all. `src/types.ts`'s `Role` grew from three members to four (`root_admin` / `admin` /
+`guardian` / `truck_driver`) alongside the backend's own RBAC change — see the top-level
+`CLAUDE.md` and `src/backend-argus/CLAUDE.md` for what `admin` is and how its scoping works.
+`npx tsc -b` and `npm run build` (Vite production build) both pass clean.
 
-**`package-lock.json` now exists** (generated the first time `npm install` actually ran, adding
-the Vitest test deps below) **but is not committed yet** — a deliberate pause, not an oversight:
-switching the Dockerfile's `deps` stage from `npm install` to `npm ci` is a real behavior change
-(strict, reproducible installs vs. permissive resolution) worth a deliberate yes rather than a
-side effect of adding tests. See "Next steps" below. All six mockup screens are ported and
-render fake data from fixtures.
+**Two real, pre-existing environment issues were hit (and resolved) while verifying this session's
+changes — neither caused by this session's code**:
 
-What exists now:
-- `App.tsx` mounts `AppLayout` (sidebar + `<Outlet/>`) as a layout route around the five
-  in-app screens; `/login` sits outside it. Every screen is a real component — `PageStub` is
-  deleted.
-- **`src/types.ts`** — TypeScript interfaces for `User`/`Truck`/`Driver`/`Route`/`StatusRoute`/
-  `Alert`. Field names now line up 1:1 with `src/backend-argus`'s Pydantic schemas (not just the
-  ER diagram verbatim — a couple of the diagram's own typos are fixed here to match the real
-  backend; see that module's `CLAUDE.md` for the full table). `Role` is reconciled too
-  (`'root_admin' | 'guardian' | 'truck_driver'`, matching the backend's enum exactly). The
-  `*_status` string unions for `Truck`/`Driver`/`Route`/`Status_Route`/`Alert` are still a
-  frontend guess — the ER model doesn't enumerate `operative_status` values — but they do match
-  what `src/backend-argus/app/models/common.py` actually implements, since that backend was
-  built reading these fixtures as the reference; still worth a final glance across both files
-  before treating them as permanently locked.
-- **`src/data/fixtures.ts`** — the fake ("foo") data every screen reads: 8 trucks, 8 drivers,
-  9 routes, 6 live-status rows, 7 alerts, one user, kept name-consistent with the mockups.
-  `MOCK_NOW` is a fixed clock so relative timestamps ("40s ago") don't drift. **Delete this
-  file when the API client lands** — `src/types.ts` stays.
-- **`src/utils/`** — `format.ts` (relative time, clock, dates, all against `MOCK_NOW`),
-  `status.ts` (status-union → English label + colour "tone", the one place the pill/tile
-  colour language lives), and `geo.ts` (`toLatLng`: `Coordinates` → Leaflet's `[lat,lng]`
-  tuple; `normalizeCoordinates`: the API-boundary adapter that folds GeoJSON / `{lat,lng}` /
-  string coordinate payloads into the canonical `{lat,lon}` shape). Named `utils/` not `lib/`
-  because the repo-root `.gitignore` (a Python template) ignores `lib/` at any depth.
-- **`src/components/`** — `Sidebar`, `AppLayout`, `Icon` (shared inline-SVG set),
-  `PageHeader`, `SearchBox`, `RecordTable` (the shared Fleet/Drivers/Routes table),
-  `StatusPill`, `FleetMap` (the `react-leaflet` map on Live operations — OpenStreetMap tiles,
-  one `divIcon` truck marker per live-status row + a detail popup; presentational, `LiveOps`
-  builds the marker array).
-- **`src/pages/`** — `Login` (controlled form, submit just routes to `/`), `LiveOps` (stat
-  tiles + an interactive `react-leaflet` fleet map fed by fixture coordinates + filterable
-  alert feed linking to triage), `AlertTriage` (looks the alert up by `:alertId`, model-score
-  bars, review
-  checkbox + notes as local state), `Fleet`/`Drivers` (search-filter + row-select → edit
-  panel, add/edit against a local `useState` copy), `TravelManagement` (route table + a
-  working "New route" create form).
-- `src/index.css` carries the mockups' dark-theme design tokens plus the shared component
-  classes (`.pill`, `.btn`, `.data-table`, `.input`, `.panel`, …); screens keep inline styles
-  for one-off layout, matching how the mockups themselves are written.
+1. This sandbox originally had no Node.js at all; once installed, `npm run test` failed outright
+   with `ERR_REQUIRE_ESM` (`html-encoding-sniffer@6.0.0` — the version actually pinned in the
+   committed `package-lock.json` — does a CJS `require()` of `@exodus/bytes`, which has been a
+   pure-ESM-only package since its first release; reproduces identically on the pre-existing
+   test files, unrelated to any app code). Node 20.x hits it every time; Node ≥22.14 (where
+   `require(esm)` support is more complete) avoids the crash.
+2. Even with a working Node version, every vitest worker — default parallelism, and even
+   `--maxWorkers=1` — timed out trying to start at all when run from this checkout's actual path
+   under `/mnt/c/Users/...` (a Windows filesystem mounted into WSL2): `Timeout waiting for
+   worker to respond`, 13 minutes, zero tests run. Confirmed the cause by copying the exact same
+   `ui-argus` source to a native Linux path and running from there instead: **13/13 files, 65/65
+   tests pass in under 2 seconds** — so this really is WSL2/`/mnt/c` I/O latency in Vitest's
+   worker startup, not a Vitest, Node, or app bug. Running (or at least testing) this repo from
+   a native filesystem path, not a `/mnt/c/...` one, avoids it entirely.
 
-**Auth is now real** (see the "Auth" section above): `Login` calls the real backend, a session
-is stored, and every in-app route is gated behind it via `ProtectedRoute`. Still not done:
-**per-role nav gating** (the sidebar still shows both role nav-groups — there's a session now,
-but no confirmed spec for which items each role should see) and **everything else that talks to
-a backend** — every screen besides `Login` still mutates `src/data/fixtures.ts`-derived local
-state only ("Guardar"/"Crear" included). All of it is tracked in `INTEGRATION.md`.
+`npx tsc -b`, `npm run build`, and the full Vitest suite (65 tests across 13 files, including
+the new `RequireRole.test.tsx`/`Access.test.tsx`/`Profile.test.tsx`/`Fleet.test.tsx` and the
+role-gating additions to `Sidebar.test.tsx`) all verified passing clean in this session.
+
+- **`src/api/`** — one client module per backend resource (`client`, `auth`, `me`, `users`,
+  `trucks`, `drivers`, `routes`, `alerts`), all built on `apiFetch`. `routes.ts`/`alerts.ts` run
+  every coordinate field through `normalizeCoordinates()` once, at this layer.
+- **`src/types.ts`** — `Role` is now 4 members; added `RouteWithStatus` (the
+  `GET /api/routes/active` shape, embedding a route's newest `Status_Route` + truck/driver
+  names).
+- **`src/components/RequireRole.tsx`** (new) — a route-level role gate on top of
+  `ProtectedRoute`'s auth-only check, used for `/access`.
+- **`src/pages/Access.tsx`** (new) — root_admin/admin user management, role-aware (see "Auth"
+  above).
+- **`src/pages/Profile.tsx`** (new) — self-service email/name/phone/password edit for any role.
+- **`src/utils/format.ts`** — `relativeTime`/`clock`/`longDay`/`daysUntil` now default to
+  `new Date()` instead of the retired `MOCK_NOW` fixture constant; the optional `now` param is
+  still there purely for tests to pin a fixed reference time.
 
 ## Next steps (not started)
 
-- **Commit `package-lock.json`** (it now exists, generated by this session's `npm install` —
-  see "Current status" above) and switch the Dockerfile's `deps` stage from `npm install` to
-  `npm ci` once that's done — currently paused on an explicit decision, not forgotten.
-- Extend the Vitest suite (see "Testing" above) to the still-uncovered components/pages, and
-  alongside `src/api/*` as the remaining screens are wired up, not after.
-- **Everything backend-connectivity-related beyond login** — per-screen fetches for Fleet/
-  Drivers/Routes/Alerts, per-role nav gating, the real-time strategy for the live dashboard, an
-  Access/Users panel, and known gaps in the committed API list itself — is tracked in
-  `INTEGRATION.md`, not here, so it doesn't drift out of sync in two places. Read that file
-  before wiring any screen up to the backend.
+- Fix the `html-encoding-sniffer`/`@exodus/bytes` toolchain bug for real (pin a working
+  `html-encoding-sniffer` version via `overrides`, regenerate `package-lock.json`) and document
+  both the Node ≥22.14 requirement and the "run tests from a native filesystem path, not
+  `/mnt/c/...` under WSL2" gotcha in the README, rather than relying on whoever hits this next
+  rediscovering both workarounds from scratch.
+- Extend the Vitest suite to `Drivers.tsx`/`TravelManagement.tsx` (same write-gating shape as
+  the new `Fleet.test.tsx`) and to `LiveOps`/`AlertTriage`.
+- A caching/data-fetching layer (TanStack Query or similar) — every screen still does its own
+  `useEffect` fetch with no shared cache; not blocking, just a quality improvement.
+- Everything else — OSRM for `TravelManagement`, a real-time push mechanism for `LiveOps`,
+  `Alert.media_url` storage — is tracked in `INTEGRATION.md`, not here.
