@@ -9,12 +9,10 @@ itself" section at the bottom for that story).
 
 ## Read this first: merged vs. not merged
 
-**Update**: both pieces this section used to describe as unmerged are now in `main` —
-`src/backend-argus` and `src/cv-argus`'s `alerts/`/`buffer/`/`orchestrator/`/`sender/` modules.
-This section's "not merged yet" framing was stale (the merges happened in commits `6a3a855`,
-`645ef05`, `dea719c`); flagged here rather than silently rewritten so the correction itself is
-visible. Sections 1 and 3 below still describe what those modules contain — read the "done" bullets
-there as simply "done, in `main`," not "done, on a branch."
+Both pieces this section used to describe as unmerged are now in `main` — `src/backend-argus`
+and `src/cv-argus`'s `alerts/`/`buffer/`/`orchestrator/`/`sender/` modules (merged in commits
+`6a3a855`, `645ef05`, `dea719c`; sections 1 and 3 below are now corrected to say so directly
+rather than still describing branches that no longer exist).
 
 Everything below distinguishes "missing from the project" (nobody has built it) from "missing
 from what's built" (it's real code, just not everything it needs yet).
@@ -35,16 +33,15 @@ the report, not just "we used Bluetooth."
 
 ## 1. `cv-argus` (Raspberry Pi edge)
 
-**Done, merged:** `model/` (fused CNN-embedding + geometric-feature + LSTM classifier, 84.24%
+**Done, in `main`:** `model/` (fused CNN-embedding + geometric-feature + LSTM classifier, 84.24%
 measured accuracy / 0.8375 macro-F1, one held-out split — see its own `CLAUDE.md` for the full
-caveats) and `pipeline/` (threaded Stage/Pipeline abstraction, MediaPipe stages, camera sources).
+caveats), `pipeline/` (threaded Stage/Pipeline abstraction, MediaPipe stages, camera sources),
+and the alert pipeline — `alerts/` (Alert/AlertKind data model + serialization), `buffer/`
+(WAL-mode SQLite queue, concurrency-tested), `orchestrator/` (debounce/cooldown decision loop +
+heartbeat), `sender/` (a custom Bluetooth SPP protocol — see section 2 below — fully implemented
+and unit-tested against a fake transport, `FakeTransport`).
 
-**Done, not merged** (`worktree-cv-argus-alert-pipeline`): `alerts/` (Alert/AlertKind data model
-+ serialization), `buffer/` (WAL-mode SQLite queue, concurrency-tested), `orchestrator/`
-(debounce/cooldown decision loop + heartbeat), `sender/` (a custom Bluetooth SPP protocol — see
-section 2 below — fully implemented and unit-tested against a fake transport, `FakeTransport`).
-
-**Missing, even once merged:**
+**Missing:**
 - Never run against real Raspberry Pi 5 hardware — only a desktop-CPU Docker container so far.
 - Neither `docker-compose.yml` nor `docker-compose.pi.yml` passes through a real Bluetooth
   adapter (`SENDER_TRANSPORT` defaults to `none` specifically because setting it to `bluetooth`
@@ -96,9 +93,12 @@ may create/edit/deactivate `guardian`-role accounts only — see that module's `
 — four roles" for exactly how it's scoped, including why non-guardian targets 404 rather than
 403). Also new: self-service `GET`/`PUT /api/auth/me` so any role can edit their own email/name/
 phone/password without needing `/api/users` access. A device-API-key auth path for the ESP32,
-`GET /api/routes/active` for the live dashboard. Verified: hermetic pytest tier passes (44 tests
-as of this change), a full Docker stack (backend + Mongo + `ui-argus`) has previously booted and
-round-tripped real HTTP calls.
+`GET /api/routes/active` for the live dashboard, and a `SEED_DEMO_DATA` env var that
+idempotently seeds a demo fleet (admin/operator + guardian accounts, trucks, drivers, routes) on
+startup — verified against a real Mongo container: no duplicates on repeat runs, all seeded
+accounts actually log in. Verified: hermetic pytest tier passes (46 tests as of this change), a
+full Docker stack (backend + Mongo + `ui-argus`) has previously booted and round-tripped real
+HTTP calls.
 
 **Missing** (see its own `CLAUDE.md`'s "Future work" for the full detail):
 - `Report`, `Device`, `Geofence` entities — in the ER diagram, deliberately deferred (no

@@ -34,8 +34,9 @@ the diagram as historical, pre-fix reference, not the live source of truth:
 | several | mixed `update_at` / `updated_at` | `updated_at` everywhere |
 | Status_Route | `operative_status` (per the diagram) | kept as `vigilance` — see next section |
 
-`src/ui-argus/src/types.ts` and `src/ui-argus/src/data/fixtures.ts` were patched to match in the
-same change that added this backend — see that module's own `CLAUDE.md`/`INTEGRATION.md` for
+`src/ui-argus/src/types.ts` was patched to match in the same change that added this backend
+(the fixture file that also needed matching at the time, `src/data/fixtures.ts`, is deleted now
+that every screen fetches real data) — see that module's own `CLAUDE.md`/`INTEGRATION.md` for
 status.
 
 ## Why `Status_Route.vigilance`, not `operative_status`
@@ -281,6 +282,14 @@ as a "should work" claim:
 - `ui-argus`'s field-name changes (see "ui-argus mechanical diff" below) were verified against
   that same live container: `npx tsc --noEmit` and `npm run build` both passed clean — this was
   `ui-argus`'s first-ever real toolchain run (see that module's own `CLAUDE.md`).
+
+**Since this section was first written**: the hermetic suite has grown to 46 tests (the `admin`
+role's scoped RBAC, self-service `/api/auth/me`, and `SEED_DEMO_DATA` seeding all added their
+own coverage — see "RBAC — four roles" and "Startup demo seeding" above) — the "32 tests"/"27
+tests" figures elsewhere on this page are the count *at the time each of those sections was
+written*, not stale claims to reconcile against each other. `ui-argus` is well past its "first
+toolchain run" too — every screen now calls this backend for real, not just field-name-verified
+against it; see that module's own `CLAUDE.md` for its current status.
 
 What genuinely hasn't been exercised: real concurrent load, MongoDB running as anything other
 than a single local container (no replica set, no auth), and — since `ui-argus` doesn't call
