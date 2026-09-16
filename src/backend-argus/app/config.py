@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     root_admin_last_name: str = "Admin"
     root_admin_phone_number: str = "+00-000-0000"
 
+    # Off by default. When true, `app.main`'s lifespan calls `scripts.seed_dev_data.seed(reset=
+    # False)` on every startup — additive/idempotent (skips anything that already exists by
+    # email/plate_number/license_number), so it's safe to leave on permanently in a dev
+    # `docker-compose.yml` without re-wiping the database on every restart. The destructive,
+    # deterministic `python -m scripts.seed_dev_data` (which *does* wipe first) is unaffected by
+    # this flag — that's still a manual, explicit action. Never enable in a real deployment.
+    seed_demo_data: bool = False
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

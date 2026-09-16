@@ -41,11 +41,27 @@ tier covers and why it's separate.
 python -m scripts.seed_dev_data
 ```
 
-Loads a small set of trucks/drivers/routes/alerts shaped like `ui-argus/src/data/fixtures.ts`,
-plus two logins (`admin@argus.dev` / `guardian@argus.dev`, both password `changeme123`) and one
-truck's device API key (printed once, for testing `POST /api/alerts`/`POST /api/routes/:id/status`
-with `X-Device-Api-Key` instead of a user token). Safe to re-run — it clears the seeded
-collections first.
+Loads a small demo fleet: 7 users (root_admin `admin@argus.dev`, three admin/operators
+`operator@argus.dev`/`operator2@argus.dev`/`operator3@argus.dev`, three guardians
+`guardian@argus.dev`/`guardian2@argus.dev`/`guardian3@argus.dev` — all password `changeme123`),
+5 trucks spanning every `TruckStatus`, 5 drivers, 4 routes (one of each `RouteStatus` worth
+demoing), and a couple of alerts. Trucks' device API keys are printed once, for testing
+`POST /api/alerts`/`POST /api/routes/:id/status` with `X-Device-Api-Key` instead of a user
+token. **This form is destructive** — it clears every seeded collection first, then reinserts
+the full dataset, so re-running it always gives you the same clean demo state (but wipes
+anything else in the database too, including data created through the UI).
+
+If you'd rather **add** the missing demo records without wiping anything (safe to run
+repeatedly, e.g. against a database that already has real data in it):
+
+```sh
+RESET_DEMO_DATA=false python -m scripts.seed_dev_data
+```
+
+Or skip the manual step entirely: set `SEED_DEMO_DATA=true` (see `docker-compose.yml`/
+`app/config.py`) and the backend seeds this same dataset idempotently on every startup, right
+after the usual root_admin bootstrap — safe to leave on permanently in a dev environment. Never
+enable `SEED_DEMO_DATA` in a real deployment.
 
 ## Running this module alone in Docker
 
@@ -98,6 +114,7 @@ defaults so nothing here is required to boot:
 | `ROOT_ADMIN_FIRST_NAME` | `Root` | first name on the bootstrapped account |
 | `ROOT_ADMIN_LAST_NAME` | `Admin` | last name on the bootstrapped account |
 | `ROOT_ADMIN_PHONE_NUMBER` | `+00-000-0000` | phone number on the bootstrapped account (required field, no real use yet) |
+| `SEED_DEMO_DATA` | `false` | when `true`, idempotently seeds a demo fleet (admins/guardians/trucks/drivers/routes — see "Seeding demo data" above) on every startup, right after the root_admin bootstrap. Never enable outside local dev. |
 
 Note: `POST /api/auth/login` and `POST /api/users`'s `password` field is not the raw password —
 it's the SHA-256 hex digest of it, computed client-side (`crypto.subtle.digest`) before the

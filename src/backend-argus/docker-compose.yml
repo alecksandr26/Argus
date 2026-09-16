@@ -24,6 +24,10 @@ services:
       - ROOT_ADMIN_FIRST_NAME=${ROOT_ADMIN_FIRST_NAME:-Root}
       - ROOT_ADMIN_LAST_NAME=${ROOT_ADMIN_LAST_NAME:-Admin}
       - ROOT_ADMIN_PHONE_NUMBER=${ROOT_ADMIN_PHONE_NUMBER:-+00-000-0000}
+      # Off by default (see app/config.py's `seed_demo_data` docstring). Set to `true` to have
+      # startup additively/idempotently populate a demo fleet (admins/operators, guardians,
+      # trucks, drivers, routes) via scripts/seed_dev_data.py — safe to leave on across restarts.
+      - SEED_DEMO_DATA=${SEED_DEMO_DATA:-false}
     ports:
       - "8000:8000"
     volumes:

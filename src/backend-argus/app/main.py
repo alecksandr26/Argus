@@ -15,6 +15,12 @@ from app.routers import alerts, auth, drivers, routes, status_routes, trucks, us
 async def lifespan(app: FastAPI):
     app.state.mongo_client = await init_db()
     await ensure_root_admin()
+    if settings.seed_demo_data:
+        # Imported lazily so a normal (non-demo) boot never pays for scripts/'s import cost.
+        # `reset=False` — additive/idempotent, see app/config.py's `seed_demo_data` docstring.
+        from scripts.seed_dev_data import seed as seed_demo_data
+
+        await seed_demo_data(reset=False, client=app.state.mongo_client)
     yield
     app.state.mongo_client.close()
 
