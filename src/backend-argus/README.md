@@ -82,6 +82,23 @@ the host, e.g. `SEED_CREDENTIALS_FILE=/app/app/seed_credentials.txt` shows up at
 the same fixed `changeme123` dev constant already documented above. Disabled
 (empty) by default, and the output file is gitignored — never commit one.
 
+Both `SEED_DEMO_DATA` and `SEED_CREDENTIALS_FILE` are plain env vars `docker-compose.yml` reads
+with a `${VAR:-default}` fallback, so they can be set directly on the `docker compose up` command
+line too, no `.env` file needed — this module's own compose file:
+
+```sh
+SEED_DEMO_DATA=true SEED_CREDENTIALS_FILE=/app/app/seed_credentials.txt docker compose up --build
+# -> credentials land on the host at ./app/seed_credentials.txt
+```
+
+or the repo-root compose file (whole stack — see "Running the whole stack" below), from the
+**repo root**:
+
+```sh
+SEED_DEMO_DATA=true SEED_CREDENTIALS_FILE=/app/app/seed_credentials.txt docker compose up --build
+# -> credentials land on the host at ./src/backend-argus/app/seed_credentials.txt
+```
+
 ## Running this module alone in Docker
 
 ```sh

@@ -146,7 +146,12 @@ written is the same fixed, already-public `DEMO_PASSWORD` (`changeme123`) alread
 and documented in README.md. In Docker, the path needs to land under the `./app:/app/app` bind
 mount (e.g. `/app/app/seed_credentials.txt`) to actually show up on the host — see both
 `docker-compose.yml` files' comments. The output file is gitignored (`seed_credentials*.txt`);
-never commit one.
+never commit one. Since it's a plain `${VAR:-default}`-style env var in both `docker-compose.yml`
+files, it (and `SEED_DEMO_DATA`) can be set directly on the `docker compose up --build` command
+line instead of in `.env` — e.g.
+`SEED_DEMO_DATA=true SEED_CREDENTIALS_FILE=/app/app/seed_credentials.txt docker compose up
+--build` — see README.md's "Seeding demo data" for the exact commands from both this module's own
+compose file and the repo-root one.
 
 ### RBAC — four roles
 
