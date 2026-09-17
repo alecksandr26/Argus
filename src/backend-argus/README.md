@@ -63,6 +63,25 @@ Or skip the manual step entirely: set `SEED_DEMO_DATA=true` (see `docker-compose
 after the usual root_admin bootstrap — safe to leave on permanently in a dev environment. Never
 enable `SEED_DEMO_DATA` in a real deployment.
 
+**To get every seeded user's role/email/password into a file** instead of just stdout — handy
+for a manual QA pass or scripting against the seeded accounts — set `SEED_CREDENTIALS_FILE` to a
+path, either form:
+
+```sh
+SEED_CREDENTIALS_FILE=./seed_credentials.txt python -m scripts.seed_dev_data
+```
+
+```sh
+SEED_CREDENTIALS_FILE=./seed_credentials.txt RESET_DEMO_DATA=false python -m scripts.seed_dev_data
+```
+
+or the same variable on the `SEED_DEMO_DATA=true` startup path (`docker-compose.yml`/`.env`) —
+in Docker, point it under `/app/app` (the bind-mounted directory) so the file actually lands on
+the host, e.g. `SEED_CREDENTIALS_FILE=/app/app/seed_credentials.txt` shows up at
+`./app/seed_credentials.txt`. This is a convenience, not a new secret: every password written is
+the same fixed `changeme123` dev constant already documented above. Disabled
+(empty) by default, and the output file is gitignored — never commit one.
+
 ## Running this module alone in Docker
 
 ```sh

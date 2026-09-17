@@ -36,6 +36,12 @@ services:
       # to `true` to have startup additively/idempotently populate a demo fleet (admins/
       # operators, guardians, trucks, drivers, routes) — safe to leave on across restarts.
       - SEED_DEMO_DATA=${SEED_DEMO_DATA:-false}
+      # Empty (disabled) by default. Set to a path under /app/app (the bind mount below) to have
+      # every seed run also write a `role email password` line per demo user there — e.g.
+      # `SEED_CREDENTIALS_FILE=/app/app/seed_credentials.txt`, which then shows up on the host at
+      # ./src/backend-argus/app/seed_credentials.txt. See src/backend-argus/app/config.py's
+      # `seed_credentials_file` docstring.
+      - SEED_CREDENTIALS_FILE=${SEED_CREDENTIALS_FILE:-}
     ports:
       - "8000:8000"
     volumes:

@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     # this flag — that's still a manual, explicit action. Never enable in a real deployment.
     seed_demo_data: bool = False
 
+    # Empty (disabled) by default. When set to a path, every demo seed run (the manual script or
+    # the idempotent SEED_DEMO_DATA startup path above) additionally writes a plaintext
+    # `role  email  password` line per seeded user to that path — a convenience for grabbing
+    # test-login credentials without reading source, not a new secret: every password here is
+    # the same fixed, already-public dev-only constant already printed to stdout and documented
+    # in README.md. Never point this at a path a real deployment serves or a path that gets
+    # committed.
+    seed_credentials_file: str = ""
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
