@@ -20,7 +20,11 @@ async def lifespan(app: FastAPI):
         # `reset=False` — additive/idempotent, see app/config.py's `seed_demo_data` docstring.
         from scripts.seed_dev_data import seed as seed_demo_data
 
-        await seed_demo_data(reset=False, client=app.state.mongo_client)
+        await seed_demo_data(
+            reset=False,
+            client=app.state.mongo_client,
+            credentials_file=settings.seed_credentials_file or None,
+        )
     yield
     app.state.mongo_client.close()
 
