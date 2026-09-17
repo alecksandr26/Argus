@@ -240,7 +240,28 @@ async def _seed_routes_and_alerts(trucks: list[Truck], drivers: list[Driver]) ->
     ).insert()
 
 
-async def seed(reset: bool = True, client=None) -> None:
+def _write_credentials_file(path: str) -> None:
+    """Writes a plaintext `role  email  password` line per seeded user (see `_USERS` above) to
+    `path`, for grabbing test-login credentials without reading source — e.g. from `it-argus`'s
+    Playwright tests or a manual QA pass. Not a new secret: every password here is the same
+    fixed, already-public `DEMO_PASSWORD` constant this module already prints to stdout and
+    documents in README.md. Local/testing use only — never point this at a path a real
+    deployment serves or that gets committed."""
+    parent = os.path.dirname(os.path.abspath(path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    lines = [
+        "# Argus demo credentials (scripts/seed_dev_data.py) — local/testing use only",
+        f"# generated {datetime.now(timezone.utc).isoformat()}",
+        "",
+    ]
+    for email, role, _first_name, _last_name, _phone in _USERS:
+        lines.append(f"{role.value:<12} {email:<24} {DEMO_PASSWORD}")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+async def seed(reset: bool = True, client=None, credentials_file: str | None = None) -> None:
     """`reset=True` (the manual-script default): wipe every collection first, then insert the
     full demo dataset fresh — deterministic, but destructive. `reset=False`: additive/idempotent
     — only inserts users/trucks/drivers that don't already exist (by email/plate_number/
@@ -250,7 +271,11 @@ async def seed(reset: bool = True, client=None) -> None:
     `client`: an already-connected Motor client to reuse (e.g. `app.state.mongo_client` from
     `app.main`'s lifespan) instead of opening a second, separate connection — `init_db()` opens
     its own only when `client` is `None`, which is what the standalone
-    `python -m scripts.seed_dev_data` entry point below relies on."""
+    `python -m scripts.seed_dev_data` entry point below relies on.
+
+    `credentials_file`: when given, also writes every seeded user's role/email/password to this
+    path (see `_write_credentials_file`) — opt-in, `None` by default so a plain test run never
+    touches the filesystem."""
     await init_db(client=client)
 
     if reset:
@@ -269,8 +294,17 @@ async def seed(reset: bool = True, client=None) -> None:
     print(f"  guardian logins:  guardian@argus.dev, guardian2@argus.dev, guardian3@argus.dev / {DEMO_PASSWORD}")
     print(f"  trucks seeded:    {', '.join(t.plate_number for t in trucks)}")
 
+    if credentials_file:
+        _write_credentials_file(credentials_file)
+        print(f"  credentials file: {credentials_file}")
+
 
 if __name__ == "__main__":
     # `RESET_DEMO_DATA=false python -m scripts.seed_dev_data` runs the idempotent path manually
     # too, if you want to add missing demo records without wiping the database.
-    asyncio.run(seed(reset=os.environ.get("RESET_DEMO_DATA", "true").lower() != "false"))
+    # `SEED_CREDENTIALS_FILE=./seed_credentials.txt python -m scripts.seed_dev_data` additionally
+    # writes every seeded user's role/email/password to that file.
+    asyncio.run(seed(
+        reset=os.environ.get("RESET_DEMO_DATA", "true").lower() != "false",
+        credentials_file=os.environ.get("SEED_CREDENTIALS_FILE") or None,
+    ))

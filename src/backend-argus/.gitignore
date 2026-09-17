@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .env
 .pytest_cache/
+
+# scripts/seed_dev_data.py's optional SEED_CREDENTIALS_FILE output — local/testing convenience,
+# never meant to be committed.
+seed_credentials*.txt
