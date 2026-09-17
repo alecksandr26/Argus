@@ -7,7 +7,7 @@ from app.models.driver import Driver
 from app.models.route import Route
 from app.models.truck import Truck
 from app.models.user import User
-from scripts.seed_dev_data import seed
+from scripts.seed_dev_data import DEMO_PASSWORD, seed
 
 
 @pytest.mark.asyncio
@@ -43,3 +43,21 @@ async def test_reset_seed_produces_the_full_dataset(mongo_client):
     assert await Route.find_all().count() == 4
     roles = {u.role.value for u in await User.find_all().to_list()}
     assert roles == {"root_admin", "admin", "guardian"}
+
+
+@pytest.mark.asyncio
+async def test_credentials_file_lists_every_seeded_user(mongo_client, tmp_path):
+    creds_path = tmp_path / "seed_credentials.txt"
+    await seed(reset=True, client=mongo_client, credentials_file=str(creds_path))
+
+    content = creds_path.read_text(encoding="utf-8")
+    assert content.count(DEMO_PASSWORD) == 7
+    assert "root_admin" in content
+    assert "admin@argus.dev" in content
+    assert "guardian3@argus.dev" in content
+
+
+@pytest.mark.asyncio
+async def test_no_credentials_file_written_when_not_requested(mongo_client, tmp_path):
+    await seed(reset=True, client=mongo_client)
+    assert list(tmp_path.iterdir()) == []

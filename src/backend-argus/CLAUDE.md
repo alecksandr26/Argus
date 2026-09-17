@@ -135,6 +135,24 @@ users, five trucks spanning every `TruckStatus`, five drivers, four routes acros
   duplicates anything, it just fills in whatever's missing. Never set this in a real deployment —
   it's a convenience for local/demo environments only.
 
+**Getting the seeded credentials into a file, not just stdout** — `SEED_CREDENTIALS_FILE`: both
+`seed()` call sites (the manual script and the `SEED_DEMO_DATA` startup path) already print every
+seeded user's role/email/password to stdout, but that's easy to lose in container logs. Setting
+`SEED_CREDENTIALS_FILE` to a path (`app/config.py`'s `seed_credentials_file`, empty/disabled by
+default) makes `seed()` additionally write the same `role email password` lines to that path via
+`scripts/seed_dev_data.py`'s `_write_credentials_file()` — a convenience for a manual QA pass or
+for `it-argus`'s Playwright tests to read logins from, not a new secret surface: every password
+written is the same fixed, already-public `DEMO_PASSWORD` (`changeme123`) already printed above
+and documented in README.md. In Docker, the path needs to land under the `./app:/app/app` bind
+mount (e.g. `/app/app/seed_credentials.txt`) to actually show up on the host — see both
+`docker-compose.yml` files' comments. The output file is gitignored (`seed_credentials*.txt`);
+never commit one. Since it's a plain `${VAR:-default}`-style env var in both `docker-compose.yml`
+files, it (and `SEED_DEMO_DATA`) can be set directly on the `docker compose up --build` command
+line instead of in `.env` — e.g.
+`SEED_DEMO_DATA=true SEED_CREDENTIALS_FILE=/app/app/seed_credentials.txt docker compose up
+--build` — see README.md's "Seeding demo data" for the exact commands from both this module's own
+compose file and the repo-root one.
+
 ### RBAC — four roles
 
 `Role` (`root_admin` / `admin` / `guardian` / `truck_driver`). The first three originally read
@@ -283,11 +301,12 @@ as a "should work" claim:
   that same live container: `npx tsc --noEmit` and `npm run build` both passed clean — this was
   `ui-argus`'s first-ever real toolchain run (see that module's own `CLAUDE.md`).
 
-**Since this section was first written**: the hermetic suite has grown to 46 tests (the `admin`
-role's scoped RBAC, self-service `/api/auth/me`, and `SEED_DEMO_DATA` seeding all added their
-own coverage — see "RBAC — four roles" and "Startup demo seeding" above) — the "32 tests"/"27
-tests" figures elsewhere on this page are the count *at the time each of those sections was
-written*, not stale claims to reconcile against each other. `ui-argus` is well past its "first
+**Since this section was first written**: the hermetic suite has grown to 48 tests (the `admin`
+role's scoped RBAC, self-service `/api/auth/me`, `SEED_DEMO_DATA` seeding, and
+`SEED_CREDENTIALS_FILE` all added their own coverage — see "RBAC — four roles" and "Startup demo
+seeding" above) — the "32 tests"/"27 tests"/"46 tests" figures elsewhere on this page are the
+count *at the time each of those sections was written*, not stale claims to reconcile against
+each other. `ui-argus` is well past its "first
 toolchain run" too — every screen now calls this backend for real, not just field-name-verified
 against it; see that module's own `CLAUDE.md` for its current status.
 
