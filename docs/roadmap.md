@@ -126,8 +126,11 @@ role). Full per-screen status: `src/ui-argus/INTEGRATION.md`.
   were in the first UI pass (no committed API/table effort behind them).
 - `Alert.media_url` — where captured clips are stored/served (S3? the backend directly?) isn't
   decided anywhere.
-- OSRM integration for `TravelManagement.tsx`'s create form (`destination_coordinates`/
-  `estimated_arrival` are still stubbed).
+- **OSRM integration for `TravelManagement.tsx`'s create form — decided as a future
+  iteration, not part of this pass.** `destination_coordinates`/`estimated_arrival` stay
+  hardcoded (`{lat:0,lon:0}` / `null`) on route creation until then; this mirrors the same
+  "mejora futura" framing the borrador doc and the top-level `CLAUDE.md` already give the OSRM
+  service itself (still not part of any Docker Compose stack).
 - No caching/data-fetching layer (TanStack Query or similar) — every screen does its own
   `useEffect` fetch, no shared cache/refetch-on-focus.
 - A real-time push mechanism for `LiveOps.tsx` (currently polling, see backend section above).
