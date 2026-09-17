@@ -43,15 +43,15 @@ tracks what's genuinely still open, not a checklist of what's missing.
 | `src/pages/AlertTriage.tsx` | `GET /api/alerts/:id`, `GET /api/routes/:id`, `PUT /api/alerts/:id` | Done. Loading and "not found" are now genuinely distinct states. Review checkbox/notes/Save are `root_admin`/`guardian` only (matches `review_alert`'s real RBAC) — `admin`/`truck_driver` see a read-only summary instead. **Still unresolved**: `Alert.media_url` storage/serving (S3? the backend directly?) isn't decided anywhere, so the media placeholder still has nothing real to point at. |
 | `src/pages/Fleet.tsx` | `GET/POST/PUT /api/trucks` | Done. Write access (`Add truck` + edit Save) is `root_admin`/`admin` only; a `guardian` still sees the table and can open a row, but the panel renders read-only (disabled inputs, no Save). No delete affordance in the UI yet even though `DELETE /api/trucks/:id` exists server-side — not needed for the current workflow. |
 | `src/pages/Drivers.tsx` | `GET/POST/PUT /api/drivers` | Same shape and same gating as Fleet. |
-| `src/pages/TravelManagement.tsx` | `GET/POST /api/routes` | Done for create + list; write access (the "New route" panel) is `root_admin`/`admin` only, hidden entirely for `guardian`. **Still stubbed**: `destination_coordinates`/`estimated_arrival` are hardcoded (`{lat:0,lon:0}` / `null`) pending OSRM integration — unchanged from before, still out of scope for this pass. No edit/delete UI yet. |
+| `src/pages/TravelManagement.tsx` | `GET/POST /api/routes` | Done for create + list; write access (the "New route" panel) is `root_admin`/`admin` only, hidden entirely for `guardian`. **Still stubbed**: `destination_coordinates`/`estimated_arrival` are hardcoded (`{lat:0,lon:0}` / `null`) pending OSRM integration, now decided as a future iteration rather than this pass — see "Explicitly not in scope yet" below. No edit/delete UI yet. |
 
 ## Explicitly not in scope yet
 
 - **Reports Panel** — cut; no committed API/table effort behind it yet.
 - **Geofence management** — in the ER model, never appeared in the committed API list at all.
-- **OSRM integration** — `TravelManagement.tsx`'s create form still stubs
-  `destination_coordinates`/`estimated_arrival`; per the top-level `CLAUDE.md`, OSRM itself isn't
-  part of any Docker Compose stack yet either.
+- **OSRM integration — decided as a future iteration, not part of this pass.**
+  `TravelManagement.tsx`'s create form still stubs `destination_coordinates`/`estimated_arrival`;
+  per the top-level `CLAUDE.md`, OSRM itself isn't part of any Docker Compose stack yet either.
 - **A real-time push mechanism** for `LiveOps.tsx` (see cross-cutting gap #5).
 
 If any of these get prioritized later, this doc should grow a row for them rather than the work
