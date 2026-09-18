@@ -69,5 +69,33 @@ services:
     depends_on:
       - backend-argus
 
+  # Fleet simulator (src/simulator-argus) — N virtual trucks provisioning their own SIM-* fleet
+  # via the admin API and POSTing real StatusRoute/Alert records over HTTP, so ui-argus's Live
+  # Operations map and Alert Triage screen have moving trucks and fresh alerts to show without
+  # touching real hardware (no ESP32/Pi exist yet). Gated behind the `simulator` Compose profile
+  # so it never starts on a plain `docker compose up` — nobody wants surprise fake alerts by
+  # default. One command away: `docker compose --profile simulator up simulator-argus`. See
+  # src/simulator-argus/CLAUDE.md for the full design.
+  simulator-argus:
+    build:
+      context: ./src/simulator-argus
+    profiles: ["simulator"]
+    environment:
+      - BACKEND_BASE_URL=http://backend-argus:8000
+      - SIMULATOR_ADMIN_EMAIL=${ROOT_ADMIN_EMAIL:-admin@argus.dev}
+      - SIMULATOR_ADMIN_PASSWORD=${ROOT_ADMIN_PASSWORD:-changeme123}
+      - SIMULATOR_TRUCK_COUNT=${SIMULATOR_TRUCK_COUNT:-4}
+      - SIMULATOR_STATUS_INTERVAL_SECONDS=${SIMULATOR_STATUS_INTERVAL_SECONDS:-5}
+      - SIMULATOR_ROUTE_DURATION_MINUTES=${SIMULATOR_ROUTE_DURATION_MINUTES:-20}
+      - SIMULATOR_SCENARIO_WEIGHTS=${SIMULATOR_SCENARIO_WEIGHTS:-normal=0.55,drowsy_escalation=0.25,panic=0.20}
+      - SIMULATOR_MEDIUM_BLIP_PROBABILITY=${SIMULATOR_MEDIUM_BLIP_PROBABILITY:-0.1}
+      - SIMULATOR_RESET=${SIMULATOR_RESET:-true}
+      # Real road-following routes need src/simulator-argus's own `osrm` service + one-time
+      # setup — see that module's README. Off by default here too.
+      - SIMULATOR_USE_OSRM=${SIMULATOR_USE_OSRM:-false}
+      - OSRM_BASE_URL=${OSRM_BASE_URL:-http://osrm:5000}
+    depends_on:
+      - backend-argus
+
 volumes:
   mongo-data:
