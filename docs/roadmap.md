@@ -45,10 +45,14 @@ heartbeat), `sender/` (a custom Bluetooth SPP protocol — see section 2 below �
 and unit-tested against a fake transport, `FakeTransport`).
 
 `orchestrator/` also now has `fusion_contract.py` — a typed reference contract (enums, dataclasses,
-a severity matrix, and stubbed debounce/escalation/recovery timing) for the ESP32's drowsy+grip
-fusion decision, added alongside the severity-taxonomy work in sections 2–4. It's a contract
+a severity matrix, and timing windows) for the ESP32's drowsy+grip fusion decision, added
+alongside the severity-taxonomy work in sections 2–4. **Its `FusionOrchestrator` state machine is
+now fully implemented and unit-tested** (19 new tests: debounce, a sudden-worsening fast path
+that confirms via the short debounce window rather than the slower escalation timer, the
+escalation timer itself, no-automatic-de-escalation, and recovery — 242 tests total in this
+module now, up from 223), not just the bare shapes/matrix it started as. It's still a contract
 reference only, not wired into `main.py` or `Orchestrator` itself — `cv-argus`'s own decision loop
-is unchanged and still camera-only.
+is unchanged and still camera-only; that boundary is unaffected by this implementation work.
 
 **Missing:**
 - Never run against real Raspberry Pi 5 hardware — only a desktop-CPU Docker container so far.
@@ -65,8 +69,9 @@ is unchanged and still camera-only.
   multi-hour recorded drive.
 - Grip sensor / panic button / CAN bus / alarm speaker / geolocation: **not this module's job at
   all** — see section 2. `cv-argus`'s own `CLAUDE.md` says so explicitly. The grip+drowsy fusion
-  *algorithm* is now fully specified (`src/esp32-argus/README.md` section 5,
-  `fusion_contract.py` above) even though the hardware/firmware itself still doesn't exist.
+  *algorithm* is now fully specified and implemented as a tested reference
+  (`src/esp32-argus/README.md` section 5, `fusion_contract.py` above) even though the
+  hardware/firmware itself still doesn't exist.
 
 ## 2. ESP32 firmware — missing entirely
 
@@ -88,13 +93,15 @@ diagram and explicitly out of `cv-argus`'s scope.
 3. **Attaching real GPS coordinates** to every record it relays — `cv-argus` never populates
    `geolocation` itself (no GPS on the Pi in this design); the ESP32 is expected to fill
    `coordinates`/`current_coordinates` before the HTTP call, not after.
-4. **The drowsy+grip fusion decision loop** — no longer an open design question:
-   `src/esp32-argus/README.md` section 5 now specifies the full algorithm (severity matrix,
-   debounce/escalation/recovery timing windows, how an escalation posts a new linked alert
-   instead of mutating the original, how recovery sets `resolved_at`), with a typed reference
-   implementation at `src/cv-argus/src/orchestrator/fusion_contract.py` to translate 1:1 into
-   firmware. What's still missing is purely the hardware-interfacing side: the grip sensor's
-   physical GPIO signal, and the panic button/CAN-bus-AEB-actuator/alarm-speaker
+4. **The drowsy+grip fusion decision loop** — no longer an open design question, and no longer
+   just a design either: `src/esp32-argus/README.md` section 5 specifies the full algorithm
+   (severity matrix, debounce/escalation/recovery timing windows, no automatic de-escalation,
+   how an escalation posts a new linked alert instead of mutating the original, how recovery
+   sets `resolved_at` on only the latest row in the chain), and
+   `src/cv-argus/src/orchestrator/fusion_contract.py`'s `FusionOrchestrator` is now a real,
+   unit-tested reference implementation of that state machine (not just typed shapes) to
+   translate 1:1 into firmware. What's still missing is purely the hardware-interfacing side: the
+   grip sensor's physical GPIO signal, and the panic button/CAN-bus-AEB-actuator/alarm-speaker
    GPIO/UART integration — genuinely new hardware work with no existing code to build on, but no
    longer an *algorithm* gap.
 
@@ -134,6 +141,15 @@ suite (the new validator and the resolve-vs-review device-key authorization spli
 - No refresh-token flow — `JWT_EXPIRE_MINUTES` is the only session-length control.
 - No decided real-time push strategy for the live dashboard (currently: `ui-argus` polls
   `GET /api/routes/active` every 7s).
+- **A manual guardian de-escalation endpoint — new, real gap surfaced while implementing
+  `FusionOrchestrator` (section 1).** That state machine deliberately never de-escalates a
+  severity on its own (see `src/esp32-argus/README.md` section 5) — only a full recovery clears
+  an incident automatically. But a guardian who has actually talked to the driver and confirmed
+  they're fine should be able to step an alert back down themselves; there's currently no
+  backend endpoint/field for this (`review_alert` only accepts `reviewed_by_operator`/
+  `operator_notes`/`resolved_at`, not a severity change), and no UI action for it either (see
+  the matching `ui-argus` bullet below). Not implemented in this pass — recorded here so it
+  isn't lost.
 
 ## 4. `ui-argus`
 
@@ -166,6 +182,10 @@ surfaces `grip_status`/`source`/escalation links/`resolved_at`.
   service itself (still not part of any Docker Compose stack).
 - No caching/data-fetching layer (TanStack Query or similar) — every screen does its own
   `useEffect` fetch, no shared cache/refetch-on-focus.
+- **A manual de-escalation action on `AlertTriage.tsx`** — the UI half of the new gap noted in
+  section 3's `backend-argus` list: once that endpoint exists, a guardian needs a way to trigger
+  it (a button alongside the existing review checkbox/notes) after confirming with the driver
+  that an alert is a false positive or has resolved. Not implemented in this pass.
 - A real-time push mechanism for `LiveOps.tsx` (currently polling, see backend section above).
 
 ## 5. `it-argus` (integration tests)
