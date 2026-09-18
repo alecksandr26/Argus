@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+
+# OSRM extract + preprocessed graph data (scripts/setup_osrm.sh) -- large binary artifacts,
+# never checked in. See README's "Optional: real road-following routes via OSRM".
+osrm-data/

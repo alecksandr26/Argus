@@ -145,8 +145,11 @@ pass), plus two new screens, Access (root_admin/admin user management) and Profi
 (below) is a fourth, newer piece: Playwright integration tests exercising `ui-argus` and
 `backend-argus` together — its own test coverage is still just the login flow (unchanged since
 it was added), even though the real connection between the two modules has grown well past
-login since. The ESP32 firmware and OSRM described in "Planned end-to-end system architecture"
-don't exist yet. See
+login since. `src/simulator-argus/` (below) is a fifth: a fleet simulator that provisions its
+own demo trucks/routes against a real `backend-argus` and continuously POSTs real
+`Status_Route`/`Alert` records over HTTP (device-API-key authenticated, per truck), so `ui-argus`
+has moving trucks and fresh alerts to demo against without real ESP32/Pi hardware. The ESP32
+firmware and OSRM described in "Planned end-to-end system architecture" don't exist yet. See
 `docs/roadmap.md` for the full, up-to-date gap list across every module (including what's built
 but not yet merged into `main`) — read that before assuming something is missing or done.
 
@@ -222,6 +225,27 @@ but not yet merged into `main`) — read that before assuming something is missi
   unauthenticated deep link redirecting to `/login` and back after signing in, sign-out) — the
   first real thing connecting `ui-argus` and `src/backend-argus`, and meant to grow alongside
   future backend-connected `ui-argus` screens, not a one-off.
+- `src/simulator-argus/` — a fleet simulator turning `docs/roadmap.md`'s previously-undone
+  "software-only simulator" idea (section 7) into real code: N virtual trucks that provision
+  their own `SIM-`-prefixed drivers/trucks/routes via the admin API (not `SEED_DEMO_DATA`), mint
+  a real per-truck device API key each (`POST /api/trucks/{id}/rotate-key`), and continuously
+  POST `Status_Route`/`Alert` records against `backend-argus` using that key — exactly the
+  auth path a real ESP32 would use, scoped server-side to each truck's own route/alert writes.
+  Three per-truck profiles (`normal`, `drowsy_escalation`, `panic`) are assigned by a weighted
+  random draw (`SIMULATOR_SCENARIO_WEIGHTS`) rather than a fixed rotation, giving a demo run a
+  coherent story per truck while which-truck-gets-which stays randomized; route duration
+  (`SIMULATOR_ROUTE_DURATION_MINUTES`, minutes to hours) and event timing are both parametrized
+  rather than hardcoded. Movement optionally follows a real OSRM-computed road route instead of a
+  straight line (`SIMULATOR_USE_OSRM`, off by default — needs a one-time Mexico OSM extract
+  setup, falls back to a straight line if unset/unreachable) — a private, simulator-only use of
+  OSRM for realistic demo tracks, distinct from the backend/frontend's own route+ETA feature
+  described above, which remains deferred. Has its own `docker-compose.yml` (a full,
+  self-contained mini-stack — Mongo + backend + UI + simulator + an opt-in OSRM service,
+  published on alternate ports for a one-command demo) plus a `profiles: ["simulator"]`-gated
+  service in the root `docker-compose.yml` for layering onto an already-running dev stack. Has a
+  `README.md` (quick start, config table, what to expect, OSRM setup) and a `CLAUDE.md` (why
+  device-key auth, why self-provisioned data, the scenario/movement-model/OSRM design); read that
+  `CLAUDE.md` before changing anything here.
 - `docs/argus-descripción-proyecto.pdf` — project description/proposal.
 - `docs/criteria/` — academic thesis/grading-criteria documents (this is a school "trabajo de
   grado" project); `Formato_Proyecto_Modular V2.docx` is the report template being filled in.
