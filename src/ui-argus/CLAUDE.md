@@ -31,7 +31,7 @@ map).
   SPA is the right shape, and Vite's dev server + esbuild-based build is materially faster than
   CRA's webpack pipeline for that shape.
 - **TypeScript, not plain JS.** This is a titulación project whose grading criteria
-  (`docs/criterios/`) explicitly reward justified language choices; static typing catches
+  (`docs/criteria/`) explicitly reward justified language choices; static typing catches
   integration errors against the backend's Pydantic models at compile time rather than at
   runtime in front of a Control Tower operator, which matters more here than in a typical
   internal tool given the safety-monitoring use case.
@@ -52,7 +52,8 @@ map).
   dark UI. Google Maps was considered and rejected: its "free" tier still needs a
   billing-enabled Google Cloud key shipped in the browser bundle, and it contradicts the
   design already written down. OSRM route-line rendering stays deferred ("mejora futura") —
-  the map currently just shows live truck positions from fixtures. Full write-up (both this
+  the map shows live truck positions from the real backend (`GET /api/routes/active`), not
+  fixtures (see "Current status" below — `src/data/fixtures.ts` is gone). Full write-up (both this
   and the coordinate-adapter decision, with the Google Maps / Amazon Location rejection
   reasoning): `docs/designs/frontend-map-and-coordinates.md`.
 
