@@ -233,11 +233,44 @@ bcrypt hash against backend-argus's single Uvicorn process) than auth.spec.ts's 
 and 6 parallel Playwright workers hitting that one process occasionally pushed a single request
 past 5s.
 
-**Still missing:** Routes, Live Operations, and Alert Triage have no spec yet — no full
-round-trip proving an alert actually lands on a guardian's dashboard, for instance. Also worth
-being precise about scope: `it-argus` proves the `ui-argus`↔`backend-argus` seam, nothing more —
-it says nothing about the cv-argus→ESP32→backend chain (see section 7 below, "Nothing exercises
-the full chain," which is still true for the edge side).
+**Also new this pass, in the same session as the users/trucks/drivers specs above:**
+`tests/live-ops.spec.ts` (3 specs) — the round-trip that was the last real gap: a route created
+through the actual Routes screen (`TravelManagement.tsx`), promoted to `in_progress` via REST
+(that screen always creates a route as `scheduled`; there's no UI control yet for "trip
+started"), then a `Status_Route`/`Alert` pair POSTed directly against the backend with a
+root_admin JWT — the ESP32 doesn't exist yet, so this is the same fallback path
+`authorize_device_or_user()` documents for manual testing, and the same one `src/simulator-argus`
+and `scripts/seed_dev_data.py` use. Verifies: the truck shows as a live map marker and the alert
+as a feed entry on `LiveOps.tsx`, severity filtering actually filters, clicking through reaches
+`AlertTriage.tsx` with full correct detail (heading, severity pill, fused source with AI
+scores/grip status) — and separately, that a `panic_button` alert renders with no AI scores at
+all (no camera/grip evaluation happens for one), that a guardian can review an alert and have
+that review survive a page reload (a real backend round-trip, not just local state), and that an
+admin sees the triage screen entirely read-only (no review controls rendered at all, matching
+`canReview`'s root_admin/guardian-only gate). Re-verified passing 4 times in a row via
+`docker compose up --build --abort-on-container-exit` (`14 passed` each clean run — the full
+suite across all 5 spec files now, not just this file's 3). One real, external confound hit
+while doing that: a separate `docker compose up` stack (the repo-root one) was running
+concurrently on the same host and measurably contributed to occasional timeouts in *unrelated*,
+previously-passing specs (`trucks.spec.ts`/`drivers.spec.ts`) under 6-way Playwright parallelism
+— `playwright.config.ts` now caps `workers: 4` (down from Playwright's default of half the
+host's cores) since the actual bottleneck is `backend-argus`'s single Uvicorn process
+serializing CPU-bound bcrypt hashes, not raw browser count; the suite reran fully clean once that
+external contention wasn't present, confirming this was host load, not a bug in any spec. Getting
+`live-ops.spec.ts` green surfaced three more instances of the same `getByLabel`/`getByText`
+substring-matching class of bug the users/trucks/drivers specs already hit once: "Driver-activated
+panic button" substring-matching a longer sentence starting with the same words, and a test's own
+`alert_type` string ("Medium severity event ...") accidentally containing the exact severity-pill
+text ("MEDIUM SEVERITY") it was also asserting on — both fixed with `exact: true`, consistent
+with the existing pattern this suite already follows.
+
+**Still missing:** no full round-trip through the actual edge chain
+(`cv-argus`→ESP32→backend) — `live-ops.spec.ts` proves `LiveOps`/`AlertTriage` render correctly
+given real `Status_Route`/`Alert` rows, ingested the same JWT-fallback way `src/simulator-argus`
+does, not via a real device. Also worth being precise about scope generally: `it-argus` proves
+the `ui-argus`↔`backend-argus` seam, nothing more — it says nothing about the cv-argus→ESP32→
+backend chain itself (see section 7 below, "Nothing exercises the full chain," which is still
+true for the edge side).
 
 ## 6. `src/dataset` (local dataset-creation pipeline)
 

@@ -1,4 +1,5 @@
-import type { Page } from '@playwright/test'
+import { createHash } from 'node:crypto'
+import type { APIRequestContext, Page } from '@playwright/test'
 
 /**
  * Shared across every spec file — pulled out once `users.spec.ts`/`trucks.spec.ts`/
@@ -51,3 +52,35 @@ export async function logout(page: Page) {
  * `docker compose up` stack, which publishes the backend at `http://localhost:8000`).
  */
 export const BACKEND_URL = process.env.IT_BACKEND_URL ?? 'http://backend-argus:8000'
+
+/**
+ * Every `password` field on the backend's API boundary (`LoginRequest`, `UserCreate`, ...)
+ * takes a SHA-256 hex digest of the real password, not the raw password — `ui-argus` computes
+ * this client-side via `crypto.subtle`; a Playwright spec talking to the backend directly (no
+ * browser involved) has to reproduce that same digest itself, via Node's own `crypto` module.
+ */
+export function sha256Hex(raw: string): string {
+  return createHash('sha256').update(raw).digest('hex')
+}
+
+/** Logs in against the real backend (no browser) and returns the JWT — for specs that need to
+ * seed data via REST before a page ever loads (route/status/alert ingestion, user creation for
+ * a role a UI flow isn't the point of exercising). */
+export async function restLogin(
+  request: APIRequestContext,
+  email: string,
+  password: string,
+): Promise<string> {
+  const res = await request.post(`${BACKEND_URL}/api/auth/login`, {
+    data: { email, password: sha256Hex(password) },
+  })
+  if (!res.ok()) {
+    throw new Error(`restLogin(${email}) failed: ${res.status()} ${await res.text()}`)
+  }
+  const body = await res.json()
+  return body.access_token as string
+}
+
+export function authHeaders(token: string): { Authorization: string } {
+  return { Authorization: `Bearer ${token}` }
+}

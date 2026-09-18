@@ -1,6 +1,13 @@
-import { createHash } from 'node:crypto'
 import { test, expect, type Page } from '@playwright/test'
-import { ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD, BACKEND_URL, login, logout, uniqueSuffix } from './helpers'
+import {
+  ROOT_ADMIN_EMAIL,
+  ROOT_ADMIN_PASSWORD,
+  BACKEND_URL,
+  login,
+  logout,
+  uniqueSuffix,
+  sha256Hex,
+} from './helpers'
 
 /**
  * Exercises `POST /api/users` through the real Access screen, and — for the one rule a UI-only
@@ -10,10 +17,6 @@ import { ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD, BACKEND_URL, login, logout, uniq
  * picker, but disabling a `<select>` proves nothing about the server, so the third test below
  * calls the endpoint directly instead of trusting the UI not to send a disallowed role.
  */
-
-function sha256Hex(raw: string): string {
-  return createHash('sha256').update(raw).digest('hex')
-}
 
 async function createUserViaAccessPanel(
   page: Page,
