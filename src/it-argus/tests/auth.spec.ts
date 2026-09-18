@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD, login, logout } from './helpers'
 
 /**
  * The first real integration spec — drives the actual `ui-argus` dev server against the actual
@@ -8,14 +9,6 @@ import { test, expect } from '@playwright/test'
  * bootstrap.py`), which this module's own `docker-compose.yml` leaves at their checked-in
  * defaults on purpose.
  */
-const ROOT_ADMIN_EMAIL = 'admin@argus.dev'
-const ROOT_ADMIN_PASSWORD = 'changeme123'
-
-async function login(page: import('@playwright/test').Page, email: string, password: string) {
-  await page.getByLabel('Email address').fill(email)
-  await page.getByLabel('Password').fill(password)
-  await page.getByRole('button', { name: 'Sign in' }).click()
-}
 
 test('logs in as the bootstrapped root admin and lands on the dashboard', async ({ page }) => {
   await page.goto('/login')
@@ -56,7 +49,7 @@ test('signing out clears the session and protects routes again', async ({ page }
   await login(page, ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD)
   await expect(page).toHaveURL('/')
 
-  await page.getByText('Sign out').click()
+  await logout(page)
   await expect(page).toHaveURL('/login')
 
   await page.goto('/fleet')

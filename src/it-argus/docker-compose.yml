@@ -67,6 +67,16 @@ services:
   it-argus:
     build:
       context: .
+    environment:
+      # Reachable from this container thanks to `network_mode: "service:ui-argus"` below — see
+      # tests/helpers.ts's `BACKEND_URL` comment. Only needed by users.spec.ts's direct-REST
+      # negative-scope test; every other spec drives the backend through the browser instead.
+      - IT_BACKEND_URL=http://backend-argus:8000
+    volumes:
+      # Bind-mounts the HTML reporter's output (see playwright.config.ts) onto the host so it
+      # survives `--abort-on-container-exit` tearing this container down — without this, the
+      # report is generated inside the container and then lost.
+      - ./playwright-report:/app/playwright-report
     # Shares ui-argus's network namespace instead of getting its own — found necessary by
     # actually running this, not decided upfront: `src/utils/crypto.ts`'s `sha256Hex` (the real
     # login path) needs `crypto.subtle`, which browsers only expose in a "secure context"
