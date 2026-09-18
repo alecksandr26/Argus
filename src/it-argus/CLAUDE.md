@@ -77,19 +77,32 @@ over a bare `getByText(...)` for a page title, since the same text often also ap
 sidebar nav link and a plain text match doesn't disambiguate between the two (hit directly
 writing `tests/auth.spec.ts`, not a hypothetical).
 
+## Reporting
+
+`playwright.config.ts`'s `reporter` is `[['list'], ['html', ...]]` — console output plus a
+browsable HTML report (`open: 'never'`, since the Docker Compose run has no display to pop a
+browser tab into). `docker-compose.yml` bind-mounts `./playwright-report:/app/playwright-report`
+on the `it-argus` service specifically so that report survives
+`--abort-on-container-exit` tearing the container down — without the mount, the report is
+generated inside the container and then lost the moment it exits. See README.md's "Viewing the
+report" for how to open it (`npx playwright show-report playwright-report`).
+
 ## Current status
 
 **Run for real, not just written**: `docker compose up --build --abort-on-container-exit` boots
-the full stack (its own Mongo, `backend-argus`, `ui-argus`) and all 4 specs in
-`tests/auth.spec.ts` pass — root-admin bootstrap login, wrong-password error, an unauthenticated
-deep link redirecting to `/login` and back after signing in, and sign-out re-protecting a route.
-Getting there surfaced two real bugs this module's own existence was the point of catching (see
-"Docker Compose" above for the network/secure-context one) — proof this harness earns its cost,
-not just a plan for one. **Nothing else is covered yet — and this is now a real gap, not a
-future hypothetical**: every `ui-argus` screen (Fleet, Drivers, Routes, Live operations,
-Alert triage, plus the new Access and Profile screens) is wired to the real `backend-argus` API
-now, with real role-based gating (a 4th `admin` role, `RequireRole`, read-only views for roles
-without write access) that this suite exercises none of. Extending this suite to cover at least
-one full round-trip per role — an alert actually landing on a guardian's dashboard, an admin
-being blocked from `/access`'s root_admin-only actions — is the natural next step, the same way
-`ui-argus`'s own Vitest suite is meant to grow alongside `src/api/*`.
+the full stack (its own Mongo, `backend-argus`, `ui-argus`) and every spec passes — `auth.spec.ts`
+(root-admin bootstrap login, wrong-password error, an unauthenticated deep link redirecting to
+`/login` and back after signing in, sign-out re-protecting a route), `users.spec.ts` (root_admin
+creates an admin who can log in and is scoped to guardians only; that admin creates a guardian
+who is bounced off `/access`; a direct REST call proving the guardian-only scope is enforced
+server-side, not just by the UI's disabled role picker), `trucks.spec.ts` and `drivers.spec.ts`
+(create via the real Fleet/Drivers screens, plus a guardian seeing both read-only — no create
+button, disabled fields, no Save button). Getting the original auth suite running surfaced two
+real bugs this module's own existence was the point of catching (see "Docker Compose" above for
+the network/secure-context one) — proof this harness earns its cost, not just a plan for one.
+
+**Still not covered**: Routes, Live operations, and Alert triage have no spec yet — no full
+round-trip proving an alert actually lands on a guardian's dashboard, for instance. Extending
+this suite to those screens (the same real-backend, real-browser shape as `trucks.spec.ts`/
+`drivers.spec.ts`) is the natural next step, the same way `ui-argus`'s own Vitest suite is meant
+to grow alongside `src/api/*`.
