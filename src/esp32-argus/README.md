@@ -121,10 +121,11 @@ This is the fused severity decision this device computes from two inputs it alon
 the Pi's relayed drowsiness classification (section 1) and its own live grip-sensor reading.
 Modeled explicitly on `cv-argus`'s own `orchestrator/orchestrator.py` debounce/cooldown design —
 same vocabulary (debounce, escalation, recovery), extended to a joint two-signal state instead of
-the camera alone. A typed, executable reference for everything below lives in
-`src/cv-argus/src/orchestrator/fusion_contract.py` (not wired into the Pi's running pipeline —
-a contract reference, not part of `cv-argus`'s own decision loop) — translate its `BASE_MATRIX`
-and the three `FusionConfig` windows into firmware 1:1 rather than re-deriving them.
+the camera alone. A typed, executable, **now fully implemented and unit-tested** reference for
+everything below lives in `src/cv-argus/src/orchestrator/fusion_contract.py`'s
+`FusionOrchestrator` (still not wired into the Pi's running pipeline — a contract reference, not
+part of `cv-argus`'s own decision loop) — translate its state machine into firmware 1:1 rather
+than re-deriving it from the matrix/windows alone below.
 
 **Base severity matrix** — both signals bad → `critical`, both good → `low`, either one alone bad
 → `medium`:
@@ -140,16 +141,44 @@ one exists):
 
 - **Debounce** (~5s) — the combined `(drowsy, grip)` state must hold this long before it first
   triggers a `POST /api/alerts` at that severity, so one noisy frame or a momentary
-  hand-off-wheel gear shift doesn't fire an alert.
+  hand-off-wheel gear shift doesn't fire an alert. **This same, short window also confirms a
+  sudden worsening of an already-open incident** — e.g. an open `medium` incident where the very
+  next reading maps straight to `critical` (both signals suddenly bad) confirms after this
+  debounce window, *not* the much longer escalation window below. These are different real
+  situations (a sudden worsening vs. a `medium` state quietly lingering unresolved) and treating
+  them with the same slow timer would either let a genuinely fast-developing critical situation
+  go unflagged for 20s, or make the slow-escalation timer meaningless. See
+  `fusion_contract.py`'s `FusionOrchestrator.update()` docstring for the exact branch.
 - **Escalation** (~20s) — an open `medium` incident that hasn't returned to `low` within this
   window escalates to `critical`: **`POST /api/alerts` again**, a new row with `related_alert_id`
   set to the original `medium` alert's `id_alert` — never a `PUT` mutating the original's
-  `severity_level` in place, since `Alert` is an append-only event record on the backend.
+  `severity_level` in place, since `Alert` is an append-only event record on the backend. This
+  20s figure was reconsidered and deliberately kept, not left as an unexamined guess: a shorter
+  window was considered (it would shrink how long a genuinely dangerous `Drowsy + good grip`
+  case can go before being flagged critical) but rejected because `medium` also fires for
+  `Not Drowsy + bad grip` — a fully alert driver with a hand off the wheel (radio, coffee),
+  common and usually harmless. One shared timer serves both causes; a faster one would routinely
+  escalate the benign case too, training drivers to ignore alerts. See `fusion_contract.py`'s
+  `FusionConfig` docstring for the same reasoning and the split-timer alternative it also
+  considered and didn't adopt.
+- **No automatic de-escalation.** Only a full recovery (both signals good, held the recovery
+  window below) clears an open incident — a *partial* improvement (e.g. `critical` → `medium`)
+  never steps the alert's severity back down on its own; it only resets the recovery clock, since
+  the reading isn't fully good yet. A driver who improves from `critical` to `medium` and stays
+  there keeps showing `critical` until they either fully recover or worsen again. A **manual**
+  override is the intended path for correcting a false-positive-turned-benign situation — a
+  guardian who has actually talked to the driver and confirmed they're fine, stepping the alert
+  back down themselves through the dashboard. That's a `backend-argus`/`ui-argus` feature, not
+  this device's job, and not built yet — tracked in `docs/roadmap.md`.
 - **Recovery** (~10s) — once both signals return to good and hold for this long, mark the open
   incident resolved: `PUT /api/alerts/{id}` with `{"resolved_at": "<now, ISO 8601>"}`, using the
   device API key (this device may set `resolved_at` this way, but not
   `reviewed_by_operator`/`operator_notes` — those are human-review-only, see
-  `src/backend-argus/CLAUDE.md`'s "Device (ESP32) auth").
+  `src/backend-argus/CLAUDE.md`'s "Device (ESP32) auth"). **Only the latest/most-severe row in
+  the incident gets this `PUT`** — if the incident escalated, that's the `critical` row, and the
+  original `medium` row's own `resolved_at` stays `null` forever. One `PUT` call on recovery, not
+  one per row in the chain; the dashboard needs to treat the original row as closed via its
+  `related_alert_id` link to the resolved row, not by querying `resolved_at` on it directly.
 
 **Panic button bypasses all of the above** — a press is always `POST /api/alerts` with
 `source: "panic_button"`, `severity_level: "critical"`, `ai_metadata`/`grip_status` both
