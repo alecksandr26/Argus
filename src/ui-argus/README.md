@@ -11,17 +11,22 @@ this fits the rest of Argus.
 `src/backend-argus` via `src/api/*`, and two screens that never had fixture data at all now
 exist: **`Access`** (root_admin/admin user management — an admin session is scoped server-side
 to guardian accounts only) and **`Profile`** (self-service email/name/phone/password edit for
-any role). Role-based gating is real: `RequireRole` gates `/access`, `Sidebar.tsx`'s nav items
-are filtered per role, and `Fleet`/`Drivers`/`TravelManagement` render read-only (no Add/Save)
-for a `guardian` session instead of letting a write attempt fail with an unexplained 403. The
-live-ops dashboard polls `GET /api/routes/active` + `GET /api/alerts` every 7s for its map/feed
-(the interim real-time strategy — see `INTEGRATION.md` for the still-open WebSocket/SSE
-question). UI copy is in English (the design canvas is in Spanish; translated on request).
-`npm install`, lint, typecheck, build, and the full Vitest suite (65 tests across 13 files) have
-all been run for real against this exact code — see "Running the tests" below and `CLAUDE.md`'s
-"Current status"/"Testing" sections (including a real environment gotcha worth reading before
-you hit it yourself) — and **`INTEGRATION.md` for what's still genuinely open** (OSRM, a
-real-time push mechanism, `Alert.media_url` storage).
+any role). A third new screen, **`RouteHistory`** (`/history`, "Route history" in the sidebar —
+previously a `soon` placeholder labeled "Trip history"), lists completed routes
+(`GET /api/routes?status=completed`) each expandable into the alerts raised on that trip
+(`GET /api/alerts`, grouped client-side by `id_route` — type, severity, timestamp, and
+lat/lon), linking each alert through to its full `AlertTriage` view. Role-based gating is real:
+`RequireRole` gates `/access`, `Sidebar.tsx`'s nav items are filtered per role, and
+`Fleet`/`Drivers`/`TravelManagement` render read-only (no Add/Save) for a `guardian` session
+instead of letting a write attempt fail with an unexplained 403. The live-ops dashboard polls
+`GET /api/routes/active` + `GET /api/alerts` every 7s for its map/feed (the interim real-time
+strategy — see `INTEGRATION.md` for the still-open WebSocket/SSE question). UI copy is in
+English (the design canvas is in Spanish; translated on request). `npm install`, lint,
+typecheck, build, and the full Vitest suite (64 tests across 13 files) have all been run for
+real against this exact code — see "Running the tests" below and `CLAUDE.md`'s "Current
+status"/"Testing" sections (including a real environment gotcha worth reading before you hit it
+yourself) — and **`INTEGRATION.md` for what's still genuinely open** (OSRM, a real-time push
+mechanism, `Alert.media_url` storage).
 
 ## Quick start (Docker — recommended)
 
@@ -64,7 +69,7 @@ npm install    # once
 npm run test
 ```
 
-65 tests across 13 files (Vitest + React Testing Library + jsdom) — component rendering/
+64 tests across 13 files (Vitest + React Testing Library + jsdom) — component rendering/
 interaction (`RecordTable`, `SearchBox`, `Sidebar`, `StatusPill`, `Login`, `RequireRole`) and
 pure utility logic (`status.ts`, `format.ts`, `geo.ts`'s coordinate-shape adapter, `crypto.ts`'s
 `sha256Hex`), plus real (mocked-`fetch`) network/role-gating flows: `Access.test.tsx`,
