@@ -15,6 +15,13 @@ export default defineConfig({
   testDir: './tests',
   fullyParallel: true,
   retries: process.env.CI ? 2 : 0,
+  // Capped rather than left at Playwright's default (half the machine's CPU cores, 6 here) —
+  // the real bottleneck under parallel load isn't browser count, it's backend-argus's single
+  // Uvicorn process serializing CPU-bound bcrypt hashes (see the `expect.timeout` comment
+  // below); more browsers just queue more requests behind that one process. 4 workers reduced
+  // the flakiness this suite hit at 6 as the suite grew past 11 specs, confirmed by rerunning
+  // the full suite repeatedly.
+  workers: 4,
   // `list` for live console output, `html` for a browsable report with per-test screenshots/
   // traces after the fact — `open: 'never'` so a local `npx playwright test` doesn't try to pop
   // a browser tab (there's no display in the Docker Compose run at all). See docker-compose.yml

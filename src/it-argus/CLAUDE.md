@@ -87,6 +87,19 @@ on the `it-argus` service specifically so that report survives
 generated inside the container and then lost the moment it exits. See README.md's "Viewing the
 report" for how to open it (`npx playwright show-report playwright-report`).
 
+## Worker count
+
+`playwright.config.ts` caps `workers: 4` rather than leaving Playwright's default (half the
+machine's CPU cores — 6 on the box this was tuned on). The real bottleneck under parallel load
+isn't browser count, it's `backend-argus` running as a single Uvicorn process: every login/user-
+create does a CPU-bound bcrypt hash (see that module's CLAUDE.md's "Auth design"), and enough
+concurrent requests queue behind that one process to occasionally exceed even the bumped
+`expect.timeout` (10s, up from Playwright's 5s default — see the inline comment). 4 workers
+measurably reduced that flakiness as the suite grew past 11 specs; it doesn't eliminate flakiness
+from *external* load (another `docker compose up` stack — the repo-root one, or either module's
+own — genuinely competing for the same host's CPU/memory) — that's environmental, not a bug in
+this suite, and reran clean once that contention wasn't present.
+
 ## Current status
 
 **Run for real, not just written**: `docker compose up --build --abort-on-container-exit` boots
@@ -97,12 +110,22 @@ creates an admin who can log in and is scoped to guardians only; that admin crea
 who is bounced off `/access`; a direct REST call proving the guardian-only scope is enforced
 server-side, not just by the UI's disabled role picker), `trucks.spec.ts` and `drivers.spec.ts`
 (create via the real Fleet/Drivers screens, plus a guardian seeing both read-only — no create
-button, disabled fields, no Save button). Getting the original auth suite running surfaced two
-real bugs this module's own existence was the point of catching (see "Docker Compose" above for
-the network/secure-context one) — proof this harness earns its cost, not just a plan for one.
+button, disabled fields, no Save button), and `live-ops.spec.ts` (creating a route via the real
+Routes screen and promoting it to `in_progress`; a fused critical alert showing as a live map
+marker and feed entry with working severity filtering; full triage-detail rendering for both
+`fusion` — AI scores, grip status — and `panic_button` — no scores, since no camera/grip
+evaluation happens — alerts; a guardian reviewing an alert and that review surviving a page
+reload; an admin seeing triage entirely read-only). Getting the original auth suite running
+surfaced two real bugs this module's own existence was the point of catching (see "Docker
+Compose" above for the network/secure-context one) — proof this harness earns its cost, not just
+a plan for one; `live-ops.spec.ts` found three more of its own (`getByLabel`/`getByText`
+substring-matching false positives — "Name" matching "First name(s)", a severity pill's own text
+accidentally appearing inside a test's `alert_type` string, "Driver-activated panic button"
+matching a longer sentence starting with the same words — all fixed with `exact: true`).
 
-**Still not covered**: Routes, Live operations, and Alert triage have no spec yet — no full
-round-trip proving an alert actually lands on a guardian's dashboard, for instance. Extending
-this suite to those screens (the same real-backend, real-browser shape as `trucks.spec.ts`/
-`drivers.spec.ts`) is the natural next step, the same way `ui-argus`'s own Vitest suite is meant
-to grow alongside `src/api/*`.
+**Still not covered**: no full round-trip through the actual ingestion chain
+(`cv-argus`→ESP32→backend) — `live-ops.spec.ts` proves `LiveOps`/`AlertTriage` render correctly
+given real `Status_Route`/`Alert` rows, using the same JWT-fallback ingestion path
+`src/simulator-argus` and `scripts/seed_dev_data.py` use, not a real device. See section 7 of
+`docs/roadmap.md` for that broader edge-to-cloud gap, which is unrelated to `it-argus`'s own
+scope (the `ui-argus`↔`backend-argus` seam only).
