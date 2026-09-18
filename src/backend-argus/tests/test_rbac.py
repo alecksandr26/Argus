@@ -108,12 +108,15 @@ async def test_admin_cannot_review_alerts(api_client, admin_user, root_admin):
             "id_route": route_resp.json()["id_route"],
             "alert_type": "drowsiness",
             "severity_level": "medium",
+            "source": "fusion",
             "ai_metadata": {"scores": {"not_drowsy": 0.2, "drowsy": 0.8}},
+            "grip_status": "good",
             "coordinates": {"lat": 19.1, "lon": -99.1},
             "speed_at_event": 80.0,
         },
         headers=auth_headers(root_admin),
     )
+    assert alert_resp.status_code == 201
     alert_id = alert_resp.json()["id_alert"]
 
     resp = await api_client.put(

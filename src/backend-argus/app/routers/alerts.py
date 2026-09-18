@@ -133,10 +133,18 @@ async def review_alert(
                 status.HTTP_403_FORBIDDEN,
                 "A device key may only set resolved_at, not reviewed_by_operator/operator_notes",
             )
-    elif not is_privileged_user:
+    elif user is None:
+        # No device key and no token at all — genuinely unauthenticated.
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             "Requires a valid device API key for this truck, or a root_admin/guardian token",
+        )
+    elif not is_privileged_user:
+        # A real, authenticated user (e.g. `admin`) — just not one of the roles allowed to
+        # review an alert. That's a 403 (forbidden), not a 401 (unauthenticated).
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Requires a root_admin/guardian token to review an alert",
         )
 
     if body.reviewed_by_operator is not None:
