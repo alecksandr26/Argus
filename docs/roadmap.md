@@ -25,7 +25,7 @@ from what's built" (it's real code, just not everything it needs yet).
 `docs/criteria/criteriosaprobacion_0.pdf` requires **architecture**: real-time communication
 between at least two devices, a justified client-server/peer-to-peer algorithm, justified
 protocols (3.1–3.4). It does **not** require an automated test suite, E2E tests, or a simulation
-deliverable — that bar (section 5 below) is a quality goal this project is choosing for itself,
+deliverable — that bar (section 7 below) is a quality goal this project is choosing for itself,
 not something the grading rubric asks for. Worth keeping in mind so the testing-framework
 decision doesn't get overbuilt chasing a requirement that isn't actually there. The rubric does
 warn that a plain FastAPI backend + HTTP clients "no cuenta por sí solo como sistema
@@ -168,12 +168,84 @@ surfaces `grip_status`/`source`/escalation links/`resolved_at`.
   `useEffect` fetch, no shared cache/refetch-on-focus.
 - A real-time push mechanism for `LiveOps.tsx` (currently polling, see backend section above).
 
-## 5. Testing / E2E / integration strategy — the real open question
+## 5. `it-argus` (integration tests)
 
-Nothing above the unit level exists today, across any module. Every module's own tests are real
-but isolated: `backend-argus` uses `mongomock-motor` + an opt-in real-Mongo tier via
-testcontainers; `cv-argus`'s Bluetooth layer is tested against `FakeTransport`, an in-memory
-double, never a real socket. **Nothing exercises the full chain** — cv-argus → (simulated)
+**Done, in `main`:** a real integration-test module, not just a plan for one — **Playwright**
+browser tests driving the real `ui-argus` dev server against the real `src/backend-argus` +
+MongoDB, together, rather than each module's own unit tests (which mock the other side away
+entirely: the backend's tests never render a browser, the frontend's tests mock `fetch`). Its
+own fully self-contained `docker-compose.yml` (own Mongo volume, own backend/UI builds, no
+published host ports, real `healthcheck:` blocks) rather than an overlay on the root compose
+file — see its own `CLAUDE.md`'s "Docker Compose" section for why, including a real networking
+bug this caught (pointing Playwright at the internal DNS name `http://ui-argus:5173` silently
+broke login, because `crypto.subtle` — which the real login path needs — is only available in a
+browser "secure context," and that hostname isn't one; fixed via `network_mode:
+"service:ui-argus"` so `http://localhost:5173` resolves straight to it).
+
+**Re-verified for this pass, not just trusted from the doc:** `cd src/it-argus && docker compose
+up --build --abort-on-container-exit` boots the full stack and all 4 specs in `tests/auth.spec.ts`
+pass — `4 passed (9.8s)`: root-admin bootstrap login, a wrong-password inline error, an
+unauthenticated deep link redirecting to `/login` and back after signing in, and sign-out
+re-protecting a route. Matches this module's own `CLAUDE.md`/`README.md` claims exactly.
+
+**Missing:** login was the first real thing connecting `ui-argus` and `backend-argus`, so it's
+the only thing this suite covers — and that's now a real gap, not a future hypothetical, given
+how far the real API integration has moved past login since (see section 4 above: every
+`ui-argus` screen now calls the real backend, with real role-based gating across four roles).
+None of Fleet, Drivers, Routes, Live Operations, Alert Triage, Access, or Profile have a
+Playwright spec yet — this module's own `CLAUDE.md` flags "extending this suite to cover at
+least one full round-trip per role" (an alert landing on a guardian's dashboard, an admin
+blocked from `/access`'s root_admin-only actions) as the natural next step. Also worth being
+precise about scope: `it-argus` proves the `ui-argus`↔`backend-argus` seam, nothing more — it
+says nothing about the cv-argus→ESP32→backend chain (see section 7 below, "Nothing exercises the
+full chain," which is still true for the edge side).
+
+## 6. `src/dataset` (local dataset-creation pipeline)
+
+**Done, in `main`:** a local, CPU-parallel, **pausable/resumable** reimplementation of four of
+the ML pipeline's ten notebooks — `01_dataset_creation_lstm`, `02_dataset_creation_flat`,
+`06_dataset_creation_face_crops`, `09_dataset_creation_cnn_lstm` — built to run on a WSL2/Linux
+dev box instead of Colab, which kept interrupting the multi-hour extraction runs. **This is now
+the source of truth for dataset creation**; those four notebooks are kept only as Colab-runnable
+reference, not the thing to edit. Standalone module (`mediapipe` + `opencv` + `numpy` + `pandas`
++ `tqdm`, deliberately **no TensorFlow** — `argus_dataset/geometry.py` is a NumPy port of the
+notebooks' `GeometricRatioFeatureLayer`, equivalence-tested against the real `tf.keras` layer to
+`atol=1e-4` in `tests/test_geometry_equiv.py`, since dataset creation only ever *calls* that
+layer and never serializes/deserializes it). Also includes a raw-video clip collector
+(`scripts/collect_clips.py` — webcam recording or file import, no-overwrite naming, a
+write-as-you-go provenance log) and incremental-update tooling (`scripts/update_dataset.py` —
+classifies every raw clip as done/new/orphan against each artifact's own resume checkpoint) that
+have no notebook equivalent at all. Has its own `README.md` (the practical runbook: extraction →
+build → verify → publish → incremental updates) and `CLAUDE.md` (architecture, the pause/resume
+design, the notebook-fidelity contract).
+
+**Re-verified for this pass:** `pytest` (from `src/dataset`, after installing the `[dev]` extra
+for `tensorflow`/`pyarrow`) → `39 passed, 2 skipped` — matches this module's own README/CLAUDE.md
+claim exactly. The 2 skips are the geometry-equivalence and analysis checks that need
+`tensorflow`/`scipy`, silently skipped without the `[dev]` extra rather than failing.
+
+**Missing:**
+- **Real MediaPipe inference is unverified on any dev box so far** — the environment(s) this was
+  built and re-tested in lack the system shared libs (`libgles2`/`libegl1`/…) MediaPipe needs at
+  import, so feature-*value* fidelity against a real Colab run (as opposed to schema/contract
+  fidelity, which `scripts/verify_artifacts.py` does check) remains unconfirmed. This module's own
+  "Same artifact means same schema, not same bytes" section already frames this as expected
+  (MediaPipe/XNNPACK isn't cross-platform-deterministic), not a bug to fix.
+- Real webcam capture in `collect_clips.py` is also unexercised end to end — no camera in the
+  environment(s) this ran in — so only the file-import path (`test_collect.py`) has real test
+  coverage; the capture loop itself is untested beyond code review.
+- This closes an ML-pipeline *tooling* gap only (faster, resumable dataset creation) — it doesn't
+  move any of the cv-argus/ESP32/backend/frontend gaps above, and doesn't change what's actually
+  deployed in `src/cv-argus` (still `11_cnn_lstm_training_drive_pull.ipynb`'s model, per the root
+  `CLAUDE.md`'s "Current deployment status").
+
+## 7. Testing / E2E / integration strategy — the real open question
+
+`it-argus` (section 5 above) closes part of this gap — the `ui-argus`↔`backend-argus` seam now
+has real integration coverage — but the rest of the picture is unchanged: every module's own unit
+tests are real but isolated (`backend-argus` uses `mongomock-motor` + an opt-in real-Mongo tier
+via testcontainers; `cv-argus`'s Bluetooth layer is tested against `FakeTransport`, an in-memory
+double, never a real socket), and **nothing exercises the full chain** — cv-argus → (simulated)
 ESP32 → backend → a guardian actually seeing it on the dashboard.
 
 **The idea on the table** (not built, discussed here for later): since both halves of the real
@@ -200,14 +272,17 @@ None of this is built. Per the grading-criteria reality check above, it's a genu
 investment worth making, not a rubric requirement — worth deciding deliberately rather than
 defaulting into whichever option is fastest to start.
 
-## 6. Documentation itself
+## 8. Documentation itself
 
 - Root `CLAUDE.md` said `docs/criterios/` in two places; the real folder on disk is
-  `docs/criteria/` — fixed alongside this document.
-- `docs/document/borrador-proyecto-modular-argus.md` (your own working draft) still lists the
-  backend as "Pendiente" — now stale, since `backend-argus` exists. Flagged here rather than
-  edited, since that file has local uncommitted changes in your own checkout this worktree can't
-  see.
+  `docs/criteria/` — fixed alongside this document. The same typo had also spread to
+  `src/ui-argus/CLAUDE.md`'s "Stack choices" section (missed in that earlier pass) — fixed now.
+- `docs/document/borrador-proyecto-modular-argus.md` (the working titulación draft) contradicted
+  itself: Parte 4/Parte 5.1.2 still called the backend/frontend "planeado, sin implementar aún"
+  in the "Tecnologías utilizadas" list, while Parte 1/5/6/8/9 elsewhere in the same file already
+  cited `backend-argus`'s real FastAPI+MongoDB code and the 84.24%-accuracy model result as
+  settled fact. Fixed — see that file's own tech-stack bullets, now consistent with the rest of
+  the document.
 - Two architecture documents exist for this project and disagree: the real one (matches the code
   + `semantic-design.drawio.xml` + `CLAUDE.md`) and an AWS-serverless one
   (`Argus_Definicion_Tecnica.docx.pdf`, dated separately). The borrador doc already demotes the
@@ -223,3 +298,15 @@ defaulting into whichever option is fastest to start.
   decision orchestration node" as the Pi's AI orchestrator — every other doc (this file included,
   now) agrees grip wires to the ESP32 only, which is the actual fusion point since it's the only
   device with both the camera classification and the grip reading. Fixed.
+- This file itself never mentioned `src/it-argus` or `src/dataset` at all, despite both being
+  real, tested, `main`-merged modules — sections 5 and 6 above added, each re-verified against a
+  real test run rather than trusted from their own docs (`it-argus`: `4 passed` via
+  `docker compose up --build --abort-on-container-exit`; `src/dataset`: `39 passed, 2 skipped`
+  via `pytest`). Root `CLAUDE.md` also had one stale leftover from the pre-real-backend `ui-argus`
+  era — "markers from fixture coordinates" in its architecture-overview bullet, contradicted by
+  its own later "Repository state" section saying fixtures are gone — fixed. `src/backend-argus/
+  CLAUDE.md`'s "Current status" section still said the hermetic suite had "grown to 48 tests" and,
+  two sentences later in the very same paragraph, that `ui-argus` "doesn't call any real API yet"
+  — both stale (actual: 53 tests passing as of this pass; every `ui-argus` screen has called the
+  real API since the RBAC/severity-taxonomy work, as the paragraph immediately above it already
+  says) — fixed.

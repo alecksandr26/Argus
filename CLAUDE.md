@@ -109,10 +109,11 @@ pieces of this section that remain pure design, not implemented anywhere in this
 - A **React** frontend using **react-leaflet** to render the OSRM route and live truck/alert
   status, with panels for login, fleet management, driver/user access, route tracking, alerts,
   travel management, and reports. (The `react-leaflet` map is now implemented in `src/ui-argus`
-  — Live operations screen, standard OpenStreetMap tiles, markers from fixture coordinates;
-  OSRM route-line rendering is still deferred. The map-library choice — react-leaflet over
-  Google Maps / Amazon Location — and how backend coordinates get normalized are written up in
-  `docs/designs/frontend-map-and-coordinates.md`.)
+  — Live operations screen, standard OpenStreetMap tiles, markers from the real backend's
+  `GET /api/routes/active` (the fixture data this used to read from is gone — see "Repository
+  state and structure" below); OSRM route-line rendering is still deferred. The map-library
+  choice — react-leaflet over Google Maps / Amazon Location — and how backend coordinates get
+  normalized are written up in `docs/designs/frontend-map-and-coordinates.md`.)
 - **Four actor roles** (grew from three — `admin` was added later as a deliberate product
   decision, not something any design doc anticipated), a settled enum matching
   `src/backend-argus`'s `Role`: **`root_admin`** (the owner/bootstrap account — manages users of

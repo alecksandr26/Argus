@@ -327,20 +327,25 @@ as a "should work" claim:
   that same live container: `npx tsc --noEmit` and `npm run build` both passed clean — this was
   `ui-argus`'s first-ever real toolchain run (see that module's own `CLAUDE.md`).
 
-**Since this section was first written**: the hermetic suite has grown to 48 tests (the `admin`
-role's scoped RBAC, self-service `/api/auth/me`, `SEED_DEMO_DATA` seeding, and
-`SEED_CREDENTIALS_FILE` all added their own coverage — see "RBAC — four roles" and "Startup demo
-seeding" above) — the "32 tests"/"27 tests"/"46 tests" figures elsewhere on this page are the
-count *at the time each of those sections was written*, not stale claims to reconcile against
-each other. `ui-argus` is well past its "first
+**Since this section was first written**: the hermetic suite has grown to 53 tests (the `admin`
+role's scoped RBAC, self-service `/api/auth/me`, `SEED_DEMO_DATA` seeding,
+`SEED_CREDENTIALS_FILE`, the severity-taxonomy unification, and the `review_alert` 401-vs-403 fix
+all added their own coverage — see "RBAC — four roles" and "Startup demo seeding" above, and
+"Coordination note" for the severity work) — the "32 tests"/"27 tests"/"46 tests"/"48 tests"
+figures elsewhere on this page are the count *at the time each of those sections was written*,
+not stale claims to reconcile against each other. `ui-argus` is well past its "first
 toolchain run" too — every screen now calls this backend for real, not just field-name-verified
 against it; see that module's own `CLAUDE.md` for its current status.
 
-What genuinely hasn't been exercised: real concurrent load, MongoDB running as anything other
-than a single local container (no replica set, no auth), and — since `ui-argus` doesn't call
-any real API yet (`INTEGRATION.md`'s cross-cutting gaps are all still open) — an actual browser
-session driving this backend through the UI rather than `curl`. Treat those as the honest next
-steps, not something to describe as production-validated without having actually done them.
+What genuinely hasn't been exercised: real concurrent load, and MongoDB running as anything other
+than a single local container (no replica set, no auth). An actual browser session driving this
+backend through the UI (rather than `curl`) is now real too, but only for the login flow —
+`src/it-argus`'s Playwright suite covers the root-admin bootstrap login, a wrong-password error,
+an unauthenticated deep-link redirect, and sign-out, all against a real `ui-argus` + this backend
++ Mongo. Every other screen (`ui-argus`'s `INTEGRATION.md` full list) calls this backend for real
+but has no browser-level test yet — `docs/roadmap.md`'s `it-argus` section tracks that gap.
+Treat what's above as the honest state, not something to describe as production-validated beyond
+what's actually been run.
 
 ## Future work (explicitly out of scope for this pass)
 
