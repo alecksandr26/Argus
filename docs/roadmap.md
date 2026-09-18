@@ -183,22 +183,41 @@ browser "secure context," and that hostname isn't one; fixed via `network_mode:
 "service:ui-argus"` so `http://localhost:5173` resolves straight to it).
 
 **Re-verified for this pass, not just trusted from the doc:** `cd src/it-argus && docker compose
-up --build --abort-on-container-exit` boots the full stack and all 4 specs in `tests/auth.spec.ts`
-pass — `4 passed (9.8s)`: root-admin bootstrap login, a wrong-password inline error, an
+up --build --abort-on-container-exit` boots the full stack and all 11 specs across 4 spec files
+pass — `11 passed (~11s)`, reproduced twice in a row to rule out flakiness. `tests/auth.spec.ts`
+(4 specs, unchanged) — root-admin bootstrap login, a wrong-password inline error, an
 unauthenticated deep link redirecting to `/login` and back after signing in, and sign-out
-re-protecting a route. Matches this module's own `CLAUDE.md`/`README.md` claims exactly.
+re-protecting a route. **New this pass**: `tests/users.spec.ts` (3 specs) — root_admin creates
+an `admin` account via the real Access screen (who can then log in and finds their own Access
+panel locked to creating guardians only), that admin creates a `guardian` (who is then bounced
+off `/access` entirely), and a direct REST call proving the admin-scoped-to-guardians rule is
+enforced server-side, not just by the UI disabling the role picker (a `403` on `POST /api/users`
+with `role: "admin"`). `tests/trucks.spec.ts` and `tests/drivers.spec.ts` (2 specs each) —
+root_admin creates a truck/driver via the real Fleet/Drivers screens, and a guardian sees the
+same screen read-only (no create button, disabled fields, no Save button). Getting these green
+surfaced three real bugs in the new specs themselves, not the app: (1) `login()`'s caller could
+race the in-flight `POST /api/auth/login` fetch by navigating immediately after, aborting it
+before the session was ever stored — fixed by having `login()` wait for either navigation away
+from `/login` or the inline error alert before returning; (2) Playwright's `getByLabel`/
+`getByText` match by substring unless `exact: true` is passed, which bit both "Name" matching
+"First name(s)"/"Last name(s)" on the Drivers form and a truck's plate (`IT-<suffix>`) matching
+as a substring of its own unit number (`UNIT-<suffix>`); (3) the same race as (1) but for
+`POST /api/users`'s own create call — a spec that clicked "Create user" then immediately signed
+out (to test the new account) could abort the create before the backend saw it, then get a
+correctly-real `401` logging in with an account that silently never existed. `playwright.config.ts`
+also gained an `html` reporter (`docker-compose.yml`'s `it-argus` service now bind-mounts
+`./playwright-report` onto the host so it survives `--abort-on-container-exit` instead of being
+lost with the container) and a bumped `expect.timeout` (10s, up from the 5s default) — the new
+specs do more sequential backend work per assertion (multiple logins/creates, each a CPU-bound
+bcrypt hash against backend-argus's single Uvicorn process) than auth.spec.ts's original specs,
+and 6 parallel Playwright workers hitting that one process occasionally pushed a single request
+past 5s.
 
-**Missing:** login was the first real thing connecting `ui-argus` and `backend-argus`, so it's
-the only thing this suite covers — and that's now a real gap, not a future hypothetical, given
-how far the real API integration has moved past login since (see section 4 above: every
-`ui-argus` screen now calls the real backend, with real role-based gating across four roles).
-None of Fleet, Drivers, Routes, Live Operations, Alert Triage, Access, or Profile have a
-Playwright spec yet — this module's own `CLAUDE.md` flags "extending this suite to cover at
-least one full round-trip per role" (an alert landing on a guardian's dashboard, an admin
-blocked from `/access`'s root_admin-only actions) as the natural next step. Also worth being
-precise about scope: `it-argus` proves the `ui-argus`↔`backend-argus` seam, nothing more — it
-says nothing about the cv-argus→ESP32→backend chain (see section 7 below, "Nothing exercises the
-full chain," which is still true for the edge side).
+**Still missing:** Routes, Live Operations, and Alert Triage have no spec yet — no full
+round-trip proving an alert actually lands on a guardian's dashboard, for instance. Also worth
+being precise about scope: `it-argus` proves the `ui-argus`↔`backend-argus` seam, nothing more —
+it says nothing about the cv-argus→ESP32→backend chain (see section 7 below, "Nothing exercises
+the full chain," which is still true for the edge side).
 
 ## 6. `src/dataset` (local dataset-creation pipeline)
 
