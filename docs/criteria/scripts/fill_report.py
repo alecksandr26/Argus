@@ -429,7 +429,10 @@ set_text(P[65], "Se comparó un conjunto de arquitecturas sobre el mismo problem
                  "alimentado a una LSTM sobre una ventana de hasta 100 frames — alcanzó "
                  "84.24% accuracy / 0.8375 F1 macro. División train/val/test agrupada por "
                  "sujeto (StratifiedGroupKFold) en todos los casos.")
-insert_table_after(P[65], [
+tbl3_head = new_paragraph_after(P[65], "TABLA III", style="Heading 3")
+tbl3_head = new_paragraph_after(tbl3_head, "COMPARACIÓN DE ARQUITECTURAS DE MODELO",
+                                 style="Normal", align=WD_ALIGN_PARAGRAPH.CENTER, size=8)
+insert_table_after(tbl3_head, [
     ["Modelo", "Acc.", "F1", "Rec. D."],
     ["RandomForest (7 feat.)", "32.6%", "—", "0.13"],
     ["Red densa (58 feat.)", "38.6–40.8%", "—", "—"],
