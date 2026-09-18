@@ -285,8 +285,8 @@ MVP, con el estado de avance que se puede sustentar con lo que ya existe en el r
 | 1 | Detección facial y ocular (visión artificial, % de cierre ocular)                                       | ✅ **Completado** — pipeline entrenado y evaluado (`notebook/`: CNN + features geométricas fusionadas → LSTM) y **corriendo en vivo** en `cv-argus/` (cámara → MediaPipe → inferencia → salida), no solo en el notebook                                                 |
 | 2 | Alertas sonoras en cabina ante microsueño (ojos cerrados >1.5s)                                         | ⏳ Pendiente — depende del firmware ESP32, aún no existe                                                                                        |
 | 3 | Frenado autónomo preventivo si el conductor no reacciona                                                | ⏳ Pendiente — interfaz con CAN bus/AEB no implementada                                                                                         |
-| 4 | Transmisión de alertas/ubicación por red celular                                                        | ⏳ Pendiente — protocolo Pi↔ESP32↔nube sin decidir (ver Parte 7)                                                                                |
-| 5 | **Memoria local (buffer):** persistencia de alertas sin internet, reenvío automático al recuperar señal | 🔶 **En diseño** — arquitectura definida (SQLite, modo WAL) y andamiaje Docker/volumen ya en `cv-argus/`, módulo `buffer/` en sí aún sin código |
+| 4 | Transmisión de alertas/ubicación por red celular                                                        | ⏳ Pendiente — protocolo ya decidido (Bluetooth Pi↔ESP32, HTTP ESP32↔backend FastAPI; ver Parte 7) y el backend que recibe ya existe (`src/backend-argus`), pero el firmware ESP32 que transmite aún no existe                                                                                |
+| 5 | **Memoria local (buffer):** persistencia de alertas sin internet, reenvío automático al recuperar señal | ✅ **Completado como código** — cola SQLite en modo WAL (`cv-argus/buffer/`), con pruebas de concurrencia real entre el orquestador que encola y el sender que despacha; falta la validación con un ESP32 real haciendo el pull por Bluetooth |
 | 6 | Botón de pánico para incidentes de seguridad                                                            | ⏳ Pendiente — depende del firmware ESP32                                                                                                       |
 
 ✅ **Quité "Plataforma de gestión cloud" de la lista** — confirmado, no es un requisito explícito
@@ -322,12 +322,16 @@ crítico arriba sobre cuál arquitectura es la vigente):
   específico, o si sigue abierto\]).
 - **Persistencia local:** SQLite (modo WAL recomendado, por lectura/escritura concurrente
   entre el orquestador que encola alertas y el sender que las despacha).
-- **Backend/nube (planeado, sin implementar aún):** Django/Flask/FastAPI, SQL o MongoDB (sin
-  decidir). Alcance del MVP: captura de geolocalización y dirección de ida/vuelta del viaje
-  (origen-destino); **OSRM queda como mejora futura**, no como parte del backend comprometido
-  en este documento — ver Parte 9.
-- **Frontend (planeado, sin implementar aún):** React + react-leaflet (mapa mostrando
-  geolocalización y origen/destino capturados; sin ruteo calculado por OSRM en el MVP).
+- **Backend/nube (implementado — `src/backend-argus`):** **FastAPI + MongoDB** (vía **Beanie**,
+  un ODM asíncrono), cubriendo `users`, `trucks`, `drivers`, `routes`, `routes/:id/status` y
+  `alerts` más `/api/auth/login`/`/api/auth/me` — 53 pruebas `pytest` pasando (tier hermético con
+  `mongomock-motor`, más un tier opcional contra MongoDB real vía testcontainers). Alcance del
+  MVP: captura de geolocalización y dirección de ida/vuelta del viaje (origen-destino); **OSRM
+  queda como mejora futura**, no como parte del backend comprometido en este documento — ver
+  Parte 9.
+- **Frontend (implementado — `src/ui-argus`):** React + react-leaflet, ya conectado al backend
+  real (ya no datos de prueba/fixtures) — mapa mostrando geolocalización y origen/destino
+  capturados vía `GET /api/routes/active`; sin ruteo calculado por OSRM en el MVP.
 
 **Repositorio:** [`github.com/alecksandr26/Argus`](https://github.com/alecksandr26/Argus/tree/main)
 — repositorio público. \[Falta solo: licencia y versión/commit puntual a citar en la portada,
@@ -392,13 +396,12 @@ elementos de Ingeniería de Software; estructurar el modelado del sistema.
     fila ya fusionada de cada instante (64 valores del embedding de la CNN + 10 features
     geométricas). Se descarta el frame más viejo y se agrega el nuevo en cada llamada, lo que
     mantiene el buffer en unos ~30KB en vez de reprocesar imágenes acumuladas.
-  - **MongoDB** como base de datos del backend/nube (planeada, sin implementar aún — ver
-    Parte 4): esquema flexible por documento, natural para los recursos `users`, `trucks`,
-    `drivers`, `alerts`, `routes` que no comparten una forma rígida entre sí (p. ej. un
-    `alert` de pánico vs. uno de somnolencia traen payloads distintos). Acceso vía un
-    **ORM/ODM** en FastAPI (p. ej. Beanie o PyMongo con modelos Pydantic) en vez de queries
-    crudas, para mantener validación de esquema y tipado consistente con el resto del backend
-    Python.
+  - **MongoDB** como base de datos del backend/nube (implementada — ver Parte 4): esquema
+    flexible por documento, natural para los recursos `users`, `trucks`, `drivers`, `alerts`,
+    `routes` que no comparten una forma rígida entre sí (p. ej. un `alert` de pánico vs. uno de
+    somnolencia traen payloads distintos). Acceso vía **Beanie** (el ODM asíncrono que
+    `src/backend-argus` usa en la práctica) en vez de queries crudas, para mantener validación
+    de esquema y tipado consistente con el resto del backend Python.
 - **1.3 Metodología de programación:** Scrum, con reuniones semanales/quincenales de avance y
   asignación de tareas (ver Parte 4).
 - **1.4 Ingeniería de software:** separación de responsabilidades explícita en `cv-argus`:
@@ -646,16 +649,22 @@ pero el alcance de "terminado" sigue siendo parcial y hay que redactarlo así.**
 alcanzados al término del desarrollo, y (2) su relación con la solución planteada. **Escrito
 en tiempo pasado.**
 
-🔶 **Estado real de `cv-argus` a la fecha de este borrador, para no exagerar ni quedarse
-corto:** de los 6 módulos planeados, **dos ya están terminados como código, no solo diseñados**
-— `model/` (carga de los modelos entrenados, extracción del embedding congelado de la CNN,
-predicción sobre la ventana fusionada) y `pipeline/` (captura de cámara, las dos etapas de
-MediaPipe, la etapa de inferencia, salidas de texto y de video anotado para demo) — corriendo
-de punta a punta contra una cámara o un video grabado, no solo en el notebook. Los otros
-cuatro (`orchestrator/`, `buffer/`, `sender/`, `alerts/`) siguen sin código, más allá de la
-arquitectura ya definida (SQLite en modo WAL para el buffer, Bluetooth con polling del ESP32
-para el envío — ver Parte 7). Tampoco existe el firmware del ESP32, ni el backend, ni el
-frontend.
+🔶 **Estado real a la fecha de esta actualización del borrador, para no exagerar ni quedarse
+corto:** los 6 módulos planeados de `cv-argus` **ya están terminados como código, no solo
+diseñados** — `model/` (carga de los modelos entrenados, extracción del embedding congelado de
+la CNN, predicción sobre la ventana fusionada) y `pipeline/` (captura de cámara, las dos etapas
+de MediaPipe, la etapa de inferencia, salidas de texto y de video anotado para demo), corriendo
+de punta a punta contra una cámara o un video grabado; y también `alerts/` (modelo de datos de
+alerta), `buffer/` (cola SQLite en modo WAL, con pruebas de concurrencia real), `orchestrator/`
+(bucle de decisión con debounce/cooldown + heartbeat) y `sender/` (protocolo Bluetooth SPP
+propio, probado contra un transporte simulado — `FakeTransport` — no contra un socket
+Bluetooth real todavía). Lo que sigue sin existir del lado de borde es el firmware del ESP32
+(sección completa, ver Parte 7/9) y una corrida contra hardware real de Raspberry Pi (solo
+contra un contenedor Docker en una laptop hasta ahora). Del lado de nube, **el backend
+(`src/backend-argus`, FastAPI + MongoDB, 53 pruebas pasando) y el frontend (`src/ui-argus`,
+React + react-leaflet) ya existen como código y ya están conectados entre sí** — ver Parte 4/5
+para el detalle; lo que falta ahí es la integración con el firmware ESP32 (que es quien de
+verdad les manda tráfico real de camión) y el ruteo OSRM (mejora futura, no MVP).
 
 **Propuesta de contenido — lo que sí se puede reportar como resultado real hoy:**
 
@@ -684,8 +693,8 @@ el número es de un solo fold, sin validación cruzada todavía; no se ha corrid
 contra hardware real de Raspberry Pi (solo contra un contenedor Docker en una laptop); y la
 identidad exacta del checkpoint de CNN usado en producción frente al usado para generar los
 embeddings de entrenamiento no está verificada (ver Parte 6). Dejar tanto esa validación en
-hardware real como la integración completa de borde (Pi+ESP32+buffer+nube) explícitamente en la
-Parte 9 como "trabajo a futuro", no disfrazadas de resultado ya alcanzado.
+hardware real como la integración con el firmware ESP32 (la pieza de borde que sigue sin existir)
+explícitamente en la Parte 9 como "trabajo a futuro", no disfrazadas de resultado ya alcanzado.
 
 ---
 
@@ -741,16 +750,20 @@ final.
 >   el mismo que se usó para generar los embeddings con los que se entrenó la LSTM final — un
 >   riesgo abierto y no trivial: un checkpoint distinto degradaría la precisión de forma
 >   silenciosa, no con un error visible.
-> - Completar e integrar los módulos `orchestrator/`, `buffer/`, `sender/`, `alerts/` de
->   `cv-argus` (el módulo de inferencia y de captura de cámara ya están terminados y corriendo)
->   con hardware real (Pi 5 + cámara CSI) para validar la cadena completa de alerta, no solo la
->   predicción.
+> - Validar los módulos `orchestrator/`, `buffer/`, `sender/`, `alerts/` de `cv-argus` (ya
+>   completos como código y con pruebas unitarias — el protocolo Bluetooth de `sender/`, por
+>   ejemplo, solo se ha probado contra un transporte simulado, no un socket Bluetooth real) contra
+>   hardware real (Pi 5 + cámara CSI + un ESP32 real) para validar la cadena completa de alerta,
+>   no solo la predicción.
 > - Prototipar el firmware del ESP32 sobre el diseño ya decidido en la Parte 7 (Bluetooth,
->   polling de la cola SQLite del Pi, HTTP hacia el backend FastAPI).
-> - Implementar el backend/frontend cloud sobre **FastAPI + MongoDB** (ver Parte 1.2),
->   capturando geolocalización y dirección de ida/vuelta del viaje; **ruteo calculado vía
->   OSRM queda como mejora futura**, no como parte del MVP. Si el avance del proyecto lo
->   permite, explorar además una evolución hacia un backend *cloud-native*/serverless (p. ej.
+>   polling de la cola SQLite del Pi, HTTP hacia el backend FastAPI) — sigue siendo la pieza que
+>   no existe como código en ningún lado del repositorio.
+> - El backend/frontend cloud sobre **FastAPI + MongoDB** (ver Parte 1.2) ya están implementados
+>   (`src/backend-argus`, `src/ui-argus`) y conectados entre sí, capturando geolocalización y
+>   dirección de ida/vuelta del viaje; lo que falta ahí es la integración con el firmware ESP32
+>   real (arriba) y **el ruteo calculado vía OSRM, que queda como mejora futura**, no como parte
+>   del MVP. Si el avance del proyecto lo permite, explorar además una evolución hacia un backend
+>   *cloud-native*/serverless (p. ej.
 >   AWS) como mejora de escalabilidad — sin comprometer aquí servicios o proveedor específico,
 >   dado que hoy es una dirección posible, no una decisión tomada ni código existente.
 > - Módulos opcionales fuera del MVP: segmentación de carriles (Canny/Hough), monitoreo
