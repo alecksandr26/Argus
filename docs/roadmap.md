@@ -262,35 +262,41 @@ claim exactly. The 2 skips are the geometry-equivalence and analysis checks that
 ## 7. Testing / E2E / integration strategy — the real open question
 
 `it-argus` (section 5 above) closes part of this gap — the `ui-argus`↔`backend-argus` seam now
-has real integration coverage — but the rest of the picture is unchanged: every module's own unit
-tests are real but isolated (`backend-argus` uses `mongomock-motor` + an opt-in real-Mongo tier
-via testcontainers; `cv-argus`'s Bluetooth layer is tested against `FakeTransport`, an in-memory
-double, never a real socket), and **nothing exercises the full chain** — cv-argus → (simulated)
-ESP32 → backend → a guardian actually seeing it on the dashboard.
+has real integration coverage — and `src/simulator-argus/` (new) closes another: the "bespoke
+asyncio simulation script" option below is now built, not just discussed. The rest of the
+picture is still open: every module's own unit tests are real but isolated (`backend-argus` uses
+`mongomock-motor` + an opt-in real-Mongo tier via testcontainers; `cv-argus`'s Bluetooth layer is
+tested against `FakeTransport`, an in-memory double, never a real socket), and **nothing
+exercises the cv-argus→ESP32 half of the chain specifically** — `simulator-argus` simulates the
+ESP32→backend HTTP leg with its own synthetic data, not real `cv-argus` `sender/` code replayed
+over a simulated Bluetooth link; that half of "the idea on the table" below remains undone.
 
-**The idea on the table** (not built, discussed here for later): since both halves of the real
-contract are already fully specified and testable in isolation (the Bluetooth protocol grammar
-and the backend's HTTP/device-key contract), a **software-only simulator for either side**
-becomes possible without waiting on real ESP32 hardware — e.g. a script that plays the ESP32's
-role against real `cv-argus` `sender/` code over `FakeTransport` or a loopback socket, relays
-what it receives to a real running `backend-argus` over HTTP, and — the specific scenario you
-raised — running *several* such simulated trucks at once so a guardian watching the real
-`ui-argus` dashboard sees realistic distributed fleet traffic, not just a single hand-crafted
-request.
+**What's built**: `src/simulator-argus` — N virtual trucks that provision their own `SIM-`
+prefixed drivers/trucks/routes via the backend's admin API, mint a real per-truck device API key
+each, and continuously POST `Status_Route`/`Alert` records against a live `backend-argus` using
+that key (the same HTTP/device-key contract a real ESP32 would use). Three scripted profiles
+(`normal`/`drowsy_escalation`/`panic`) give a demo run a coherent story — this is exactly the
+"guardian watching the real `ui-argus` dashboard sees realistic distributed fleet traffic"
+scenario this section originally proposed. See `src/simulator-argus/CLAUDE.md` for the full
+design and its "Known limitations" section for what it doesn't cover.
 
-**Framework options, not decided — for discussion:**
+**Still not built**: a simulator for the *other* half — something that plays the ESP32's role
+against real `cv-argus` `sender/` code over `FakeTransport` or a loopback socket (rather than
+`simulator-argus`'s own synthetic `Alert`/`Status_Route` data), so the Bluetooth protocol grammar
+itself gets exercised end to end, not just the HTTP/device-key leg downstream of it.
+
+**Framework options for that remaining half, not decided — for discussion:**
 
 | Option | Fit |
 |---|---|
-| **pytest + docker-compose** | Extends the pattern `backend-argus` already uses (testcontainers-backed integration tests) to also spin up simulated cv-argus/ESP32 processes against a live backend. Lowest new-tooling cost — reuses what already exists rather than adding a new test runner. |
-| **A bespoke asyncio simulation script** (e.g. `scripts/simulate_fleet.py`) | N virtual trucks constructing real `Alert`/`StatusRoute` records (reusing `cv-argus`'s own `alerts/` models rather than reinventing serialization) and POSTing them to a live backend. Closest match to the "multiple trailers distributed" scenario you described, and the most direct route to a guardian watching real traffic on the live dashboard. |
-| **Playwright** (official Python client) | Real browser-level E2E against `ui-argus` — verifies a guardian actually *sees* an alert land on the dashboard, not just that an API call returns 200. Complements, doesn't replace, the simulator idea above. |
-| **Locust** | Normally a load-testing tool, but its "swarm of simulated users" model maps directly onto "swarm of simulated trucks" — could double as both a load test and a fleet simulator. |
+| **pytest + docker-compose** | Extends the pattern `backend-argus` already uses (testcontainers-backed integration tests) to also spin up a simulated ESP32 process against real `cv-argus` `sender/` code and a live backend. Lowest new-tooling cost — reuses what already exists rather than adding a new test runner. |
+| **Playwright** (official Python client) | Real browser-level E2E against `ui-argus` — verifies a guardian actually *sees* an alert land on the dashboard, not just that an API call returns 200. Complements, doesn't replace, `simulator-argus` or the cv-argus-side idea above. |
+| **Locust** | Normally a load-testing tool, but its "swarm of simulated users" model maps directly onto "swarm of simulated trucks" — could double as both a load test and additional fleet-simulation coverage alongside `simulator-argus`. |
 | **Robot Framework** | A readable, less code-heavy acceptance-test DSL. Produces test reports a non-technical reader (e.g. a thesis reviewer) can follow, though it's a less idiomatic fit for an otherwise all-Python/TypeScript stack. |
 
-None of this is built. Per the grading-criteria reality check above, it's a genuine quality
-investment worth making, not a rubric requirement — worth deciding deliberately rather than
-defaulting into whichever option is fastest to start.
+Per the grading-criteria reality check above, this remains a genuine quality investment worth
+making, not a rubric requirement — worth deciding deliberately rather than defaulting into
+whichever option is fastest to start.
 
 ## 8. Documentation itself
 

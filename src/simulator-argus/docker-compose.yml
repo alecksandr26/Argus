@@ -1,0 +1,103 @@
+# Self-contained demo mini-stack -- its own Mongo, backend-argus, and ui-argus builds, following
+# the same "own compose file, own network, real healthcheck chains" pattern src/it-argus already
+# uses, but unlike it-argus this one publishes ports: a human is meant to open a browser and
+# watch it work, not just have Playwright drive it headlessly. Backend/UI are published on
+# alternate host ports (8001/5174) specifically so this stack can run alongside an
+# already-running root `docker compose up` (which uses 8000/5173) without a collision.
+#
+# Run with: docker compose up --build
+# Then open http://localhost:5174 and log in as admin@argus.dev / changeme123.
+services:
+  mongo:
+    image: mongo:7
+    volumes:
+      - simulator-mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  backend-argus:
+    build:
+      context: ../backend-argus
+    environment:
+      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_DB=argus
+      - CORS_ORIGINS=http://localhost:5174
+      - ROOT_ADMIN_EMAIL=admin@argus.dev
+      - ROOT_ADMIN_PASSWORD=changeme123
+      # This module provisions its own SIM-* fleet at startup (see fleet.py) -- SEED_DEMO_DATA's
+      # separate ARG-* fixture fleet would just be visual noise alongside it.
+      - SEED_DEMO_DATA=false
+    ports:
+      - "8001:8000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  ui-argus:
+    build:
+      context: ../ui-argus
+      target: dev
+    environment:
+      # The browser's own URL (matches the published host port above), not the Docker-network
+      # hostname -- see the root docker-compose.yml's identical comment on this var.
+      - VITE_API_BASE_URL=http://localhost:8001
+    ports:
+      - "5174:5173"
+    depends_on:
+      backend-argus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:5173', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  simulator-argus:
+    build:
+      context: .
+    environment:
+      - BACKEND_BASE_URL=http://backend-argus:8000
+      - SIMULATOR_ADMIN_EMAIL=admin@argus.dev
+      - SIMULATOR_ADMIN_PASSWORD=changeme123
+      - SIMULATOR_TRUCK_COUNT=${SIMULATOR_TRUCK_COUNT:-4}
+      - SIMULATOR_STATUS_INTERVAL_SECONDS=${SIMULATOR_STATUS_INTERVAL_SECONDS:-5}
+      - SIMULATOR_ROUTE_DURATION_MINUTES=${SIMULATOR_ROUTE_DURATION_MINUTES:-20}
+      - SIMULATOR_SCENARIO_WEIGHTS=${SIMULATOR_SCENARIO_WEIGHTS:-normal=0.55,drowsy_escalation=0.25,panic=0.20}
+      - SIMULATOR_MEDIUM_BLIP_PROBABILITY=${SIMULATOR_MEDIUM_BLIP_PROBABILITY:-0.1}
+      - SIMULATOR_RESET=${SIMULATOR_RESET:-true}
+      # Off by default -- see the `osrm` service below and README's "Optional: real
+      # road-following routes via OSRM" for the one-time setup this needs before turning it on.
+      - SIMULATOR_USE_OSRM=${SIMULATOR_USE_OSRM:-false}
+      - OSRM_BASE_URL=http://osrm:5000
+    depends_on:
+      backend-argus:
+        condition: service_healthy
+
+  # Optional real road-following route geometry. NOT started by a plain `docker compose up` --
+  # gated behind the `osrm` profile because it needs `scripts/setup_osrm.sh` run first (a
+  # one-time ~150MB Mexico OSM extract download + several minutes of preprocessing into
+  # ./osrm-data/, gitignored). Bring it up with:
+  #   ./scripts/setup_osrm.sh   # once
+  #   docker compose --profile osrm up -d osrm
+  #   SIMULATOR_USE_OSRM=true docker compose up --build simulator-argus
+  # If SIMULATOR_USE_OSRM is true but this isn't running (or the extract isn't preprocessed
+  # yet), osrm_client.py falls back to a straight line per route instead of failing the run.
+  osrm:
+    image: osrm/osrm-backend
+    profiles: ["osrm"]
+    volumes:
+      - ./osrm-data:/data
+    command: ["osrm-routed", "--algorithm", "mld", "/data/mexico-latest.osrm"]
+    ports:
+      - "5001:5000"
+
+volumes:
+  simulator-mongo-data:
