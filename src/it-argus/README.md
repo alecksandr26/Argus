@@ -61,6 +61,16 @@ with `npx playwright show-trace test-results/<test-name>/trace.zip`.
   no Save button on an existing truck).
 - `tests/drivers.spec.ts` — the same shape as `trucks.spec.ts`, for `POST /api/drivers`/the
   Drivers screen.
+- `tests/live-ops.spec.ts` — Live operations (`LiveOps.tsx`) and Alert triage
+  (`AlertTriage.tsx`), the two screens that ingest `Status_Route`/`Alert` data. Since the ESP32
+  firmware doesn't exist yet, that ingestion is done directly against the backend (a root_admin
+  JWT, the same fallback path `authorize_device_or_user()` documents for manual testing without
+  real hardware). Covers: creating a route through the real Routes screen and promoting it to
+  `in_progress`, a fused critical alert showing as a live map marker and an alert-feed entry
+  (severity filter included), the full triage detail view for both `fusion` (AI scores, grip
+  status) and `panic_button` (no scores — no camera/grip evaluation happens) alerts, a guardian
+  reviewing an alert and that review surviving a page reload, and an admin seeing the triage
+  screen read-only (no review controls at all).
 
 Every spec generates its own test data (unique emails/plate numbers/license numbers per run —
 see `tests/helpers.ts`'s `uniqueSuffix()`) rather than hardcoding fixed values, since this
