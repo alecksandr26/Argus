@@ -32,13 +32,42 @@ npx playwright install --with-deps chromium
 IT_BASE_URL=http://localhost:5173 npm run test   # against the repo-root `docker compose up`
 ```
 
+## Viewing the report
+
+Every run produces an HTML report (`playwright.config.ts`'s `html` reporter), not just the
+console `list` output. The Docker run mounts it out to `./playwright-report/` on the host (see
+`docker-compose.yml`), so after `docker compose up --build --abort-on-container-exit` finishes:
+
+```bash
+npx playwright show-report playwright-report
+```
+
+Running locally (no Docker for this module) writes to the same `./playwright-report/` directly,
+no extra step needed. A failed test also gets a trace (`trace: 'retain-on-failure'`) — open one
+with `npx playwright show-trace test-results/<test-name>/trace.zip`.
+
 ## What's covered
 
-`tests/auth.spec.ts` — the login flow this module was built alongside: logging in as the
-bootstrapped root admin, a wrong-password error, an unauthenticated deep link redirecting to
-`/login` and back after signing in, and sign-out re-protecting a route. Extend this suite
-alongside future backend-connected `ui-argus` screens (see that module's `INTEGRATION.md`) —
-each new one wired up is a natural candidate for a new spec here.
+- `tests/auth.spec.ts` — the login flow this module was built alongside: logging in as the
+  bootstrapped root admin, a wrong-password error, an unauthenticated deep link redirecting to
+  `/login` and back after signing in, and sign-out re-protecting a route.
+- `tests/users.spec.ts` — `POST /api/users` through the real Access screen: root_admin creates
+  an `admin` account (who can then log in and finds their own Access panel locked to creating
+  guardians only), that admin creates a `guardian` (who is then bounced off `/access` entirely),
+  and a direct REST call proving the guardian-only scoping is enforced server-side, not just by
+  the UI disabling the role picker (an `admin` JWT POSTing `role: "admin"` gets a real `403`).
+- `tests/trucks.spec.ts` — `POST /api/trucks` through the Fleet screen: root_admin creates a
+  truck, and a guardian sees the same screen read-only (no "Add truck" button, disabled fields,
+  no Save button on an existing truck).
+- `tests/drivers.spec.ts` — the same shape as `trucks.spec.ts`, for `POST /api/drivers`/the
+  Drivers screen.
+
+Every spec generates its own test data (unique emails/plate numbers/license numbers per run —
+see `tests/helpers.ts`'s `uniqueSuffix()`) rather than hardcoding fixed values, since this
+stack's Mongo volume isn't wiped between reruns without `docker compose down -v` — a hardcoded
+value would 409 on the second run. Extend this suite alongside future backend-connected
+`ui-argus` screens (see that module's `INTEGRATION.md`) — each new one wired up is a natural
+candidate for a new spec here.
 
 ## Troubleshooting
 
