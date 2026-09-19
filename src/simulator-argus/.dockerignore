@@ -1,0 +1,13 @@
+# Preprocessed OSRM extract (multi-GB, some files root-owned since scripts/setup_osrm.sh runs
+# osrm-extract/partition/customize as root inside their own containers) -- the simulator-argus
+# app image never needs this baked in, it only talks to the separate `osrm` service over HTTP.
+# Without this, `docker compose build` tries to tar the whole directory as build context and
+# fails outright once any file in here is unreadable by the invoking user.
+osrm-data/
+
+.venv/
+.venv-check/
+__pycache__/
+*.pyc
+.pytest_cache/
+.git/
