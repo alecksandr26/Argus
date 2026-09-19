@@ -69,13 +69,9 @@ describe('Sidebar', () => {
     expect(
       screen.getByRole('link', { name: /Routes/ }),
     ).toHaveAttribute('href', '/routes')
-  })
-
-  it('marks "soon" items with a soon badge', () => {
-    renderSidebar()
-    expect(screen.getByRole('link', { name: /Trip history/ })).toHaveTextContent(
-      'soon',
-    )
+    expect(
+      screen.getByRole('link', { name: /Route history/ }),
+    ).toHaveAttribute('href', '/history')
   })
 
   it('hides Access from a guardian session, but shows it (not "soon") for root_admin', () => {

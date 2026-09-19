@@ -219,13 +219,36 @@ changes — neither caused by this session's code**:
    worker startup, not a Vitest, Node, or app bug. Running (or at least testing) this repo from
    a native filesystem path, not a `/mnt/c/...` one, avoids it entirely.
 
-`npx tsc -b`, `npm run build`, and the full Vitest suite (65 tests across 13 files, including
-the new `RequireRole.test.tsx`/`Access.test.tsx`/`Profile.test.tsx`/`Fleet.test.tsx` and the
+`npx tsc -b`, `npm run build`, and the full Vitest suite (64 tests across 13 files, including
+the `RequireRole.test.tsx`/`Access.test.tsx`/`Profile.test.tsx`/`Fleet.test.tsx` files and the
 role-gating additions to `Sidebar.test.tsx`) all verified passing clean in this session.
+
+**`RouteHistory.tsx`** (new, `/history`): the real "Route history" screen behind
+`Sidebar.tsx`'s nav item, previously a `soon` placeholder labeled "Trip history" that pointed
+nowhere. Lists completed routes (`listRoutes(token, 'completed')` →
+`GET /api/routes?status=completed`) sorted newest-first by `actual_arrival`; each row expands
+into a nested list of that route's alerts (`listAlerts(token)`, all alerts fetched once and
+grouped client-side by `id_route` in a `useMemo` — the same "fetch the full list, join in
+memory" shape `TravelManagement.tsx` already uses for driver/truck names, not a new pattern),
+each entry showing `alert_type`, a severity pill, `timestamp` (`shortDate`/`clock`/
+`relativeTime`), and `coordinates` (lat/lon), linking through to the existing `AlertTriage`
+view. No backend change was needed — `GET /api/routes` already supported a `status` filter and
+`GET /api/alerts` already supported `route_id`; this screen just composes two endpoints that
+already existed. This also dropped the one `Sidebar.test.tsx` case asserting the item stayed
+"soon" (folded into the "renders every real nav link" case instead), which is where the test
+count above went from 65 to 64. **Verification gap, stated plainly**: this sandbox had no
+`npm`/`npx`/Playwright/`chromium-cli` available, so verification here is `docker build --target
+checks` (lint → the Vitest suite → `tsc -b && vite build`, all passing) plus a live
+`docker compose up` against the seeded demo data confirming `GET /api/routes?status=completed`
+and `GET /api/alerts?route_id=...` return exactly the shape this component expects (one
+completed route, one `medium`-severity fusion alert) — not an actual rendered-in-a-browser
+screenshot of the expand/collapse interaction. Worth a real browser check next session before
+treating the UI polish (not just the data plumbing) as verified.
 
 - **`src/api/`** — one client module per backend resource (`client`, `auth`, `me`, `users`,
   `trucks`, `drivers`, `routes`, `alerts`), all built on `apiFetch`. `routes.ts`/`alerts.ts` run
-  every coordinate field through `normalizeCoordinates()` once, at this layer.
+  every coordinate field through `normalizeCoordinates()` once, at this layer. `listRoutes` now
+  takes an optional `status` filter (`GET /api/routes?status=...`), added for `RouteHistory.tsx`.
 - **`src/types.ts`** — `Role` is now 4 members; added `RouteWithStatus` (the
   `GET /api/routes/active` shape, embedding a route's newest `Status_Route` + truck/driver
   names).
@@ -234,6 +257,7 @@ role-gating additions to `Sidebar.test.tsx`) all verified passing clean in this 
 - **`src/pages/Access.tsx`** (new) — root_admin/admin user management, role-aware (see "Auth"
   above).
 - **`src/pages/Profile.tsx`** (new) — self-service email/name/phone/password edit for any role.
+- **`src/pages/RouteHistory.tsx`** (new) — see above.
 - **`src/utils/format.ts`** — `relativeTime`/`clock`/`longDay`/`daysUntil` now default to
   `new Date()` instead of the retired `MOCK_NOW` fixture constant; the optional `now` param is
   still there purely for tests to pin a fixed reference time.
