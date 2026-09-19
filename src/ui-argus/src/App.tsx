@@ -4,6 +4,7 @@ import ProtectedRoute from './components/ProtectedRoute'
 import RequireRole from './components/RequireRole'
 import Login from './pages/Login'
 import LiveOps from './pages/LiveOps'
+import RouteHistory from './pages/RouteHistory'
 import AlertTriage from './pages/AlertTriage'
 import Fleet from './pages/Fleet'
 import Drivers from './pages/Drivers'
@@ -32,6 +33,7 @@ export default function App() {
           <Route element={<AppLayout />}>
             {/* Control Tower */}
             <Route path="/" element={<LiveOps />} />
+            <Route path="/history" element={<RouteHistory />} />
             <Route path="/alerts/:alertId" element={<AlertTriage />} />
 
             {/* Administration / Logistics */}

@@ -27,8 +27,9 @@ function normalizeRouteWithStatus(r: RouteWithStatus): RouteWithStatus {
   }
 }
 
-export function listRoutes(token: string): Promise<Route[]> {
-  return apiFetch<Route[]>('/api/routes', { token }).then((rs) => rs.map(normalizeRoute))
+export function listRoutes(token: string, status?: Route['operative_status']): Promise<Route[]> {
+  const qs = status ? `?status=${status}` : ''
+  return apiFetch<Route[]>(`/api/routes${qs}`, { token }).then((rs) => rs.map(normalizeRoute))
 }
 
 /** `GET /api/routes/active` — in-progress routes embedding their newest status snapshot,
