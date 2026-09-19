@@ -106,23 +106,29 @@ lifecycle end to end.
 
 `osrm_client.py`'s `fetch_route_geometry()` queries a local OSRM instance's
 `/route/v1/driving` endpoint for a real road-following polyline between a route's origin and
-destination, when `SIMULATOR_USE_OSRM=true`. This is **off by default** and designed to fail
-safe: any error at all (OSRM not running, the extract not preprocessed yet, a network hiccup,
-a malformed response) is caught and logged as a warning, returning the plain
+destination, when `SIMULATOR_USE_OSRM=true` (**on by default**). Designed to fail safe
+regardless: any error at all (OSRM not running, the extract not preprocessed yet, a network
+hiccup, a malformed response) is caught and logged as a warning, returning the plain
 `[origin, destination]` two-point fallback instead of raising — `fleet.py`'s `provision_fleet`
 therefore never blocks or crashes because of OSRM being unavailable, it just silently gets
-straight-line movement for that route instead.
+straight-line movement for that route instead. This matters because the default being *on*
+doesn't remove the one-time setup cost below — on a fresh checkout with no extract preprocessed
+yet, every route silently falls back to straight lines until that setup is done.
 
-Why off by default: getting real road geometry needs a full Mexico OSM extract (~150MB from
-Geofabrik) preprocessed by OSRM's own `extract`/`partition`/`customize` pipeline into a routable
-graph — a real, one-time cost (bandwidth + several minutes of CPU) that would otherwise silently
-turn this module's "quick start" promise into a multi-minute wait on first run. `scripts/
-setup_osrm.sh` does that preprocessing once into `./osrm-data/` (gitignored); the `osrm` service
-in `docker-compose.yml` is gated behind its own `profiles: ["osrm"]` tag, matching this repo's
-existing idiom for opt-in Compose services (see the root `docker-compose.yml`'s `simulator`
-profile). The **full country** extract is required, not a smaller regional one, because
-`ROUTE_TEMPLATES` spans long-haul corridors across the whole country (Tijuana↔Mexicali in the
-north, Puebla↔Veracruz in the south-center) that a regional extract wouldn't cover.
+Getting real road geometry needs a full Mexico OSM extract (~150MB from Geofabrik) preprocessed
+by OSRM's own `extract`/`partition`/`customize` pipeline into a routable graph — a real, one-time
+cost (bandwidth + several minutes of CPU) that can't be folded into `docker compose up` itself
+without either bundling a huge preprocessed dataset into the repo or turning this module's
+"quick start" promise into a multi-minute wait on first run. `scripts/setup_osrm.sh` does that
+preprocessing once into `./osrm-data/` (gitignored); the `osrm` service in `docker-compose.yml`
+starts automatically alongside every other service in this module's own standalone stack (no
+profile gate — an unpreprocessed extract just makes it exit immediately with a clear error,
+which is expected and harmless since nothing else depends on it being healthy), and in the root
+`docker-compose.yml` it's gated behind the same `simulator` profile as `simulator-argus` itself,
+so it comes up automatically whenever the simulator is layered onto that stack. The **full
+country** extract is required, not a smaller regional one, because `ROUTE_TEMPLATES` spans
+long-haul corridors across the whole country (Tijuana↔Mexicali in the north, Puebla↔Veracruz in
+the south-center) that a regional extract wouldn't cover.
 
 This is a separate, simulator-only use of OSRM purely for generating realistic demo tracks — it
 is **not** the backend/frontend's own route+ETA feature the root `CLAUDE.md` describes as "still
@@ -135,11 +141,14 @@ bearing on that separate, still-open item.
 
 `scenarios.py` gives each `VirtualTruck` one of three named profiles
 (`normal`/`drowsy_escalation`/`panic`) — but *which* profile a given truck gets is a weighted
-random draw (`choose_scenario_name`, weights from `SIMULATOR_SCENARIO_WEIGHTS`, default 55%/25%/
+random draw (`choose_scenario_name`, weights from `SIMULATOR_SCENARIO_WEIGHTS`, default 45%/35%/
 20%), not a fixed round-robin assignment, and *when* a scripted event fires within a profile is
 also randomized where it makes sense (`panic`'s single alert fires at a random tick in the first
 third of the route; `normal`'s medium blips are a per-tick coin flip at
-`SIMULATOR_MEDIUM_BLIP_PROBABILITY`). What stays scripted, deliberately, is each profile's
+`SIMULATOR_MEDIUM_BLIP_PROBABILITY` that, once triggered, holds for a randomized 30s-2min dwell
+instead of reverting the very next tick — an earlier version redrew the coin flip independently
+every tick, which made "medium" last only ~1 tick and read as flickering rather than a real,
+observable state). What stays scripted, deliberately, is each profile's
 overall *shape*: a purely random simulator (independent random severity every tick, for every
 truck) produces an undifferentiated wall of severities that doesn't demo well. A `drowsy_
 escalation` that visibly climbs `low → medium → critical`, fires one `fusion` alert with

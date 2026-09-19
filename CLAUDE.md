@@ -236,8 +236,9 @@ but not yet merged into `main`) — read that before assuming something is missi
   coherent story per truck while which-truck-gets-which stays randomized; route duration
   (`SIMULATOR_ROUTE_DURATION_MINUTES`, minutes to hours) and event timing are both parametrized
   rather than hardcoded. Movement optionally follows a real OSRM-computed road route instead of a
-  straight line (`SIMULATOR_USE_OSRM`, off by default — needs a one-time Mexico OSM extract
-  setup, falls back to a straight line if unset/unreachable) — a private, simulator-only use of
+  straight line (`SIMULATOR_USE_OSRM`, on by default — needs a one-time Mexico OSM extract
+  setup to actually take effect, falls back to a straight line if that hasn't been run yet or
+  OSRM is otherwise unreachable) — a private, simulator-only use of
   OSRM for realistic demo tracks, distinct from the backend/frontend's own route+ETA feature
   described above, which remains deferred. Has its own `docker-compose.yml` (a full,
   self-contained mini-stack — Mongo + backend + UI + simulator + an opt-in OSRM service,

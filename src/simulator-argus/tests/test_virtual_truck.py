@@ -71,6 +71,20 @@ def test_normal_scenario_never_fires_an_alert():
     assert all(scenario.alert(tick) is None for tick in range(50))
 
 
+def test_normal_scenario_medium_blip_holds_for_minimum_dwell_ticks():
+    # probability=1.0 forces a blip to start at tick 0; the minimum dwell (30s / 5s per tick)
+    # guarantees at least 6 consecutive "medium" ticks, regardless of the random dwell draw.
+    scenario = Scenario(total_ticks=500, medium_blip_probability=1.0, interval_seconds=5.0)
+    vigilances = [scenario.vigilance(t) for t in range(6)]
+    assert vigilances == ["medium"] * 6
+
+
+def test_panic_scenario_medium_blip_holds_for_minimum_dwell_ticks():
+    scenario = PanicScenario(total_ticks=500, medium_blip_probability=1.0, interval_seconds=5.0)
+    vigilances = [scenario.vigilance(t) for t in range(6)]
+    assert vigilances == ["medium"] * 6
+
+
 def test_drowsy_escalation_fires_one_fusion_alert_at_peak_and_resolves():
     scenario = DrowsyEscalationScenario(total_ticks=40)
     fired = None

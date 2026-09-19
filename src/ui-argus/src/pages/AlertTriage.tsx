@@ -9,6 +9,8 @@ import { listTrucks } from '../api/trucks'
 import { ApiError } from '../api/client'
 import { clock, pct, relativeTime, shortDate } from '../utils/format'
 import { severity } from '../utils/status'
+import { toLatLng } from '../utils/geo'
+import FleetMap, { type FleetMapMarker } from '../components/FleetMap'
 import type { Alert, AlertSource, Driver, GripStatus, Route, Truck } from '../types'
 
 const SOURCE_LABEL: Record<AlertSource, string> = {
@@ -164,6 +166,19 @@ export default function AlertTriage() {
       ]
     : []
 
+  const alertMarker: FleetMapMarker = {
+    id: alert.id_alert,
+    position: toLatLng(alert.coordinates),
+    plate: truck ? `${truck.plate_number} · ${truck.company_number}` : '—',
+    driver: driver ? `${driver.first_name} ${driver.last_name}` : '—',
+    origin: route?.origin_name ?? '—',
+    destination: route?.destination_name ?? '—',
+    speedKmh: alert.speed_at_event,
+    vigilanceLabel: sev.label,
+    tone: sev.tone,
+    timestamp: alert.timestamp,
+  }
+
   return (
     <div
       style={{
@@ -276,7 +291,7 @@ export default function AlertTriage() {
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(5, minmax(0,1fr))',
+          gridTemplateColumns: 'repeat(4, minmax(0,1fr))',
           gap: 14,
         }}
       >
@@ -294,7 +309,6 @@ export default function AlertTriage() {
         <Ctx label="Speed at event">
           <span className="mono">{alert.speed_at_event} km/h</span>
         </Ctx>
-        <Ctx label="Source">{SOURCE_LABEL[alert.source]}</Ctx>
       </div>
 
       <div style={{ flex: 1, display: 'flex', gap: 18, minHeight: 0 }}>
@@ -315,65 +329,10 @@ export default function AlertTriage() {
               borderRadius: 12,
               flex: 1,
               position: 'relative',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
               overflow: 'hidden',
             }}
           >
-            <div
-              style={{
-                position: 'absolute',
-                inset: 0,
-                background:
-                  'repeating-linear-gradient(135deg, oklch(0.16 0.015 258) 0 14px, oklch(0.13 0.015 258) 14px 28px)',
-              }}
-            />
-            <span
-              style={{
-                position: 'relative',
-                width: 58,
-                height: 58,
-                borderRadius: '50%',
-                background: 'oklch(0.14 0.018 258 / 0.75)',
-                border: '1px solid var(--border)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: 'var(--text)',
-              }}
-            >
-              <Icon name="play" size={22} />
-            </span>
-            <span
-              style={{
-                position: 'absolute',
-                top: 12,
-                left: 14,
-                fontSize: 10.5,
-                background: 'oklch(0.14 0.018 258 / 0.75)',
-                padding: '3px 9px',
-                borderRadius: 6,
-                color: 'var(--text-soft)',
-              }}
-            >
-              {alert.ai_metadata?.clip_seconds != null && alert.ai_metadata.clip_seconds > 0
-                ? `Captured clip · 00:0${alert.ai_metadata.clip_seconds}`
-                : 'No clip'}
-            </span>
-            <span
-              className="mono"
-              style={{
-                position: 'absolute',
-                bottom: 12,
-                right: 14,
-                fontSize: 10,
-                color: 'var(--text-faint)',
-              }}
-            >
-              lat {alert.coordinates.lat.toFixed(4)}, lon{' '}
-              {alert.coordinates.lon.toFixed(4)}
-            </span>
+            <FleetMap markers={[alertMarker]} maxZoom={13} />
           </div>
 
           <div className="panel" style={{ padding: '14px 16px' }}>
