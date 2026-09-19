@@ -1,12 +1,13 @@
 """Optional real road-following route geometry via a local OSRM instance.
 
-Disabled by default (`SIMULATOR_USE_OSRM=false`) because it needs a one-time setup step --
+Enabled by default (`SIMULATOR_USE_OSRM=true`), but it still needs a one-time setup step --
 downloading and preprocessing a full Mexico OSM extract, see README's "Optional: real
-road-following routes via OSRM" section. When disabled, or when a query fails for any reason
-(OSRM not running, extract not preprocessed yet, network hiccup), callers get a plain two-point
-`[origin, destination]` polyline back instead -- the exact shape `virtual_truck.py` already knows
-how to walk via straight-line interpolation, so OSRM being unavailable never blocks the
-simulator from running.
+road-following routes via OSRM" section -- before it can actually produce real geometry. When
+disabled, or when a query fails for any reason (OSRM not running, extract not preprocessed yet,
+network hiccup), callers get a plain two-point `[origin, destination]` polyline back instead --
+the exact shape `virtual_truck.py` already knows how to walk via straight-line interpolation, so
+OSRM being unavailable (including on a first run before the one-time setup script has been run)
+never blocks the simulator from running.
 """
 from __future__ import annotations
 

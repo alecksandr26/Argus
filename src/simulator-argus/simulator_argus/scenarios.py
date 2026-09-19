@@ -26,17 +26,48 @@ class AlertEvent:
 class Scenario:
     """`normal`: vigilance stays `low` with occasional `medium` blips; no alerts. This is
     typically the most heavily-weighted profile, so the live dashboard isn't wall-to-wall
-    incidents."""
+    incidents.
+
+    A blip's *trigger* is a per-tick coin flip (`medium_blip_probability`), but once triggered
+    it *holds* `medium` for a randomized realistic dwell (`_MEDIUM_DWELL_SECONDS_MIN`-`_MAX` of
+    wall-clock time, converted to ticks via `interval_seconds`) instead of reverting the very
+    next tick -- a fresh independent draw every tick made "medium" last only ~1 tick (~5s at the
+    default interval), which read as the alert flickering rather than a real, observable state.
+    """
 
     name = "normal"
 
-    def __init__(self, total_ticks: int, medium_blip_probability: float = 0.1) -> None:
+    _MEDIUM_DWELL_SECONDS_MIN = 30.0
+    _MEDIUM_DWELL_SECONDS_MAX = 120.0
+
+    def __init__(
+        self,
+        total_ticks: int,
+        medium_blip_probability: float = 0.1,
+        interval_seconds: float = 5.0,
+    ) -> None:
         self._total_ticks = max(total_ticks, 1)
         self._medium_blip_probability = medium_blip_probability
+        self._interval_seconds = interval_seconds if interval_seconds and interval_seconds > 0 else 5.0
         self._fired = False
+        self._medium_until_tick: Optional[int] = None
 
     def vigilance(self, tick: int) -> str:
-        return "medium" if random.random() < self._medium_blip_probability else "low"
+        return self._blip_vigilance(tick, self._medium_blip_probability)
+
+    def _blip_vigilance(self, tick: int, probability: float) -> str:
+        if self._medium_until_tick is not None:
+            if tick < self._medium_until_tick:
+                return "medium"
+            self._medium_until_tick = None
+        if random.random() < probability:
+            dwell_seconds = random.uniform(
+                self._MEDIUM_DWELL_SECONDS_MIN, self._MEDIUM_DWELL_SECONDS_MAX
+            )
+            dwell_ticks = max(1, round(dwell_seconds / self._interval_seconds))
+            self._medium_until_tick = tick + dwell_ticks
+            return "medium"
+        return "low"
 
     def alert(self, tick: int) -> Optional[AlertEvent]:
         return None
@@ -61,8 +92,13 @@ class DrowsyEscalationScenario(Scenario):
     _RECOVER_FRACTION = 0.55
     _MIN_CYCLE_TICKS = 8
 
-    def __init__(self, total_ticks: int, medium_blip_probability: float = 0.1) -> None:
-        super().__init__(total_ticks, medium_blip_probability)
+    def __init__(
+        self,
+        total_ticks: int,
+        medium_blip_probability: float = 0.1,
+        interval_seconds: float = 5.0,
+    ) -> None:
+        super().__init__(total_ticks, medium_blip_probability, interval_seconds)
         self._resolved = True
         cycle = max(self._MIN_CYCLE_TICKS, self._total_ticks // 2)
         self._escalate_at = max(1, round(cycle * self._ESCALATE_FRACTION))
@@ -116,13 +152,18 @@ class PanicScenario(Scenario):
 
     name = "panic"
 
-    def __init__(self, total_ticks: int, medium_blip_probability: float = 0.1) -> None:
-        super().__init__(total_ticks, medium_blip_probability)
+    def __init__(
+        self,
+        total_ticks: int,
+        medium_blip_probability: float = 0.1,
+        interval_seconds: float = 5.0,
+    ) -> None:
+        super().__init__(total_ticks, medium_blip_probability, interval_seconds)
         window = max(2, self._total_ticks // 3)
         self._fire_at = random.randint(1, window)
 
     def vigilance(self, tick: int) -> str:
-        return "medium" if random.random() < (self._medium_blip_probability * 1.5) else "low"
+        return self._blip_vigilance(tick, self._medium_blip_probability * 1.5)
 
     def alert(self, tick: int) -> Optional[AlertEvent]:
         if tick == self._fire_at and not self._fired:
@@ -147,7 +188,7 @@ _DEFAULT_WEIGHTS = {name: 1.0 for name in SCENARIOS}
 
 
 def parse_scenario_weights(spec: str) -> dict[str, float]:
-    """Parses `"normal=0.55,drowsy_escalation=0.25,panic=0.20"` into a weight dict. Unknown
+    """Parses `"normal=0.45,drowsy_escalation=0.35,panic=0.20"` into a weight dict. Unknown
     names and malformed entries are dropped silently (logged by the caller if it cares); if
     nothing valid parses, falls back to an equal split across every known scenario so a
     typo'd `SIMULATOR_SCENARIO_WEIGHTS` never crashes provisioning."""
@@ -176,6 +217,9 @@ def choose_scenario_name(weights: dict[str, float]) -> str:
 
 
 def build_scenario(
-    name: str, total_ticks: int, medium_blip_probability: float = 0.1
+    name: str,
+    total_ticks: int,
+    medium_blip_probability: float = 0.1,
+    interval_seconds: float = 5.0,
 ) -> Scenario:
-    return SCENARIOS[name](total_ticks, medium_blip_probability)
+    return SCENARIOS[name](total_ticks, medium_blip_probability, interval_seconds)

@@ -94,7 +94,17 @@ function buildIcon(m: FleetMapMarker): DivIcon {
   })
 }
 
-export default function FleetMap({ markers }: { markers: FleetMapMarker[] }) {
+export default function FleetMap({
+  markers,
+  maxZoom = 9,
+}: {
+  markers: FleetMapMarker[]
+  /** Cap on how far `fitBounds` may zoom in when framing `markers` — 9 (fleet-wide default)
+   * suits the Live Operations map's multi-truck view; pass a tighter value (e.g. 13, the map's
+   * own interactive ceiling below) for a single-marker close-up like Alert Triage's embedded
+   * location map. */
+  maxZoom?: number
+}) {
   const bounds = markers.length
     ? latLngBounds(markers.map((m) => m.position))
     : undefined
@@ -104,7 +114,7 @@ export default function FleetMap({ markers }: { markers: FleetMapMarker[] }) {
       center={FALLBACK_CENTER}
       zoom={FALLBACK_ZOOM}
       bounds={bounds}
-      boundsOptions={{ padding: [48, 48], maxZoom: 9 }}
+      boundsOptions={{ padding: [48, 48], maxZoom }}
       minZoom={5}
       maxZoom={13}
       scrollWheelZoom
