@@ -291,7 +291,7 @@ export default function AlertTriage() {
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(4, minmax(0,1fr))',
+          gridTemplateColumns: 'repeat(5, minmax(0,1fr))',
           gap: 14,
         }}
       >
@@ -309,6 +309,7 @@ export default function AlertTriage() {
         <Ctx label="Speed at event">
           <span className="mono">{alert.speed_at_event} km/h</span>
         </Ctx>
+        <Ctx label="Source">{SOURCE_LABEL[alert.source]}</Ctx>
       </div>
 
       <div style={{ flex: 1, display: 'flex', gap: 18, minHeight: 0 }}>
