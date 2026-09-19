@@ -2,7 +2,16 @@
  * Small formatting helpers shared across screens. Relative times default to the real wall
  * clock (`new Date()`) now that every screen fetches live backend data — the optional `now`
  * param stays purely for tests to pin a fixed reference time.
+ *
+ * Every wall-clock/date formatter here is pinned to `America/Mexico_City` rather than left to
+ * the viewer's own browser (or, in a test/CI context, the host machine's) timezone — Argus is
+ * exclusively a Mexico-operations system, so every actor (guardian, admin, driver) reasons about
+ * Mexico local time regardless of where the browser or server physically sits. `relativeTime`/
+ * `daysUntil` don't need this: they're pure epoch-millisecond deltas, never a formatted wall-clock
+ * value, so they're correct in any timezone already.
  */
+
+const MEXICO_TZ = 'America/Mexico_City'
 
 export function relativeTime(iso: string, now: Date = new Date()): string {
   const deltaMs = now.getTime() - new Date(iso).getTime()
@@ -21,25 +30,40 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
 }
 
 const clockFmt = new Intl.DateTimeFormat('en-US', {
+  timeZone: MEXICO_TZ,
   hour: '2-digit',
   minute: '2-digit',
   hour12: false,
 })
 
-/** "06:30" — or "Yesterday 22:00" / "Aug 23 22:00" when not today relative to `now`. */
+// "YYYY-MM-DD" in Mexico City's own calendar, regardless of the host machine's timezone —
+// en-CA's format is the one built-in Intl locale that gives that ordering unambiguously, used
+// here purely as a comparable key, never displayed.
+const mexicoDateKeyFmt = new Intl.DateTimeFormat('en-CA', {
+  timeZone: MEXICO_TZ,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+
+function mexicoDateKey(d: Date): string {
+  return mexicoDateKeyFmt.format(d)
+}
+
+/** "06:30" — or "Yesterday 22:00" / "Aug 23 22:00" when not today relative to `now`, all
+ * judged by Mexico City's own calendar day, not the host machine's. */
 export function clock(iso: string | null, now: Date = new Date()): string {
   if (!iso) return '—'
   const d = new Date(iso)
-  const sameDay = d.toDateString() === now.toDateString()
-  const yesterday = new Date(now)
-  yesterday.setDate(now.getDate() - 1)
-  if (sameDay) return clockFmt.format(d)
-  if (d.toDateString() === yesterday.toDateString())
+  if (mexicoDateKey(d) === mexicoDateKey(now)) return clockFmt.format(d)
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+  if (mexicoDateKey(d) === mexicoDateKey(yesterday))
     return `Yesterday ${clockFmt.format(d)}`
   return `${shortDate(iso)} ${clockFmt.format(d)}`
 }
 
 const dateFmt = new Intl.DateTimeFormat('en-US', {
+  timeZone: MEXICO_TZ,
   day: '2-digit',
   month: 'short',
   year: 'numeric',
@@ -51,6 +75,7 @@ export function shortDate(iso: string): string {
 }
 
 const dayFmt = new Intl.DateTimeFormat('en-US', {
+  timeZone: MEXICO_TZ,
   weekday: 'long',
   day: 'numeric',
   month: 'long',

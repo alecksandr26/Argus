@@ -17,7 +17,15 @@ from .scenarios import build_scenario
 
 logger = logging.getLogger(__name__)
 
-_JITTER_DEGREES = 0.01
+# Realistic consumer-GPS wobble, not a random teleport: +-60m per axis stays comfortably under
+# the smallest real per-tick forward progress across all route templates (~310m/tick for
+# Monterrey<->Saltillo at default settings), so the dot still has natural noise but visibly
+# advances instead of "spinning" tick to tick (each tick redraws jitter independently, so a
+# magnitude comparable to or larger than per-tick progress reads as random wandering, not GPS
+# noise on top of real movement).
+_JITTER_METERS = 60.0
+_METERS_PER_DEGREE = 111_320.0
+_JITTER_DEGREES = _JITTER_METERS / _METERS_PER_DEGREE
 _EARTH_RADIUS_METERS = 6_371_000.0
 
 
@@ -87,7 +95,9 @@ class VirtualTruck:
         self._interval = interval_seconds
         total_seconds = (spec.arrival - spec.departure).total_seconds()
         total_ticks = max(1, int(total_seconds / interval_seconds)) if interval_seconds else 1
-        self._scenario = build_scenario(spec.scenario, total_ticks, medium_blip_probability)
+        self._scenario = build_scenario(
+            spec.scenario, total_ticks, medium_blip_probability, interval_seconds
+        )
         self._odometer = 0.0
         self._open_alert_id: str | None = None
 

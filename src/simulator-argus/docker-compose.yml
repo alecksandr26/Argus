@@ -67,32 +67,34 @@ services:
       - BACKEND_BASE_URL=http://backend-argus:8000
       - SIMULATOR_ADMIN_EMAIL=admin@argus.dev
       - SIMULATOR_ADMIN_PASSWORD=changeme123
-      - SIMULATOR_TRUCK_COUNT=${SIMULATOR_TRUCK_COUNT:-4}
+      - SIMULATOR_TRUCK_COUNT=${SIMULATOR_TRUCK_COUNT:-6}
       - SIMULATOR_STATUS_INTERVAL_SECONDS=${SIMULATOR_STATUS_INTERVAL_SECONDS:-5}
       - SIMULATOR_ROUTE_DURATION_MINUTES=${SIMULATOR_ROUTE_DURATION_MINUTES:-20}
-      - SIMULATOR_SCENARIO_WEIGHTS=${SIMULATOR_SCENARIO_WEIGHTS:-normal=0.55,drowsy_escalation=0.25,panic=0.20}
+      - SIMULATOR_SCENARIO_WEIGHTS=${SIMULATOR_SCENARIO_WEIGHTS:-normal=0.45,drowsy_escalation=0.35,panic=0.20}
       - SIMULATOR_MEDIUM_BLIP_PROBABILITY=${SIMULATOR_MEDIUM_BLIP_PROBABILITY:-0.1}
       - SIMULATOR_RESET=${SIMULATOR_RESET:-true}
-      # Off by default -- see the `osrm` service below and README's "Optional: real
-      # road-following routes via OSRM" for the one-time setup this needs before turning it on.
-      - SIMULATOR_USE_OSRM=${SIMULATOR_USE_OSRM:-false}
+      # On by default -- see the `osrm` service below and README's "Optional: real
+      # road-following routes via OSRM" for the one-time setup needed before it actually takes
+      # effect. Until that's done, OSRM queries fail and trucks fall back to a straight line.
+      - SIMULATOR_USE_OSRM=${SIMULATOR_USE_OSRM:-true}
       - OSRM_BASE_URL=http://osrm:5000
     depends_on:
       backend-argus:
         condition: service_healthy
 
-  # Optional real road-following route geometry. NOT started by a plain `docker compose up` --
-  # gated behind the `osrm` profile because it needs `scripts/setup_osrm.sh` run first (a
-  # one-time ~150MB Mexico OSM extract download + several minutes of preprocessing into
-  # ./osrm-data/, gitignored). Bring it up with:
-  #   ./scripts/setup_osrm.sh   # once
-  #   docker compose --profile osrm up -d osrm
-  #   SIMULATOR_USE_OSRM=true docker compose up --build simulator-argus
-  # If SIMULATOR_USE_OSRM is true but this isn't running (or the extract isn't preprocessed
-  # yet), osrm_client.py falls back to a straight line per route instead of failing the run.
+  # Real road-following route geometry, started by default alongside everything else in this
+  # stack. It still needs `scripts/setup_osrm.sh` run once first (a one-time ~150MB Mexico OSM
+  # extract download + several minutes of preprocessing into ./osrm-data/, gitignored) before it
+  # can actually serve routes:
+  #   ./scripts/setup_osrm.sh   # once, before the first `docker compose up`
+  #   docker compose up --build
+  # Until that script has been run, this container exits immediately with a "file not found"
+  # error (the preprocessed `.osrm` files don't exist yet) -- expected and harmless: nothing else
+  # in this stack depends on it being healthy, and osrm_client.py falls back to a straight line
+  # per route instead of failing the run. If you don't want real routes at all, set
+  # SIMULATOR_USE_OSRM=false instead of running the setup script.
   osrm:
     image: osrm/osrm-backend
-    profiles: ["osrm"]
     volumes:
       - ./osrm-data:/data
     command: ["osrm-routed", "--algorithm", "mld", "/data/mexico-latest.osrm"]

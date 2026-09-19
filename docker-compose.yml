@@ -4,10 +4,12 @@
 # src/ui-argus/docker-compose.yml both keep working on their own for solo-module dev) — it's
 # purely the integration layer that didn't exist before because the backend didn't exist before.
 #
-# No OSRM service here. The borrador doc (docs/document/borrador-proyecto-modular-argus.md)
-# explicitly frames OSRM as "mejora futura, no como parte del backend comprometido" — deferred
-# future work, not part of this MVP stack — so it's left out on purpose, not forgotten. Same
-# convention src/cv-argus/docker-compose.pi.yml uses for documenting deliberate omissions.
+# No OSRM service for the product-facing route+ETA feature — the borrador doc
+# (docs/document/borrador-proyecto-modular-argus.md) explicitly frames that as "mejora futura, no
+# como parte del backend comprometido" — deferred future work, not part of this MVP stack, so
+# backend-argus/ui-argus never query one. The `osrm` service below is a separate, simulator-only
+# instance (see src/simulator-argus/CLAUDE.md's "Optional real routes: OSRM") gated behind the
+# same `simulator` profile as `simulator-argus` itself, so it only starts when the simulator does.
 services:
   mongo:
     image: mongo:7
@@ -84,18 +86,37 @@ services:
       - BACKEND_BASE_URL=http://backend-argus:8000
       - SIMULATOR_ADMIN_EMAIL=${ROOT_ADMIN_EMAIL:-admin@argus.dev}
       - SIMULATOR_ADMIN_PASSWORD=${ROOT_ADMIN_PASSWORD:-changeme123}
-      - SIMULATOR_TRUCK_COUNT=${SIMULATOR_TRUCK_COUNT:-4}
+      - SIMULATOR_TRUCK_COUNT=${SIMULATOR_TRUCK_COUNT:-6}
       - SIMULATOR_STATUS_INTERVAL_SECONDS=${SIMULATOR_STATUS_INTERVAL_SECONDS:-5}
       - SIMULATOR_ROUTE_DURATION_MINUTES=${SIMULATOR_ROUTE_DURATION_MINUTES:-20}
-      - SIMULATOR_SCENARIO_WEIGHTS=${SIMULATOR_SCENARIO_WEIGHTS:-normal=0.55,drowsy_escalation=0.25,panic=0.20}
+      - SIMULATOR_SCENARIO_WEIGHTS=${SIMULATOR_SCENARIO_WEIGHTS:-normal=0.45,drowsy_escalation=0.35,panic=0.20}
       - SIMULATOR_MEDIUM_BLIP_PROBABILITY=${SIMULATOR_MEDIUM_BLIP_PROBABILITY:-0.1}
       - SIMULATOR_RESET=${SIMULATOR_RESET:-true}
-      # Real road-following routes need src/simulator-argus's own `osrm` service + one-time
-      # setup — see that module's README. Off by default here too.
-      - SIMULATOR_USE_OSRM=${SIMULATOR_USE_OSRM:-false}
+      # On by default — see the `osrm` service below and src/simulator-argus/README.md's
+      # "Optional: real road-following routes via OSRM" for the one-time setup needed before it
+      # actually takes effect. Until that's done, OSRM queries fail and trucks fall back to a
+      # straight line, same fail-safe behavior as src/simulator-argus's own standalone stack.
+      - SIMULATOR_USE_OSRM=${SIMULATOR_USE_OSRM:-true}
       - OSRM_BASE_URL=${OSRM_BASE_URL:-http://osrm:5000}
     depends_on:
       - backend-argus
+
+  # Real road-following route geometry for the simulator only (see the comment above this
+  # file's `simulator-argus` service) — gated behind the same `simulator` profile, not its own
+  # `osrm` profile, so it starts automatically whenever the simulator is layered onto this stack
+  # (`docker compose --profile simulator up`) without a separate flag. Needs
+  # src/simulator-argus/scripts/setup_osrm.sh run once first; until then this container exits
+  # immediately with a "file not found" error, which is expected and harmless — nothing else in
+  # this stack depends on it being healthy, and simulator-argus falls back to straight-line
+  # movement instead of failing.
+  osrm:
+    image: osrm/osrm-backend
+    profiles: ["simulator"]
+    volumes:
+      - ./src/simulator-argus/osrm-data:/data
+    command: ["osrm-routed", "--algorithm", "mld", "/data/mexico-latest.osrm"]
+    ports:
+      - "5001:5000"
 
 volumes:
   mongo-data:
