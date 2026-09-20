@@ -302,6 +302,9 @@ textarea.input {
 }
 .fleet-marker__dot--warn {
   background: var(--warn);
+  width: 13px;
+  height: 13px;
+  box-shadow: 0 0 0 4px oklch(0.8 0.15 80 / 0.22);
 }
 .fleet-marker__dot--neutral {
   background: var(--text-faint);

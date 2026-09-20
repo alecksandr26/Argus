@@ -24,6 +24,7 @@ interface NavItem {
 const MONITORING: NavItem[] = [
   { to: '/', label: 'Live operations', icon: 'eye' },
   { to: '/history', label: 'Route history', icon: 'list' },
+  { to: '/alerts/history', label: 'Alert history', icon: 'check' },
 ]
 
 const OPERATIONS: NavItem[] = [
