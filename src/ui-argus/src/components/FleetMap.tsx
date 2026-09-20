@@ -1,6 +1,7 @@
-import { MapContainer, Marker, Popup, TileLayer } from 'react-leaflet'
+import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet'
 import { divIcon, latLngBounds } from 'leaflet'
 import type { DivIcon } from 'leaflet'
+import { useEffect, useRef } from 'react'
 import { relativeTime } from '../utils/format'
 import type { Tone } from '../utils/status'
 
@@ -94,9 +95,34 @@ function buildIcon(m: FleetMapMarker): DivIcon {
   })
 }
 
+/**
+ * `MapContainer`'s `bounds`/`boundsOptions` only frame `markers` once, at mount (see this
+ * file's header comment) — this fills the gap for "keep following a moving marker after
+ * that", used by `RouteLiveView`'s single-truck live map. Skips the first position it sees
+ * (mount already got `fitBounds`'d) so the two don't fight on first paint, and re-centers via
+ * `map.getZoom()` rather than resetting to `maxZoom`, so a user's manual zoom survives across
+ * follow-updates — only the center point re-tracks the truck.
+ */
+function FollowMarker({ position }: { position: [number, number] }) {
+  const map = useMap()
+  const mounted = useRef(false)
+  useEffect(() => {
+    if (!mounted.current) {
+      mounted.current = true
+      return
+    }
+    map.flyTo(position, map.getZoom(), { duration: 0.8 })
+    // `map` is stable per MapContainer instance; keying on the raw lat/lng (not `position`'s
+    // tuple identity) below is deliberate, not a missed dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [position[0], position[1]])
+  return null
+}
+
 export default function FleetMap({
   markers,
   maxZoom = 9,
+  follow = false,
 }: {
   markers: FleetMapMarker[]
   /** Cap on how far `fitBounds` may zoom in when framing `markers` — 9 (fleet-wide default)
@@ -104,6 +130,9 @@ export default function FleetMap({
    * own interactive ceiling below) for a single-marker close-up like Alert Triage's embedded
    * location map. */
   maxZoom?: number
+  /** Keep the viewport centered on `markers[0]` as its position changes after mount (poll-driven
+   * live tracking). Only meaningful for a single-marker map — ignored otherwise. */
+  follow?: boolean
 }) {
   const bounds = markers.length
     ? latLngBounds(markers.map((m) => m.position))
@@ -126,6 +155,8 @@ export default function FleetMap({
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         maxZoom={19}
       />
+
+      {follow && markers.length === 1 && <FollowMarker position={markers[0].position} />}
 
       {markers.map((m) => (
         <Marker key={m.id} position={m.position} icon={buildIcon(m)}>

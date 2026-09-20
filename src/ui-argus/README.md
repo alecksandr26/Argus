@@ -7,22 +7,31 @@ Tower** (`guardian`, read-only monitoring + alert review), **Administration / Lo
 this fits the rest of Argus.
 
 **Current status: every screen calls the real backend.** `src/data/fixtures.ts` is deleted —
-`Login`, `Fleet`, `Drivers`, `TravelManagement`, `LiveOps`, and `AlertTriage` all fetch from
+`Login`, `Fleet`, `Drivers`, `TravelManagement`, `LiveOps`, and `RouteLiveView` (the single-alert
+`AlertTriage` screen, since generalized into a route+alert live view — see below) all fetch from
 `src/backend-argus` via `src/api/*`, and two screens that never had fixture data at all now
 exist: **`Access`** (root_admin/admin user management — an admin session is scoped server-side
 to guardian accounts only) and **`Profile`** (self-service email/name/phone/password edit for
-any role). A third new screen, **`RouteHistory`** (`/history`, "Route history" in the sidebar —
+any role). A third screen, **`RouteHistory`** (`/history`, "Route history" in the sidebar —
 previously a `soon` placeholder labeled "Trip history"), lists completed routes
 (`GET /api/routes?status=completed`) each expandable into the alerts raised on that trip
 (`GET /api/alerts`, grouped client-side by `id_route` — type, severity, timestamp, and
-lat/lon), linking each alert through to its full `AlertTriage` view. Role-based gating is real:
+lat/lon), linking each alert through to `RouteLiveView`. A fourth, **`AlertHistory`**
+(`/alerts/history`, "Alert history" in the sidebar), lists every alert a human has already
+reviewed (`GET /api/alerts?reviewed=true`) independent of whether its route has completed.
+`RouteLiveView` itself (`/alerts/:alertId`, or the newer `/routes/:routeId/live` from
+`TravelManagement`'s per-row "View live" button) now live-tracks the truck's map position
+(`FleetMap`'s new `follow` prop), shows a client-side improving/worsening trend pill, and has a
+"Route alerts" tab listing every alert on that route with its own severity/reviewed filters —
+`LiveOps.tsx`'s own feed gained a matching Unreviewed/Reviewed/All filter, which is the whole
+mechanism behind a reviewed alert moving into `AlertHistory`. Role-based gating is real:
 `RequireRole` gates `/access`, `Sidebar.tsx`'s nav items are filtered per role, and
 `Fleet`/`Drivers`/`TravelManagement` render read-only (no Add/Save) for a `guardian` session
 instead of letting a write attempt fail with an unexplained 403. The live-ops dashboard polls
 `GET /api/routes/active` + `GET /api/alerts` every 7s for its map/feed (the interim real-time
 strategy — see `INTEGRATION.md` for the still-open WebSocket/SSE question). UI copy is in
 English (the design canvas is in Spanish; translated on request). `npm install`, lint,
-typecheck, build, and the full Vitest suite (64 tests across 13 files) have all been run for
+typecheck, build, and the full Vitest suite (65 tests across 13 files) have all been run for
 real against this exact code — see "Running the tests" below and `CLAUDE.md`'s "Current
 status"/"Testing" sections (including a real environment gotcha worth reading before you hit it
 yourself) — and **`INTEGRATION.md` for what's still genuinely open** (OSRM, a real-time push

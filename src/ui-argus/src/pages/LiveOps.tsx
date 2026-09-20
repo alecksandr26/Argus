@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import FleetMap, { type FleetMapMarker } from '../components/FleetMap'
+import FilterChips from '../components/FilterChips'
 import { useAuth } from '../context/AuthContext'
 import { listActiveRoutes } from '../api/routes'
 import { listAlerts } from '../api/alerts'
@@ -38,11 +39,20 @@ const FILTERS: { key: AlertSeverity | 'all'; label: string }[] = [
   { key: 'low', label: 'Low' },
 ]
 
+type ReviewedFilter = 'unreviewed' | 'reviewed' | 'all'
+
+const REVIEWED_FILTERS: { key: ReviewedFilter; label: string }[] = [
+  { key: 'unreviewed', label: 'Unreviewed' },
+  { key: 'reviewed', label: 'Reviewed' },
+  { key: 'all', label: 'All' },
+]
+
 export default function LiveOps() {
   const { session } = useAuth()
   const token = session!.token
 
   const [filter, setFilter] = useState<AlertSeverity | 'all'>('all')
+  const [reviewedFilter, setReviewedFilter] = useState<ReviewedFilter>('unreviewed')
   const [activeRoutes, setActiveRoutes] = useState<RouteWithStatus[]>([])
   const [alerts, setAlerts] = useState<Awaited<ReturnType<typeof listAlerts>>>([])
   const [drivers, setDrivers] = useState<Driver[]>([])
@@ -124,8 +134,14 @@ export default function LiveOps() {
     const rows = [...alerts].sort(
       (a, b) => +new Date(b.timestamp) - +new Date(a.timestamp),
     )
-    return (filter === 'all' ? rows : rows.filter((a) => a.severity_level === filter)).map(
-      (a) => {
+    return rows
+      .filter((a) => filter === 'all' || a.severity_level === filter)
+      .filter(
+        (a) =>
+          reviewedFilter === 'all' ||
+          (reviewedFilter === 'reviewed' ? a.reviewed_by_operator : !a.reviewed_by_operator),
+      )
+      .map((a) => {
         const route = routeById.get(a.id_route)
         const driver = route ? driverById.get(route.id_driver) : undefined
         const truck = route ? truckById.get(route.id_truck) : undefined
@@ -135,9 +151,8 @@ export default function LiveOps() {
           plate: route?.truck_plate_number ?? truck?.plate_number ?? null,
           driverName: route?.driver_full_name ?? (driver ? `${driver.first_name} ${driver.last_name}` : null),
         }
-      },
-    )
-  }, [alerts, filter, routeById, driverById, truckById])
+      })
+  }, [alerts, filter, reviewedFilter, routeById, driverById, truckById])
 
   const todayCount = alerts.length
 
@@ -327,28 +342,8 @@ export default function LiveOps() {
             </span>
           </div>
 
-          <div style={{ display: 'flex', gap: 4 }}>
-            {FILTERS.map((f) => (
-              <button
-                key={f.key}
-                onClick={() => setFilter(f.key)}
-                style={{
-                  fontSize: 11,
-                  padding: '4px 10px',
-                  borderRadius: 20,
-                  border: 'none',
-                  cursor: 'pointer',
-                  font: 'inherit',
-                  background:
-                    filter === f.key ? 'var(--surface-3)' : 'transparent',
-                  color:
-                    filter === f.key ? 'var(--text)' : 'var(--text-faint)',
-                }}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
+          <FilterChips options={FILTERS} value={filter} onChange={setFilter} />
+          <FilterChips options={REVIEWED_FILTERS} value={reviewedFilter} onChange={setReviewedFilter} />
 
           <div
             style={{
@@ -360,7 +355,7 @@ export default function LiveOps() {
           >
             {feed.map(({ alert, originDestination, plate, driverName }) => {
               const sev = severity[alert.severity_level]
-              const resolved = alert.reviewed_by_operator
+              const reviewed = alert.reviewed_by_operator
               return (
                 <Link
                   key={alert.id_alert}
@@ -372,15 +367,15 @@ export default function LiveOps() {
                     borderRadius: 9,
                     color: 'inherit',
                     background:
-                      sev.tone === 'bad' && !resolved
+                      sev.tone === 'bad' && !reviewed
                         ? 'var(--bad-soft)'
                         : 'var(--surface-2)',
                     border: `1px solid ${
-                      sev.tone === 'bad' && !resolved
+                      sev.tone === 'bad' && !reviewed
                         ? 'var(--bad)'
                         : 'var(--border-soft)'
                     }`,
-                    opacity: resolved ? 0.6 : 1,
+                    opacity: reviewed ? 0.6 : 1,
                   }}
                 >
                   <span
@@ -388,7 +383,7 @@ export default function LiveOps() {
                       width: 3,
                       borderRadius: 2,
                       flexShrink: 0,
-                      background: resolved
+                      background: reviewed
                         ? 'var(--good)'
                         : toneColor[sev.tone],
                     }}
@@ -409,12 +404,12 @@ export default function LiveOps() {
                         style={{
                           fontSize: 10.5,
                           fontWeight: 600,
-                          color: resolved
+                          color: reviewed
                             ? 'var(--text-faint)'
                             : toneColor[sev.tone],
                         }}
                       >
-                        {resolved ? 'RESOLVED' : sev.label.toUpperCase()}
+                        {reviewed ? 'REVIEWED' : sev.label.toUpperCase()}
                       </span>
                     </div>
                     <div

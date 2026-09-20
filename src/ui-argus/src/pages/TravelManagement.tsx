@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import SearchBox from '../components/SearchBox'
 import RecordTable, { type Column } from '../components/RecordTable'
@@ -171,6 +172,21 @@ export default function TravelManagement() {
           {clock(r.actual_arrival ?? r.estimated_arrival)}
         </span>
       ),
+    },
+    {
+      header: 'Live',
+      cell: (r) =>
+        isActiveRoute(r.operative_status) ? (
+          <Link
+            to={`/routes/${r.id_route}/live`}
+            className="btn btn--ghost"
+            style={{ padding: '4px 10px', fontSize: 11.5 }}
+          >
+            <Icon name="eye" size={13} /> View live
+          </Link>
+        ) : (
+          <span style={{ color: 'var(--text-faint)', fontSize: 11.5 }}>—</span>
+        ),
     },
   ]
 
