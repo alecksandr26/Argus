@@ -72,6 +72,9 @@ describe('Sidebar', () => {
     expect(
       screen.getByRole('link', { name: /Route history/ }),
     ).toHaveAttribute('href', '/history')
+    expect(
+      screen.getByRole('link', { name: /Alert history/ }),
+    ).toHaveAttribute('href', '/alerts/history')
   })
 
   it('hides Access from a guardian session, but shows it (not "soon") for root_admin', () => {

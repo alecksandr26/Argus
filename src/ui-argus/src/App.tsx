@@ -5,7 +5,8 @@ import RequireRole from './components/RequireRole'
 import Login from './pages/Login'
 import LiveOps from './pages/LiveOps'
 import RouteHistory from './pages/RouteHistory'
-import AlertTriage from './pages/AlertTriage'
+import AlertHistory from './pages/AlertHistory'
+import RouteLiveView from './pages/RouteLiveView'
 import Fleet from './pages/Fleet'
 import Drivers from './pages/Drivers'
 import TravelManagement from './pages/TravelManagement'
@@ -34,7 +35,12 @@ export default function App() {
             {/* Control Tower */}
             <Route path="/" element={<LiveOps />} />
             <Route path="/history" element={<RouteHistory />} />
-            <Route path="/alerts/:alertId" element={<AlertTriage />} />
+            <Route path="/alerts/history" element={<AlertHistory />} />
+            {/* Legacy single-alert URL — kept working unchanged (src/it-argus's Playwright
+                suite asserts this exact shape) alongside the canonical route-scoped one below;
+                both render the same RouteLiveView, generalized from the old AlertTriage. */}
+            <Route path="/alerts/:alertId" element={<RouteLiveView />} />
+            <Route path="/routes/:routeId/live" element={<RouteLiveView />} />
 
             {/* Administration / Logistics */}
             <Route path="/fleet" element={<Fleet />} />

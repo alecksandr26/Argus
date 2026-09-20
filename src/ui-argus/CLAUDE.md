@@ -183,7 +183,8 @@ Vite app.
 - **Not yet covered**: `AppLayout`, `PageHeader`, `Icon`, `FleetMap` (would need a
   `react-leaflet` mocking strategy — not attempted yet), `Drivers.test.tsx`/
   `TravelManagement.test.tsx` (same write-gating shape as `Fleet.test.tsx`, not yet duplicated),
-  `LiveOps`/`AlertTriage` (the two data-heaviest pages — multiple parallel fetches each).
+  `LiveOps`/`RouteLiveView`/`AlertHistory` (the data-heaviest pages — multiple parallel fetches
+  each).
 - **`src/test/setup.ts` polyfills `crypto.subtle`** via Node's `webcrypto` — jsdom provides
   `window.crypto` but not `.subtle`, which `sha256Hex` (and therefore the real `Login` submit
   path) needs; without this, any test exercising it throws immediately. Also clears
@@ -194,7 +195,8 @@ Vite app.
 ## Current status
 
 **Every screen now calls the real backend.** `src/data/fixtures.ts` is deleted — `Fleet`,
-`Drivers`, `TravelManagement`, `LiveOps`, and `AlertTriage` all fetch from `src/backend-argus`
+`Drivers`, `TravelManagement`, `LiveOps`, and `RouteLiveView` (`AlertTriage`'s current name —
+see below) all fetch from `src/backend-argus`
 via `src/api/*`, and two new screens (`Access.tsx`, `Profile.tsx`) exist that never had fixture
 data at all. `src/types.ts`'s `Role` grew from three members to four (`root_admin` / `admin` /
 `guardian` / `truck_driver`) alongside the backend's own RBAC change — see the top-level
@@ -231,8 +233,9 @@ into a nested list of that route's alerts (`listAlerts(token)`, all alerts fetch
 grouped client-side by `id_route` in a `useMemo` — the same "fetch the full list, join in
 memory" shape `TravelManagement.tsx` already uses for driver/truck names, not a new pattern),
 each entry showing `alert_type`, a severity pill, `timestamp` (`shortDate`/`clock`/
-`relativeTime`), and `coordinates` (lat/lon), linking through to the existing `AlertTriage`
-view. No backend change was needed — `GET /api/routes` already supported a `status` filter and
+`relativeTime`), and `coordinates` (lat/lon), linking through to what was then `AlertTriage`
+(now `RouteLiveView` — see below). No backend change was needed — `GET /api/routes` already
+supported a `status` filter and
 `GET /api/alerts` already supported `route_id`; this screen just composes two endpoints that
 already existed. This also dropped the one `Sidebar.test.tsx` case asserting the item stayed
 "soon" (folded into the "renders every real nav link" case instead), which is where the test
@@ -245,19 +248,73 @@ completed route, one `medium`-severity fusion alert) — not an actual rendered-
 screenshot of the expand/collapse interaction. Worth a real browser check next session before
 treating the UI polish (not just the data plumbing) as verified.
 
+**`RouteLiveView.tsx`** (renamed/generalized from `AlertTriage.tsx`) + **`AlertHistory.tsx`**
+(new, `/alerts/history`): a Control Tower iteration closing several Live Operations/Routes gaps
+in one pass. `AlertTriage.tsx` — previously a single-alert-only page — is now `RouteLiveView.tsx`,
+mounted at **two** URL shapes rendering the same component: the legacy `/alerts/:alertId` (kept
+byte-for-byte working since `src/it-argus/tests/live-ops.spec.ts` asserts that exact URL three
+times) and the new canonical `/routes/:routeId/live` (+ optional `?alert=<id>` focus), which
+`TravelManagement.tsx`'s new per-row "View live" button (active routes only, via `isActiveRoute()`)
+and `AlertHistory.tsx`'s rows both link to. It polls the route (`getRoute`), its live telemetry
+(new `getRouteStatus()` in `api/routes.ts`, wrapping the previously-unwrapped
+`GET /api/routes/:id/status`; 404-when-no-telemetry-yet is treated as "no live data", not an
+error), and its alerts (`listAlerts(token, { route_id, severity, reviewed })`, using the filter
+params `api/alerts.ts`'s `listAlerts` now accepts) every 7s, same interval `LiveOps.tsx` already
+used. `FleetMap.tsx` gained a `follow` prop (a `useMap()`-based `FollowMarker` child that
+`flyTo()`s the single marker on each position change post-mount, preserving the user's manual
+zoom) so this page's map actually tracks the live truck instead of only framing it once at
+mount. A client-side-only trend pill (improving/worsening/steady, ranked off `vigilance`'s
+severity scale) shows whether a route's condition is trending better or worse since the tab was
+opened — there's no backend status-history endpoint, only the latest snapshot, so this
+necessarily resets on reload; treated as an accepted limitation, not a bug. The right panel has
+two tabs: "This alert" (today's review UI, unchanged, only present when an alert is focused) and
+a new "Route alerts" tab listing every alert on that route with its own editable severity/
+reviewed filters. `AlertHistory.tsx` is the "reviewed alerts" list this same reviewed filter
+made possible — `GET /api/alerts?reviewed=true` directly, deliberately **not** folded into
+`RouteHistory.tsx` (which is keyed off route *completion*, an unrelated concept — a reviewed
+alert on a still-`in_progress` route wouldn't show up there). `LiveOps.tsx`'s own feed gained a
+matching Unreviewed/Reviewed/All filter (default `Unreviewed`) — review-then-filtered-out is the
+entire "moves to history" mechanism, no separate state machine. Also fixed while touching that
+file: the feed previously read `alert.reviewed_by_operator` into a variable named `resolved` and
+labeled it "RESOLVED" — wrong field (`resolved_at` is a distinct, real concept: automatic
+condition-recovery, not human review); renamed to `reviewed`/relabeled "REVIEWED", a pure
+rename, not new behavior. A small `FilterChips.tsx` component was extracted for the (now three)
+places rendering the same pill-row filter pattern (`LiveOps.tsx`, `RouteLiveView.tsx`,
+`AlertHistory.tsx`). Medium-severity map dots (`.fleet-marker__dot--warn` in `index.css`) also
+got the same bigger/glow "elevated" treatment critical's dot already had (smaller/fainter, so
+critical still reads as more severe) — the actual gap behind the original "add medium alerts"
+ask, since medium already had its own filter chip/stat tile in `LiveOps.tsx`.
+**Verification**: `docker build --target checks` (lint clean — one unrelated pre-existing
+`AuthContext.tsx` fast-refresh warning aside — 65/65 Vitest tests, `tsc -b && vite build` all
+passing) plus a live `docker compose up` (`SEED_DEMO_DATA=true`) confirming the exact new/
+extended endpoint contracts against real seeded data: `GET /api/routes/:id/status` (200 with a
+live snapshot, 404 for a route with none yet), `GET /api/alerts?reviewed=true`, and
+`GET /api/alerts?severity=medium` all returned exactly the shapes this code expects. This
+sandbox had no `npm`/`npx`/Playwright available (same gap noted for `RouteHistory.tsx` above),
+so — beyond every touched module transforming cleanly through Vite's dev server — this is
+build/lint/test/API-contract verification, not an actual rendered-in-a-browser click-through of
+the map-following/tab/filter interactions; worth a real browser pass next session.
+
 - **`src/api/`** — one client module per backend resource (`client`, `auth`, `me`, `users`,
   `trucks`, `drivers`, `routes`, `alerts`), all built on `apiFetch`. `routes.ts`/`alerts.ts` run
   every coordinate field through `normalizeCoordinates()` once, at this layer. `listRoutes` now
   takes an optional `status` filter (`GET /api/routes?status=...`), added for `RouteHistory.tsx`.
+  `listAlerts` now takes an optional `AlertFilters` (`severity`/`source`/`reviewed`/`route_id`,
+  mapping onto `GET /api/alerts`'s existing query params) and `routes.ts` gained `getRouteStatus`
+  (`GET /api/routes/:id/status`) — both added for `RouteLiveView.tsx`/`AlertHistory.tsx`.
 - **`src/types.ts`** — `Role` is now 4 members; added `RouteWithStatus` (the
   `GET /api/routes/active` shape, embedding a route's newest `Status_Route` + truck/driver
   names).
 - **`src/components/RequireRole.tsx`** (new) — a route-level role gate on top of
   `ProtectedRoute`'s auth-only check, used for `/access`.
+- **`src/components/FilterChips.tsx`** (new) — the shared pill-row filter control (see above).
+- **`src/components/FleetMap.tsx`** — gained a `follow` prop (see above).
 - **`src/pages/Access.tsx`** (new) — root_admin/admin user management, role-aware (see "Auth"
   above).
 - **`src/pages/Profile.tsx`** (new) — self-service email/name/phone/password edit for any role.
 - **`src/pages/RouteHistory.tsx`** (new) — see above.
+- **`src/pages/RouteLiveView.tsx`** (renamed/generalized from `AlertTriage.tsx`) and
+  **`src/pages/AlertHistory.tsx`** (new) — see above.
 - **`src/utils/format.ts`** — `relativeTime`/`clock`/`longDay`/`daysUntil` now default to
   `new Date()` instead of the retired `MOCK_NOW` fixture constant; the optional `now` param is
   still there purely for tests to pin a fixed reference time.
@@ -270,7 +327,9 @@ treating the UI polish (not just the data plumbing) as verified.
   `/mnt/c/...` under WSL2" gotcha in the README, rather than relying on whoever hits this next
   rediscovering both workarounds from scratch.
 - Extend the Vitest suite to `Drivers.tsx`/`TravelManagement.tsx` (same write-gating shape as
-  the new `Fleet.test.tsx`) and to `LiveOps`/`AlertTriage`.
+  the new `Fleet.test.tsx`) and to `LiveOps`/`RouteLiveView`/`AlertHistory`.
+- A real browser (Playwright/manual) pass over this session's map-following, tab-switching, and
+  filter interactions — see "Verification" above for exactly what's unverified.
 - A caching/data-fetching layer (TanStack Query or similar) — every screen still does its own
   `useEffect` fetch with no shared cache; not blocking, just a quality improvement.
 - Everything else — OSRM for `TravelManagement`, a real-time push mechanism for `LiveOps`,
