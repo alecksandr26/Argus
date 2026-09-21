@@ -96,24 +96,33 @@ function buildIcon(m: FleetMapMarker): DivIcon {
 }
 
 /**
- * `MapContainer`'s `bounds`/`boundsOptions` only frame `markers` once, at mount (see this
- * file's header comment) — this fills the gap for "keep following a moving marker after
- * that", used by `RouteLiveView`'s single-truck live map. Skips the first position it sees
- * (mount already got `fitBounds`'d) so the two don't fight on first paint, and re-centers via
- * `map.getZoom()` rather than resetting to `maxZoom`, so a user's manual zoom survives across
- * follow-updates — only the center point re-tracks the truck.
+ * `MapContainer`'s `bounds`/`boundsOptions` only ever fit whatever `markers` existed on
+ * `FleetMap`'s *very first* render — verified directly against `react-leaflet`'s own source
+ * (`MapContainer.js`'s `mapRef` callback has an empty dependency array, so it constructs the
+ * real Leaflet `Map` exactly once, using only the `bounds`/`center`/`zoom` values closed over at
+ * that first call). `RouteLiveView`'s truck position loads asynchronously (`liveStatus` starts
+ * `null`), so `markers` is empty on that first render every time — the map permanently locks
+ * onto the wide `FALLBACK_CENTER`/`FALLBACK_ZOOM` view and never zooms to the truck at all, no
+ * matter what `maxZoom` is passed, since `fitBounds` is simply never invoked again afterwards.
+ * This component is therefore the *only* thing that ever zooms to a single followed marker —
+ * not a follow-up to an initial framing `MapContainer` already did, since it usually didn't.
+ * `mounted` distinguishes this marker's first appearance (snap instantly via `setView`, no
+ * animation — there's nothing to animate *from* yet) from a later live-tracking update (ease via
+ * `flyTo`, preserving the current zoom rather than resetting to `maxZoom`, so a user's manual
+ * zoom survives across follow-updates).
  */
-function FollowMarker({ position }: { position: [number, number] }) {
+function FollowMarker({ position, maxZoom }: { position: [number, number]; maxZoom: number }) {
   const map = useMap()
   const mounted = useRef(false)
   useEffect(() => {
     if (!mounted.current) {
       mounted.current = true
+      map.setView(position, maxZoom)
       return
     }
     map.flyTo(position, map.getZoom(), { duration: 0.8 })
-    // `map` is stable per MapContainer instance; keying on the raw lat/lng (not `position`'s
-    // tuple identity) below is deliberate, not a missed dependency.
+    // `map`/`maxZoom` are stable per FleetMap instance; keying on the raw lat/lng (not
+    // `position`'s tuple identity) below is deliberate, not a missed dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [position[0], position[1]])
   return null
@@ -156,7 +165,9 @@ export default function FleetMap({
         maxZoom={19}
       />
 
-      {follow && markers.length === 1 && <FollowMarker position={markers[0].position} />}
+      {follow && markers.length === 1 && (
+        <FollowMarker position={markers[0].position} maxZoom={maxZoom} />
+      )}
 
       {markers.map((m) => (
         <Marker key={m.id} position={m.position} icon={buildIcon(m)}>
