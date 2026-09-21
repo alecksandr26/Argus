@@ -135,9 +135,12 @@ export default function FleetMap({
 }: {
   markers: FleetMapMarker[]
   /** Cap on how far `fitBounds` may zoom in when framing `markers` — 9 (fleet-wide default)
-   * suits the Live Operations map's multi-truck view; pass a much tighter value (e.g. 17, close
-   * to the map's own interactive ceiling below) for a single-marker close-up like
-   * `RouteLiveView`'s embedded location map. */
+   * suits the Live Operations map's multi-truck view; pass a tighter value (e.g. 14, a
+   * neighborhood/road-segment view — enough to see the truck's actual road context without
+   * zooming so far in that per-tick GPS jitter reads as the dot hopping around) for a
+   * single-marker close-up like `RouteLiveView`'s embedded location map. The map's own
+   * interactive ceiling (below) stays much higher, so a viewer can always zoom in tighter
+   * themselves. */
   maxZoom?: number
   /** Keep the viewport centered on `markers[0]` as its position changes after mount (poll-driven
    * live tracking). Only meaningful for a single-marker map — ignored otherwise. */
