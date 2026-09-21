@@ -319,6 +319,29 @@ the map-following/tab/filter interactions; worth a real browser pass next sessio
   `new Date()` instead of the retired `MOCK_NOW` fixture constant; the optional `now` param is
   still there purely for tests to pin a fixed reference time.
 
+**Follow-up fixes, from real usage against the running simulator**: `RouteLiveView`'s map didn't
+actually zoom in on the truck at all, despite `FleetMap`'s `maxZoom` prop being raised from 13 to
+17/18 — root-caused by reading `react-leaflet`'s own `MapContainer` source directly: its `bounds`/
+`boundsOptions` are captured in a `useCallback` with an **empty dependency array**, so the real
+Leaflet `Map` is constructed exactly once, using only whatever `bounds` existed on `FleetMap`'s
+very first render. `RouteLiveView`'s truck position loads asynchronously (`liveStatus` starts
+`null`), so `markers` is always empty on that first render — the map permanently locked onto the
+wide `FALLBACK_CENTER`/`FALLBACK_ZOOM` view and never fit to the truck at all, no matter what
+`maxZoom` was passed, since `fitBounds` is simply never invoked again afterwards. Raising
+`maxZoom` alone (the first attempted fix) could never have worked; the real fix is in
+`FollowMarker` itself, which is now the *only* thing that ever frames a followed single marker,
+not a follow-up to an initial framing `MapContainer` usually didn't actually do: on its own first
+appearance it now calls `map.setView(position, maxZoom)` (an instant snap — nothing to animate
+*from* yet), and only eases via `flyTo` on later live-tracking updates. Also, while addressing
+separate feedback: dropped the "Low" chip from every Alert severity filter (`LiveOps.tsx`,
+`RouteLiveView.tsx`'s Route alerts tab, `AlertHistory.tsx`) since a real `Alert` row is never
+actually posted at `severity_level` "low" in practice (see `src/simulator-argus/CLAUDE.md`'s
+"Scenario design" section and the fusion contract it mirrors); and relabeled the shared
+`severity` map's `low` entry from "Low"/neutral-gray to "Normal"/good-green in `utils/status.ts`
+— a truck being fine isn't a severity, and the map legend/stat tile were already green for this
+state while the marker dot itself rendered gray, a real inconsistency now fixed everywhere at
+once.
+
 ## Next steps (not started)
 
 - Fix the `html-encoding-sniffer`/`@exodus/bytes` toolchain bug for real (pin a working
