@@ -30,9 +30,16 @@ class AlertEvent:
 
 
 class Scenario:
-    """`normal`: vigilance stays `low` with occasional `medium` blips; no alerts. This is
-    typically the most heavily-weighted profile, so the live dashboard isn't wall-to-wall
-    incidents.
+    """`normal`: vigilance stays `low` with occasional `medium` blips, each one a real posted
+    `fusion` alert (a driver's hand briefly off the wheel — `not_drowsy` + bad grip on the base
+    matrix, `src/cv-argus/src/orchestrator/fusion_contract.py`), auto-resolved when the blip
+    ends. This is typically the most heavily-weighted profile, so most of a demo run's alert
+    volume is these low-key blips rather than `drowsy_escalation`'s scripted climb — matching
+    the real fusion contract, where *any* confirmed medium reading posts an alert; there's no
+    such thing as "too benign to alert on" in the real system. (This used to fire no alert at
+    all for these blips, on the theory that alerting on every ambient blip would make the demo
+    dashboard too noisy — reverted once real usage showed the opposite problem: a truck visibly
+    reading `medium` with nothing in the alert feed for it looked broken, not quiet.)
 
     A blip's *trigger* is a per-tick coin flip (`medium_blip_probability`), but once triggered
     it *holds* `medium` for a randomized realistic dwell (`_MEDIUM_DWELL_SECONDS_MIN`-`_MAX` of
@@ -57,29 +64,66 @@ class Scenario:
         self._interval_seconds = interval_seconds if interval_seconds and interval_seconds > 0 else 5.0
         self._fired = False
         self._medium_until_tick: Optional[int] = None
+        # Set by `_blip_vigilance` each tick ("started"/"ended"/None) and consumed the same tick
+        # by `_blip_alert`/`_blip_should_resolve` -- `vigilance()` always runs first in
+        # `VirtualTruck._tick`, so by the time `alert()` looks at `_medium_until_tick` directly
+        # it's already been mutated for *this* tick (cleared to `None` the instant a blip ends);
+        # this flag is what lets alert()/should_resolve() see the transition itself, not just
+        # the already-mutated end state.
+        self._blip_transition: Optional[str] = None
+        self._medium_alert_open = False
 
     def vigilance(self, tick: int) -> str:
         return self._blip_vigilance(tick, self._medium_blip_probability)
 
     def _blip_vigilance(self, tick: int, probability: float) -> str:
+        self._blip_transition = None
         if self._medium_until_tick is not None:
             if tick < self._medium_until_tick:
                 return "medium"
             self._medium_until_tick = None
+            self._blip_transition = "ended"
         if random.random() < probability:
             dwell_seconds = random.uniform(
                 self._MEDIUM_DWELL_SECONDS_MIN, self._MEDIUM_DWELL_SECONDS_MAX
             )
             dwell_ticks = max(1, round(dwell_seconds / self._interval_seconds))
             self._medium_until_tick = tick + dwell_ticks
+            self._blip_transition = "started"
             return "medium"
         return "low"
 
+    def _blip_alert(self, tick: int) -> Optional[AlertEvent]:
+        """Shared blip->alert lifecycle for any scenario built on `_blip_vigilance` (currently
+        just `normal` itself — deliberately *not* wired into `PanicScenario`, whose own
+        `_open_alert_id` must stay pointed at its deliberately-unresolved panic alert; see that
+        class's docstring)."""
+        if self._blip_transition != "started":
+            return None
+        self._medium_alert_open = True
+        return AlertEvent(
+            alert_type="drowsiness",
+            severity_level="medium",
+            source="fusion",
+            ai_metadata={
+                "model": None,
+                "scores": {"not_drowsy": 0.86, "drowsy": 0.14},
+                "clip_seconds": None,
+            },
+            grip_status="bad",
+        )
+
+    def _blip_should_resolve(self, tick: int) -> bool:
+        if self._blip_transition != "ended" or not self._medium_alert_open:
+            return False
+        self._medium_alert_open = False
+        return True
+
     def alert(self, tick: int) -> Optional[AlertEvent]:
-        return None
+        return self._blip_alert(tick)
 
     def should_resolve(self, tick: int) -> bool:
-        return False
+        return self._blip_should_resolve(tick)
 
 
 class DrowsyEscalationScenario(Scenario):
@@ -178,7 +222,15 @@ class PanicScenario(Scenario):
     """Vigilance stays low/medium throughout; a single unresolved `panic_button` alert fires at
     a random tick within the first third of the route and is deliberately left open, matching
     how a real panic event waits for a human to review it in Alert Triage rather than
-    auto-recovering."""
+    auto-recovering.
+
+    Its own ambient `medium` blips (`_blip_vigilance`, via `vigilance()` below) deliberately do
+    **not** get `Scenario`'s blip-alert lifecycle — `VirtualTruck._tick` tracks exactly one
+    `_open_alert_id` (the *latest* posted alert), and a blip-alert firing after the panic alert
+    would silently redirect the tracked id to it; a later blip recovery would then wrongly
+    auto-resolve the panic alert via `should_resolve()`, contradicting "deliberately left open."
+    A driver's grip blipping while a panic alert is already open isn't the interesting story
+    this profile tells anyway."""
 
     name = "panic"
 

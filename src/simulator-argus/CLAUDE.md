@@ -168,6 +168,22 @@ Trigger points inside `DrowsyEscalationScenario`/`PanicScenario` are fractions o
 coherently whether the route takes 5 minutes or 5 hours, satisfying "parametrized, not
 hardcoded" the same way the movement/OSRM design above does.
 
+**`normal`'s medium blips now fire a real alert too, not just a cosmetic vigilance reading** —
+`Scenario._blip_alert`/`_blip_should_resolve` post a `medium` `fusion` alert (grip briefly bad,
+`not_drowsy`-skewed AI scores — a hand-off-the-wheel moment, not a drowsiness signal, which is
+also how its scores/grip differ from `DrowsyEscalationScenario`'s medium) exactly when a blip
+starts, and auto-resolve it exactly when the blip ends. This used to intentionally fire nothing
+at all for `normal`'s blips (the demo dashboard otherwise being "too noisy" was the original
+reasoning) — reverted after real usage showed the opposite problem: a truck visibly reading
+`medium` on the map/stat tile with nothing in the alert feed for it looked like a bug, not a
+deliberately quiet moment, and it also didn't match how the real fusion contract behaves (*any*
+confirmed medium reading posts an alert — there's no "too benign to alert on" tier in the real
+system). `PanicScenario` also calls `_blip_vigilance` for its own ambient medium blips but
+deliberately does **not** get this same alert-lifecycle wiring — see that class's own docstring
+for why (it would risk redirecting `VirtualTruck._tick`'s single tracked `_open_alert_id` away
+from the panic alert that's supposed to stay open, then wrongly auto-resolving it on the next
+blip recovery).
+
 ## Known limitations
 
 - No trip lifecycle beyond "park at destination" (see "Movement model" above).
