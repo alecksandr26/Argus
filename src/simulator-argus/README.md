@@ -53,7 +53,7 @@ weighted draw, not a guaranteed round-robin):
 
 | Profile | Behavior |
 |---|---|
-| `normal` | Vigilance stays `low` with occasional `medium` blips (`SIMULATOR_MEDIUM_BLIP_PROBABILITY`). No alerts. |
+| `normal` | Vigilance stays `low` with occasional `medium` blips (`SIMULATOR_MEDIUM_BLIP_PROBABILITY`) — each blip fires a real `medium` `fusion` alert (a driver's grip briefly slipping, not drowsiness) that auto-resolves when the blip ends. |
 | `drowsy_escalation` | Vigilance drifts `low → medium → critical` over a fraction of the route's configured duration. Fires a `medium` `fusion` `Alert` when the incident opens, then — mirroring the real fusion contract's escalation model — a second `critical` `Alert` linked back to it via `related_alert_id` at the peak (plausible AI scores + a bad grip reading), then recovers and auto-resolves the critical alert. Repeats on a cycle for as long as the route runs. |
 | `panic` | Vigilance stays low/medium; fires one unresolved `panic_button` `Alert` at a random point in the first third of the route, and leaves it open for a guardian to review in Alert Triage. |
 

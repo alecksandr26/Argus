@@ -66,9 +66,43 @@ def test_interpolate_multipoint_polyline_start_and_end():
 # --- scenarios: timing scales with the route's own configured duration ---------------------
 
 
-def test_normal_scenario_never_fires_an_alert():
-    scenario = Scenario(total_ticks=50)
-    assert all(scenario.alert(tick) is None for tick in range(50))
+def test_normal_scenario_fires_no_alert_when_no_blip_ever_triggers():
+    scenario = Scenario(total_ticks=50, medium_blip_probability=0.0)
+    fired = []
+    for tick in range(50):
+        scenario.vigilance(tick)
+        event = scenario.alert(tick)
+        if event is not None:
+            fired.append(event)
+    assert fired == []
+
+
+def test_normal_scenario_fires_a_medium_alert_on_blip_start_and_resolves_on_blip_end():
+    scenario = Scenario(total_ticks=500, medium_blip_probability=1.0, interval_seconds=5.0)
+
+    # tick 0: the blip starts -- fires exactly one medium fusion alert, matching the fusion
+    # contract's "any confirmed medium reading posts an alert" rule (fusion_contract.py).
+    assert scenario.vigilance(0) == "medium"
+    event = scenario.alert(0)
+    assert event is not None
+    assert event.severity_level == "medium"
+    assert event.source == "fusion"
+    assert event.is_escalation is False
+    assert scenario.should_resolve(0) is False
+
+    end_tick = scenario._medium_until_tick
+    scenario._medium_blip_probability = 0.0  # don't let a second blip start right after this one
+
+    # every tick while the blip holds: no new alert fires, and it isn't resolved yet.
+    for tick in range(1, end_tick):
+        assert scenario.vigilance(tick) == "medium"
+        assert scenario.alert(tick) is None
+        assert scenario.should_resolve(tick) is False
+
+    # the tick the blip ends: vigilance drops to "low" and the open alert resolves.
+    assert scenario.vigilance(end_tick) == "low"
+    assert scenario.alert(end_tick) is None
+    assert scenario.should_resolve(end_tick) is True
 
 
 def test_normal_scenario_medium_blip_holds_for_minimum_dwell_ticks():
