@@ -140,6 +140,12 @@ class VirtualTruck:
 
         event = self._scenario.alert(tick)
         if event is not None:
+            # `related_alert_id` is filled in here, not by the scenario -- the scenario only
+            # knows *that* this is an escalation (`event.is_escalation`), not the real backend
+            # id of the incident's previous alert, which only this class tracks
+            # (`_open_alert_id`, overwritten on every post -- see DrowsyEscalationScenario's
+            # docstring for why that's exactly the id an escalation needs to link back to).
+            related_alert_id = self._open_alert_id if event.is_escalation else None
             alert = await self._client.post_alert(
                 spec.device_key,
                 {
@@ -149,6 +155,7 @@ class VirtualTruck:
                     "source": event.source,
                     "ai_metadata": event.ai_metadata,
                     "grip_status": event.grip_status,
+                    "related_alert_id": related_alert_id,
                     "coordinates": {"lat": lat, "lon": lon},
                     "speed_at_event": speed,
                 },

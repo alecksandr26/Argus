@@ -151,10 +151,16 @@ every tick, which made "medium" last only ~1 tick and read as flickering rather 
 observable state). What stays scripted, deliberately, is each profile's
 overall *shape*: a purely random simulator (independent random severity every tick, for every
 truck) produces an undifferentiated wall of severities that doesn't demo well. A `drowsy_
-escalation` that visibly climbs `low → medium → critical`, fires one `fusion` alert with
-plausible AI scores and a bad grip reading, then recovers and auto-resolves, tells the same story
-a guardian would actually watch happen with a real driver — the randomness is in *which* trucks
-get which story and *exactly when* within it, not in whether the story coheres at all.
+escalation` that visibly climbs `low → medium → critical`, fires a `medium` `fusion` alert when
+the incident opens and a linked `critical` escalation (`related_alert_id` pointing back at the
+medium alert's real id, per the fusion contract's escalation model — see the module docstring on
+`DrowsyEscalationScenario` in `scenarios.py`) at the peak, then recovers and auto-resolves the
+critical alert, tells the same story a guardian would actually watch happen with a real driver —
+the randomness is in *which* trucks get which story and *exactly when* within it, not in whether
+the story coheres at all. This used to fire only the critical alert, skipping the medium one
+entirely (so a medium-severity `fusion` alert never actually appeared in the feed even though
+`Alert.severity_level`/`ui-argus`'s filters have always supported it) — fixed to match
+`fusion_contract.py`'s real event sequence, not just its end state.
 
 Trigger points inside `DrowsyEscalationScenario`/`PanicScenario` are fractions of the truck's own
 `total_ticks` (derived from `SIMULATOR_ROUTE_DURATION_MINUTES` ÷

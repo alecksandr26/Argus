@@ -32,11 +32,14 @@ const toneColor = {
   neutral: 'var(--text-faint)',
 } as const
 
+// No "Low" chip: a real Alert row is never actually severity_level "low" in practice — per
+// the fusion contract (src/cv-argus/src/orchestrator/fusion_contract.py), "low" means no
+// incident is open at all, so nothing gets posted at that severity. Keeping "All" covers the
+// (should-never-happen) edge case without offering a dead filter button.
 const FILTERS: { key: AlertSeverity | 'all'; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'critical', label: 'Critical' },
   { key: 'medium', label: 'Medium' },
-  { key: 'low', label: 'Low' },
 ]
 
 type ReviewedFilter = 'unreviewed' | 'reviewed' | 'all'
@@ -207,7 +210,7 @@ export default function LiveOps() {
         }}
       >
         <Tile label="Trucks on route" value={tiles.onRoute} />
-        <Tile label="Low severity" value={tiles.low} color="var(--good)" />
+        <Tile label="Normal" value={tiles.low} color="var(--good)" />
         <Tile
           label="Medium severity"
           value={tiles.medium}
@@ -309,7 +312,7 @@ export default function LiveOps() {
                       background: toneColor[t],
                     }}
                   />
-                  {['Low', 'Medium', 'Critical'][i]}
+                  {['Normal', 'Medium', 'Critical'][i]}
                 </span>
               ))}
             </div>

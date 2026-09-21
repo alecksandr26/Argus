@@ -126,9 +126,9 @@ export default function FleetMap({
 }: {
   markers: FleetMapMarker[]
   /** Cap on how far `fitBounds` may zoom in when framing `markers` — 9 (fleet-wide default)
-   * suits the Live Operations map's multi-truck view; pass a tighter value (e.g. 13, the map's
-   * own interactive ceiling below) for a single-marker close-up like Alert Triage's embedded
-   * location map. */
+   * suits the Live Operations map's multi-truck view; pass a much tighter value (e.g. 17, close
+   * to the map's own interactive ceiling below) for a single-marker close-up like
+   * `RouteLiveView`'s embedded location map. */
   maxZoom?: number
   /** Keep the viewport centered on `markers[0]` as its position changes after mount (poll-driven
    * live tracking). Only meaningful for a single-marker map — ignored otherwise. */
@@ -145,7 +145,7 @@ export default function FleetMap({
       bounds={bounds}
       boundsOptions={{ padding: [48, 48], maxZoom }}
       minZoom={5}
-      maxZoom={13}
+      maxZoom={18}
       scrollWheelZoom
       attributionControl
       style={{ position: 'absolute', inset: 0 }}
