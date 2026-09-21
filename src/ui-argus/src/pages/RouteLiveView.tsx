@@ -539,7 +539,7 @@ export default function RouteLiveView() {
               overflow: 'hidden',
             }}
           >
-            <FleetMap markers={truckMarker ? [truckMarker] : []} maxZoom={17} follow />
+            <FleetMap markers={truckMarker ? [truckMarker] : []} maxZoom={14} follow />
           </div>
 
           {focusedAlert && (
