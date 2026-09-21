@@ -85,25 +85,46 @@ def test_panic_scenario_medium_blip_holds_for_minimum_dwell_ticks():
     assert vigilances == ["medium"] * 6
 
 
-def test_drowsy_escalation_fires_one_fusion_alert_at_peak_and_resolves():
+def test_drowsy_escalation_fires_medium_then_escalates_to_critical_and_resolves():
     scenario = DrowsyEscalationScenario(total_ticks=40)
-    fired = None
+    fired: list[tuple[int, object]] = []
     resolved_tick = None
     for tick in range(scenario._cycle_length):
         event = scenario.alert(tick)
         if event is not None:
-            fired = (tick, event)
+            fired.append((tick, event))
         if scenario.should_resolve(tick):
             resolved_tick = tick
 
-    assert fired is not None
-    tick, event = fired
-    assert tick == scenario._peak_at
-    assert event.source == "fusion"
-    assert event.ai_metadata is not None
-    assert event.grip_status == "bad"
+    assert len(fired) == 2
+    (medium_tick, medium_event), (critical_tick, critical_event) = fired
+
+    assert medium_tick == scenario._escalate_at
+    assert medium_event.severity_level == "medium"
+    assert medium_event.source == "fusion"
+    assert medium_event.is_escalation is False
+    assert scenario.vigilance(scenario._escalate_at) == "medium"
+
+    assert critical_tick == scenario._peak_at
+    assert critical_event.severity_level == "critical"
+    assert critical_event.source == "fusion"
+    assert critical_event.ai_metadata is not None
+    assert critical_event.grip_status == "bad"
+    assert critical_event.is_escalation is True
     assert scenario.vigilance(scenario._peak_at) == "critical"
+
     assert resolved_tick == scenario._recover_at
+
+
+def test_drowsy_escalation_repeats_medium_then_critical_across_cycles():
+    scenario = DrowsyEscalationScenario(total_ticks=40)
+    fired_severities = []
+    for tick in range(scenario._cycle_length * 2):
+        event = scenario.alert(tick)
+        if event is not None:
+            fired_severities.append(event.severity_level)
+        scenario.should_resolve(tick)
+    assert fired_severities == ["medium", "critical", "medium", "critical"]
 
 
 @pytest.mark.parametrize("total_ticks", [10, 40, 240, 2000])

@@ -44,11 +44,12 @@ const toneColor = {
 
 const SEVERITY_RANK: Record<AlertSeverity, number> = { low: 0, medium: 1, critical: 2 }
 
+// No "Low" chip — see LiveOps.tsx's FILTERS comment: a real Alert row is never actually
+// severity_level "low" in practice.
 const SEVERITY_FILTERS: { key: AlertSeverity | 'all'; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'critical', label: 'Critical' },
   { key: 'medium', label: 'Medium' },
-  { key: 'low', label: 'Low' },
 ]
 
 type ReviewedFilter = 'unreviewed' | 'reviewed' | 'all'
@@ -538,7 +539,7 @@ export default function RouteLiveView() {
               overflow: 'hidden',
             }}
           >
-            <FleetMap markers={truckMarker ? [truckMarker] : []} maxZoom={13} follow />
+            <FleetMap markers={truckMarker ? [truckMarker] : []} maxZoom={17} follow />
           </div>
 
           {focusedAlert && (

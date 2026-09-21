@@ -42,11 +42,22 @@ export const routeStatus: Record<RouteStatus, Badge> = {
 }
 
 /** Shared by `StatusRoute.vigilance` and `Alert.severity_level` — one severity scale, one label
- * map, instead of the two separate (and previously mismatched) maps this used to be. */
+ * map, instead of the two separate (and previously mismatched) maps this used to be.
+ *
+ * `low` is labeled "Normal", not "Low" — for a truck's live vigilance, `low` means the driver
+ * is fine/no incident open (the reassuring, common case), so a severity-sounding word there
+ * reads as alarming rather than as the all-clear it actually is. Alerts, in practice, are never
+ * actually posted at `low` severity (the fusion contract — `src/cv-argus/src/orchestrator/
+ * fusion_contract.py` — never raises an incident for it), so this relabel has no real
+ * downside on the Alert side either; see `LiveOps.tsx`/`RouteLiveView.tsx`/`AlertHistory.tsx`'s
+ * severity filter chips, which drop a "Low" option entirely for the same reason. Tone is
+ * `good` (green), not `neutral` (gray) — this also fixes a real inconsistency: the map legend
+ * and the "Low severity" stat tile were already colored green for this state, but the truck
+ * marker dot itself rendered gray/neutral; now all three agree. */
 export const severity: Record<AlertSeverity, Badge> = {
   critical: { label: 'Critical', tone: 'bad' },
   medium: { label: 'Medium', tone: 'warn' },
-  low: { label: 'Low', tone: 'neutral' },
+  low: { label: 'Normal', tone: 'good' },
 }
 
 /** True when a route currently counts as "on the road" for dashboard tallies. */
