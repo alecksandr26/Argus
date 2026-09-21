@@ -16,11 +16,12 @@ import type { Alert, AlertSeverity, Driver, Route, Truck } from '../types'
 
 const POLL_MS = 7000
 
+// No "Low" chip — see LiveOps.tsx's FILTERS comment: a real Alert row is never actually
+// severity_level "low" in practice.
 const FILTERS: { key: AlertSeverity | 'all'; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'critical', label: 'Critical' },
   { key: 'medium', label: 'Medium' },
-  { key: 'low', label: 'Low' },
 ]
 
 /**

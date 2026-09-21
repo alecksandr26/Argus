@@ -21,6 +21,12 @@ class AlertEvent:
     source: str
     ai_metadata: Optional[dict]
     grip_status: Optional[str]
+    # True when this event escalates the truck's currently-open incident (per the fusion
+    # contract's escalation model, src/cv-argus/src/orchestrator/fusion_contract.py) -- the
+    # caller (VirtualTruck._tick) reads this to attach `related_alert_id` pointing back at the
+    # previously-posted alert for this incident, rather than the scenario needing to know that
+    # alert's real backend id itself.
+    is_escalation: bool = False
 
 
 class Scenario:
@@ -78,10 +84,17 @@ class Scenario:
 
 class DrowsyEscalationScenario(Scenario):
     """Drifts `low -> medium -> critical` over a fraction of the route's own configured
-    duration, fires one `fusion` alert at the peak (plausible CNN+LSTM scores and a bad grip
-    reading), then recovers back to `low` and auto-resolves that alert -- mirrors the fusion
-    contract's debounce/escalation/recovery shape
-    (`src/cv-argus/src/orchestrator/fusion_contract.py`) without reimplementing it. Trigger
+    duration, mirroring the fusion contract's debounce/escalation/recovery shape
+    (`src/cv-argus/src/orchestrator/fusion_contract.py`) *as an event sequence*, not just its
+    end state: a real `medium` `fusion` alert fires when the incident opens (a driver getting
+    drowsy but still gripping the wheel), and if it isn't resolved by the time the peak arrives,
+    a second, `critical` alert fires with `is_escalation=True` -- the caller attaches
+    `related_alert_id` back to the medium alert's real id, exactly like a genuine
+    `FusionOrchestrator.update()` escalation (an open incident's severity only ever steps up via
+    a new, linked `Alert` row, never mutated in place). Recovery then resolves whichever alert
+    was posted last (the escalated critical one, matching `FusionOrchestrator`'s "only the
+    latest/most-severe row gets `resolved_at`" rule) -- `VirtualTruck._tick` already tracks
+    exactly one `_open_alert_id`, overwritten on every post, so this falls out for free. Trigger
     points are fractions of `total_ticks`, not fixed tick counts, so the same profile plays out
     coherently whether the route takes 5 minutes or 5 hours."""
 
@@ -100,6 +113,8 @@ class DrowsyEscalationScenario(Scenario):
     ) -> None:
         super().__init__(total_ticks, medium_blip_probability, interval_seconds)
         self._resolved = True
+        self._fired_medium = False
+        self._fired_critical = False
         cycle = max(self._MIN_CYCLE_TICKS, self._total_ticks // 2)
         self._escalate_at = max(1, round(cycle * self._ESCALATE_FRACTION))
         self._peak_at = max(self._escalate_at + 1, round(cycle * self._PEAK_FRACTION))
@@ -118,9 +133,22 @@ class DrowsyEscalationScenario(Scenario):
 
     def alert(self, tick: int) -> Optional[AlertEvent]:
         cycle = tick % self._cycle_length
-        if cycle == self._peak_at and not self._fired:
-            self._fired = True
+        if cycle == self._escalate_at and not self._fired_medium:
+            self._fired_medium = True
             self._resolved = False
+            return AlertEvent(
+                alert_type="drowsiness",
+                severity_level="medium",
+                source="fusion",
+                ai_metadata={
+                    "model": None,
+                    "scores": {"not_drowsy": 0.42, "drowsy": 0.58},
+                    "clip_seconds": None,
+                },
+                grip_status="good",
+            )
+        if cycle == self._peak_at and not self._fired_critical:
+            self._fired_critical = True
             return AlertEvent(
                 alert_type="drowsiness",
                 severity_level="critical",
@@ -131,15 +159,17 @@ class DrowsyEscalationScenario(Scenario):
                     "clip_seconds": None,
                 },
                 grip_status="bad",
+                is_escalation=True,
             )
-        if cycle == self._escalate_at:
-            self._fired = False
         return None
 
     def should_resolve(self, tick: int) -> bool:
         cycle = tick % self._cycle_length
-        if cycle == self._recover_at and self._fired and not self._resolved:
+        if cycle == self._recover_at and not self._resolved:
             self._resolved = True
+            # Ready for the next cycle's medium alert to fire again.
+            self._fired_medium = False
+            self._fired_critical = False
             return True
         return False
 
