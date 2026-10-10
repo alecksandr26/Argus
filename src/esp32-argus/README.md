@@ -1,9 +1,4 @@
-# esp32-argus — not built yet
-
-This module doesn't exist. No firmware, no code, nothing — this file exists so whoever starts
-it (a future session, or you) has the real contracts already implemented on both sides to build
-against, instead of re-deriving them from `cv-argus`'s and `backend-argus`'s source each time.
-See `docs/roadmap.md` for how this fits the rest of the project's gap list.
+# esp32-argus
 
 Per the root `CLAUDE.md`, this is the **"Message Sender Orchestrator"**: the device that owns
 everything actuation-/safety-critical in the truck cabin — the alarm speaker, the CAN bus/AEB
@@ -11,6 +6,49 @@ actuator, the panic button, the geolocation (GPS) module, and the steering-wheel
 and is the only device that talks to the cloud backend. It has two jobs: pull queued
 alert/status records off the Raspberry Pi over Bluetooth, and relay them to the backend over
 HTTP with its own GPS reading attached.
+
+## 0. Status
+
+Real firmware now exists, as an **Arduino IDE multi-tab sketch** under
+`src/esp32_argus/esp32_argus.ino` plus paired `.h`/`.cpp` files per concern — written and
+reviewed by hand, but **not yet compiled or run against real hardware**: no Arduino toolchain
+or physical ESP32/SIM800L/NEO-6M harness has been available in any session that's touched this
+repo. Treat it the same way `cv-argus`'s own Bluetooth server is treated in that module's
+`CLAUDE.md` — a real implementation of the protocol, not a tested link. The rest of this file
+(sections 1-6) is still the authoritative contract spec; what follows documents what the
+firmware actually does with it.
+
+**Files:**
+
+| File | Responsibility |
+|---|---|
+| `esp32_argus.ino` | `setup()`/`loop()` — wires every module together; `handlePiRecord()` (dispatches a pulled record to the fusion engine or straight to a route-status POST) and `handlePanicButton()` live here |
+| `config.h` | every pin, timing constant, and per-deployment placeholder (WiFi creds, backend URL, device API key, route id, the Pi's Bluetooth MAC) — see "Before you flash this" below |
+| `gps_module.*` | NEO-6M over `TinyGPSPlus` — lat/lon/speed/satellite count, plus a GPS-derived UTC timestamp (`gpsUtcIso8601()`) used for `Alert.resolved_at`, so this device never needs an NTP-synced clock |
+| `sms_module.*` | SIM800L via `TinyGsm` — **SMS only**. Deliberately *not* this device's data transport (see the network-path decision below); kept purely as the panic button's hardware-direct fallback |
+| `wifi_client.*` | this device's main transport — joins a mobile-network-backed WiFi link (not the SIM800L's own GPRS), with non-blocking reconnect |
+| `backend_api.*` | `backendPostAlert()` / `backendResolveAlert()` / `backendPostRouteStatus()` — the three HTTP calls into `backend-argus`, field-mapped per section 2 below |
+| `bluetooth_client.*` | the PULL/ACK client (section 1) via ESP32's built-in classic Bluetooth (`BluetoothSerial`) — a separate radio from WiFi, both run concurrently |
+| `fusion.*` | `FusionOrchestrator` — a 1:1 C++ port of `cv-argus`'s `fusion_contract.py` (section 5) |
+| `panic_button.*` / `grip_sensor.*` | debounced digital-input wrappers; GPIO pins are placeholders (see `config.h`) — real hardware mapping isn't finalized |
+
+**Network-path decision, confirmed directly with the user:** this device's WiFi radio is the
+transport for both `backend-argus` HTTP calls and (once pulled) relaying `cv-argus` records
+onward — reusing a mobile-network-backed WiFi connection, not the SIM800L's own GPRS data
+channel. The SIM800L is kept **SMS-only**, and SMS fires **only** from the panic button
+(`handlePanicButton()` in the main sketch) — a redundant, hardware-direct channel alongside the
+normal `POST /api/alerts`, so an emergency location text still goes out even if WiFi or
+`backend-argus` itself is down. It does *not* fire for any fused drowsy+grip severity.
+
+**Before you flash this**, fill in every placeholder in `config.h`: `WIFI_SSID`/`WIFI_PASSWORD`,
+`BACKEND_BASE_URL` (reachable from this device's WiFi network, not `localhost`),
+`DEVICE_API_KEY` (minted via `POST /api/trucks/{id}/rotate-key`), `ROUTE_ID` (see section 2's
+`id_route` gap below — still genuinely unsolved, this is a stopgap), and `PI_BT_MAC_ADDRESS`
+(the Pi's Bluetooth MAC, from `hciconfig`/`bluetoothctl`). Required Arduino libraries (Library
+Manager names): `TinyGSM`, `TinyGPSPlus`, `ArduinoJson` (v7+ — this code uses v7's `JsonDocument`
+API), plus `BluetoothSerial`/`WiFi`/`HTTPClient`, which ship with the ESP32 board package
+itself. Bluetooth must be enabled in the board's partition/SDK config (the default for most
+standard ESP32 board variants) or `BluetoothSerial.h` won't compile.
 
 ## 1. Bluetooth SPP client — pulling from `cv-argus`
 
@@ -96,24 +134,28 @@ the geolocation module is wired directly to the ESP32, not the Pi). Every record
 needs your own live GPS reading attached before the HTTP call, not copied from anything cv-argus
 sent you.
 
-## 4. Hardware ownership — entirely new work, no existing code to build on
+## 4. Hardware ownership
 
 Per the root `CLAUDE.md` and `semantic-design.drawio.xml`, this device owns all of the
-following, and **none of them have any code anywhere in this repo yet**:
+following:
 
 - **Grip sensor** (steering wheel) — feeds this device's own fusion decision loop; see section 5
-  for the full spec (exact GPIO signal/debounce hardware details still not defined, but the
-  decision algorithm itself now is).
+  for the full spec. `grip_sensor.h`/`.cpp` now exist (a debounced digital-input wrapper on
+  `GRIP_SENSOR_PIN`), but the GPIO pin/signal convention is a **placeholder**, not a verified
+  mapping against a real sensor — see `config.h`'s comment on it.
 - **Panic button** — triggers an alert directly; not routed through `cv-argus`'s orchestrator at
   all (that module's own docs say so explicitly), and bypasses the fusion loop entirely (section
-  5) — unconditional `critical`, no debounce.
-- **CAN bus / AEB actuator** — preventive autonomous braking.
-- **Alarm speaker** — in-cabin audible alert.
+  5) — unconditional `critical`, no debounce. `panic_button.h`/`.cpp` now implement the
+  debounce/edge-detection; same placeholder-GPIO caveat as the grip sensor.
+- **CAN bus / AEB actuator** — preventive autonomous braking. **Still genuinely no code
+  anywhere in this repo** — out of scope for this pass.
+- **Alarm speaker** — in-cabin audible alert. **Still genuinely no code anywhere in this repo**
+  — out of scope for this pass.
 
-None of these have a defined GPIO pin mapping or firmware interaction pattern yet — this is
-genuinely from-scratch hardware-integration work. The grip sensor's *decision* algorithm (what to
-do with its reading once you have one) is now specified in section 5, which is the part that
-doesn't depend on which physical sensor/GPIO pin ends up producing that reading.
+The grip sensor and panic button have real debounce/read logic now, but neither has a
+hardware-verified GPIO pin mapping — `config.h` flags both placeholders explicitly and explains
+why GPIO 34-39 were avoided (no internal pull-up on that pin group). The CAN bus/AEB actuator and
+alarm speaker remain entirely unimplemented, same as before.
 
 ## 5. Grip sensor + drowsiness fusion — this device's own decision loop
 

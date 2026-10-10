@@ -73,40 +73,49 @@ is unchanged and still camera-only; that boundary is unaffected by this implemen
   (`src/esp32-argus/README.md` section 5, `fusion_contract.py` above) even though the
   hardware/firmware itself still doesn't exist.
 
-## 2. ESP32 firmware — missing entirely
+## 2. ESP32 firmware — written, not hardware-verified
 
-No code exists anywhere in this repo. This is the single biggest concrete gap, and it's the
-device that owns everything actuation-/safety-critical per the root `CLAUDE.md`: the alarm
-speaker, the CAN bus/AEB actuator, the panic button, the geolocation (GPS) module, and — per the
-`semantic-design.drawio.xml` diagram — the steering-wheel grip sensor. None of those five have
-any code anywhere, on either the Pi or ESP32 side; they're drawn as distinct boxes in the
-diagram and explicitly out of `cv-argus`'s scope.
+Real code now exists: `src/esp32-argus/src/esp32_argus/` (an Arduino IDE multi-tab sketch) — see
+that module's `README.md` section 0 for the full file map. It's the device that owns everything
+actuation-/safety-critical per the root `CLAUDE.md`: the alarm speaker, the CAN bus/AEB
+actuator, the panic button, the geolocation (GPS) module, and — per the
+`semantic-design.drawio.xml` diagram — the steering-wheel grip sensor. **What's actually
+implemented vs. still genuinely missing, item by item:**
 
-**What it needs to implement, against contracts that already exist and are already tested:**
+1. **Bluetooth SPP client** (`bluetooth_client.*`) — implements the exact protocol
+   `cv-argus/src/sender/protocol.py` already serves (see `src/esp32-argus/README.md` for the
+   full grammar), including the "only ACK what you actually relayed onward" invariant.
+2. **HTTP relay to `backend-argus`** (`backend_api.*`) — `X-Device-Api-Key`-authenticated
+   `POST /api/alerts` / `PUT /api/alerts/{id}` / `POST /api/routes/{id}/status`, over this
+   device's WiFi (not the SIM800L's GPRS — see the network-path decision in that README).
+3. **Attaching real GPS coordinates** (`gps_module.*`, NEO-6M via `TinyGPSPlus`) — lat/lon/speed,
+   plus a GPS-derived UTC timestamp for `Alert.resolved_at` so this device needs no NTP sync.
+4. **The drowsy+grip fusion decision loop** (`fusion.*`) — a 1:1 C++ port of
+   `src/cv-argus/src/orchestrator/fusion_contract.py`'s `FusionOrchestrator` (severity matrix,
+   debounce/escalation/recovery, no automatic de-escalation, escalation-as-a-new-linked-row).
+5. **Panic button** (`panic_button.*`) — debounced, edge-triggered, bypasses the fusion loop
+   entirely per spec; also fires an SMS via the SIM800L (`sms_module.*`, kept SMS-only) as a
+   hardware-direct fallback that still works if WiFi/the backend is down.
+6. **Grip sensor** (`grip_sensor.*`) — a debounced digital-input wrapper feeding the fusion loop.
 
-1. **Bluetooth SPP client**, speaking the exact protocol `cv-argus/src/sender/protocol.py`
-   already implements server-side (see `src/esp32-argus/README.md` for the full grammar).
-2. **HTTP relay to `backend-argus`**, using a per-truck device API key (`X-Device-Api-Key`
-   header) against `POST /api/alerts` and `POST /api/routes/{id}/status` — this auth scheme was
-   built specifically anticipating this caller; see `src/backend-argus/CLAUDE.md`'s "Device
-   (ESP32) auth" section.
-3. **Attaching real GPS coordinates** to every record it relays — `cv-argus` never populates
-   `geolocation` itself (no GPS on the Pi in this design); the ESP32 is expected to fill
-   `coordinates`/`current_coordinates` before the HTTP call, not after.
-4. **The drowsy+grip fusion decision loop** — no longer an open design question, and no longer
-   just a design either: `src/esp32-argus/README.md` section 5 specifies the full algorithm
-   (severity matrix, debounce/escalation/recovery timing windows, no automatic de-escalation,
-   how an escalation posts a new linked alert instead of mutating the original, how recovery
-   sets `resolved_at` on only the latest row in the chain), and
-   `src/cv-argus/src/orchestrator/fusion_contract.py`'s `FusionOrchestrator` is now a real,
-   unit-tested reference implementation of that state machine (not just typed shapes) to
-   translate 1:1 into firmware. What's still missing is purely the hardware-interfacing side: the
-   grip sensor's physical GPIO signal, and the panic button/CAN-bus-AEB-actuator/alarm-speaker
-   GPIO/UART integration — genuinely new hardware work with no existing code to build on, but no
-   longer an *algorithm* gap.
+**What's still genuinely missing or unverified, not glossed over:**
 
-`src/esp32-argus/README.md` documents the exact protocol/contract/fusion details so this can
-start without re-deriving them from `cv-argus`'s and `backend-argus`'s source.
+- **Never compiled or flashed.** No Arduino toolchain and no physical ESP32/SIM800L/NEO-6M
+  harness has been available in any session that's touched this repo — treat this the same way
+  `cv-argus`'s Bluetooth server is treated in that module's own `CLAUDE.md`: a real protocol
+  implementation, not a tested link, on *either* side of the Pi↔ESP32 connection.
+- **Grip sensor / panic button GPIO mapping is a placeholder**, not verified against a real
+  sensor/switch (`config.h` flags this explicitly, including why GPIO 34-39 were avoided — no
+  internal pull-up on that pin group).
+- **CAN bus / AEB actuator and the alarm speaker have no code at all** — genuinely out of scope
+  for this pass, not even stubbed.
+- **`id_route` is still the same open question** `src/esp32-argus/README.md` section 2 always
+  flagged — `config.h`'s `ROUTE_ID` is a hardcoded-per-deployment stopgap, not the real "query
+  this truck's current in-progress route" answer, which isn't built anywhere.
+- **`current_speed` is GPS-derived** (`TinyGPSPlus`'s `speed()`), not a CAN-bus/OBD reading as
+  originally anticipated — a defensible real data source, but a different one; **`odometer` has
+  no sensor on this device at all** and is sent as a hardcoded `0.0`, not fabricated from
+  GPS-distance integration.
 
 ## 3. `backend-argus`
 
