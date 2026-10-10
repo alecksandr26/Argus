@@ -35,10 +35,10 @@ setup(
         "numpy>=1.26,<2",
         "gdown>=5.2,<6",
         "python-dotenv>=1.0,<2",
-        # Official Raspberry Pi camera stack (libcamera bindings) — only installable/needed
-        # on the Pi itself; a USB webcam on a dev machine just uses cv2.VideoCapture and
-        # doesn't need this.
-        "picamera2>=0.3.21; platform_machine in 'armv7l aarch64'",
+        # picamera2 (the Pi's CSI camera) is not listed: it depends on the `libcamera` Python
+        # bindings, which only ship via Raspberry Pi OS apt (`python3-picamera2`), not PyPI.
+        # The Dockerfile installs it that way; outside Docker on a Pi, `apt install
+        # python3-picamera2` and use a venv with `--system-site-packages`.
     ],
     entry_points={
         "console_scripts": [

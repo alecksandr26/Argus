@@ -198,11 +198,18 @@ you'd rather not depend on a live camera and decent lighting for a demo.
 ### On the Raspberry Pi 5
 
 Uses the CSI camera via a separate overlay file that adds the right device passthrough,
-`SOURCE=picamera`, and `restart: unless-stopped` on top of the base compose file:
+`SOURCE=picamera`, and `restart: unless-stopped` on top of the base compose file. Once per Pi,
+run the host setup script first (rootless Docker can't use the host's `video` group, so the
+camera's dma-heap nodes need a per-user ACL — see the script's header):
 
 ```sh
+sudo scripts/pi-host-setup.sh
 OUTPUTS=logging,mjpeg docker compose -f docker-compose.yml -f docker-compose.pi.yml up --build
 ```
+
+On arm64 the Dockerfile installs `python3-picamera2`/`python3-libcamera` from Raspberry Pi's own
+apt repo (bookworm suite) — they're not on PyPI or in Debian's own repo, so don't add them to
+`requirements.txt` or a plain `apt-get install` line.
 
 (drop `--build` on later runs, same as above, once `argus/cv-argus:dev` already exists on the
 Pi)
@@ -210,10 +217,10 @@ Pi)
 Then open **`http://<pi-ip>:8080/stream`** from any device's browser on the same network (find
 the Pi's IP with `hostname -I` on the Pi itself).
 
-**Test this path well before you actually need it for something important.** The device
-passthrough in `docker-compose.pi.yml` is a best-effort list, not verified against real Pi 5
-hardware yet — if the camera doesn't show up, run `ls /dev/video*` and `ls /dev/dma_heap/` on
-the Pi itself and compare against that file's `devices:` list; it may need adjusting. CPU
+The device list in `docker-compose.pi.yml` was taken from a real Pi 5 with an IMX219 camera, and
+picamera2 inside this image has captured frames through it. A different board/camera/kernel may
+number nodes differently — if `up` fails on a missing device or no camera is listed, compare
+`ls /dev/media* /dev/video* /dev/v4l-subdev* /dev/dma_heap/` on the Pi against that file. CPU
 performance for this model on a Pi 5 is also unmeasured — if it feels slow, that's expected to
 be checked, not a sign something's broken.
 
