@@ -41,6 +41,15 @@ ENV PYTHONUNBUFFERED=1
 # mediapipe/tensorflow-heavy) layer as long as requirements.txt hasn't changed.
 RUN pip install --no-cache-dir --upgrade pip
 COPY requirements.txt .
+# arm64 (the Pi) only: requirements.txt's arm-gated `picamera2` depends on `python-prctl`, which
+# ships no wheel and is compiled from source at install time — it needs gcc plus libcap's headers
+# (`sys/capability.h`), neither of which python:3.11-slim has. Without them the build fails with
+# "You need to install gcc to build this module". Skipped on amd64, where picamera2 isn't installed.
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "arm64" ] || [ "$(uname -m)" = "aarch64" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev libcap-dev \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
 RUN pip install --no-cache-dir -r requirements.txt
 
 # setup.py maps the `src/` directory onto the `cv_argus` package name (see setup.py for
