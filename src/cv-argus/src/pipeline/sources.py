@@ -164,9 +164,12 @@ class PiCameraSource(SourceStage):
     gate) — importing this *class* is fine anywhere; only instantiating/running it needs the
     real hardware/library.
 
-    Requests `BGR888` output specifically so `frame_bgr` matches `cv2.VideoCapture`'s channel
-    order (the rest of the pipeline, e.g. `FaceDetectorCropStage`, assumes BGR) — `picamera2`
-    supports several output pixel formats and this isn't necessarily its default.
+    Requests `RGB888` output specifically so `frame_bgr` matches `cv2.VideoCapture`'s channel
+    order (the rest of the pipeline, e.g. `FaceDetectorCropStage`, assumes BGR). Counter-
+    intuitive but correct: picamera2's format names follow libcamera/DRM little-endian naming,
+    so `"RGB888"` yields numpy arrays in **[B, G, R]** order and `"BGR888"` yields [R, G, B]
+    (see the picamera2 manual's pixel-format table). Asking for `"BGR888"` here would silently
+    feed the CNN red/blue-swapped crops — no exception, just degraded accuracy.
 
     `frame_rate` (default `constants.DEFAULT_SAMPLE_FPS` = 5) is applied as the sensor's
     `FrameRate` control, so the camera reads out at that rate and the ISP does no work for
@@ -199,7 +202,7 @@ class PiCameraSource(SourceStage):
         picam2 = Picamera2()
         controls = {"FrameRate": float(self._frame_rate)} if self._frame_rate else {}
         config = picam2.create_video_configuration(
-            main={"size": self._resolution, "format": "BGR888"}, controls=controls
+            main={"size": self._resolution, "format": "RGB888"}, controls=controls
         )
         picam2.configure(config)
         picam2.start()

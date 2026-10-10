@@ -646,13 +646,28 @@ actually asking for.
     device path without real Pi 5 hardware to verify it against, same convention as the
     camera-passthrough device list in `docker-compose.pi.yml`.
 - Real camera on the Pi: settled as `picamera2` (see "Python packaging" above) for the CSI
-  module, rather than raw `/dev/video*` + `libcamera` device passthrough. `docker-compose.pi.yml`
-  now exists with a best-effort device list (`/dev/video0`-`/dev/video3` plus a couple of
-  commonly-seen `/dev/dma_heap/*` nodes), but it's explicitly **not verified against real Pi 5
-  hardware in this repo** — still worth a dedicated smoke test early (see "Demo" above), and the
-  device list may well need adjusting once someone can actually check `ls /dev/video*` /
-  `ls /dev/dma_heap/` on the real device. A dev laptop's USB webcam keeps using plain
-  `cv2.VideoCapture` either way (`SOURCE=video_capture`, the default).
+  module. **Verified at the camera level on a real Pi 5** (Raspberry Pi OS / Debian 13, IMX219,
+  rootless Docker): picamera2 inside this image lists the sensor and captures frames. The full
+  cv-argus pipeline on that Pi hasn't been run end to end yet. Four things that took real
+  debugging, all now encoded in the repo — don't undo them:
+  - **picamera2 + libcamera come from Raspberry Pi's apt repo (bookworm suite), not pip.** The
+    `libcamera` Python bindings aren't on PyPI (pip `picamera2` fails with `No module named
+    'libcamera'`) or in Debian's own repo. The Dockerfile adds the RPi repo on arm64 and appends
+    `/usr/lib/python3/dist-packages` to `sys.path` via a `.pth` (after site-packages, so pip's
+    numpy/TF win). Bookworm, matching the image's Python 3.11 — not the host's OS release.
+  - **Device list** (`docker-compose.pi.yml`): `/dev/media0-3`, `/dev/video0-7` (rp1-cfe),
+    `/dev/v4l-subdev0-2` (sensor/CSI-2 — missing these makes libcamera skip the camera),
+    `/dev/video19-35` (PiSP backend), `/dev/dma_heap/*`.
+  - **`/run/udev:/run/udev:ro`** — without udev's database libcamera can't group the nodes
+    ("Unable to acquire a CFE instance") and lists zero cameras.
+  - **Rootless Docker + dma-heap ACL**: the container can't use the host's `video` group, and
+    `/dev/dma_heap/*` (root:video 0660) has no per-user ACL, so allocation fails ("Could not open
+    any dma-buf provider"). `scripts/pi-host-setup.sh` installs a udev rule granting the Docker
+    user an ACL on the camera/media/dma-heap nodes at every boot (a headless truck boot can't rely
+    on logind's desktop-seat ACLs).
+  - Also: picamera2's `"RGB888"` yields **BGR** arrays (DRM naming) — `PiCameraSource` asks for
+    `RGB888` to get BGR; it used to ask for `BGR888`, which silently swapped red/blue.
+  A dev laptop's USB webcam keeps using plain `cv2.VideoCapture` (`SOURCE=video_capture`).
 
 ## `scripts/` — dataset-prep utilities, not part of the deployed package
 
