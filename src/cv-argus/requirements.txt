@@ -13,4 +13,8 @@ python-dotenv>=1.0,<2
 # Keep in sync with setup.py's install_requires: the Dockerfile installs from this file,
 # then does `pip install -e . --no-deps` for the local package, so setup.py's
 # install_requires is NOT what actually gets installed in the image — this file is.
-picamera2>=0.3.21; platform_machine in 'armv7l aarch64'
+#
+# picamera2 (the Pi's CSI camera, SOURCE=picamera) is deliberately NOT here: it needs the
+# `libcamera` Python bindings, which aren't on PyPI, so the Dockerfile installs both from
+# Raspberry Pi's apt repo instead (python3-picamera2). A pip picamera2 here would shadow that
+# apt copy and fail at import with "No module named 'libcamera'".

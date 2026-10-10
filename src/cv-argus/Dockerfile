@@ -39,33 +39,32 @@ ENV PYTHONUNBUFFERED=1
 
 # Install pinned deps before copying source so `docker build` cache reuses this (slow,
 # mediapipe/tensorflow-heavy) layer as long as requirements.txt hasn't changed.
-RUN pip install --no-cache-dir --upgrade pip
-COPY requirements.txt .
-# arm64 (the Pi) only: requirements.txt's arm-gated `picamera2` depends on `python-prctl`, which
-# ships no wheel and is compiled from source at install time — it needs gcc plus libcap's headers
-# (`sys/capability.h`), neither of which python:3.11-slim has. Without them the build fails with
-# "You need to install gcc to build this module". `python3-libcamera` is a second, unrelated
-# arm64-only requirement surfaced by the first real run of this image on actual Pi 5 hardware
-# (confirmed directly, not guessed): `picamera2`'s pip package itself installs fine, but it does
-# `import libcamera` internally, and `libcamera` has **no PyPI wheel at all, for any platform** —
-# it's a compiled C++ binding tied to the exact camera driver/firmware on the board, published
-# only as the Raspberry Pi OS apt package `python3-libcamera`. Without this, the pipeline builds
-# and starts, then crashes at the first camera read with
-# "ModuleNotFoundError: No module named 'libcamera'". `python3-libcamera` installs for Debian's
-# own /usr/bin/python3 (a second, separate Python next to this image's /usr/local one, same
-# Bookworm base so the same cpython-311 ABI) at /usr/lib/python3/dist-packages — not on this
-# image's Python's search path by default, hence the PYTHONPATH addition further down. Both
-# are skipped on amd64, where picamera2 isn't installed and there's no camera stack to speak of.
+# arm64 (the Pi) only: the CSI camera stack (`SOURCE=picamera`). picamera2 imports `libcamera`,
+# whose Python bindings are NOT on PyPI — they only ship as Raspberry Pi OS apt packages, built
+# against the matching libcamera (with the Pi 5 PiSP pipeline handler + sensor tuning files in
+# libcamera-ipa). So both come from Raspberry Pi's own apt repo rather than pip: its *bookworm*
+# suite, matching this image's Debian 12 / Python 3.11 ABI — not whatever the host Pi OS release
+# is (the host's own python3-libcamera is built for the host's Python and can't be mounted in).
+# apt installs them into /usr/lib/python3/dist-packages, which this image's /usr/local Python
+# doesn't search by default; the .pth file *appends* it to sys.path, after site-packages, so the
+# pip-pinned numpy/TF/OpenCV below still win over any older Debian copies apt pulls in as deps.
+# Skipped on amd64, where SOURCE=picamera isn't usable anyway.
 ARG TARGETARCH
 RUN if [ "$TARGETARCH" = "arm64" ] || [ "$(uname -m)" = "aarch64" ]; then \
-        apt-get update && apt-get install -y --no-install-recommends \
-            gcc libc6-dev libcap-dev python3-libcamera \
-        && rm -rf /var/lib/apt/lists/*; \
+        mkdir -p /etc/apt/keyrings \
+        && python -c "import urllib.request; urllib.request.urlretrieve('https://archive.raspberrypi.com/debian/raspberrypi.gpg.key', '/etc/apt/keyrings/raspberrypi.asc')" \
+        && echo "deb [signed-by=/etc/apt/keyrings/raspberrypi.asc] http://archive.raspberrypi.com/debian bookworm main" \
+            > /etc/apt/sources.list.d/raspi.list \
+        && apt-get update \
+        && apt-get install -y --no-install-recommends python3-picamera2 libcamera-ipa \
+        && rm -rf /var/lib/apt/lists/* \
+        && echo /usr/lib/python3/dist-packages \
+            > "$(python -c 'import site; print(site.getsitepackages()[0])')/zz-debian-dist-packages.pth"; \
     fi
+
+RUN pip install --no-cache-dir --upgrade pip
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-# Only takes effect on arm64, where the apt install above actually populates this path — on
-# amd64 it simply doesn't exist, and a missing sys.path entry is a silent no-op, not an error.
-ENV PYTHONPATH=/usr/lib/python3/dist-packages
 
 # setup.py maps the `src/` directory onto the `cv_argus` package name (see setup.py for
 # why). `-e` (editable) registers it as a path reference back to /app/src rather than
