@@ -16,22 +16,39 @@ against it, printing every step. This proves the real server/buffer/alerts/proto
 end to end; it does NOT prove real Bluetooth connectivity, which needs real hardware no
 session has had access to.
 
-Needs `cv_argus` importable. Either:
-  (a) `pip install -e src/cv-argus` once (pulls in the full dependency list from
-      requirements.txt -- this script itself only touches alerts/buffer/sender, no camera,
-      model, mediapipe, or tensorflow needed at runtime, but setup.py doesn't split those out
-      so the install is the heavy, one-time part)
-  (b) run it inside the already-running container instead, from src/cv-argus/:
-      docker compose exec -T cv-argus python - < ../tests/smoke_cv_argus.py
+No install needed, no Docker needed. `alerts/`, `buffer/`, and `sender/` are deliberately
+dependency-light -- pure stdlib (dataclasses/enum/json/sqlite3/socket/threading, no numpy/
+mediapipe/tensorflow/opencv -- verified directly against every file in that import chain,
+including constants.py). So rather than `pip install -e src/cv-argus` (which would pull in that
+full heavy dependency list for nothing, since this script never touches model/ or pipeline/),
+this script registers `cv_argus` as a module pointing straight at src/cv-argus/src/ itself,
+below -- the same `package_dir={"cv_argus": "src"}` mapping setup.py does for a real install,
+just done at runtime via importlib instead of setuptools. A plain `sys.path.insert` alone
+wouldn't work here: that directory is named `src` on disk, not `cv_argus`, so Python wouldn't
+find anything under the name this code's relative imports (`from ..alerts import ...` etc.)
+expect.
 
 Usage:
     python src/tests/smoke_cv_argus.py
 """
 from __future__ import annotations
 
+import importlib.util
 import sys
 import tempfile
 from pathlib import Path
+
+_CV_ARGUS_SRC = Path(__file__).resolve().parent.parent / "cv-argus" / "src"
+
+if "cv_argus" not in sys.modules:
+    _spec = importlib.util.spec_from_file_location(
+        "cv_argus",
+        _CV_ARGUS_SRC / "__init__.py",
+        submodule_search_locations=[str(_CV_ARGUS_SRC)],
+    )
+    _module = importlib.util.module_from_spec(_spec)
+    sys.modules["cv_argus"] = _module
+    _spec.loader.exec_module(_module)
 
 try:
     from cv_argus.alerts import Alert, AlertKind
@@ -46,12 +63,11 @@ try:
         format_pull,
     )
 except ImportError as exc:
-    print(f"[FAIL] cv_argus isn't importable here: {exc}")
+    print(f"[FAIL] cv_argus isn't importable even from {_CV_ARGUS_SRC}: {exc}")
     print()
-    print("Fix one of these, then re-run:")
-    print("  (a) pip install -e src/cv-argus   (one-time; pulls the full dependency list)")
-    print("  (b) from src/cv-argus/: docker compose exec -T cv-argus \\")
-    print("        python - < ../tests/smoke_cv_argus.py")
+    print(f"Check that this path actually exists and looks right: {_CV_ARGUS_SRC}")
+    print("(this script expects src/tests/ and src/cv-argus/src/ to be siblings under src/ --")
+    print(" if the repo got reorganized, update _CV_ARGUS_SRC above to match)")
     sys.exit(1)
 
 _FAILURES: list[str] = []
