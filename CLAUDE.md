@@ -28,8 +28,11 @@ product but not the degree requirement.
 The full system (see `docs/designs/semantic-design.drawio.png` / the underlying `.drawio` XML
 at `docs/designs/semantic-design`) has two halves — the edge (truck cabin) and the cloud/server
 side. Both halves now have real code behind them (see "Repository state and structure" below
-for exactly what and its verified/unverified status); the ESP32 firmware and OSRM are the two
-pieces of this section that remain pure design, not implemented anywhere in this repo.
+for exactly what and its verified/unverified status); OSRM is the one piece of this section
+that remains pure design, not implemented anywhere in this repo. `src/esp32-argus` now has
+real firmware too (see that module's README.md) — written, but not yet compiled or run
+against real hardware, since no ESP32/SIM800L/NEO-6M harness has been available in any
+session that's touched this repo.
 
 **Truck cabin (edge, hard real-time / safety-critical):**
 - A camera captures frames, read by the **Raspberry Pi 5 ("AI Orchestrator")**, which — per the
@@ -148,10 +151,14 @@ it was added), even though the real connection between the two modules has grown
 login since. `src/simulator-argus/` (below) is a fifth: a fleet simulator that provisions its
 own demo trucks/routes against a real `backend-argus` and continuously POSTs real
 `Status_Route`/`Alert` records over HTTP (device-API-key authenticated, per truck), so `ui-argus`
-has moving trucks and fresh alerts to demo against without real ESP32/Pi hardware. The ESP32
-firmware and OSRM described in "Planned end-to-end system architecture" don't exist yet. See
-`docs/roadmap.md` for the full, up-to-date gap list across every module (including what's built
-but not yet merged into `main`) — read that before assuming something is missing or done.
+has moving trucks and fresh alerts to demo against without real ESP32/Pi hardware. OSRM,
+described in "Planned end-to-end system architecture", doesn't exist in this repo yet.
+`src/esp32-argus` is a sixth: real Arduino firmware now exists there too (GPS, SIM800L-SMS,
+WiFi, Bluetooth-pull from `cv-argus`, drowsy+grip fusion, HTTP relay to `backend-argus`) — see
+that module's own section below and its README.md; it has not been compiled or flashed against
+real hardware. See `docs/roadmap.md` for the full, up-to-date gap list across every module
+(including what's built but not yet merged into `main`) — read that before assuming something
+is missing or done.
 
 - `src/notebook/01_dataset_creation_lstm.ipynb` through `src/notebook/10_cnn_lstm_training.ipynb`
   (the `notebook/` folder was moved under `src/`) — the ML pipeline, split into ten stage-scoped
@@ -247,6 +254,20 @@ but not yet merged into `main`) — read that before assuming something is missi
   `README.md` (quick start, config table, what to expect, OSRM setup) and a `CLAUDE.md` (why
   device-key auth, why self-provisioned data, the scenario/movement-model/OSRM design); read that
   `CLAUDE.md` before changing anything here.
+- `src/esp32-argus/` — the ESP32 "Message Sender Orchestrator" firmware, an Arduino IDE
+  multi-tab sketch (`src/esp32_argus/esp32_argus.ino` + per-concern `.h`/`.cpp` pairs: GPS,
+  SIM800L/SMS, WiFi, the backend HTTP client, the Bluetooth client pulling from `cv-argus`, the
+  drowsy+grip fusion state machine ported 1:1 from `cv-argus`'s `fusion_contract.py`, the panic
+  button, the grip sensor). WiFi (joining a mobile-network-backed network, not the SIM800L's own
+  GPRS) is this device's main transport to `backend-argus` and the Bluetooth pull — a deliberate
+  split from the SIM800L, which this firmware keeps **SMS-only**, fired specifically (and only)
+  by the panic button as a hardware-direct fallback that still works if WiFi/the backend is
+  unreachable. See its own `README.md` for the full protocol/field-mapping contracts this
+  implements and `config.h` for every per-deployment placeholder (WiFi creds, backend URL,
+  device API key, route id, the Pi's Bluetooth MAC, GPIO pins) that needs a real value before
+  flashing. Written and reviewed by hand; **not yet compiled or run against real hardware** — no
+  Arduino toolchain or physical ESP32/SIM800L/NEO-6M harness has been available in any session
+  that's touched this repo.
 - `docs/argus-descripción-proyecto.pdf` — project description/proposal.
 - `docs/criteria/` — academic thesis/grading-criteria documents (this is a school "trabajo de
   grado" project); `Formato_Proyecto_Modular V2.docx` is the report template being filled in.
