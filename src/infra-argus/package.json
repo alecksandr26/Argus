@@ -1,0 +1,33 @@
+{
+  "name": "infra-argus",
+  "private": true,
+  "version": "0.0.1",
+  "bin": {
+    "argus": "bin/argus.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "synth": "cdk synth",
+    "deploy": "bash scripts/deploy.sh",
+    "destroy": "cdk destroy --all",
+    "setup-secrets": "bash scripts/setup-secrets.sh",
+    "kill": "bash scripts/kill.sh",
+    "unkill": "bash scripts/unkill.sh",
+    "osrm:upload": "bash scripts/osrm-upload.sh",
+    "osrm:remove": "bash scripts/osrm-remove.sh"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.10.0",
+    "aws-cdk": "^2.1000.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.8.3"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.200.0",
+    "constructs": "^10.4.2"
+  }
+}

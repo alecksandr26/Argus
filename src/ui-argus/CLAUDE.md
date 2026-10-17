@@ -342,6 +342,18 @@ actually posted at `severity_level` "low" in practice (see `src/simulator-argus/
 state while the marker dot itself rendered gray, a real inconsistency now fixed everywhere at
 once.
 
+**`components/SimulatorControl.tsx`** (+ `api/simulator.ts`, `SimulatorControl.test.tsx`): the
+root_admin-only *Fleet simulator* card at the top of Live operations, rendered only when
+`session.user.role === 'root_admin'` (the backend 403s everyone else anyway). It's an accessible
+`role="switch"` On/Off toggle for the AWS deployment's on-demand simulator task
+(`src/infra-argus`). It shows Off / Starting… / On, a live countdown to the fixed 10-minute
+auto-off, and "X of 12 sessions left" this month, and it disables itself when the quota is used
+up. There's deliberately **no duration input**: session length is a server-side cost guardrail,
+not a user choice. It polls `GET /api/simulator` every 10 s only while a session is open.
+409/429/503 are shown as plain sentences. Verified: lint, 70/70 Vitest tests across 14 files,
+`tsc -b && vite build`. This ran natively on Node 24 from a native Linux copy of the module,
+since Docker/Node weren't usable in that WSL session; same `/mnt/c` caveat as above.
+
 ## Next steps (not started)
 
 - Fix the `html-encoding-sniffer`/`@exodus/bytes` toolchain bug for real (pin a working

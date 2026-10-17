@@ -268,6 +268,20 @@ is missing or done.
   flashing. Written and reviewed by hand; **not yet compiled or run against real hardware** — no
   Arduino toolchain or physical ESP32/SIM800L/NEO-6M harness has been available in any session
   that's touched this repo.
+- `src/infra-argus/` — **AWS CDK (TypeScript) demo deployment, cheapest possible, pay-per-use**:
+  `backend-argus` as its **unchanged** Docker image on Lambda (via the Lambda Web Adapter, a
+  wrapper image in `docker/backend-lambda/`, no backend code changes for Lambda) behind a
+  Function URL; `ui-argus` on S3 + one CloudFront distribution that also routes `/api/*` to the
+  Lambda (same origin, no CORS); MongoDB Atlas M0 (free, external); and the fleet simulator +
+  OSRM as an on-demand **Fargate Spot** task that root_admin turns on/off from Live operations
+  (`/api/simulator`, root_admin only). **Hard cost guardrails are a non-negotiable requirement
+  here, not tuning**: every simulator session is a fixed 10 minutes, at most one at a time, 12
+  sessions/month, a 1-minute reaper Lambda, a $3 AWS Budget whose action denies further starts,
+  an invocation kill switch, and synth-time tests that fail on any always-on paid resource (NAT
+  Gateway, ALB, RDS/DocumentDB, EC2, ...). Estimated bill ≈ $0.30/month. See its `README.md`
+  (the R1–R10 table + cost table) and `CLAUDE.md` before changing anything there. Written and
+  tested (synth assertions, Lambda unit tests, backend + UI tests); **not yet deployed to a
+  real AWS account**.
 - `docs/argus-descripción-proyecto.pdf` — project description/proposal.
 - `docs/criteria/` — academic thesis/grading-criteria documents (this is a school "trabajo de
   grado" project); `Formato_Proyecto_Modular V2.docx` is the report template being filled in.

@@ -177,6 +177,9 @@ something any design doc anticipated in advance.
 | `guardian` | none | read-only | read-only | read-only | read + review (`PUT`) + de-escalate only |
 | `truck_driver` | none | read | read | read | read |
 
+Plus one resource outside the ER model: **`/api/simulator`** (cloud simulator on/off) is
+**`root_admin` only** for every method; every other role gets 403. See "Simulator control" below.
+
 **`admin`'s user-management scope is narrow and enforced server-side, not just by convention**:
 `app/routers/users.py` moved its auth check from a router-level `dependencies=[...]` (whose
 return value isn't injectable) to a per-route `actor: User = Depends(require_role(Role.ROOT_ADMIN,
@@ -224,6 +227,31 @@ Instead, `Truck.device_api_key_hash` holds a bcrypt-hashed, per-truck static key
   only — a device marking a fused incident's recovery (see `fusion_contract.py`'s recovery
   window) is not the same authorization as a human review, so a device-key request that also
   tries to set `reviewed_by_operator`/`operator_notes` gets a `403`, not silently ignored.
+
+## Simulator control — `/api/simulator` (root_admin only, cost-guarded)
+
+On the AWS demo deployment (`src/infra-argus`), the fleet simulator isn't always running. It's
+one ECS Fargate Spot task per session, which root_admin turns on and off from `ui-argus`'s Live
+operations screen. `app/simulator_control.py` (`SimulatorController`, boto3 ECS via
+`asyncio.to_thread`) + `app/routers/simulator.py`: `GET /api/simulator`, `POST .../start`
+(body: only `truck_count` 1–10; `extra="forbid"`, so sending a duration is a 422),
+`POST .../stop`.
+
+The backend's share of the hard cost guardrails (full R1–R10 table in
+`src/infra-argus/README.md`):
+- **R1** every session is exactly `SIMULATOR_SESSION_MINUTES` (10). The task gets that value
+  as an env override, and `status()` itself stops a task still alive past `auto_off_at`.
+- **R2** one at a time: 409 if Mongo has an open session *or* ECS lists any `argus-simulator`
+  task, so an orphaned task still blocks.
+- **R3** monthly quota (`SIMULATOR_MONTHLY_QUOTA_MINUTES`, 120 = 12 sessions, UTC calendar
+  month), charged the full session up front, never refunded on an early stop; 429 when it's used up.
+
+`SimulatorSession` (new Beanie document, `simulator_sessions`) exists only for those checks. It
+isn't an ER-diagram entity. `SIMULATOR_CONTROL=disabled` (the default) makes every endpoint
+503 *after* the role check (other roles still see 403), so local dev and the existing test tier
+need no AWS at all. Tests swap ECS for an in-memory fake via
+`app.dependency_overrides[get_simulator_controller]` (`tests/test_simulator.py`). `boto3` is
+imported lazily, so a disabled deployment never needs AWS credentials.
 
 ## Geo design
 

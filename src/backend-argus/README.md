@@ -151,6 +151,12 @@ defaults so nothing here is required to boot:
 | `ROOT_ADMIN_LAST_NAME` | `Admin` | last name on the bootstrapped account |
 | `ROOT_ADMIN_PHONE_NUMBER` | `+00-000-0000` | phone number on the bootstrapped account (required field, no real use yet) |
 | `SEED_DEMO_DATA` | `false` | when `true`, idempotently seeds a demo fleet (admins/guardians/trucks/drivers/routes — see "Seeding demo data" above) on every startup, right after the root_admin bootstrap. Never enable outside local dev. |
+| `SIMULATOR_CONTROL` | `disabled` | `ecs` enables root_admin-only `/api/simulator` on/off control of the cloud simulator task (set by `src/infra-argus`); `disabled` makes those endpoints 503 — local dev keeps using `docker compose --profile simulator` |
+| `SIMULATOR_ECS_CLUSTER` / `SIMULATOR_TASK_DEFINITION` | empty | ECS cluster name / task family to run (set by `src/infra-argus`) |
+| `SIMULATOR_SUBNETS` / `SIMULATOR_SECURITY_GROUPS` | empty | comma-separated, for the task's network config (set by `src/infra-argus`) |
+| `SIMULATOR_BACKEND_URL` | empty | URL the simulator task posts to; empty = this backend's own URL as seen on the start request |
+| `SIMULATOR_SESSION_MINUTES` | `10` | fixed length of every simulator session (no API parameter can change it) |
+| `SIMULATOR_MONTHLY_QUOTA_MINUTES` | `120` | simulator minutes per UTC month, charged a full session up front on each start |
 
 Note: `POST /api/auth/login` and `POST /api/users`'s `password` field is not the raw password —
 it's the SHA-256 hex digest of it, computed client-side (`crypto.subtle.digest`) before the
