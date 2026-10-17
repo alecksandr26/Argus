@@ -41,3 +41,38 @@ def test_route_status_defaults_to_ok():
 def test_route_status_accepts_a_custom_status():
     alert = route_status("cam0", status="DEGRADED")
     assert alert.payload == {"status": "DEGRADED"}
+
+
+# --- Clock fields for fusion timing and ordering (CV-13) ----------------------------------------
+# The ESP32 fuses readings by *when they happened on the Pi*, not when it pulled them. Wall
+# clock (`created_at_ms`) can jump (NTP) or be wrong (no network, no RTC battery), so each record
+# also needs a monotonic stamp, the boot it belongs to (monotonic resets on reboot), and whether
+# the wall clock was synced.
+
+import pytest  # noqa: E402
+
+from cv_argus.alerts import route_status  # noqa: E402
+
+_CLOCK_BUG = "CV-13: records carry no monotonic time / boot id / clock-synced flag"
+
+
+@pytest.mark.xfail(strict=True, reason=_CLOCK_BUG)
+def test_alert_carries_mono_ms_boot_id_and_clock_synced():
+    alert = Alert.new(AlertKind.DROWSINESS, level=2, source_id="cam0", payload={})
+    assert isinstance(alert.mono_ms, int) and alert.mono_ms > 0
+    assert isinstance(alert.boot_id, str) and alert.boot_id
+    assert isinstance(alert.clock_synced, bool)
+
+
+@pytest.mark.xfail(strict=True, reason=_CLOCK_BUG)
+def test_mono_ms_is_monotonic_across_alerts():
+    a = Alert.new(AlertKind.DROWSINESS, level=1, source_id="cam0", payload={})
+    b = route_status("cam0")
+    assert b.mono_ms >= a.mono_ms
+
+
+@pytest.mark.xfail(strict=True, reason=_CLOCK_BUG)
+def test_boot_id_is_stable_within_a_process():
+    a = Alert.new(AlertKind.DROWSINESS, level=1, source_id="cam0", payload={})
+    b = Alert.new(AlertKind.DROWSINESS, level=1, source_id="cam0", payload={})
+    assert a.boot_id == b.boot_id
