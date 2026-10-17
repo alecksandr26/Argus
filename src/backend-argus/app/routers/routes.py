@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from beanie import PydanticObjectId
 from beanie.operators import In
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.auth.dependencies import get_current_user, require_role
 from app.geo import to_geojson
+from app.ids import get_by_id, get_or_404
 from app.models.common import Role, RouteStatus
 from app.models.driver import Driver
 from app.models.route import Route
@@ -23,14 +23,16 @@ _ACTIVE_STATUSES = (RouteStatus.IN_PROGRESS, RouteStatus.IN_PROGRESS_ALERT)
 
 
 async def _get_or_404(route_id: str) -> Route:
-    try:
-        oid = PydanticObjectId(route_id)
-    except Exception:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Route not found")
-    route = await Route.get(oid)
-    if route is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Route not found")
-    return route
+    return await get_or_404(Route, route_id, "Route")
+
+
+async def _check_refs(id_truck: Optional[str], id_driver: Optional[str]) -> None:
+    """A route must point at a truck and a driver that exist (BE-02); a dangling reference
+    leaves the device with no truck to authenticate against and the dashboard with no plate."""
+    if id_truck is not None and await get_by_id(Truck, id_truck) is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "id_truck not found")
+    if id_driver is not None and await get_by_id(Driver, id_driver) is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "id_driver not found")
 
 
 @router.get("", response_model=list[RouteOut], dependencies=[Depends(get_current_user)])
@@ -69,8 +71,8 @@ async def list_active_routes() -> list[RouteWithStatus]:
             .sort(-StatusRoute.timestamp)
             .first_or_none()
         )
-        truck = await Truck.get(PydanticObjectId(route.id_truck)) if route.id_truck else None
-        driver = await Driver.get(PydanticObjectId(route.id_driver)) if route.id_driver else None
+        truck = await get_by_id(Truck, route.id_truck)
+        driver = await get_by_id(Driver, route.id_driver)
         out.append(route_with_status_out(route, latest_status, truck, driver))
     return out
 
@@ -82,6 +84,7 @@ async def list_active_routes() -> list[RouteWithStatus]:
     dependencies=[Depends(require_role(Role.ROOT_ADMIN, Role.ADMIN))],
 )
 async def create_route(body: RouteCreate) -> RouteOut:
+    await _check_refs(body.id_truck, body.id_driver)
     route = Route(
         id_driver=body.id_driver,
         id_truck=body.id_truck,
@@ -109,6 +112,7 @@ async def get_route(route_id: str) -> RouteOut:
 async def update_route(route_id: str, body: RouteUpdate) -> RouteOut:
     route = await _get_or_404(route_id)
     data = body.model_dump(exclude_unset=True)
+    await _check_refs(data.get("id_truck"), data.get("id_driver"))
     if "destination_coordinates" in data:
         route.destination_coordinates = to_geojson(body.destination_coordinates)
         del data["destination_coordinates"]
