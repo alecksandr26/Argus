@@ -6,6 +6,7 @@ from typing import Optional
 from pydantic import BaseModel
 
 from app.models.common import DriverStatus
+from app.schemas.common import UtcDatetime
 
 
 class DriverCreate(BaseModel):
@@ -43,5 +44,5 @@ class DriverOut(BaseModel):
     emergency_contact_phone: str
     blood_type: str
     operative_status: DriverStatus
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
