@@ -45,7 +45,6 @@ class _FailingOnceBuffer:
         self.enqueued.append(alert)
 
 
-@pytest.mark.xfail(strict=True, reason="CV-10: an enqueue error kills the orchestrator thread")
 def test_enqueue_error_does_not_kill_the_orchestrator_thread():
     buf = _FailingOnceBuffer()
     orch = Orchestrator(buf, poll_seconds=0.02, heartbeat_interval_seconds=0.05)

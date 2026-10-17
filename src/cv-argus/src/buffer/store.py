@@ -50,6 +50,13 @@ CREATE TABLE IF NOT EXISTS alerts (
 CREATE INDEX IF NOT EXISTS idx_alerts_unsent ON alerts (sent, enqueued_at_ms);
 """
 
+# Columns added after the first release; `_init_schema` adds any that an older file lacks.
+_ADDED_COLUMNS = {
+    "mono_ms": "INTEGER",
+    "boot_id": "TEXT",
+    "clock_synced": "INTEGER",
+}
+
 _DEFAULT_FETCH_LIMIT = 50
 
 
@@ -88,6 +95,10 @@ class Buffer:
     def _init_schema(self) -> None:
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            existing = {row[1] for row in self._conn.execute("PRAGMA table_info(alerts)")}
+            for column, sql_type in _ADDED_COLUMNS.items():
+                if column not in existing:
+                    self._conn.execute(f"ALTER TABLE alerts ADD COLUMN {column} {sql_type}")
 
     def enqueue(self, alert: Alert) -> None:
         """Insert one row. Idempotent on `alert.id` (`INSERT OR IGNORE`) -- a caller that
@@ -103,8 +114,8 @@ class Buffer:
                 """
                 INSERT OR IGNORE INTO alerts
                     (id, kind, level, created_at_ms, source_id, payload_json, geolocation_json,
-                     sent, sent_at_ms, enqueued_at_ms)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
+                     sent, sent_at_ms, enqueued_at_ms, mono_ms, boot_id, clock_synced)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)
                 """,
                 (
                     data["id"],
@@ -115,6 +126,9 @@ class Buffer:
                     json.dumps(data["payload"]),
                     json.dumps(data["geolocation"]) if data["geolocation"] is not None else None,
                     enqueued_at_ms,
+                    data["mono_ms"],
+                    data["boot_id"],
+                    None if data["clock_synced"] is None else int(data["clock_synced"]),
                 ),
             )
 
@@ -122,16 +136,20 @@ class Buffer:
         """Oldest-first, never mutates `sent` -- see the module docstring. Safe to call
         repeatedly/idempotently, which is exactly what makes "a not-yet-acked record is always
         safely re-served" possible in `sender/`."""
-        rows = self._conn.execute(
-            """
-            SELECT id, kind, level, created_at_ms, source_id, payload_json, geolocation_json
-            FROM alerts
-            WHERE sent = 0
-            ORDER BY enqueued_at_ms ASC, rowid ASC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+        # Insertion order (rowid), not the wall clock: an NTP step backwards between two
+        # enqueues must not serve the newer row first (CV-14).
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, kind, level, created_at_ms, source_id, payload_json, geolocation_json,
+                       mono_ms, boot_id, clock_synced
+                FROM alerts
+                WHERE sent = 0
+                ORDER BY rowid ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
         return [
             from_dict(
                 {
@@ -142,6 +160,9 @@ class Buffer:
                     "source_id": row[4],
                     "payload": json.loads(row[5]),
                     "geolocation": json.loads(row[6]) if row[6] is not None else None,
+                    "mono_ms": row[7],
+                    "boot_id": row[8],
+                    "clock_synced": None if row[9] is None else bool(row[9]),
                 }
             )
             for row in rows
@@ -167,7 +188,43 @@ class Buffer:
             return cur.rowcount
 
     def unsent_count(self) -> int:
-        return self._conn.execute("SELECT COUNT(*) FROM alerts WHERE sent = 0").fetchone()[0]
+        with self._lock:
+            return self._conn.execute("SELECT COUNT(*) FROM alerts WHERE sent = 0").fetchone()[0]
+
+    def prune_sent(self, older_than_ms: int) -> int:
+        """Delete rows the ESP32 already ACKed before `older_than_ms` (epoch ms). Sent rows are
+        only kept for inspection; without pruning, the 2 s keepalives grow the file forever
+        (BUF-01). Returns how many rows were deleted."""
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM alerts WHERE sent = 1 AND sent_at_ms < ?", (older_than_ms,)
+            )
+            return cur.rowcount
+
+    def cap_unsent(self, max_rows: int) -> int:
+        """If more than `max_rows` rows are waiting (a long Bluetooth outage), drop the oldest
+        *keepalive* readings first: they only repeat a state already queued. Class-change
+        transitions and heartbeats are never dropped here. Returns how many rows were dropped."""
+        with self._lock:
+            excess = (
+                self._conn.execute("SELECT COUNT(*) FROM alerts WHERE sent = 0").fetchone()[0]
+                - max_rows
+            )
+            if excess <= 0:
+                return 0
+            cur = self._conn.execute(
+                """
+                DELETE FROM alerts WHERE rowid IN (
+                    SELECT rowid FROM alerts
+                    WHERE sent = 0 AND kind = 'drowsiness'
+                      AND json_extract(payload_json, '$.transition') = 0
+                    ORDER BY rowid ASC
+                    LIMIT ?
+                )
+                """,
+                (excess,),
+            )
+            return cur.rowcount
 
     def close(self) -> None:
         self._conn.close()

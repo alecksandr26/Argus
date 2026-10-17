@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import pytest
 
-_BUG = "CV-10/SND-10: main() only watches the pipeline"
 
 
 class _Component:
@@ -17,7 +16,6 @@ class _Component:
         self.is_alive = alive
 
 
-@pytest.mark.xfail(strict=True, reason=_BUG)
 def test_first_dead_names_the_dead_component():
     from cv_argus.supervisor import first_dead
 
@@ -29,7 +27,6 @@ def test_first_dead_names_the_dead_component():
     assert first_dead(components) == "orchestrator"
 
 
-@pytest.mark.xfail(strict=True, reason=_BUG)
 def test_first_dead_is_none_when_all_alive_and_ignores_disabled_ones():
     from cv_argus.supervisor import first_dead
 
@@ -37,7 +34,6 @@ def test_first_dead_is_none_when_all_alive_and_ignores_disabled_ones():
     assert first_dead(components) is None
 
 
-@pytest.mark.xfail(strict=True, reason=_BUG)
 def test_pipeline_is_alive_as_a_method_is_supported():
     """`Pipeline.is_alive()` is a method; the threads expose a property. Both must work."""
     from cv_argus.supervisor import first_dead
@@ -49,7 +45,6 @@ def test_pipeline_is_alive_as_a_method_is_supported():
     assert first_dead({"pipeline": _Pipeline(), "orchestrator": _Component(True)}) == "pipeline"
 
 
-@pytest.mark.xfail(strict=True, reason=_BUG)
 def test_exit_code_is_zero_on_requested_stop_and_one_when_a_component_died():
     from cv_argus.supervisor import exit_code
 

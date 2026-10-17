@@ -160,19 +160,17 @@ def _reading(class_name="Drowsy", transition=True):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="CV-14: rows ordered by wall clock, NTP step reorders them")
 def test_fetch_unsent_keeps_insertion_order_when_clock_goes_backwards(tmp_path, monkeypatch):
     buf = open_buffer(tmp_path / "b.sqlite3")
+    first, second = _reading(), _reading()
     wall = iter([2_000_000.0, 1_000_000.0])  # NTP steps the clock back between two enqueues
     monkeypatch.setattr(store.time, "time", lambda: next(wall))
-    first, second = _reading(), _reading()
     buf.enqueue(first)
     buf.enqueue(second)
     assert [a.id for a in buf.fetch_unsent()] == [first.id, second.id]
     buf.close()
 
 
-@pytest.mark.xfail(strict=True, reason="BUF-01: sent rows are never pruned")
 def test_prune_sent_removes_only_old_sent_rows(tmp_path):
     buf = open_buffer(tmp_path / "b.sqlite3")
     old_sent, new_sent, unsent = _reading(), _reading(), _reading()
@@ -188,7 +186,6 @@ def test_prune_sent_removes_only_old_sent_rows(tmp_path):
     buf.close()
 
 
-@pytest.mark.xfail(strict=True, reason="BUF-01: no cap on unsent rows")
 def test_unsent_cap_drops_oldest_keepalives_never_transitions(tmp_path):
     buf = open_buffer(tmp_path / "b.sqlite3")
     transitions = [_reading("Drowsy", True), _reading("Not Drowsy", True)]
@@ -220,7 +217,6 @@ def test_restart_reopens_with_unsent_backlog_oldest_first(tmp_path):
     reopened.close()
 
 
-@pytest.mark.xfail(strict=True, reason="CV-13: buffer doesn't store the clock fields")
 def test_clock_fields_survive_the_buffer(tmp_path):
     buf = open_buffer(tmp_path / "b.sqlite3")
     alert = _reading()
@@ -243,7 +239,6 @@ CREATE TABLE alerts (
 """
 
 
-@pytest.mark.xfail(strict=True, reason="CV-13: no schema migration for the clock fields")
 def test_buffer_file_from_previous_release_opens_and_serves_old_rows(tmp_path):
     path = tmp_path / "b.sqlite3"
     conn = sqlite3.connect(path)
