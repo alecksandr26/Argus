@@ -99,6 +99,15 @@ class Severity(str, Enum):
     MEDIUM = "medium"
     LOW = "low"
 
+    @property
+    def rank(self) -> int:
+        """Least-severe -> most-severe, for comparisons (e.g. a de-escalation must go strictly
+        down). The enum's declaration order is most-severe-first, so don't compare by that."""
+        return _SEVERITY_RANK[self]
+
+
+_SEVERITY_RANK = {Severity.LOW: 0, Severity.MEDIUM: 1, Severity.CRITICAL: 2}
+
 
 class AlertSource(str, Enum):
     """Which decision path produced an `Alert`. Every alert is either the ESP32's fused

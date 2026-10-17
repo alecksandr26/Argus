@@ -3,7 +3,13 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import Icon from '../components/Icon'
 import FilterChips from '../components/FilterChips'
 import { useAuth } from '../context/AuthContext'
-import { getAlert, listAlerts, reviewAlert, type AlertFilters } from '../api/alerts'
+import {
+  deescalateAlert,
+  getAlert,
+  listAlerts,
+  reviewAlert,
+  type AlertFilters,
+} from '../api/alerts'
 import { getRoute, getRouteStatus } from '../api/routes'
 import { listDrivers } from '../api/drivers'
 import { listTrucks } from '../api/trucks'
@@ -113,6 +119,10 @@ export default function RouteLiveView() {
   const [saved, setSaved] = useState(false)
   const [saving, setSaving] = useState(false)
 
+  const [deescTo, setDeescTo] = useState<AlertSeverity | ''>('')
+  const [deescReason, setDeescReason] = useState('')
+  const [deescalating, setDeescalating] = useState(false)
+
   useEffect(() => {
     if (!focusedAlertId) {
       setFocusedAlert(null)
@@ -130,6 +140,8 @@ export default function RouteLiveView() {
         setReviewed(a.reviewed_by_operator)
         setNotes(a.operator_notes)
         setSaved(false)
+        setDeescTo('')
+        setDeescReason('')
       })
       .catch((err) => {
         if (cancelled) return
@@ -267,6 +279,28 @@ export default function RouteLiveView() {
       setAlertError(err instanceof ApiError ? err.message : 'Failed to save review')
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function deescalate() {
+    if (!focusedAlert || !deescTo) return
+    setDeescalating(true)
+    setAlertError(null)
+    try {
+      const updated = await deescalateAlert(
+        focusedAlert.id_alert,
+        { severity_level: deescTo, reason: deescReason.trim() },
+        token,
+      )
+      setFocusedAlert(updated)
+      setReviewed(updated.reviewed_by_operator)
+      setRouteAlerts((prev) => prev.map((a) => (a.id_alert === updated.id_alert ? updated : a)))
+      setDeescTo('')
+      setDeescReason('')
+    } catch (err) {
+      setAlertError(err instanceof ApiError ? err.message : 'Failed to de-escalate alert')
+    } finally {
+      setDeescalating(false)
     }
   }
 
@@ -733,6 +767,73 @@ export default function RouteLiveView() {
                         </div>
                       )}
                     </div>
+
+                    {focusedAlert.original_severity_level && (
+                      <div
+                        style={{ fontSize: 12, color: 'var(--text-soft)' }}
+                        data-testid="deescalation-note"
+                      >
+                        De-escalated from{' '}
+                        <strong>{severity[focusedAlert.original_severity_level].label}</strong> to{' '}
+                        <strong>{severity[focusedAlert.severity_level].label}</strong>
+                        {focusedAlert.deescalated_at && (
+                          <>
+                            {' '}
+                            · {shortDate(focusedAlert.deescalated_at)}{' '}
+                            {clock(focusedAlert.deescalated_at)}
+                          </>
+                        )}
+                        {focusedAlert.deescalation_reason && (
+                          <p style={{ margin: '4px 0 0', color: 'var(--text-faint)' }}>
+                            {focusedAlert.deescalation_reason}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {canReview && SEVERITY_RANK[focusedAlert.severity_level] > 0 && (
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                          De-escalate severity
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 10 }}>
+                          Only after confirming with the driver. The device never lowers a
+                          severity on its own.
+                        </div>
+                        <select
+                          className="input"
+                          aria-label="New severity"
+                          value={deescTo}
+                          onChange={(e) => setDeescTo(e.target.value as AlertSeverity | '')}
+                          style={{ marginBottom: 8 }}
+                        >
+                          <option value="">Choose a lower severity…</option>
+                          {(['medium', 'low'] as AlertSeverity[])
+                            .filter((s) => SEVERITY_RANK[s] < SEVERITY_RANK[focusedAlert.severity_level])
+                            .map((s) => (
+                              <option key={s} value={s}>
+                                {severity[s].label}
+                              </option>
+                            ))}
+                        </select>
+                        <textarea
+                          className="input"
+                          rows={2}
+                          aria-label="De-escalation reason"
+                          placeholder="Reason, e.g. called the driver, false positive"
+                          value={deescReason}
+                          onChange={(e) => setDeescReason(e.target.value)}
+                          style={{ marginBottom: 8 }}
+                        />
+                        <button
+                          className="btn btn--block"
+                          onClick={deescalate}
+                          disabled={!deescTo || !deescReason.trim() || deescalating}
+                        >
+                          {deescalating ? 'De-escalating…' : 'De-escalate'}
+                        </button>
+                      </div>
+                    )}
 
                     {canReview && (
                       <button

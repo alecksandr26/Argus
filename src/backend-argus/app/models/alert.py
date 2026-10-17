@@ -56,7 +56,8 @@ class Alert(Document):
     """An Alert row. Like Status_Route, this is an append-only event record — no
     `TimestampedDocument` mixin — except for `reviewed_by_operator`/`operator_notes`/
     `resolved_at`, which can be edited in place after creation (see `app/routers/alerts.py`'s
-    `review_alert`)."""
+    `review_alert`), and `severity_level` plus the `deescalat*` audit fields, which only a
+    manual de-escalation changes (`deescalate_alert`)."""
 
     id_route: str
     alert_type: str
@@ -73,6 +74,15 @@ class Alert(Document):
     # Set once the underlying condition recovers (both signals good, held for the recovery
     # window) — the one other legitimately-mutable field besides the reviewer ones above.
     resolved_at: Optional[datetime] = None
+    # Manual de-escalation by a guardian/root_admin who has confirmed with the driver that the
+    # incident is a false positive or has eased (see `app/routers/alerts.py`'s `deescalate_alert`).
+    # The ESP32's fusion loop never steps a severity down on its own, so this is the one path
+    # that rewrites `severity_level` in place. `original_severity_level` keeps what the device
+    # actually reported (set on the first de-escalation only) so the audit trail survives.
+    original_severity_level: Optional[Severity] = None
+    deescalated_by: Optional[str] = None  # User id
+    deescalated_at: Optional[datetime] = None
+    deescalation_reason: str = ""
     media_url: Optional[str] = None
     coordinates: GeoJSONPoint
     speed_at_event: float

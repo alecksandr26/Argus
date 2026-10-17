@@ -218,7 +218,8 @@ test('root_admin creates a route via the Routes screen, and a fused critical ale
   ).toBeVisible()
   await expect(page.getByText(alertType, { exact: true })).toBeVisible()
 
-  await page.getByRole('button', { name: 'Low' }).click()
+  // No "Low" chip anymore (an Alert row is never posted as low), so filter to Medium instead.
+  await page.getByRole('button', { name: 'Medium', exact: true }).click()
   await expect(page.getByText(alertType, { exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: 'Critical' }).click()
   await expect(page.getByText(alertType, { exact: true })).toBeVisible()
@@ -338,4 +339,57 @@ test('an admin sees alert triage read-only, with no review controls', async ({
     page.getByPlaceholder('Operator notes — what was observed, what action was taken…'),
   ).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Save and close alert' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'De-escalate', exact: true })).toHaveCount(0)
+})
+
+test('a guardian de-escalates a critical alert, and the original severity and reason persist', async ({
+  page,
+  request,
+}) => {
+  const suffix = uniqueSuffix()
+  const alertType = `Escalated check ${suffix}`
+  const guardianEmail = `guardian-deesc-${suffix}@argus.dev`
+  const guardianPassword = 'guardian-pass-123'
+  const reason = `Called driver, eyes were fine — ${suffix}`
+
+  const rootToken = await restLogin(request, ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD)
+  const truck = await createTruck(request, rootToken, `LIVE-${suffix}`)
+  const driver = await createDriver(request, rootToken, `LIC-${suffix}`)
+  const route = await createRouteRest(request, rootToken, {
+    driverId: driver.id_driver,
+    truckId: truck.id_truck,
+    origin: `Origin-${suffix}`,
+    destination: `Dest-${suffix}`,
+  })
+  await postStatus(request, rootToken, route.id_route, 'critical')
+  const alert = await postFusionAlert(request, rootToken, route.id_route, {
+    alertType,
+    severity: 'critical',
+  })
+  await createUserRest(request, rootToken, {
+    email: guardianEmail,
+    password: guardianPassword,
+    role: 'guardian',
+  })
+
+  await page.goto('/login')
+  await login(page, guardianEmail, guardianPassword)
+  await page.goto(`/alerts/${alert.id_alert}`)
+  await expect(page.getByText('CRITICAL SEVERITY', { exact: true })).toBeVisible()
+
+  const submit = page.getByRole('button', { name: 'De-escalate', exact: true })
+  await expect(submit).toBeDisabled()
+  await page.getByLabel('New severity').selectOption('medium')
+  await page.getByLabel('De-escalation reason').fill(reason)
+  await submit.click()
+
+  await expect(page.getByText('MEDIUM SEVERITY', { exact: true })).toBeVisible()
+  await expect(page.getByTestId('deescalation-note')).toContainText('De-escalated from Critical to Medium')
+  await expect(page.getByTestId('deescalation-note')).toContainText(reason)
+
+  // Survives a reload (real backend round trip), and de-escalating counts as a review.
+  await page.reload()
+  await expect(page.getByText('MEDIUM SEVERITY', { exact: true })).toBeVisible()
+  await expect(page.getByTestId('deescalation-note')).toContainText(reason)
+  await expect(page.getByLabel('Mark alert as reviewed')).toBeChecked()
 })

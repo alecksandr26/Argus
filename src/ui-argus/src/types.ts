@@ -189,6 +189,13 @@ export interface Alert {
   /** Set once the underlying condition recovers (both signals good, held for the recovery
    * window) — `null` while the incident is still open. */
   resolved_at: string | null
+  /** Set by a guardian/root_admin's manual de-escalation (`POST /api/alerts/:id/de-escalate`):
+   * the severity the device originally reported. `severity_level` then holds the lowered one.
+   * `null` if never de-escalated. */
+  original_severity_level: AlertSeverity | null
+  deescalated_by: string | null
+  deescalated_at: string | null
+  deescalation_reason: string
   media_url: string | null
   coordinates: Coordinates
   speed_at_event: number

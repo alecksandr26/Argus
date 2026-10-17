@@ -150,15 +150,6 @@ suite (the new validator and the resolve-vs-review device-key authorization spli
 - No refresh-token flow — `JWT_EXPIRE_MINUTES` is the only session-length control.
 - No decided real-time push strategy for the live dashboard (currently: `ui-argus` polls
   `GET /api/routes/active` every 7s).
-- **A manual guardian de-escalation endpoint — new, real gap surfaced while implementing
-  `FusionOrchestrator` (section 1).** That state machine deliberately never de-escalates a
-  severity on its own (see `src/esp32-argus/README.md` section 5) — only a full recovery clears
-  an incident automatically. But a guardian who has actually talked to the driver and confirmed
-  they're fine should be able to step an alert back down themselves; there's currently no
-  backend endpoint/field for this (`review_alert` only accepts `reviewed_by_operator`/
-  `operator_notes`/`resolved_at`, not a severity change), and no UI action for it either (see
-  the matching `ui-argus` bullet below). Not implemented in this pass — recorded here so it
-  isn't lost.
 
 ## 4. `ui-argus`
 
@@ -191,11 +182,14 @@ surfaces `grip_status`/`source`/escalation links/`resolved_at`.
   service itself (still not part of any Docker Compose stack).
 - No caching/data-fetching layer (TanStack Query or similar) — every screen does its own
   `useEffect` fetch, no shared cache/refetch-on-focus.
-- **A manual de-escalation action on `AlertTriage.tsx`** — the UI half of the new gap noted in
-  section 3's `backend-argus` list: once that endpoint exists, a guardian needs a way to trigger
-  it (a button alongside the existing review checkbox/notes) after confirming with the driver
-  that an alert is a false positive or has resolved. Not implemented in this pass.
 - A real-time push mechanism for `LiveOps.tsx` (currently polling, see backend section above).
+
+**Closed (2026-10-16): manual guardian de-escalation.** `POST /api/alerts/{id}/de-escalate`
+(root_admin/guardian only, target must be strictly lower, reason required, keeps
+`original_severity_level` and who/when/why) plus a "De-escalate severity" control in
+`RouteLiveView.tsx`'s alert tab. Covered by 3 new backend tests and a new `live-ops.spec.ts`
+Playwright spec. The full it-argus suite (15 specs) passed twice against a host-run stack (no Docker
+in that session). That run also fixed a stale spec that still clicked the removed "Low" filter chip.
 
 ## 5. `it-argus` (integration tests)
 
