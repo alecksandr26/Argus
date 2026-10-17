@@ -11,9 +11,11 @@ pip install -r src/tests/requirements.txt
 | What | Kind | Needs |
 |---|---|---|
 | `smoke_cv_argus.py` | script | nothing else |
-| `smoke_backend.py` | script | a running backend (`esp32_hil/bench_backend.py` is enough) |
+| `smoke_backend.py` | script | a running backend (`src/esp32-argus/test/hil/bench_backend.py` is enough) |
 | `edge_chain/` | pytest suite, cv-argus → simulated ESP32 → backend, in one process | nothing else. See its README.md |
-| `esp32_hil/` | bench test against the **real ESP32** over Bluetooth + WiFi | the ESP32 + a Windows PC. See its README.md |
+
+The bench test against the **real ESP32** lives with the firmware, in
+`src/esp32-argus/test/hil/` (own `requirements.txt`).
 
 Two standalone Python scripts, not pytest, not mocked — each one connects to a real,
 already-running piece of Argus and prints a readable `[ OK ]`/`[FAIL]` log per check, so you can
@@ -40,7 +42,7 @@ Stdlib only. It needs *some* backend-argus reachable over HTTP. The simplest is 
 bench backend, which is the real app on mongomock, with no Docker and no `mongod`:
 
 ```sh
-python src/tests/esp32_hil/bench_backend.py      # terminal 1
+python src/esp32-argus/test/hil/bench_backend.py   # terminal 1 (needs that folder's requirements.txt)
 python src/tests/smoke_backend.py                 # terminal 2
 ```
 
