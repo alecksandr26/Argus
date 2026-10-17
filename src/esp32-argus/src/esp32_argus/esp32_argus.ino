@@ -120,6 +120,9 @@ void setup() {
   delay(1000);
   Serial.println();
   Serial.println("==== Argus ESP32 -- Message Sender Orchestrator ====");
+  if (BENCH_FAKE_GPS) {
+    Serial.println("[main] WARNING: BENCH_FAKE_GPS is on -- reporting a fixed bench position");
+  }
 
   gpsBegin();
   panicButtonBegin();

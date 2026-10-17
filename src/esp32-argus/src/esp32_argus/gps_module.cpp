@@ -19,9 +19,9 @@ void gpsPoll() {
   }
 }
 
-bool gpsHasFix() { return gps.location.isValid(); }
-double gpsLatitude() { return gps.location.lat(); }
-double gpsLongitude() { return gps.location.lng(); }
+bool gpsHasFix() { return BENCH_FAKE_GPS || gps.location.isValid(); }
+double gpsLatitude() { return BENCH_FAKE_GPS ? BENCH_GPS_LAT : gps.location.lat(); }
+double gpsLongitude() { return BENCH_FAKE_GPS ? BENCH_GPS_LON : gps.location.lng(); }
 double gpsSpeedKmh() { return gps.speed.isValid() ? gps.speed.kmph() : 0.0; }
 uint32_t gpsSatellites() { return gps.satellites.isValid() ? gps.satellites.value() : 0; }
 
