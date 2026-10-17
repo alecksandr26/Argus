@@ -1,4 +1,4 @@
-# The repo root .gitignore ignores every `lib/` (Python packaging); this one is CDK source.
+# The repo-root .gitignore ignores every `lib/`; this package's stacks live in lib/.
 !lib/
 node_modules/
 cdk.out/
