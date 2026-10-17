@@ -228,6 +228,13 @@ one exists):
   original `medium` row's own `resolved_at` stays `null` forever. One `PUT` call on recovery, not
   one per row in the chain; the dashboard needs to treat the original row as closed via its
   `related_alert_id` link to the resolved row, not by querying `resolved_at` on it directly.
+- **Failed POSTs are retried, never dropped.** An alert stays owed until `recordAlertPosted()`
+  confirms it, and `update()` raises it again on every later tick until then, even after the
+  driver starts recovering. A newer raise (an escalation) replaces an older owed one. Without
+  this, a POST that failed while WiFi or the backend was down would never be sent again,
+  because the state machine had already confirmed that severity, and the next pulled record
+  would be ACKed with the alert lost. Caught by `src/tests/edge_chain/`. The C++ port has
+  host-compiled tests: `test/host/run.sh` (needs only `g++`).
 
 **Panic button bypasses all of the above** — a press is always `POST /api/alerts` with
 `source: "panic_button"`, `severity_level: "critical"`, `ai_metadata`/`grip_status` both

@@ -68,7 +68,8 @@ class FusionOrchestrator {
   FusionDecision update(const FusionReading& reading);
 
   // Call once, immediately after successfully POSTing an AlertToRaise this class
-  // returned. No-op if no incident is currently open (a benign race, not caller error).
+  // returned. Stops update() re-raising it (see _unposted). Otherwise a no-op if no
+  // incident is currently open (a benign race, not caller error).
   void recordAlertPosted(const String& alertId);
 
   // The severity of the most recently posted alert for the currently open incident (LOW
@@ -77,6 +78,7 @@ class FusionOrchestrator {
   Severity confirmedSeverity() const { return _confirmedSeverity; }
 
  private:
+  FusionDecision decide(const FusionReading& reading);
   FusionDecision handleWorsening(const FusionReading& reading, Severity instantaneous);
   FusionDecision handleSteady(const FusionReading& reading);
   FusionDecision handleImproving(const FusionReading& reading, Severity instantaneous);
@@ -95,4 +97,9 @@ class FusionOrchestrator {
 
   bool _hasRecoveringSince = false;
   float _recoveringSince = 0.0f;
+
+  // The last alert update() returned that recordAlertPosted() hasn't confirmed yet. update()
+  // keeps re-raising it every tick until then, so a failed POST is retried instead of lost.
+  // Mirrors fusion_contract.py's _unposted_alert.
+  AlertToRaise _unposted;
 };

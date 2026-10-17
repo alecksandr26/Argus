@@ -30,6 +30,18 @@ Severity baseMatrixSeverity(DrowsyState drowsy, GripState grip) {
 FusionOrchestrator::FusionOrchestrator(const FusionConfig& config) : _config(config) {}
 
 FusionDecision FusionOrchestrator::update(const FusionReading& reading) {
+  FusionDecision decision = decide(reading);
+  if (decision.alert.present) {
+    _unposted = decision.alert;  // a newer raise (e.g. an escalation) supersedes an older one
+  } else if (_unposted.present) {
+    // Still owed: without this, a failed POST is never retried (the state machine already
+    // confirmed this severity) and the alert is lost once the next record is ACKed.
+    decision.alert = _unposted;
+  }
+  return decision;
+}
+
+FusionDecision FusionOrchestrator::decide(const FusionReading& reading) {
   Severity instantaneous = baseMatrixSeverity(reading.drowsy, reading.grip);
   int confirmedRank = severityRank(_confirmedSeverity);
   int instantaneousRank = severityRank(instantaneous);
@@ -148,6 +160,7 @@ void FusionOrchestrator::recordAlertPosted(const String& alertId) {
   // two roles: read as related_alert_id on a later escalation, and read as
   // resolvedIncidentId at recovery. No-op if no incident is open -- a benign race (e.g. a
   // slow POST completing after the driver already recovered), not caller error.
+  _unposted.present = false;
   if (_confirmedSeverity == Severity::Low) return;
   _openIncidentId = alertId;
   _hasOpenIncident = true;

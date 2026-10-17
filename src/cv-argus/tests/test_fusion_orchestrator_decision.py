@@ -132,6 +132,7 @@ def test_escalation_before_escalation_seconds_elapsed_is_a_no_op():
     orch = _orch()
     orch.update(_medium_via_drowsy(at=0.0))
     orch.update(_medium_via_drowsy(at=2.0))  # confirms MEDIUM at t=2.0
+    orch.record_alert_posted("alert-1")
 
     decision = orch.update(_medium_via_drowsy(at=2.0 + _CONFIG.escalation_seconds - 0.1))
     assert decision.severity == Severity.MEDIUM
@@ -166,6 +167,7 @@ def test_partial_improvement_from_critical_to_medium_does_not_deescalate():
     orch = _orch()
     orch.update(_critical(at=0.0))
     orch.update(_critical(at=2.0))  # confirms CRITICAL
+    orch.record_alert_posted("alert-1")
 
     decision = orch.update(_medium_via_drowsy(at=3.0))
     assert decision.severity == Severity.CRITICAL
@@ -287,6 +289,7 @@ def test_repeated_readings_at_steady_state_are_no_ops():
     orch = _orch()
     orch.update(_medium_via_grip(at=0.0))
     orch.update(_medium_via_grip(at=2.0))  # confirms MEDIUM
+    orch.record_alert_posted("alert-1")
 
     for t in (3.0, 5.0, 7.0, 9.0):  # all below escalation_seconds from t=2.0 (-> 12.0)
         decision = orch.update(_medium_via_grip(at=t))
@@ -334,3 +337,44 @@ def test_full_lifecycle_low_to_medium_to_critical_to_recovered_to_low():
     )
     assert decisions[6].resolved_incident_id == escalation_id
     assert decisions[7].alert is None  # the fresh incident hasn't debounced in yet
+
+
+# --- unposted alerts are retried, never dropped ---------------------------------------------
+# The state machine confirms a severity when it first raises the alert. If the caller's POST
+# then fails, nothing about the *readings* changes, so without this the alert would never be
+# raised again and the caller would ACK the next reading, losing it for good. Found by
+# src/tests/edge_chain/.
+
+
+def test_an_unposted_alert_is_re_raised_on_every_tick_until_posted():
+    orch = _orch()
+    orch.update(_critical(at=0.0))
+    first = orch.update(_critical(at=2.0)).alert
+    assert first is not None  # POST of this one "fails": record_alert_posted not called
+
+    for t in (3.0, 4.0):
+        decision = orch.update(_critical(at=t))
+        assert decision.alert == first
+        assert decision.severity == Severity.CRITICAL
+
+    orch.record_alert_posted("alert-1")
+    assert orch.update(_critical(at=5.0)).alert is None
+
+
+def test_an_unposted_alert_is_still_re_raised_after_the_driver_improves():
+    orch = _orch()
+    orch.update(_critical(at=0.0))
+    first = orch.update(_critical(at=2.0)).alert
+
+    assert orch.update(_medium_via_drowsy(at=3.0)).alert == first  # partial improvement
+    assert orch.update(_good(at=4.0)).alert == first  # recovery in progress
+
+
+def test_an_escalation_supersedes_an_older_unposted_alert():
+    orch = _orch()
+    orch.update(_medium_via_grip(at=0.0))
+    orch.update(_medium_via_grip(at=2.0))  # MEDIUM raised, never posted
+
+    escalation = orch.update(_medium_via_grip(at=2.0 + _CONFIG.escalation_seconds)).alert
+    assert escalation is not None and escalation.severity_level == Severity.CRITICAL
+    assert orch.update(_medium_via_grip(at=13.0)).alert == escalation
