@@ -238,3 +238,4 @@ dist-ssr/
 *.local
 npm-debug.log*
 .vite/
+.claude/worktrees/
