@@ -32,6 +32,13 @@ firmware actually does with it.
 | `fusion.*` | `FusionOrchestrator` — a 1:1 C++ port of `cv-argus`'s `fusion_contract.py` (section 5) |
 | `panic_button.*` / `grip_sensor.*` | debounced digital-input wrappers; GPIO pins are placeholders (see `config.h`) — real hardware mapping isn't finalized |
 
+`src/Codigo_SMS_GPS/Codigo_SMS_GPS.ino` is the original standalone SIM800L + NEO-6M
+prototype this firmware grew out of: it waits for a GPS fix and sends one emergency SMS with a
+Google Maps link. It isn't part of the deployed firmware. Keep it as a **hardware bring-up
+sketch**: flash it first on a new harness to confirm the modem, SIM, and GPS wiring work
+before debugging the full multi-module firmware. Its pins and destination number match
+`config.h`.
+
 **Network-path decision, confirmed directly with the user:** this device's WiFi radio is the
 transport for both `backend-argus` HTTP calls and (once pulled) relaying `cv-argus` records
 onward — reusing a mobile-network-backed WiFi connection, not the SIM800L's own GPRS data
