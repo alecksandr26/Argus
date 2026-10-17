@@ -86,7 +86,16 @@ class Alert(Document):
     media_url: Optional[str] = None
     coordinates: GeoJSONPoint
     speed_at_event: float
+    # When the event happened (the device's occurred_at, else server receive time) -- what
+    # every "when" in the UI means. received_at is when this backend got it; the gap is how
+    # long the record sat in a backlog. time_source says which clock `timestamp` came from.
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    received_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    time_source: str = "server"
+    location_source: str = "gps"
+    location_accuracy_m: Optional[float] = None
+    # Device-side id of the event; a retried POST with the same id returns this row (BE-06).
+    client_event_id: Optional[str] = None
     # ER diagram spells this `reviwed_by_operator` — fixed here, see models/common.py's docstring.
     reviewed_by_operator: bool = False
     operator_notes: str = ""
@@ -100,6 +109,9 @@ class Alert(Document):
         name = "alerts"
         indexes = [
             pymongo.IndexModel([("id_route", pymongo.ASCENDING)]),
+            pymongo.IndexModel(
+                [("id_route", pymongo.ASCENDING), ("client_event_id", pymongo.ASCENDING)]
+            ),
             pymongo.IndexModel([("severity_level", pymongo.ASCENDING)]),
             pymongo.IndexModel([("source", pymongo.ASCENDING)]),
             pymongo.IndexModel([("reviewed_by_operator", pymongo.ASCENDING)]),

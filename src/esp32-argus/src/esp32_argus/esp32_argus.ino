@@ -30,6 +30,7 @@
 namespace {
 FusionOrchestrator fusion;
 unsigned long lastBtPollAt = 0;
+unsigned long lastGpsLogAt = 0;
 }  // namespace
 
 // Called once per record bluetoothPullAlerts() pulls off the Pi. Returns true iff the
@@ -120,6 +121,9 @@ void setup() {
   delay(1000);
   Serial.println();
   Serial.println("==== Argus ESP32 -- Message Sender Orchestrator ====");
+  if (BENCH_FAKE_GPS) {
+    Serial.println("[main] WARNING: BENCH_FAKE_GPS is on -- reporting a fixed bench position");
+  }
 
   gpsBegin();
   panicButtonBegin();
@@ -139,6 +143,11 @@ void loop() {
   wifiEnsureConnected();
 
   unsigned long now = millis();
+  if (now - lastGpsLogAt >= GPS_LOG_INTERVAL_MS) {
+    lastGpsLogAt = now;
+    gpsLogStatus();
+  }
+
   if (now - lastBtPollAt >= PI_BT_POLL_INTERVAL_MS) {
     lastBtPollAt = now;
     int pulled = bluetoothPullAlerts(handlePiRecord);

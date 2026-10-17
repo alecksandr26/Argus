@@ -26,6 +26,9 @@ from .transport import Listener, Transport
 
 logger = logging.getLogger(__name__)
 
+_MIN_ACCEPT_BACKOFF_S = 0.1
+_MAX_ACCEPT_BACKOFF_S = 5.0
+
 
 class SenderServer:
     """`start()`/`stop()`/`join()`/`is_alive` mirror `pipeline.stage.Pipeline`'s naming, same
@@ -34,10 +37,18 @@ class SenderServer:
     `Pipeline`/`Stage` subclass.
     """
 
-    def __init__(self, buffer: Buffer, listener: Listener, *, accept_timeout: float = 1.0) -> None:
+    def __init__(
+        self,
+        buffer: Buffer,
+        listener: Listener,
+        *,
+        accept_timeout: float = 1.0,
+        ack_timeout: float = 10.0,
+    ) -> None:
         self._buffer = buffer
         self._listener = listener
         self._accept_timeout = accept_timeout
+        self._ack_timeout = ack_timeout
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -59,8 +70,18 @@ class SenderServer:
         return self._thread is not None and self._thread.is_alive()
 
     def _run(self) -> None:
+        backoff = _MIN_ACCEPT_BACKOFF_S
         while not self._stop_event.is_set():
-            transport = self._listener.accept(timeout=self._accept_timeout)
+            try:
+                transport = self._listener.accept(timeout=self._accept_timeout)
+            except Exception:
+                # A Bluetooth adapter reset / bluetoothd restart surfaces here. Retrying with a
+                # backoff keeps the sender alive instead of silently ending the thread (SND-10).
+                logger.exception("sender: accept failed, retrying in %.1fs", backoff)
+                self._stop_event.wait(backoff)
+                backoff = min(backoff * 2, _MAX_ACCEPT_BACKOFF_S)
+                continue
+            backoff = _MIN_ACCEPT_BACKOFF_S
             if transport is None:
                 continue
             try:
@@ -78,9 +99,16 @@ class SenderServer:
         line = transport.readline(timeout=5.0)
         if line is None:
             return
-        n = protocol.parse_pull(line.decode())
+        request = line.decode()
+        ack_ids = protocol.parse_ack(request)
+        if ack_ids is not None:
+            # A standalone ACK for rows pulled in an earlier session (see protocol.py).
+            updated = self._buffer.mark_sent(ack_ids)
+            transport.write((protocol.format_acked(updated) + "\n").encode())
+            return
+        n = protocol.parse_pull(request)
         if n is None:
-            logger.debug("sender: malformed request %r, dropping session", line)
+            logger.warning("sender: malformed request %r, dropping session", line[:80])
             return
 
         alerts = self._buffer.fetch_unsent(limit=n)
@@ -90,7 +118,7 @@ class SenderServer:
         if not alerts:
             return  # nothing to ack
 
-        ack_line = transport.readline(timeout=10.0)
+        ack_line = transport.readline(timeout=self._ack_timeout)
         if ack_line is None:
             # Disconnected before ACK -- see the module docstring: nothing gets marked sent, so
             # these rows are safely re-served on the next PULL.

@@ -1,0 +1,25 @@
+# Venv for the ESP32 bench test (this folder). No Docker, no MongoDB.
+# Use Python 3.12 (backend-argus's own version). Newer Pythons, like 3.14, have no wheels yet
+# for some of these pins. On Windows (Bluetooth + COM ports aren't reachable from WSL):
+#
+#   py -3.12 -m venv .venv
+#   .venv\Scripts\activate
+#   pip install -r src\esp32-argus\test\hil\requirements.txt
+
+# backend-argus's real app, imported from source. Same pins as src/backend-argus/requirements.txt.
+fastapi==0.115.6
+uvicorn==0.34.0
+beanie==1.29.0
+motor==3.6.0
+pydantic[email]==2.10.4
+pydantic-settings==2.7.0
+bcrypt==4.2.1
+PyJWT==2.10.1
+python-dotenv==1.0.1
+
+# In-memory MongoDB stand-in for bench_backend.py + HTTP client for the checks.
+mongomock-motor==0.0.35
+httpx==0.28.1
+
+# The PC side of the Bluetooth SPP link, through Windows' "incoming" COM port.
+pyserial==3.5

@@ -6,7 +6,7 @@ from typing import Optional
 from pydantic import BaseModel, EmailStr
 
 from app.models.common import Role
-from app.schemas.common import Sha256HexDigest
+from app.schemas.common import Sha256HexDigest, UtcDatetime
 
 
 class UserCreate(BaseModel):
@@ -37,6 +37,6 @@ class UserOut(BaseModel):
     last_name: str
     phone_number: str
     is_active: bool
-    last_login: Optional[datetime]
-    created_at: datetime
-    updated_at: datetime
+    last_login: Optional[UtcDatetime]
+    created_at: UtcDatetime
+    updated_at: UtcDatetime

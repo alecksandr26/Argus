@@ -6,6 +6,7 @@ from typing import Optional
 from pydantic import BaseModel
 
 from app.models.common import TruckStatus
+from app.schemas.common import UtcDatetime
 
 
 class TruckCreate(BaseModel):
@@ -37,5 +38,5 @@ class TruckOut(BaseModel):
     raspberry_pi_mac: Optional[str]
     esp32_id: Optional[str]
     operative_status: TruckStatus
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
