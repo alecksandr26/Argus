@@ -95,6 +95,10 @@ def status_route_out(doc: StatusRoute) -> StatusRouteOut:
         odometer=doc.odometer,
         vigilance=doc.vigilance,
         timestamp=doc.timestamp,
+        received_at=doc.received_at,
+        time_source=doc.time_source,
+        location_source=doc.location_source,
+        location_accuracy_m=doc.location_accuracy_m,
     )
 
 
@@ -132,6 +136,11 @@ def alert_out(doc: Alert) -> AlertOut:
         coordinates=to_latlon(doc.coordinates),
         speed_at_event=doc.speed_at_event,
         timestamp=doc.timestamp,
+        received_at=doc.received_at,
+        time_source=doc.time_source,
+        location_source=doc.location_source,
+        location_accuracy_m=doc.location_accuracy_m,
+        client_event_id=doc.client_event_id,
         reviewed_by_operator=doc.reviewed_by_operator,
         operator_notes=doc.operator_notes,
     )

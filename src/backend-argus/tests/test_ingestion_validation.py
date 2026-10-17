@@ -13,7 +13,6 @@ from app.models.route import Route
 from tests.conftest import auth_headers, fusion_alert_body, status_body
 
 
-@pytest.mark.xfail(strict=True, reason="BE-02: PydanticObjectId(id_route) raises -> 500")
 @pytest.mark.parametrize("bad_id", ["CHANGE_ME", "123"])
 async def test_alert_with_malformed_id_route_is_404_not_500(api_client, rig_a, bad_id):
     resp = await api_client.post(
@@ -34,7 +33,6 @@ async def test_status_on_malformed_route_path_id_is_404(api_client, rig_a):
     assert resp.status_code == 404
 
 
-@pytest.mark.xfail(strict=True, reason="BE-02: a route with a bad id_truck 500s /routes/active")
 async def test_route_with_malformed_id_truck_does_not_break_active_routes(
     api_client, root_admin, rig_a
 ):
@@ -52,7 +50,6 @@ async def test_route_with_malformed_id_truck_does_not_break_active_routes(
     assert rig_a.route_id in [r["id_route"] for r in resp.json()]
 
 
-@pytest.mark.xfail(strict=True, reason="BE-02: route create doesn't check truck/driver exist")
 async def test_create_route_rejects_nonexistent_truck_and_driver_ids(api_client, root_admin):
     resp = await api_client.post(
         "/api/routes",
@@ -77,7 +74,6 @@ BAD_COORDINATES = [
 ]
 
 
-@pytest.mark.xfail(strict=True, reason="BE-03: Coordinates has no ranges; GeoJSONPoint 500s")
 @pytest.mark.parametrize("coords", BAD_COORDINATES)
 async def test_alert_with_out_of_range_coordinates_is_422(api_client, rig_a, coords):
     resp = await api_client.post(
@@ -88,7 +84,6 @@ async def test_alert_with_out_of_range_coordinates_is_422(api_client, rig_a, coo
     assert resp.status_code == 422
 
 
-@pytest.mark.xfail(strict=True, reason="BE-03: Coordinates has no ranges; GeoJSONPoint 500s")
 @pytest.mark.parametrize("coords", BAD_COORDINATES)
 async def test_status_with_out_of_range_coordinates_is_422(api_client, rig_a, coords):
     resp = await api_client.post(
@@ -99,7 +94,6 @@ async def test_status_with_out_of_range_coordinates_is_422(api_client, rig_a, co
     assert resp.status_code == 422
 
 
-@pytest.mark.xfail(strict=True, reason="BE-03: NaN/Infinity coordinates are not rejected")
 @pytest.mark.parametrize("raw_value", ["NaN", "Infinity", "-Infinity"])
 async def test_non_finite_coordinates_are_422(api_client, rig_a, raw_value):
     # json= can't encode NaN, so send the raw text the way a sloppy client would.
@@ -115,7 +109,6 @@ async def test_non_finite_coordinates_are_422(api_client, rig_a, raw_value):
     assert resp.status_code == 422
 
 
-@pytest.mark.xfail(strict=True, reason="BE-25: speed/odometer have no range checks")
 @pytest.mark.parametrize(
     "overrides", [{"current_speed": -5.0}, {"odometer": -1.0}], ids=["speed", "odometer"]
 )
@@ -128,7 +121,6 @@ async def test_negative_speed_and_odometer_are_422(api_client, rig_a, overrides)
     assert resp.status_code == 422
 
 
-@pytest.mark.xfail(strict=True, reason="BE-25: speed_at_event has no range check")
 async def test_negative_speed_at_event_is_422(api_client, rig_a):
     resp = await api_client.post(
         "/api/alerts",
@@ -182,13 +174,11 @@ async def _post_alert(api_client, rig, **overrides) -> dict:
     return resp.json()
 
 
-@pytest.mark.xfail(strict=True, reason="FUS-07/X-12: firmware sends related_alert_id '' ")
 async def test_related_alert_id_empty_string_stored_as_null(api_client, rig_a):
     alert = await _post_alert(api_client, rig_a, related_alert_id="")
     assert alert["related_alert_id"] is None
 
 
-@pytest.mark.xfail(strict=True, reason="BE-13: related_alert_id isn't checked to exist")
 async def test_related_alert_id_must_exist(api_client, rig_a):
     resp = await api_client.post(
         "/api/alerts",
@@ -198,7 +188,6 @@ async def test_related_alert_id_must_exist(api_client, rig_a):
     assert resp.status_code == 422
 
 
-@pytest.mark.xfail(strict=True, reason="BE-13: related_alert_id may point at another route")
 async def test_related_alert_id_must_be_on_the_same_route(api_client, rig_a, rig_b):
     other = await _post_alert(api_client, rig_b)
     resp = await api_client.post(

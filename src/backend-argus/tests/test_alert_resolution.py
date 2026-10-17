@@ -22,7 +22,6 @@ async def _get(api_client, user, alert_id) -> dict:
     return (await api_client.get(f"/api/alerts/{alert_id}", headers=auth_headers(user))).json()
 
 
-@pytest.mark.xfail(strict=True, reason="BE-09: no POST resolve endpoint (SIM800L can't PUT)")
 async def test_post_resolve_by_device_key(api_client, root_admin, rig_a):
     alert = await _alert(api_client, rig_a)
     resp = await api_client.post(
@@ -34,7 +33,6 @@ async def test_post_resolve_by_device_key(api_client, root_admin, rig_a):
     assert (await _get(api_client, root_admin, alert["id_alert"]))["resolved_at"] is not None
 
 
-@pytest.mark.xfail(strict=True, reason="BE-09: no POST resolve endpoint (SIM800L can't PUT)")
 async def test_post_resolve_with_other_trucks_key_is_401(api_client, rig_a, rig_b):
     alert = await _alert(api_client, rig_a)
     resp = await api_client.post(
@@ -45,7 +43,6 @@ async def test_post_resolve_with_other_trucks_key_is_401(api_client, rig_a, rig_
     assert resp.status_code == 401
 
 
-@pytest.mark.xfail(strict=True, reason="BE-09: no POST resolve endpoint (SIM800L can't PUT)")
 async def test_post_resolve_unknown_alert_is_404(api_client, rig_a):
     resp = await api_client.post(
         "/api/alerts/64b0a00000000000000000aa/resolve",
@@ -56,7 +53,6 @@ async def test_post_resolve_unknown_alert_is_404(api_client, rig_a):
     assert resp.json()["detail"] == "Alert not found"  # not a missing endpoint
 
 
-@pytest.mark.xfail(strict=True, reason="BE-10: a second resolve overwrites the first resolved_at")
 async def test_resolve_twice_keeps_first_resolved_at(api_client, root_admin, rig_a):
     alert = await _alert(api_client, rig_a)
     for when in ("2030-01-01T09:00:00Z", "2030-01-01T10:00:00Z"):
@@ -68,7 +64,6 @@ async def test_resolve_twice_keeps_first_resolved_at(api_client, root_admin, rig
     assert resolved.startswith("2030-01-01T09:00:00")
 
 
-@pytest.mark.xfail(strict=True, reason="BE-11: resolved_at earlier than the alert is accepted")
 async def test_resolved_at_before_alert_timestamp_is_422(api_client, rig_a):
     alert = await _alert(api_client, rig_a)
     resp = await api_client.put(
@@ -79,7 +74,6 @@ async def test_resolved_at_before_alert_timestamp_is_422(api_client, rig_a):
     assert resp.status_code == 422
 
 
-@pytest.mark.xfail(strict=True, reason="BE-11: a naive (no timezone) resolved_at is accepted")
 async def test_naive_resolved_at_is_422(api_client, rig_a):
     alert = await _alert(api_client, rig_a)
     resp = await api_client.put(
@@ -90,7 +84,6 @@ async def test_naive_resolved_at_is_422(api_client, rig_a):
     assert resp.status_code == 422
 
 
-@pytest.mark.xfail(strict=True, reason="BE-12: resolving an escalation leaves the original open")
 async def test_resolving_escalation_closes_linked_original(api_client, root_admin, rig_a):
     original = await _alert(api_client, rig_a, severity_level="medium", grip_status="good")
     escalation = await _alert(api_client, rig_a, related_alert_id=original["id_alert"])
