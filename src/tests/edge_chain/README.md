@@ -17,11 +17,10 @@ look like once they land in the backend.
 
 ## Running it
 
-Needs backend-argus's requirements plus `numpy` (cv-argus's `orchestrator` package imports it).
-No Docker, no MongoDB, no TensorFlow/MediaPipe.
+From the `src/tests` venv (see `../README.md`). No Docker, no MongoDB, no TensorFlow/MediaPipe.
 
 ```sh
-pip install -r src/backend-argus/requirements.txt numpy
+pip install -r src/tests/requirements.txt
 cd src/tests/edge_chain && pytest
 ```
 
