@@ -152,6 +152,30 @@ suite (the new validator and the resolve-vs-review device-key authorization spli
 - No decided real-time push strategy for the live dashboard (currently: `ui-argus` polls
   `GET /api/routes/active` every 7s).
 
+**Also done (on branch `worktree-aws-cdk-deploy`, not yet merged)**: root_admin-only
+`/api/simulator` on/off control for the AWS demo deployment's on-demand simulator, with the
+backend's share of the cost guardrails (fixed 10-minute sessions, one at a time, 12
+sessions/month). See section 3b and `src/backend-argus/CLAUDE.md`'s "Simulator control".
+
+## 3b. `infra-argus` (AWS demo deployment, CDK)
+
+**Written and tested, not yet deployed** (branch `worktree-aws-cdk-deploy`): a TypeScript CDK app
+deploying backend-argus to Lambda (unchanged image + Lambda Web Adapter), ui-argus to S3 +
+CloudFront (one distribution, `/api/*` → Lambda), MongoDB Atlas M0, and the simulator + OSRM as
+an on-demand Fargate Spot task, all under hard cost guardrails (R1–R10 in
+`src/infra-argus/README.md`; ≈ $0.30/month estimated). Verified: 34 synth-time assertion tests
+(no NAT/ALB/EC2/RDS/…, Spot only, 10-minute clamp, reaper, budget action, log retention,
+Function URL permissions), Lambda unit tests, the backend's simulator tests, and the UI toggle's
+tests.
+
+**Missing**:
+- A real `cdk deploy` against an AWS account (none was available): first-deploy verification
+  of the Lambda Web Adapter, OSRM-on-Fargate startup time, Spot availability, and the budget
+  action firing.
+- OSRM for the *product* route/ETA feature still needs an always-on OSRM, so it stays deferred
+  under the cost constraint.
+- No custom domain and no CI/CD.
+
 ## 4. `ui-argus`
 
 **Every screen now calls the real backend** — the fixture-era gap this section used to describe
