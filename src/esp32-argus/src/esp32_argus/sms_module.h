@@ -15,4 +15,6 @@ void smsBegin();
 // later (e.g. retried from the panic handler) if it failed once.
 bool smsWaitForNetwork();
 
-bool smsSendPanicAlert(double lat, double lon);
+// Without a GPS fix the SMS still goes out, but says the location is unavailable instead
+// of linking to a meaningless 0,0 (the original prototype refused to send at all).
+bool smsSendPanicAlert(bool hasFix, double lat, double lon);
