@@ -77,7 +77,6 @@ async def test_missing_or_empty_key_is_401(api_client, rig_a, header):
     assert resp.status_code == 401
 
 
-@pytest.mark.xfail(strict=True, reason="BE-16: authenticated user with the wrong role gets 401")
 async def test_admin_jwt_posting_alert_is_403_not_401(api_client, admin_user, rig_a):
     resp = await api_client.post(
         "/api/alerts", json=fusion_alert_body(rig_a.route_id), headers=auth_headers(admin_user)
@@ -85,7 +84,6 @@ async def test_admin_jwt_posting_alert_is_403_not_401(api_client, admin_user, ri
     assert resp.status_code == 403
 
 
-@pytest.mark.xfail(strict=True, reason="BE-16: authenticated user with the wrong role gets 401")
 async def test_truck_driver_jwt_posting_status_is_403_not_401(
     api_client, truck_driver_user, rig_a
 ):
@@ -116,14 +114,12 @@ async def _seed_status(api_client, rig) -> None:
     assert resp.status_code == 201
 
 
-@pytest.mark.xfail(strict=True, reason="BE-01: GET route status needs no auth (leaks location)")
 async def test_get_route_status_without_token_is_401(api_client, rig_a):
     await _seed_status(api_client, rig_a)
     resp = await api_client.get(f"/api/routes/{rig_a.route_id}/status")
     assert resp.status_code == 401
 
 
-@pytest.mark.xfail(strict=True, reason="BE-01: GET route status needs no auth (leaks location)")
 async def test_get_route_status_with_device_key_only_is_401(api_client, rig_a):
     await _seed_status(api_client, rig_a)
     resp = await api_client.get(f"/api/routes/{rig_a.route_id}/status", headers=rig_a.headers)

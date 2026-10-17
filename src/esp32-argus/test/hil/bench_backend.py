@@ -25,7 +25,7 @@ import uvicorn
 from mongomock_motor import AsyncMongoMockClient
 
 import app.main as backend_main
-from app.auth.security import hash_secret
+from app.auth.security import hash_secret, key_fingerprint
 from app.database import init_db as _real_init_db
 from app.geo import GeoJSONPoint
 from app.models.common import DriverStatus, RouteStatus, TruckStatus
@@ -50,6 +50,7 @@ async def _seed() -> None:
         company_number="UNIT-BENCH-001",
         operative_status=TruckStatus.ACTIVE,
         device_api_key_hash=hash_secret(DEVICE_API_KEY),
+        device_api_key_fingerprint=key_fingerprint(DEVICE_API_KEY),
     ).insert()
     await Driver(
         id=PydanticObjectId(DRIVER_ID),

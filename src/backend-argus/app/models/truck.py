@@ -20,9 +20,13 @@ class Truck(TimestampedDocument):
     # user login (see the backend CLAUDE.md's "Auth design" section). bcrypt-hashed, never
     # returned by any endpoint; the plaintext key is shown exactly once, at generation time.
     device_api_key_hash: Optional[str] = None
+    # SHA-256 of the same key (`app.auth.security.key_fingerprint`), indexed, so a device can be
+    # identified from its key alone. None for keys issued before this field existed.
+    device_api_key_fingerprint: Optional[str] = None
 
     class Settings:
         name = "trucks"
         indexes = [
             pymongo.IndexModel([("plate_number", pymongo.ASCENDING)], unique=True),
+            pymongo.IndexModel([("device_api_key_fingerprint", pymongo.ASCENDING)]),
         ]

@@ -1,41 +1,78 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from beanie import PydanticObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.auth.dependencies import (
-    authorize_device_or_user,
     get_current_user,
     get_current_user_optional,
     get_device_api_key,
     require_role,
 )
-from app.auth.security import verify_secret
 from app.geo import to_geojson
+from app.ids import get_by_id, get_or_404
+from app.ingestion import INGESTION_ROLES, authorize_route_access, authorize_route_write
 from app.models.alert import Alert
 from app.models.common import AlertSource, Role, Severity
 from app.models.route import Route
-from app.models.truck import Truck
 from app.models.user import User
-from app.schemas.alert import AlertCreate, AlertDeescalate, AlertOut, AlertReview
+from app.schemas.alert import AlertCreate, AlertDeescalate, AlertOut, AlertResolve, AlertReview
 from app.schemas.common import Message
 from app.serializers import alert_out
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
+# How much earlier than the alert's own timestamp a resolved_at may be (device and server
+# clocks disagree a little); anything earlier is a bad value, not clock skew (BE-11).
+RESOLVE_CLOCK_SKEW = timedelta(seconds=60)
+
 
 async def _get_or_404(alert_id: str) -> Alert:
-    try:
-        oid = PydanticObjectId(alert_id)
-    except Exception:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Alert not found")
-    alert = await Alert.get(oid)
-    if alert is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Alert not found")
-    return alert
+    return await get_or_404(Alert, alert_id, "Alert")
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+async def _check_related_alert(body: AlertCreate) -> None:
+    """An escalation must point at an existing alert on the same route (BE-13)."""
+    if body.related_alert_id is None:
+        return
+    original = await get_by_id(Alert, body.related_alert_id)
+    if original is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "related_alert_id not found")
+    if original.id_route != body.id_route:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "related_alert_id is on a different route"
+        )
+
+
+async def _resolve(alert: Alert, resolved_at: datetime) -> None:
+    """Marks `alert` resolved, then every earlier alert its escalation chain links back to.
+
+    Idempotent: an alert already resolved keeps its first `resolved_at` (BE-10), so a device
+    retrying a resolve it already delivered changes nothing. Only the newest row of an escalated
+    incident gets the device's resolve; the originals it escalated from are closed with it here
+    (BE-12), so no row of a recovered incident shows as ongoing."""
+    if resolved_at.tzinfo is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "resolved_at must include a timezone (UTC)"
+        )
+    if resolved_at < _as_utc(alert.timestamp) - RESOLVE_CLOCK_SKEW:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "resolved_at is earlier than the alert itself"
+        )
+    seen: set[str] = set()
+    current: Optional[Alert] = alert
+    while current is not None and str(current.id) not in seen:
+        seen.add(str(current.id))
+        if current.resolved_at is None:
+            current.resolved_at = resolved_at
+            await current.save()
+        current = await get_by_id(Alert, current.related_alert_id)
 
 
 @router.get("", response_model=list[AlertOut], dependencies=[Depends(get_current_user)])
@@ -66,23 +103,26 @@ async def get_alert(alert_id: str) -> AlertOut:
 @router.post("", response_model=AlertOut, status_code=status.HTTP_201_CREATED)
 async def create_alert(
     body: AlertCreate,
+    response: Response,
     user: User | None = Depends(get_current_user_optional),
     device_key: str | None = Depends(get_device_api_key),
 ) -> AlertOut:
-    """Ingestion endpoint the ESP32 calls after polling a `drowsiness` record off the Pi's
-    Bluetooth buffer and attaching its own GPS reading. See `status_routes.py`'s `post_status`
-    for the identical device-or-user authorization shape, and the backend CLAUDE.md's
-    "Coordination note" for exactly what cv-argus's envelope does/doesn't carry."""
-    route = await Route.get(PydanticObjectId(body.id_route)) if body.id_route else None
-    if route is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Route not found")
-    truck = await Truck.get(PydanticObjectId(route.id_truck)) if route.id_truck else None
-    await authorize_device_or_user(
-        truck=truck,
-        device_key=device_key,
-        user=user,
-        allowed_roles=(Role.ROOT_ADMIN, Role.GUARDIAN),
-    )
+    """Ingestion endpoint the ESP32 calls with a fused (or panic) alert, its own GPS reading
+    attached. See `status_routes.py`'s `post_status` for the identical device-or-user
+    authorization shape, and the backend CLAUDE.md's "Coordination note" for exactly what
+    cv-argus's envelope does/doesn't carry. A retry with the same `client_event_id` returns the
+    stored alert with 200 instead of a duplicate (BE-06)."""
+    route = await get_or_404(Route, body.id_route, "Route")
+    await authorize_route_write(route, device_key, user)
+
+    if body.client_event_id:
+        existing = await Alert.find_one(
+            Alert.id_route == body.id_route, Alert.client_event_id == body.client_event_id
+        )
+        if existing is not None:
+            response.status_code = status.HTTP_200_OK
+            return alert_out(existing)
+    await _check_related_alert(body)
 
     alert = Alert(
         id_route=body.id_route,
@@ -95,6 +135,11 @@ async def create_alert(
         media_url=body.media_url,
         coordinates=to_geojson(body.coordinates),
         speed_at_event=body.speed_at_event,
+        timestamp=body.event_time(),
+        time_source=body.time_source,
+        location_source=body.location_source,
+        location_accuracy_m=body.location_accuracy_m,
+        client_event_id=body.client_event_id,
     )
     await alert.insert()
     return alert_out(alert)
@@ -113,20 +158,8 @@ async def review_alert(
     fields — see the backend CLAUDE.md's "Coordination note" for why the ESP32, not a human, is
     what detects recovery."""
     alert = await _get_or_404(alert_id)
-    route = await Route.get(PydanticObjectId(alert.id_route)) if alert.id_route else None
-    truck = (
-        await Truck.get(PydanticObjectId(route.id_truck))
-        if route is not None and route.id_truck
-        else None
-    )
-
-    is_device = bool(
-        device_key
-        and truck is not None
-        and truck.device_api_key_hash
-        and verify_secret(device_key, truck.device_api_key_hash)
-    )
-    is_privileged_user = user is not None and user.role in (Role.ROOT_ADMIN, Role.GUARDIAN)
+    is_device = await _is_alerts_own_device(alert, device_key)
+    is_privileged_user = user is not None and user.role in INGESTION_ROLES
 
     if is_device:
         if body.reviewed_by_operator is not None or body.operator_notes is not None:
@@ -152,10 +185,39 @@ async def review_alert(
         alert.reviewed_by_operator = body.reviewed_by_operator
     if body.operator_notes is not None:
         alert.operator_notes = body.operator_notes
-    if body.resolved_at is not None:
-        alert.resolved_at = body.resolved_at
     await alert.save()
+    if body.resolved_at is not None:
+        await _resolve(alert, body.resolved_at)
     return alert_out(alert)
+
+
+async def _is_alerts_own_device(alert: Alert, device_key: Optional[str]) -> bool:
+    route = await get_by_id(Route, alert.id_route)
+    if route is None or not device_key:
+        return False
+    try:
+        return await authorize_route_access(route, device_key, None)
+    except HTTPException:
+        return False
+
+
+@router.post("/{alert_id}/resolve", response_model=AlertOut)
+async def resolve_alert(
+    alert_id: str,
+    body: AlertResolve,
+    user: User | None = Depends(get_current_user_optional),
+    device_key: str | None = Depends(get_device_api_key),
+) -> AlertOut:
+    """The device marking a fused incident recovered: a POST twin of `PUT`'s `resolved_at`,
+    since the SIM800L's HTTP stack can't send PUT (BE-09). Same callers as that path: the
+    alert's own truck's device key, or a root_admin/guardian."""
+    alert = await _get_or_404(alert_id)
+    route = await get_by_id(Route, alert.id_route)
+    if route is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Alert's route not found")
+    await authorize_route_access(route, device_key, user)
+    await _resolve(alert, body.resolved_at)
+    return alert_out(await _get_or_404(alert_id))
 
 
 @router.post("/{alert_id}/de-escalate", response_model=AlertOut)

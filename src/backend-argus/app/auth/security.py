@@ -9,6 +9,7 @@ narrower-scope library FastAPI's own current docs point to.
 """
 from __future__ import annotations
 
+import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -31,6 +32,14 @@ def verify_secret(plaintext: str, hashed: str) -> bool:
     except ValueError:
         # Malformed/empty stored hash (e.g. a truck that never had a key issued) -> never match.
         return False
+
+
+def key_fingerprint(plaintext: str) -> str:
+    """An indexable lookup handle for a device key: SHA-256 of the key. Lets the backend find
+    *which* truck a key belongs to (`GET /api/devices/me/active-route`) with one indexed query
+    instead of a bcrypt check against every truck. Not a substitute for the bcrypt hash, which
+    still has to verify; the key itself is 32 random bytes, so a fast hash leaks nothing useful."""
+    return hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
 
 
 def generate_device_api_key() -> str:
