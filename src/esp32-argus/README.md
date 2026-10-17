@@ -25,7 +25,7 @@ firmware actually does with it.
 | `esp32_argus.ino` | `setup()`/`loop()` — wires every module together; `handlePiRecord()` (dispatches a pulled record to the fusion engine or straight to a route-status POST) and `handlePanicButton()` live here |
 | `config.h` | every pin, timing constant, and per-deployment placeholder (WiFi creds, backend URL, device API key, route id, the Pi's Bluetooth MAC) — see "Before you flash this" below |
 | `gps_module.*` | NEO-6M over `TinyGPSPlus` — lat/lon/speed/satellite count, plus a GPS-derived UTC timestamp (`gpsUtcIso8601()`) used for `Alert.resolved_at`, so this device never needs an NTP-synced clock |
-| `sms_module.*` | SIM800L via `TinyGsm` — **SMS only**. Deliberately *not* this device's data transport (see the network-path decision below); kept purely as the panic button's hardware-direct fallback |
+| `sms_module.*` | SIM800L via raw AT commands (no TinyGsm — see that file's comment) — **SMS only**. Deliberately *not* this device's data transport (see the network-path decision below); kept purely as the panic button's hardware-direct fallback |
 | `wifi_client.*` | this device's main transport — joins a mobile-network-backed WiFi link (not the SIM800L's own GPRS), with non-blocking reconnect |
 | `backend_api.*` | `backendPostAlert()` / `backendResolveAlert()` / `backendPostRouteStatus()` — the three HTTP calls into `backend-argus`, field-mapped per section 2 below |
 | `bluetooth_client.*` | the PULL/ACK client (section 1) via ESP32's built-in classic Bluetooth (`BluetoothSerial`) — a separate radio from WiFi, both run concurrently |
@@ -52,10 +52,21 @@ normal `POST /api/alerts`, so an emergency location text still goes out even if 
 `DEVICE_API_KEY` (minted via `POST /api/trucks/{id}/rotate-key`), `ROUTE_ID` (see section 2's
 `id_route` gap below — still genuinely unsolved, this is a stopgap), and `PI_BT_MAC_ADDRESS`
 (the Pi's Bluetooth MAC, from `hciconfig`/`bluetoothctl`). Required Arduino libraries (Library
-Manager names): `TinyGSM`, `TinyGPSPlus`, `ArduinoJson` (v7+ — this code uses v7's `JsonDocument`
+Manager names): `TinyGPSPlus`, `ArduinoJson` (v7+ — this code uses v7's `JsonDocument`
 API), plus `BluetoothSerial`/`WiFi`/`HTTPClient`, which ship with the ESP32 board package
-itself. Bluetooth must be enabled in the board's partition/SDK config (the default for most
+itself (no `TinyGSM` — `sms_module.cpp` talks to the SIM800L with raw AT commands instead, see
+that file). Bluetooth must be enabled in the board's partition/SDK config (the default for most
 standard ESP32 board variants) or `BluetoothSerial.h` won't compile.
+
+**If the compiler reports the sketch is over 100% of program storage space**, check
+**Tools → Partition Scheme** before cutting any more code: most ESP32 boards default to a
+dual-OTA partition layout that only gives the app half of the chip's flash. Switching to a
+single-app, no-OTA scheme (e.g. "Huge APP (3MB No OTA/1MB SPIFFS)" — the exact label depends on
+your board package version) roughly doubles the space available with zero code changes, and
+this firmware never uses OTA updates. After that, the next-biggest line item is
+`BluetoothSerial` — the ESP32's classic-Bluetooth (SPP) stack is large by itself; there's no way
+around that without dropping the Bluetooth-SPP pull from `cv-argus` entirely, which is a protocol
+decision (see "Why Bluetooth" below), not a code-trim.
 
 ## 1. Bluetooth SPP client — pulling from `cv-argus`
 
