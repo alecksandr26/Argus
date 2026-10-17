@@ -3,9 +3,9 @@
 
 NOT part of backend-argus's own hermetic pytest suite (src/backend-argus/tests/, which runs
 against mongomock-motor, no real service needed). This script does the opposite: it hits a
-real, already-running backend-argus + MongoDB stack over the network and prints a readable
-PASS/FAIL log per check, so you can `docker compose up --build` and then run this to actually
-confirm the connection works -- not just that the unit tests pass against a mock.
+real, already-running backend-argus over the network and prints a readable PASS/FAIL log per
+check, so you can start one (the in-memory `esp32_hil/bench_backend.py` is enough) and then run
+this to actually confirm the connection works -- not just that the unit tests pass against a mock.
 
 Confirms, end to end against the real API:
   1. the service is up (GET /health)
@@ -24,8 +24,8 @@ Usage:
     ARGUS_BACKEND_URL=http://localhost:8000 python src/tests/smoke_backend.py
 
 Env vars (all optional):
-    ARGUS_BACKEND_URL           default http://localhost:8000 (the root docker-compose.yml's
-                                 default port mapping for backend-argus)
+    ARGUS_BACKEND_URL           default http://localhost:8000 (bench_backend.py's and the
+                                 backend's own default port)
     ARGUS_ROOT_ADMIN_EMAIL       default admin@argus.dev   (app/auth/bootstrap.py's default)
     ARGUS_ROOT_ADMIN_PASSWORD    default changeme123       (same -- raw password, this script
                                  computes the SHA-256 digest the backend actually expects)
