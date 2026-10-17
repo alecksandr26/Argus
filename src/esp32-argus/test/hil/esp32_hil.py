@@ -86,8 +86,19 @@ class SerialSppListener(Listener):
 
     def __init__(self, port_name: str) -> None:
         import serial
+        from serial.tools import list_ports
 
-        self._port = serial.Serial(port_name, 115200, timeout=0.1)
+        try:
+            self._port = serial.Serial(port_name, 115200, timeout=0.1)
+        except serial.SerialException as exc:
+            ports = ", ".join(f"{p.device} ({p.description})" for p in list_ports.comports())
+            raise SystemExit(
+                f"\nCan't open {port_name}: {exc}\n"
+                f"COM ports on this PC: {ports or 'none'}\n"
+                "Use the *incoming Bluetooth* COM port, not the USB one. If none is listed, create\n"
+                "it: Bluetooth settings > More Bluetooth options > COM Ports > Add > Incoming.\n"
+                "See README.md, setup step 4."
+            ) from None
 
     def accept(self, timeout: float | None = None) -> Transport | None:
         deadline = time.monotonic() + (timeout or 0)
