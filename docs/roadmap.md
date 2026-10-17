@@ -100,7 +100,8 @@ implemented vs. still genuinely missing, item by item:**
 
 **What's still genuinely missing or unverified, not glossed over:**
 
-- **Never compiled or flashed.** No Arduino toolchain and no physical ESP32/SIM800L/NEO-6M
+- **Never compiled for the ESP32 or flashed** (only `fusion.cpp` has been compiled, on the host with
+  `g++` — see `test/host/`). No Arduino toolchain and no physical ESP32/SIM800L/NEO-6M
   harness has been available in any session that's touched this repo — treat this the same way
   `cv-argus`'s Bluetooth server is treated in that module's own `CLAUDE.md`: a real protocol
   implementation, not a tested link, on *either* side of the Pi↔ESP32 connection.
@@ -335,12 +336,19 @@ that key (the same HTTP/device-key contract a real ESP32 would use). Three scrip
 scenario this section originally proposed. See `src/simulator-argus/CLAUDE.md` for the full
 design and its "Known limitations" section for what it doesn't cover.
 
-**Still not built**: a simulator for the *other* half — something that plays the ESP32's role
-against real `cv-argus` `sender/` code over `FakeTransport` or a loopback socket (rather than
-`simulator-argus`'s own synthetic `Alert`/`Status_Route` data), so the Bluetooth protocol grammar
-itself gets exercised end to end, not just the HTTP/device-key leg downstream of it.
+**Now built (2026-10-16): the other half.** `src/tests/edge_chain/` is a pytest suite running
+cv-argus's real `Buffer` + `SenderServer` (over `FakeTransport`), a step-for-step Python mirror
+of the ESP32's relay loop driving the real `FusionOrchestrator`, and backend-argus's real app
+with a real device key, all in one process. It covers the PULL/ACK grammar end to end, the
+"only ACK what was relayed" invariant, and fused alerts and recovery landing in the backend. It
+also **found a real alert-loss bug**: after a failed `POST /api/alerts`, fusion had already
+confirmed the severity, so the re-served record raised nothing, got ACKed, and the alert was
+gone. That's fixed in both `fusion_contract.py` and the firmware's `fusion.cpp` (owed alerts are
+re-raised until posted). The C++ fusion port now also has host-compiled `g++` tests
+(`src/esp32-argus/test/host/`), its first real execution of any kind. The real radio and the
+firmware's C++ HTTP code remain untested without hardware.
 
-**Framework options for that remaining half, not decided — for discussion:**
+**Framework options considered for that half** (pytest won, as the lowest-new-tooling option):
 
 | Option | Fit |
 |---|---|

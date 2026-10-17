@@ -221,6 +221,11 @@ class FusionOrchestrator:
         # recovery timer. Reset to None on any reading that isn't fully good, or once resolved.
         self._recovering_since: Optional[float] = None
 
+        # The last AlertToRaise returned that the caller hasn't confirmed posting yet (via
+        # record_alert_posted()). update() keeps re-raising it on every later tick until it's
+        # posted, so a POST that fails (backend down, no WiFi) is retried, never dropped.
+        self._unposted_alert: Optional[AlertToRaise] = None
+
     def update(self, reading: FusionReading) -> FusionDecision:
         """Feed one new reading; returns this tick's decision per `FusionConfig`'s three windows
         and `BASE_MATRIX` above.
@@ -240,6 +245,18 @@ class FusionOrchestrator:
           see the module docstring); a *full* recovery (both signals good) is timed via
           `recovery_seconds`.
         """
+        decision = self._decide(reading)
+        if decision.alert is not None:
+            # A newer raise (e.g. an escalation) supersedes an older one still unposted.
+            self._unposted_alert = decision.alert
+        elif self._unposted_alert is not None:
+            # Still owed: the state machine already moved on (it confirmed this severity when
+            # it first raised), so without this a failed POST would never be retried and the
+            # alert would be lost once the caller ACKs the next reading.
+            decision.alert = self._unposted_alert
+        return decision
+
+    def _decide(self, reading: FusionReading) -> FusionDecision:
         instantaneous = BASE_MATRIX[(reading.drowsy, reading.grip)]
         confirmed_rank = _SEVERITY_RANK[self._confirmed_severity]
         instantaneous_rank = _SEVERITY_RANK[instantaneous]
@@ -345,7 +362,11 @@ class FusionOrchestrator:
         escalation to preserve a linkage field is the wrong tradeoff for a safety system.
         `escalation_seconds` (20s) is generous relative to any real HTTP round-trip, so this
         should be rare in practice.
+
+        Also stops `update()` re-raising the alert (see `_unposted_alert`). That happens even
+        when no incident is open anymore, since the alert did get posted.
         """
+        self._unposted_alert = None
         if self._confirmed_severity is Severity.LOW:
             return
         self._open_incident_id = alert_id

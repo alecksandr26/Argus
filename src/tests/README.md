@@ -1,5 +1,8 @@
 # src/tests — manual smoke-check scripts
 
+(Also here: `edge_chain/`, an automated pytest suite for the cv-argus → ESP32 → backend path,
+see its own README.md.)
+
 Two standalone Python scripts, not pytest, not mocked — each one connects to a real,
 already-running piece of Argus and prints a readable `[ OK ]`/`[FAIL]` log per check, so you can
 actually watch a connection succeed instead of trusting a hermetic test suite's mocks. This is
