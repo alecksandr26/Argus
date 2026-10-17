@@ -7,7 +7,7 @@ It feeds the Pi's buffer the records cv-argus produces (Drowsy readings + route_
 heartbeats), logs every protocol line the ESP32 exchanges, and watches the backend for what the
 ESP32 relays. Prints [ OK ]/[FAIL] per check and exits 0 only if all of them pass.
 
-    python src/esp32-argus/test/hil/esp32_hil.py --serial COM5     # Windows incoming SPP COM port
+    python src/esp32-argus/test/hil/esp32_hil.py --serial auto     # Windows incoming SPP COM port(s)
     python src/esp32-argus/test/hil/esp32_hil.py --rfcomm 4     # Linux/BlueZ (e.g. the real Pi)
 
 See README.md next to this file for the Bluetooth pairing and config.h setup.
@@ -15,6 +15,7 @@ See README.md next to this file for the Bluetooth pairing and config.h setup.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import tempfile
 import time
@@ -35,6 +36,22 @@ ROOT_ADMIN = {
     # sha256("changeme123"): what ui-argus sends, see smoke_backend.py's sha256_hex()
     "password": "494a715f7e9b4071aca61bac42ca858a309524e5864f0920030862a4ae7589be",
 }
+
+
+# config.h's BENCH_GPS_LAT/LON: what the ESP32 sends with BENCH_FAKE_GPS 1 instead of the NEO-6M.
+BENCH_FAKE_POSITION = (20.6597, -103.3496)
+
+
+def distance_m(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Great-circle (haversine) distance in metres between two (lat, lon) points."""
+    lat1, lon1, lat2, lon2 = map(math.radians, (*a, *b))
+    h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    return 2 * 6_371_000 * math.asin(math.sqrt(h))
+
+
+def parse_lat_lon(text: str) -> tuple[float, float]:
+    lat, lon = (float(v) for v in text.replace(" ", "").split(","))
+    return lat, lon
 
 
 def drowsy(p_drowsy: float = 0.88) -> Alert:
@@ -79,37 +96,60 @@ class _SerialSession(Transport):
         pass
 
 
-class SerialSppListener(Listener):
-    """Windows' "incoming" Bluetooth COM port as a cv-argus `Listener`. Windows owns the RFCOMM
-    socket and advertises the SPP service, so the ESP32's `SerialBT.connect(mac)` finds it. A COM
-    port has no accept event, so a session starts when the first byte (the PULL) arrives."""
+def incoming_bt_ports() -> list[str]:
+    """Windows' incoming Bluetooth COM ports: SPP (UUID 1101) with no remote device address in
+    the hardware id. The outgoing port Windows creates when pairing names the ESP32's MAC
+    instead, and opening that one would dial the ESP32, so it's skipped."""
+    from serial.tools import list_ports
 
-    def __init__(self, port_name: str) -> None:
+    return [
+        p.device
+        for p in list_ports.comports()
+        if "00001101-0000-1000-8000-00805F9B34FB" in p.hwid.upper()
+        and "LOCALMFG&0000" in p.hwid.upper()
+    ]
+
+
+class SerialSppListener(Listener):
+    """Windows' "incoming" Bluetooth COM ports as a cv-argus `Listener`. Windows owns the RFCOMM
+    socket and advertises the SPP service, so the ESP32's `SerialBT.connect(mac)` finds it, but
+    only while a program holds the port open. With more than one incoming port Windows
+    advertises them all and the ESP32 takes whichever it finds first, so this listens on every
+    one given. A COM port has no accept event, so a session starts when the first byte (the
+    PULL) arrives."""
+
+    def __init__(self, port_names: list[str]) -> None:
         import serial
         from serial.tools import list_ports
 
-        try:
-            self._port = serial.Serial(port_name, 115200, timeout=0.1)
-        except serial.SerialException as exc:
-            ports = ", ".join(f"{p.device} ({p.description})" for p in list_ports.comports())
-            raise SystemExit(
-                f"\nCan't open {port_name}: {exc}\n"
-                f"COM ports on this PC: {ports or 'none'}\n"
-                "Use the *incoming Bluetooth* COM port, not the USB one. If none is listed, create\n"
-                "it: Bluetooth settings > More Bluetooth options > COM Ports > Add > Incoming.\n"
-                "See README.md, setup step 4."
-            ) from None
+        self._ports = []
+        for name in port_names:
+            try:
+                self._ports.append(serial.Serial(name, 115200, timeout=0.1))
+            except serial.SerialException as exc:
+                ports = ", ".join(f"{p.device} ({p.description})" for p in list_ports.comports())
+                raise SystemExit(
+                    f"\nCan't open {name}: {exc}\n"
+                    f"COM ports on this PC: {ports or 'none'}\n"
+                    "Use the *incoming Bluetooth* COM port, not the USB one. If none is listed,\n"
+                    "create it: Bluetooth settings > More Bluetooth options > COM Ports > Add >\n"
+                    "Incoming. See README.md, setup step 4."
+                ) from None
+        print(f"Listening on {', '.join(port_names)}")
 
     def accept(self, timeout: float | None = None) -> Transport | None:
         deadline = time.monotonic() + (timeout or 0)
-        while self._port.in_waiting == 0:
+        while True:
+            for port in self._ports:
+                if port.in_waiting:
+                    return _SerialSession(port)
             if time.monotonic() >= deadline:
                 return None
             time.sleep(0.02)
-        return _SerialSession(self._port)
 
     def close(self) -> None:
-        self._port.close()
+        for port in self._ports:
+            port.close()
 
 
 class LoggingTransport(Transport):
@@ -158,7 +198,13 @@ class LoggingListener(Listener):
 
 def make_listener(args: argparse.Namespace) -> Listener:
     if args.serial:
-        return SerialSppListener(args.serial)
+        names = incoming_bt_ports() if args.serial == "auto" else args.serial.split(",")
+        if not names:
+            raise SystemExit(
+                "No incoming Bluetooth COM port found. Create one: Bluetooth settings > More\n"
+                "Bluetooth options > COM Ports > Add > Incoming. See README.md, setup step 4."
+            )
+        return SerialSppListener(names)
     from cv_argus.sender import BluetoothSppListener
 
     return BluetoothSppListener(channel=args.rfcomm)
@@ -172,13 +218,46 @@ def _log(ok: bool, label: str, detail: str = "") -> bool:
     return ok
 
 
+def check_location(
+    positions: list[tuple[float, float]], expected: tuple[float, float], tolerance_m: float
+) -> bool:
+    """Every position the ESP32 posted must come from the real GPS and be near `expected`."""
+    if not positions:
+        return _log(False, "GPS position matches --expect-location", "the ESP32 sent no positions")
+    if any(distance_m(p, BENCH_FAKE_POSITION) < 1.0 for p in positions):
+        return _log(
+            False,
+            "GPS position matches --expect-location",
+            "the ESP32 sent the BENCH_FAKE_GPS position; set it to 0 in config.h and reflash",
+        )
+    worst = max(positions, key=lambda p: distance_m(p, expected))
+    worst_m = distance_m(worst, expected)
+    return _log(
+        worst_m <= tolerance_m,
+        "GPS position matches --expect-location",
+        f"{len(positions)} position(s), farthest {worst_m:.0f} m away at {worst[0]:.6f},{worst[1]:.6f}"
+        f" (tolerance {tolerance_m:.0f} m) https://www.google.com/maps?q={worst[0]},{worst[1]}",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     where = parser.add_mutually_exclusive_group(required=True)
-    where.add_argument("--serial", help="Windows incoming Bluetooth COM port, e.g. COM5")
+    where.add_argument(
+        "--serial",
+        help="Windows incoming Bluetooth COM port(s): 'auto' (every incoming one), COM4, or COM4,COM6",
+    )
     where.add_argument("--rfcomm", type=int, help="Linux/BlueZ RFCOMM channel, e.g. 4")
     parser.add_argument("--duration", type=float, default=120.0, help="seconds to run (max)")
     parser.add_argument("--drowsy-every", type=float, default=1.0, help="seconds per Drowsy record")
+    parser.add_argument(
+        "--expect-location",
+        type=parse_lat_lon,
+        metavar="LAT,LON",
+        help="where the ESP32 really is (e.g. right-click > copy in Google Maps); every position "
+        "it sends must be within --tolerance-m of it, from the NEO-6M (not BENCH_FAKE_GPS)",
+    )
+    parser.add_argument("--tolerance-m", type=float, default=100.0, help="for --expect-location")
     parser.add_argument("--heartbeat-every", type=float, default=10.0, help="seconds per route_status")
     args = parser.parse_args()
 
@@ -199,6 +278,7 @@ def main() -> int:
     print(f"Feeding the Pi buffer for up to {args.duration:.0f}s. Waiting for the ESP32...\n")
     enqueued = 0
     seen_alerts: set[str] = set()
+    positions: list[tuple[float, float]] = []
     status = None
     start = last_drowsy = last_heartbeat = time.monotonic()
     buffer.enqueue(route_status("cam-0"))
@@ -218,6 +298,7 @@ def main() -> int:
             for alert in http.get("/api/alerts", params={"route_id": ROUTE_ID}).json():
                 if alert["id_alert"] not in seen_alerts:
                     seen_alerts.add(alert["id_alert"])
+                    positions.append((alert["coordinates"]["lat"], alert["coordinates"]["lon"]))
                     print(
                         f"  [http] alert from ESP32: {alert['alert_type']} "
                         f"severity={alert['severity_level']} source={alert['source']} "
@@ -226,6 +307,8 @@ def main() -> int:
             resp = http.get(f"/api/routes/{ROUTE_ID}/status")
             if resp.status_code == 200 and resp.json() != status:
                 status = resp.json()
+                coords = status["current_coordinates"]
+                positions.append((coords["lat"], coords["lon"]))
                 print(
                     f"  [http] route status from ESP32: vigilance={status['vigilance']} "
                     f"at {status['current_coordinates']}"
@@ -254,6 +337,8 @@ def main() -> int:
         _log(bool(seen_alerts), "fusion alert reached the backend over HTTP (device key)",
              f"{len(seen_alerts)} alert(s)"),
     ]
+    if args.expect_location:
+        results.append(check_location(positions, args.expect_location, args.tolerance_m))
     if not all(results):
         print("\nSee README.md's troubleshooting table, and the ESP32's Serial Monitor (115200).")
     return 0 if all(results) else 1
