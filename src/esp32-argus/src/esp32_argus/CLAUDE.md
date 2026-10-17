@@ -7,8 +7,9 @@ Build/toolchain notes for compiling this sketch in the Arduino IDE. For what the
 ## Status
 
 **Compiles and flashes** (2026-10-16, Arduino IDE 2.x on Windows, core 3.3.12, Huge APP
-partition scheme): 56% flash, 19% RAM, uploaded to a real ESP32-D0WD-V3 board. It hasn't yet
-run against a real Pi/backend over Bluetooth + WiFi. `../../test/hil/` is the bench test
+partition scheme): 56% flash, 19% RAM, uploaded to a real ESP32-D0WD-V3 board. On 2026-10-17 `../../test/hil/` passed all 4 checks on real
+hardware (Bluetooth pull from the PC acting as the Pi, fusion, HTTP to the bench backend over
+WiFi), with `BENCH_FAKE_GPS 1`. Real NEO-6M positions (`--expect-location`) aren't verified yet. `../../test/hil/` is the bench test
 for that: the PC plays the Pi and the backend. It needs `BENCH_FAKE_GPS 1` in `config.h`
 indoors. Set it back to `0` for a real truck.
 

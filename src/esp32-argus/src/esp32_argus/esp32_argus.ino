@@ -30,6 +30,7 @@
 namespace {
 FusionOrchestrator fusion;
 unsigned long lastBtPollAt = 0;
+unsigned long lastGpsLogAt = 0;
 }  // namespace
 
 // Called once per record bluetoothPullAlerts() pulls off the Pi. Returns true iff the
@@ -142,6 +143,11 @@ void loop() {
   wifiEnsureConnected();
 
   unsigned long now = millis();
+  if (now - lastGpsLogAt >= GPS_LOG_INTERVAL_MS) {
+    lastGpsLogAt = now;
+    gpsLogStatus();
+  }
+
   if (now - lastBtPollAt >= PI_BT_POLL_INTERVAL_MS) {
     lastBtPollAt = now;
     int pulled = bluetoothPullAlerts(handlePiRecord);

@@ -19,6 +19,10 @@ double gpsLongitude();  // degrees, only valid if gpsHasFix()
 double gpsSpeedKmh();   // GPS-derived speed -- NOT a CAN-bus/OBD reading, see config.h
 uint32_t gpsSatellites();
 
+// One Serial line with the raw NEO-6M state, ignoring BENCH_FAKE_GPS: bytes received (0 means
+// a wiring/baud problem, not a sky problem), corrupted sentences, satellites, fix, position. For bench debugging.
+void gpsLogStatus();
+
 String gpsMapsLink();  // "https://www.google.com/maps?q=<lat>,<lon>" for the panic SMS
 
 // UTC date/time from the GPS fix itself, formatted as "YYYY-MM-DDTHH:MM:SSZ" -- used for
