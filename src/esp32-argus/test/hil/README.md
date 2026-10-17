@@ -1,4 +1,4 @@
-# esp32_hil: bench test against the real ESP32
+# test/hil: bench test against the real ESP32
 
 Your PC plays both ends of the ESP32's world, running real code at each one:
 
@@ -42,12 +42,12 @@ Python venv. On a Linux machine with BlueZ (e.g. the real Pi), use `--rfcomm` in
    py install 3.12                      # if `py -0` doesn't list 3.12 yet
    py -3.12 -m venv .venv
    .venv\Scripts\activate
-   pip install -r src\tests\requirements.txt
+   pip install -r src\esp32-argus\test\hil\requirements.txt
    ```
 2. **Firmware `config.h`**, then flash:
    - Set `WIFI_SSID` / `WIFI_PASSWORD` to the **same WiFi network as the PC**.
    - Copy `BACKEND_BASE_URL`, `DEVICE_API_KEY` and `ROUTE_ID` exactly as
-     `python src\tests\esp32_hil\bench_backend.py` prints them (Ctrl+C after). Only the
+     `python src\esp32-argus\test\hil\bench_backend.py` prints them (Ctrl+C after). Only the
      IP can change between runs.
    - Set `PI_BT_MAC_ADDRESS` to the **PC's** Bluetooth MAC, because the PC is the Pi here.
      `ipconfig /all` shows it as "Physical Address" under "Bluetooth Network Connection".
@@ -65,7 +65,7 @@ Python venv. On a Linux machine with BlueZ (e.g. the real Pi), use `--rfcomm` in
 
 ```powershell
 .venv\Scripts\activate
-python src\tests\esp32_hil\esp32_hil.py --serial COM5
+python src\esp32-argus\test\hil\esp32_hil.py --serial COM5
 ```
 
 Allow Python through the Windows Firewall (Private networks) the first time, or the ESP32's

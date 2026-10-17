@@ -7,8 +7,8 @@ It feeds the Pi's buffer the records cv-argus produces (Drowsy readings + route_
 heartbeats), logs every protocol line the ESP32 exchanges, and watches the backend for what the
 ESP32 relays. Prints [ OK ]/[FAIL] per check and exits 0 only if all of them pass.
 
-    python src/tests/esp32_hil/esp32_hil.py --serial COM5      # Windows incoming SPP COM port
-    python src/tests/esp32_hil/esp32_hil.py --rfcomm 4         # Linux/BlueZ (e.g. the real Pi)
+    python src/esp32-argus/test/hil/esp32_hil.py --serial COM5     # Windows incoming SPP COM port
+    python src/esp32-argus/test/hil/esp32_hil.py --rfcomm 4     # Linux/BlueZ (e.g. the real Pi)
 
 See README.md next to this file for the Bluetooth pairing and config.h setup.
 """

@@ -6,7 +6,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[2]
+SRC = Path(__file__).resolve().parents[3]
 
 if str(SRC / "backend-argus") not in sys.path:
     sys.path.insert(0, str(SRC / "backend-argus"))
