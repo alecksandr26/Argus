@@ -10,8 +10,8 @@
 // a mobile-network-backed WiFi link, NOT the SIM800L's own GPRS -- the SIM800L is kept
 // SMS-only now (see sms_module.h).
 // =====================================================
-#define WIFI_SSID "CHANGE_ME"
-#define WIFI_PASSWORD "CHANGE_ME"
+#define WIFI_SSID "Casa " // trailing space is part of the real SSID (2.4 GHz; "Casa 5g" is 5 GHz-only)
+#define WIFI_PASSWORD "1212121212"
 #define WIFI_CONNECT_TIMEOUT_MS 20000UL
 #define WIFI_RETRY_INTERVAL_MS 10000UL
 
@@ -21,19 +21,19 @@
 // whatever machine is running `docker compose up` on port 8000, not "localhost" (which
 // from this device's own network stack means itself, not the dev machine).
 // =====================================================
-#define BACKEND_BASE_URL "http://192.168.1.100:8000"
+#define BACKEND_BASE_URL "http://192.168.100.67:8000"
 
 // Per-truck device API key -- minted once via POST /api/trucks/{id}/rotate-key
 // (root_admin only, see backend CLAUDE.md), provisioned here out of band. Never commit a
 // real deployment key to source control -- this placeholder is intentionally a dummy.
-#define DEVICE_API_KEY "CHANGE_ME"
+#define DEVICE_API_KEY "argus-bench-device-key"
 
 // UNDEFINED per src/esp32-argus/README.md section 2's field-mapping table: nothing today
 // tells this device which Route document a given truck's alert/status belongs to.
 // Hardcoding one route id per truck here is a stopgap, not the real answer (the README's
 // own suggestion -- this device querying "the truck's current in-progress route" -- isn't
 // built anywhere yet). Flagged, not solved.
-#define ROUTE_ID "CHANGE_ME"
+#define ROUTE_ID "64b0a0000000000000000003"
 
 // =====================================================
 // Bluetooth SPP client -- pulling from cv-argus's sender/ module (the Pi runs the SPP
@@ -42,7 +42,7 @@
 // =====================================================
 // The Pi's Bluetooth MAC address, e.g. {0x08, 0x3A, 0xF2, 0x4B, 0x9C, 0x01}. Find it on
 // the Pi with `hciconfig` or `bluetoothctl` ("show" on the default controller).
-#define PI_BT_MAC_ADDRESS { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } // CHANGE_ME
+#define PI_BT_MAC_ADDRESS { 0xB0, 0xDC, 0xEF, 0x34, 0x4C, 0x83 } // bench: this PC's Bluetooth
 #define PI_BT_POLL_INTERVAL_MS 5000UL
 #define PI_BT_PULL_COUNT 50 // matches sender/protocol.py's DEFAULT_PULL_LIMIT
 #define PI_BT_LINE_TIMEOUT_MS 3000UL
@@ -86,7 +86,7 @@
 // handlePiRecord() relays nothing without one, so 1 makes gps_module report a fixed position
 // instead. GPS date/time stays real (empty with no fix), so an incident can't be resolved on
 // the bench. NEVER flash a truck with this set to 1: every alert would carry these coordinates.
-#define BENCH_FAKE_GPS 0
+#define BENCH_FAKE_GPS 1
 #define BENCH_GPS_LAT 20.6597
 #define BENCH_GPS_LON -103.3496
 
