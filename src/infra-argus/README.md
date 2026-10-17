@@ -74,6 +74,21 @@ osrm:upload` restores it). If the Spot price or region differs, the order of mag
    If ECS complains about its service-linked role on a brand-new account:
    `aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com`.
 
+## Hello world first (recommended)
+
+Before the real stacks, prove the account, region, login and CDK flow work with one throwaway
+Lambda (`ArgusHello`, `lib/hello-stack.ts`). It costs $0 and needs no Docker, Atlas or secrets.
+
+```bash
+npm install
+npx cdk bootstrap          # once per account/region
+npm run hello:deploy       # prints HelloUrl at the end
+curl <HelloUrl>            # {"message": "Hello from Argus", "region": "..."}
+npm run hello:destroy      # delete it again
+```
+
+If this works, the real deploy below will reach AWS the same way.
+
 ## Deploy
 
 ```bash

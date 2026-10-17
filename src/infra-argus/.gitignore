@@ -1,3 +1,5 @@
+# The repo root .gitignore ignores every `lib/` (Python packaging); this one is CDK source.
+!lib/
 node_modules/
 cdk.out/
 cdk.context.json
