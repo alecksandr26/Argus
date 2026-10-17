@@ -58,6 +58,7 @@ import cv_argus.bootstrap  # noqa: F401 -- MUST be first: sets thread env vars b
 import logging
 import os
 import signal
+import sys
 import threading
 
 from cv_argus import constants
@@ -79,6 +80,7 @@ from cv_argus.pipeline import (
     download_face_landmarker_bundle,
 )
 from cv_argus.sender import BluetoothSppListener, SenderServer
+from cv_argus.supervisor import exit_code, first_dead
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +220,7 @@ def main() -> None:
     sender = SenderServer(buffer, listener) if listener is not None else None
 
     stop_event = threading.Event()
+    dead: str | None = None
 
     def _handle_signal(signum, _frame) -> None:
         logger.info("Received signal %s, shutting down...", signum)
@@ -236,7 +239,8 @@ def main() -> None:
         # Wake up periodically rather than blocking on stop_event forever: a video-file source
         # reaching EOF stops the pipeline's own threads without ever setting stop_event, and
         # this is what notices that and lets the process exit instead of hanging.
-        while not stop_event.is_set() and pipeline.is_alive():
+        components = {"pipeline": pipeline, "orchestrator": orchestrator, "sender": sender}
+        while not stop_event.is_set() and (dead := first_dead(components)) is None:
             stop_event.wait(timeout=1.0)
     finally:
         logger.info("Stopping...")
@@ -253,6 +257,11 @@ def main() -> None:
             sender.join(timeout=5.0)
         buffer.close()
         logger.info("cv-argus stopped")
+    if dead is not None and dead != "pipeline":
+        logger.error("cv-argus: %s died; exiting so the container restarts", dead)
+    code = exit_code(stop_requested=stop_event.is_set(), dead=None if dead == "pipeline" else dead)
+    if code:
+        sys.exit(code)
 
 
 if __name__ == "__main__":

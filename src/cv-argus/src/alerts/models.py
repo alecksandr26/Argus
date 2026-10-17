@@ -19,10 +19,37 @@ anything downstream can import it cheaply (callers building a `payload` from a n
 """
 
 import enum
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
+
+
+def _read_boot_id() -> str:
+    """The kernel's per-boot id (shared by every process and container on this boot, so it
+    matches the clock `time.monotonic()` counts from), else a random one for this process."""
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            return f.read().strip()
+    except OSError:
+        return uuid.uuid4().hex
+
+
+BOOT_ID = _read_boot_id()
+
+# systemd-timesyncd creates this once the clock has been synchronized at least once this boot.
+_TIMESYNC_FLAG = "/run/systemd/timesync/synchronized"
+
+
+def clock_synced() -> bool:
+    """Whether the wall clock has been NTP-synced this boot. A Pi has no battery-backed clock, so
+    a cold boot with no network starts at the last-shutdown time. `CV_ARGUS_CLOCK_SYNCED=1`
+    overrides it (e.g. a container that can't see the host's /run)."""
+    override = os.environ.get("CV_ARGUS_CLOCK_SYNCED")
+    if override is not None:
+        return override == "1"
+    return os.path.exists(_TIMESYNC_FLAG)
 
 
 class AlertKind(str, enum.Enum):
@@ -59,6 +86,13 @@ class Alert:
     source_id: str
     payload: dict[str, Any] = field(default_factory=dict)
     geolocation: dict[str, float] | None = None
+    # Monotonic milliseconds on this device: what the ESP32 fuses readings by (an NTP step or an
+    # unset clock can't reorder or stretch them), comparable only within one `boot_id`. Both are
+    # None on rows queued by a release that predates them. `clock_synced` says whether
+    # `created_at_ms` can be trusted as real time.
+    mono_ms: int | None = None
+    boot_id: str | None = None
+    clock_synced: bool | None = None
 
     @staticmethod
     def new(kind: AlertKind, *, level: int | None, source_id: str, payload: dict[str, Any]) -> "Alert":
@@ -73,6 +107,9 @@ class Alert:
             source_id=source_id,
             payload=payload,
             geolocation=None,
+            mono_ms=int(time.monotonic() * 1000),
+            boot_id=BOOT_ID,
+            clock_synced=clock_synced(),
         )
 
 

@@ -259,7 +259,6 @@ def test_non_utf8_first_line_does_not_kill_the_accept_loop(running):
     assert running.server.is_alive
 
 
-@pytest.mark.xfail(strict=True, reason="SND-01/02: an ACK can only come in the same session")
 def test_ack_arriving_in_a_later_session_still_marks_sent(running):
     """The ESP32 relays the batch over HTTP before ACKing; if that took longer than the Pi's
     ACK wait, it must be able to ACK on its next connection instead of re-pulling forever."""
@@ -275,7 +274,6 @@ def test_ack_arriving_in_a_later_session_still_marks_sent(running):
     assert running.buf.unsent_count() == 0
 
 
-@pytest.mark.xfail(strict=True, reason="SND-04: 'PULL 5\\r' (CRLF client) is rejected")
 def test_pull_with_crlf_line_ending_is_accepted(running):
     running.buf.enqueue(_drowsy_alert())
     client = running.connect()
@@ -284,7 +282,6 @@ def test_pull_with_crlf_line_ending_is_accepted(running):
     assert line is not None and json.loads(line.decode())["kind"] == "drowsiness"
 
 
-@pytest.mark.xfail(strict=True, reason="SND-05: PULL n is not clamped")
 def test_huge_pull_is_clamped_to_the_protocol_maximum(running):
     for i in range(protocol.DEFAULT_PULL_LIMIT + 10):
         running.buf.enqueue(_drowsy_alert(str(i)))
@@ -309,7 +306,6 @@ class _FlakyListener(Listener):
         self.inner.close()
 
 
-@pytest.mark.xfail(strict=True, reason="SND-10: an accept() error kills the sender thread")
 def test_listener_error_is_retried_not_fatal(tmp_path):
     buf = open_buffer(tmp_path / "b.sqlite3")
     buf.enqueue(_drowsy_alert())
@@ -326,7 +322,6 @@ def test_listener_error_is_retried_not_fatal(tmp_path):
         buf.close()
 
 
-@pytest.mark.xfail(strict=True, reason="SND-08: no line-length limit on the Bluetooth transport")
 def test_bluetooth_transport_bounds_an_endless_line():
     ours, theirs = socket.socketpair()
     transport = BluetoothSppTransport(ours)
