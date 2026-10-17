@@ -1,9 +1,10 @@
 """Re-exports + small shared request/response shapes for the API boundary."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Annotated
 
-from pydantic import BaseModel, StringConstraints
+from pydantic import AfterValidator, BaseModel, StringConstraints
 
 from app.geo import Coordinates  # noqa: F401  (re-exported: `from app.schemas.common import Coordinates`)
 
@@ -28,3 +29,16 @@ class Message(BaseModel):
 # same `sha256-then-bcrypt` pipeline server-side from a raw env-var/literal password, so a real
 # browser login with that raw password still succeeds afterward.
 Sha256HexDigest = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Mongo hands datetimes back naive (they're stored as UTC). Serialized without an offset,
+    a browser's `new Date(...)` reads them as local time and shifts every timestamp by the
+    viewer's UTC offset (BE-24), so every datetime leaving the API is UTC-marked."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+# Use for every datetime field on a response schema.
+UtcDatetime = Annotated[datetime, AfterValidator(_as_utc)]

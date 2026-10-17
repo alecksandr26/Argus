@@ -4,7 +4,7 @@ from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.auth.dependencies import get_current_user, require_role
-from app.auth.security import generate_device_api_key, hash_secret
+from app.auth.security import generate_device_api_key, hash_secret, key_fingerprint
 from app.models.common import Role
 from app.models.truck import Truck
 from app.schemas.auth import DeviceKeyResponse
@@ -87,5 +87,6 @@ async def rotate_device_key(truck_id: str) -> DeviceKeyResponse:
     truck = await _get_or_404(truck_id)
     plaintext = generate_device_api_key()
     truck.device_api_key_hash = hash_secret(plaintext)
+    truck.device_api_key_fingerprint = key_fingerprint(plaintext)
     await truck.touch_and_save()
     return DeviceKeyResponse(id_truck=str(truck.id), device_api_key=plaintext)

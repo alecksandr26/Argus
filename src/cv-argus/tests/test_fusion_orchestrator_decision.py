@@ -378,3 +378,184 @@ def test_an_escalation_supersedes_an_older_unposted_alert():
     escalation = orch.update(_medium_via_grip(at=2.0 + _CONFIG.escalation_seconds)).alert
     assert escalation is not None and escalation.severity_level == Severity.CRITICAL
     assert orch.update(_medium_via_grip(at=13.0)).alert == escalation
+
+
+# =================================================================================================
+# Corner cases found by the edge-cloud audit (docs/designs/edge-cloud-scenarios.md). Each one is
+# mirrored 1:1 in src/esp32-argus/test/host/fusion_host_test.cpp so the C++ port can't drift.
+# New API these define: FusionConfig.{max_gap_seconds, stale_after_seconds,
+# no_face_drowsy_after_seconds}, DrowsyState.NO_FACE, record_resolve_posted(), tick(),
+# FusionDecision.camera_offline, snapshot()/restore().
+# =================================================================================================
+
+import dataclasses  # noqa: E402
+
+
+def _cfg(**overrides) -> FusionConfig:
+    fields = {f.name for f in dataclasses.fields(FusionConfig)}
+    unknown = set(overrides) - fields
+    if unknown:
+        raise TypeError(f"FusionConfig has no {sorted(unknown)} yet")
+    return dataclasses.replace(_CONFIG, **overrides)
+
+
+def _confirm_medium_and_recover(orch):
+    """Opens a MEDIUM incident posted as 'root', then fully recovers it. Returns the
+    recovery decision (t = 2.0 + 1.0 + recovery_seconds)."""
+    orch.update(_medium_via_grip(at=0.0))
+    orch.update(_medium_via_grip(at=2.0))
+    orch.record_alert_posted("root")
+    orch.update(_good(at=3.0))
+    return orch.update(_good(at=3.0 + _CONFIG.recovery_seconds))
+
+
+@pytest.mark.xfail(strict=True, reason="FUS-05: a failed resolve is forgotten, never retried")
+def test_failed_resolve_is_owed_and_retried_until_confirmed():
+    orch = _orch()
+    first = _confirm_medium_and_recover(orch)
+    assert first.resolved_incident_id == "root"
+
+    # The POST /resolve failed: the caller doesn't confirm. The next reading must re-ask.
+    retry = orch.update(_good(at=10.0))
+    assert retry.resolved_incident_id == "root"
+
+    orch.record_resolve_posted("root")
+    assert orch.update(_good(at=11.0)).resolved_incident_id is None
+
+
+@pytest.mark.xfail(strict=True, reason="FUS-06: an alert posted after recovery is never resolved")
+def test_alert_posted_after_recovery_owes_a_resolve():
+    orch = _orch()
+    orch.update(_medium_via_grip(at=0.0))
+    raised = orch.update(_medium_via_grip(at=2.0))
+    assert raised.alert is not None  # POST fails, nothing confirmed yet
+    orch.update(_good(at=3.0))
+    orch.update(_good(at=3.0 + _CONFIG.recovery_seconds))  # recovered while still unposted
+
+    orch.record_alert_posted("late")  # the retried POST finally succeeds
+    decision = orch.update(_good(at=20.0))
+    assert decision.resolved_incident_id == "late"
+
+
+@pytest.mark.xfail(strict=True, reason="FUS-03: an out-of-order (older) reading resets timers")
+def test_reading_older_than_the_last_one_is_ignored():
+    orch = _orch()
+    orch.update(_medium_via_grip(at=0.0))
+    orch.update(_medium_via_grip(at=2.0))  # MEDIUM confirmed
+    orch.record_alert_posted("root")
+    orch.update(_good(at=3.0))  # recovery clock starts at 3.0
+    orch.update(_medium_via_grip(at=1.0))  # a re-served old record, must not reset recovery
+    decision = orch.update(_good(at=3.0 + _CONFIG.recovery_seconds))
+    assert decision.resolved_incident_id == "root"
+
+
+@pytest.mark.xfail(strict=True, reason="FUS-04: debounce 'holds' across a gap it never observed")
+def test_gap_longer_than_max_gap_restarts_debounce():
+    orch = FusionOrchestrator(_cfg(max_gap_seconds=6.0))
+    orch.update(_medium_via_grip(at=0.0))
+    after_gap = orch.update(_medium_via_grip(at=10.0))  # 10 s with no reading at all
+    assert after_gap.alert is None
+    assert orch.update(_medium_via_grip(at=12.0)).alert is not None
+
+
+@pytest.mark.xfail(strict=True, reason="FUS-04: recovery 'holds' across a gap it never observed")
+def test_gap_longer_than_max_gap_restarts_recovery():
+    orch = FusionOrchestrator(_cfg(max_gap_seconds=3.0))
+    orch.update(_medium_via_grip(at=0.0))
+    orch.update(_medium_via_grip(at=2.0))
+    orch.record_alert_posted("root")
+    orch.update(_good(at=3.0))
+    assert orch.update(_good(at=9.0)).resolved_incident_id is None  # gap 6 s > 3 s
+    assert orch.update(_good(at=9.0 + 2.0)).resolved_incident_id is None
+    assert orch.update(_good(at=9.0 + _CONFIG.recovery_seconds)).resolved_incident_id == "root"
+
+
+@pytest.mark.xfail(strict=True, reason="FUS-01: fusion only runs on Pi records, never on grip")
+def test_tick_without_a_new_reading_fires_a_grip_only_incident():
+    orch = FusionOrchestrator(_cfg(stale_after_seconds=30.0))
+    orch.update(_good(at=0.0))  # camera says Not Drowsy
+    orch.tick(at=0.5, grip=GripState.BAD)  # hand leaves the wheel; no new camera record
+    decision = orch.tick(at=0.5 + _CONFIG.debounce_seconds, grip=GripState.BAD)
+    assert decision.alert is not None
+    assert decision.alert.severity_level == Severity.MEDIUM
+    assert decision.alert.grip_status == GripState.BAD
+
+
+@pytest.mark.xfail(strict=True, reason="CV-07: stale camera data keeps driving decisions")
+def test_stale_camera_reading_stops_new_alerts_and_reports_offline():
+    orch = FusionOrchestrator(_cfg(stale_after_seconds=3.0))
+    orch.update(_medium_via_drowsy(at=0.0))  # last record from the Pi: Drowsy
+    decision = orch.tick(at=5.0, grip=GripState.BAD)  # Pi silent for 5 s
+    assert decision.camera_offline is True
+    assert decision.alert is None
+
+
+@pytest.mark.xfail(strict=True, reason="CV-04: no NO_FACE state in fusion")
+def test_no_face_sustained_counts_as_drowsy():
+    orch = FusionOrchestrator(_cfg(no_face_drowsy_after_seconds=3.0))
+    decisions = [
+        orch.update(_reading(DrowsyState.NO_FACE, GripState.GOOD, at=float(t)))
+        for t in range(0, 6)
+    ]
+    alerts = [d.alert for d in decisions if d.alert is not None]
+    # NO_FACE for 3 s -> treated as Drowsy (medium with good grip) -> debounced 2 s -> t = 5.
+    assert len(alerts) == 1 and alerts[0].severity_level == Severity.MEDIUM
+    assert decisions[5].alert is not None
+
+
+@pytest.mark.xfail(strict=True, reason="CV-04: no NO_FACE state in fusion")
+def test_short_no_face_then_not_drowsy_raises_nothing():
+    orch = FusionOrchestrator(_cfg(no_face_drowsy_after_seconds=3.0))
+    orch.update(_reading(DrowsyState.NO_FACE, GripState.GOOD, at=0.0))
+    orch.update(_reading(DrowsyState.NO_FACE, GripState.GOOD, at=2.0))
+    for t in (3.0, 5.0, 8.0):
+        assert orch.update(_good(at=t)).alert is None
+
+
+def test_medium_low_flicker_still_escalates_on_schedule():
+    """FUS-08, decided: dipping back to good for a moment isn't recovery; the escalation timer
+    keeps running from when the incident was confirmed (only a full recovery_seconds of good
+    clears it)."""
+    orch = _orch()
+    orch.update(_medium_via_drowsy(at=0.0))
+    orch.update(_medium_via_drowsy(at=2.0))  # MEDIUM confirmed
+    orch.record_alert_posted("root")
+    t, escalated = 2.0, None
+    while t < 2.0 + _CONFIG.escalation_seconds:
+        t += 1.0
+        reading = _good(at=t) if int(t) % 2 else _medium_via_drowsy(at=t)
+        decision = orch.update(reading)
+        if decision.alert is not None:
+            escalated = decision
+    assert escalated is not None and escalated.alert.severity_level == Severity.CRITICAL
+
+
+def test_backlog_of_spaced_readings_confirms_at_the_right_reading():
+    """FUS-02: a backlog pulled in one batch is fused by its own timestamps."""
+    orch = _orch()
+    decisions = [orch.update(_critical(at=0.5 * i)) for i in range(8)]  # 0.0 .. 3.5 s
+    first = next(i for i, d in enumerate(decisions) if d.alert is not None)
+    assert 0.5 * first == _CONFIG.debounce_seconds
+
+
+@pytest.mark.xfail(strict=True, reason="FUS-10: fusion state can't be persisted across a reboot")
+def test_snapshot_restore_resumes_an_open_incident():
+    orch = _orch()
+    orch.update(_medium_via_grip(at=0.0))
+    orch.update(_medium_via_grip(at=2.0))
+    orch.record_alert_posted("root")
+    snap = orch.snapshot()
+
+    rebooted = FusionOrchestrator.restore(snap, _CONFIG)
+    rebooted.update(_good(at=3.0))
+    assert rebooted.update(_good(at=3.0 + _CONFIG.recovery_seconds)).resolved_incident_id == "root"
+
+
+@pytest.mark.xfail(strict=True, reason="FUS-10: fusion state can't be persisted across a reboot")
+def test_snapshot_keeps_owed_alert_and_owed_resolve():
+    orch = _orch()
+    orch.update(_critical(at=0.0))
+    orch.update(_critical(at=2.0))  # raised, not yet posted
+    snap = orch.snapshot()
+    rebooted = FusionOrchestrator.restore(snap, _CONFIG)
+    assert rebooted.update(_critical(at=3.0)).alert is not None  # still owed after reboot

@@ -68,6 +68,10 @@ this firmware never uses OTA updates. After that, the next-biggest line item is
 around that without dropping the Bluetooth-SPP pull from `cv-argus` entirely, which is a protocol
 decision (see "Why Bluetooth" below), not a code-trim.
 
+**Tests** live in `test/`: `test/host/` compiles the fusion state machine on the PC
+(`test/host/run.sh`, needs only `g++`), and `test/hil/` is the bench test against the real,
+flashed ESP32 (the PC plays the Pi over Bluetooth and the backend over WiFi; see its README.md).
+
 ## 1. Bluetooth SPP client — pulling from `cv-argus`
 
 `cv-argus`'s `sender/` module (merged to `main` — fully implemented and unit-tested against a

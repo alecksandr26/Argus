@@ -104,4 +104,4 @@ async def test_truck_driver_jwt_cannot_post_status(api_client, root_admin, truck
     )
     # truck_driver isn't in the allowed_roles for device-or-user ingestion (root_admin/guardian
     # only) -- see status_routes.py's post_status.
-    assert resp.status_code == 401
+    assert resp.status_code == 403  # authenticated, wrong role (BE-16)

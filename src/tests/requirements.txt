@@ -1,0 +1,29 @@
+# One venv for everything under src/tests/: the smoke scripts and the edge_chain pytest suite.
+# No Docker, no MongoDB, no TensorFlow/MediaPipe.
+# Use Python 3.12 (backend-argus's own version). Newer Pythons, like 3.14, have no wheels yet
+# for some of these pins.
+#
+#   python -m venv .venv                 (Windows: py -3.12 -m venv .venv)
+#   source .venv/bin/activate            (Windows: .venv\Scripts\activate)
+#   pip install -r src/tests/requirements.txt
+
+# backend-argus's real app, imported from source. Same pins as src/backend-argus/requirements.txt.
+fastapi==0.115.6
+uvicorn==0.34.0
+beanie==1.29.0
+motor==3.6.0
+pydantic[email]==2.10.4
+pydantic-settings==2.7.0
+bcrypt==4.2.1
+PyJWT==2.10.1
+python-dotenv==1.0.1
+
+# In-memory MongoDB stand-in (edge_chain) + HTTP client.
+mongomock-motor==0.0.35
+httpx==0.28.1
+
+# cv-argus's orchestrator/fusion_contract imports numpy (edge_chain only).
+numpy>=1.26,<2
+
+pytest==8.3.4
+pytest-asyncio==0.25.0
