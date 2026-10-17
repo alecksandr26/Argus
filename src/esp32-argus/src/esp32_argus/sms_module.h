@@ -7,6 +7,10 @@
 // never touches either. This device's main data transport to backend-argus is WiFi (see
 // wifi_client.h/backend_api.h), not this modem's GPRS -- a deliberate project decision,
 // not a limitation of the hardware.
+//
+// Talks to the modem with raw AT commands over its own HardwareSerial, not TinyGsm --
+// this module's usage is narrow enough (power-on, poll network registration, send one
+// SMS) that the full TinyGsm library was pure flash-size overhead for what it bought here.
 
 void smsBegin();
 
