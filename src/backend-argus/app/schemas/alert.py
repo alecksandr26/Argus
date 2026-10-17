@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from app.geo import Coordinates
 from app.models.alert import AlertAiMetadata, GripStatus, validate_source_ai_metadata
@@ -42,6 +42,15 @@ class AlertReview(BaseModel):
     resolved_at: Optional[datetime] = None
 
 
+class AlertDeescalate(BaseModel):
+    """`POST /api/alerts/{id}/de-escalate` — a guardian/root_admin stepping an alert's severity
+    down after confirming with the driver. `severity_level` must be strictly lower than the
+    alert's current one; `reason` is required so the override is always explained."""
+
+    severity_level: Severity
+    reason: str = Field(min_length=1)
+
+
 class AlertOut(BaseModel):
     id_alert: str
     id_route: str
@@ -52,6 +61,10 @@ class AlertOut(BaseModel):
     grip_status: Optional[GripStatus]
     related_alert_id: Optional[str]
     resolved_at: Optional[datetime]
+    original_severity_level: Optional[Severity]
+    deescalated_by: Optional[str]
+    deescalated_at: Optional[datetime]
+    deescalation_reason: str
     media_url: Optional[str]
     coordinates: Coordinates
     speed_at_event: float

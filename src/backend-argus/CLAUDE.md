@@ -174,7 +174,7 @@ something any design doc anticipated in advance.
 |---|---|---|---|---|---|
 | `root_admin` | full CRUD (any role) | full CRUD | full CRUD | read | full CRUD |
 | `admin` | scoped: create/view/edit/deactivate **`guardian`-role accounts only** — see below | full CRUD | full CRUD | read | none |
-| `guardian` | none | read-only | read-only | read-only | read + review (`PUT`) only |
+| `guardian` | none | read-only | read-only | read-only | read + review (`PUT`) + de-escalate only |
 | `truck_driver` | none | read | read | read | read |
 
 **`admin`'s user-management scope is narrow and enforced server-side, not just by convention**:
@@ -281,6 +281,16 @@ geolocation}`. Two things from that exchange shaped this backend's schema direct
   `resolved_at` records recovery — settable via `PUT /api/alerts/{id}` by either a
   guardian/root_admin (who may also set `reviewed_by_operator`/`operator_notes`) or, for
   `resolved_at` only, the device key for the alert's own truck.
+
+  **Manual de-escalation** (`POST /api/alerts/{id}/de-escalate`, body `{severity_level,
+  reason}`) is the one path that rewrites `severity_level` in place. The ESP32's fusion loop
+  never steps a severity down on its own (only a full recovery clears an incident), so a
+  guardian/root_admin who has confirmed with the driver that an alert is a false positive or has
+  eased can lower it. The target must be strictly lower than the current severity (`422`
+  otherwise) and `reason` is required. The first de-escalation copies the device-reported value
+  into `original_severity_level`. Each one records `deescalated_by` (user id),
+  `deescalated_at`, and `deescalation_reason`, and sets `reviewed_by_operator`. Device keys get
+  `401` and `admin` gets `403`, the same roles as reviewing.
 
 ## Docker build test gate
 

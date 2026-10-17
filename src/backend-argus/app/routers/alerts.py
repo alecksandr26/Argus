@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
 
 from beanie import PydanticObjectId
@@ -19,7 +20,7 @@ from app.models.common import AlertSource, Role, Severity
 from app.models.route import Route
 from app.models.truck import Truck
 from app.models.user import User
-from app.schemas.alert import AlertCreate, AlertOut, AlertReview
+from app.schemas.alert import AlertCreate, AlertDeescalate, AlertOut, AlertReview
 from app.schemas.common import Message
 from app.serializers import alert_out
 
@@ -153,6 +154,34 @@ async def review_alert(
         alert.operator_notes = body.operator_notes
     if body.resolved_at is not None:
         alert.resolved_at = body.resolved_at
+    await alert.save()
+    return alert_out(alert)
+
+
+@router.post("/{alert_id}/de-escalate", response_model=AlertOut)
+async def deescalate_alert(
+    alert_id: str,
+    body: AlertDeescalate,
+    user: User = Depends(require_role(Role.ROOT_ADMIN, Role.GUARDIAN)),
+) -> AlertOut:
+    """Manual severity step-down. The ESP32's fusion loop deliberately never de-escalates on its
+    own (see `src/esp32-argus/README.md` section 5) — only a human who has actually checked on
+    the driver can. Same roles as reviewing (`review_alert`); never a device key, and never
+    `admin`. Also marks the alert reviewed, since confirming with the driver *is* a review."""
+    alert = await _get_or_404(alert_id)
+    if body.severity_level.rank >= alert.severity_level.rank:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Can only de-escalate to a lower severity than '{alert.severity_level.value}'",
+        )
+
+    if alert.original_severity_level is None:
+        alert.original_severity_level = alert.severity_level
+    alert.severity_level = body.severity_level
+    alert.deescalated_by = str(user.id)
+    alert.deescalated_at = datetime.now(timezone.utc)
+    alert.deescalation_reason = body.reason
+    alert.reviewed_by_operator = True
     await alert.save()
     return alert_out(alert)
 

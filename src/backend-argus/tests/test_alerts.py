@@ -264,3 +264,101 @@ async def test_device_key_can_resolve_but_not_review(api_client, root_admin, sam
         headers={"X-Device-Api-Key": device_key},
     )
     assert review_resp.status_code == 403
+
+
+async def _post_critical(api_client, headers, route_id) -> str:
+    resp = await api_client.post(
+        "/api/alerts",
+        json={
+            "id_route": route_id,
+            "alert_type": "drowsiness",
+            "severity_level": "critical",
+            "source": "fusion",
+            "ai_metadata": {"scores": {"not_drowsy": 0.1, "drowsy": 0.9}},
+            "grip_status": "bad",
+            "coordinates": {"lat": 19.1, "lon": -99.1},
+            "speed_at_event": 80.0,
+        },
+        headers=headers,
+    )
+    return resp.json()["id_alert"]
+
+
+@pytest.mark.asyncio
+async def test_guardian_can_deescalate_and_original_is_kept(
+    api_client, root_admin, guardian, sample_truck
+):
+    route_id = await _make_route(api_client, auth_headers(root_admin), str(sample_truck.id))
+    alert_id = await _post_critical(api_client, auth_headers(root_admin), route_id)
+
+    resp = await api_client.post(
+        f"/api/alerts/{alert_id}/de-escalate",
+        json={"severity_level": "medium", "reason": "Called driver, pulling over to rest"},
+        headers=auth_headers(guardian),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["severity_level"] == "medium"
+    assert body["original_severity_level"] == "critical"
+    assert body["deescalated_by"] == str(guardian.id)
+    assert body["deescalated_at"] is not None
+    assert body["deescalation_reason"] == "Called driver, pulling over to rest"
+    assert body["reviewed_by_operator"] is True
+
+    # A second step down keeps the device-reported original, not the intermediate level.
+    resp = await api_client.post(
+        f"/api/alerts/{alert_id}/de-escalate",
+        json={"severity_level": "low", "reason": "False positive confirmed"},
+        headers=auth_headers(guardian),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["severity_level"] == "low"
+    assert resp.json()["original_severity_level"] == "critical"
+
+
+@pytest.mark.asyncio
+async def test_deescalate_rejects_same_or_higher_severity(api_client, root_admin, sample_truck):
+    headers = auth_headers(root_admin)
+    route_id = await _make_route(api_client, headers, str(sample_truck.id))
+    alert_id = await _post_critical(api_client, headers, route_id)
+
+    resp = await api_client.post(
+        f"/api/alerts/{alert_id}/de-escalate",
+        json={"severity_level": "critical", "reason": "no-op"},
+        headers=headers,
+    )
+    assert resp.status_code == 422
+
+    resp = await api_client.post(
+        f"/api/alerts/{alert_id}/de-escalate",
+        json={"severity_level": "low", "reason": ""},
+        headers=headers,
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_deescalate_forbidden_for_admin_and_device_key(
+    api_client, root_admin, admin_user, sample_truck
+):
+    headers = auth_headers(root_admin)
+    key = (await api_client.post(f"/api/trucks/{sample_truck.id}/rotate-key", headers=headers)).json()[
+        "device_api_key"
+    ]
+    route_id = await _make_route(api_client, headers, str(sample_truck.id))
+    alert_id = await _post_critical(api_client, headers, route_id)
+    body = {"severity_level": "low", "reason": "x"}
+
+    resp = await api_client.post(
+        f"/api/alerts/{alert_id}/de-escalate", json=body, headers=auth_headers(admin_user)
+    )
+    assert resp.status_code == 403
+
+    resp = await api_client.post(
+        f"/api/alerts/{alert_id}/de-escalate", json=body, headers={"X-Device-Api-Key": key}
+    )
+    assert resp.status_code == 401
+
+    still = (await api_client.get(f"/api/alerts/{alert_id}", headers=headers)).json()
+    assert still["severity_level"] == "critical"
+    assert still["original_severity_level"] is None
