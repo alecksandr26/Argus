@@ -21,10 +21,23 @@ throwaway truck → rotate its device key → create a driver + route → use th
 token, to `POST /api/routes/{id}/status` and `POST /api/alerts`) — the exact contract
 `src/esp32-argus`'s firmware uses. Cleans up everything it created, so it's safe to re-run.
 
-Zero dependencies (stdlib `urllib` only — nothing to `pip install`).
+Zero dependencies (stdlib `urllib` only — nothing to `pip install`). The script itself never
+needs Docker; it just needs *some* real backend-argus + MongoDB already reachable over HTTP —
+Docker Compose is the easiest way to get both running together in one command:
 
 ```sh
 docker compose up --build          # from the repo root, starts backend-argus + mongo + ui-argus
+python src/tests/smoke_backend.py
+```
+
+**Without Docker** is possible but is genuinely more setup, not less — backend-argus needs a
+real MongoDB to talk to either way, so skipping Docker means installing/running `mongod`
+yourself plus the backend's own Python deps and server:
+
+```sh
+# a MongoDB instance running and reachable at mongodb://localhost:27017
+pip install -r src/backend-argus/requirements.txt
+cd src/backend-argus && uvicorn app.main:app --port 8000   # separate terminal
 python src/tests/smoke_backend.py
 ```
 
@@ -45,19 +58,15 @@ the client's side of the exchange by hand, printing every line exchanged. This p
 server/buffer/alerts/protocol code works end to end; it does **not** prove real Bluetooth
 connectivity, which needs hardware no session has had access to.
 
-Needs `cv_argus` importable:
+**No install, no Docker.** `alerts/`/`buffer/`/`sender/` are pure stdlib (no numpy/mediapipe/
+tensorflow/opencv in that import chain at all), so this script registers `cv_argus` as a module
+pointing straight at `src/cv-argus/src/` itself (the same name mapping `setup.py`'s
+`package_dir={"cv_argus": "src"}` does for a real install, just done at runtime via `importlib`
+instead of setuptools) — a real `pip install -e src/cv-argus` would otherwise drag in the full
+heavy dependency list for nothing, since this script never touches `model/` or `pipeline/`.
 
 ```sh
-pip install -e src/cv-argus   # one-time; pulls the full dependency list
 python src/tests/smoke_cv_argus.py
-```
-
-or, without installing anything locally, run it inside the already-running container:
-
-```sh
-cd src/cv-argus
-docker compose up --build -d
-docker compose exec -T cv-argus python - < ../tests/smoke_cv_argus.py
 ```
 
 Exits `0` if every check passes, `1` otherwise.
