@@ -116,3 +116,100 @@ async def sample_truck(mongo_client) -> Truck:
     )
     await truck.insert()
     return truck
+
+
+# --- Edge-ingestion fixtures (device-key writes from the ESP32) --------------------------------
+# A "rig" is one truck as the ESP32 sees it: its own driver, one route, and a device API key.
+# Two of them make cross-truck checks (key A on truck B's route) one-liners.
+
+from dataclasses import dataclass  # noqa: E402
+from datetime import date, datetime, timezone  # noqa: E402
+
+from app.geo import GeoJSONPoint  # noqa: E402
+from app.models.common import RouteStatus, TruckStatus  # noqa: E402
+from app.models.driver import Driver  # noqa: E402
+from app.models.route import Route  # noqa: E402
+
+
+@dataclass
+class Rig:
+    truck_id: str
+    route_id: str
+    key: str
+
+    @property
+    def headers(self) -> dict:
+        return {"X-Device-Api-Key": self.key}
+
+
+async def make_rig(plate: str, route_status: RouteStatus = RouteStatus.IN_PROGRESS) -> Rig:
+    key = f"device-key-{plate}"
+    truck = Truck(
+        plate_number=plate,
+        brand="Kenworth",
+        model="T680",
+        company_number=f"UNIT-{plate}",
+        operative_status=TruckStatus.ACTIVE,
+        device_api_key_hash=hash_secret(key),
+    )
+    await truck.insert()
+    driver = Driver(
+        first_name="Edge",
+        last_name=plate,
+        license_number=f"LIC-{plate}",
+        license_expiration=date(2030, 1, 1),
+        phone_number="5550000000",
+        emergency_contact_name="Contact",
+        emergency_contact_phone="5550000001",
+        blood_type="O+",
+    )
+    await driver.insert()
+    route = Route(
+        id_driver=str(driver.id),
+        id_truck=str(truck.id),
+        origin_name="GDL",
+        destination_name="CDMX",
+        destination_coordinates=GeoJSONPoint(coordinates=(-99.13, 19.43)),
+        estimated_departure=datetime(2030, 1, 1, 8, tzinfo=timezone.utc),
+        operative_status=route_status,
+    )
+    await route.insert()
+    return Rig(truck_id=str(truck.id), route_id=str(route.id), key=key)
+
+
+@pytest_asyncio.fixture
+async def rig_a(mongo_client) -> Rig:
+    return await make_rig("RIG-A")
+
+
+@pytest_asyncio.fixture
+async def rig_b(mongo_client) -> Rig:
+    return await make_rig("RIG-B")
+
+
+def fusion_alert_body(route_id: str, **overrides) -> dict:
+    """What the ESP32 posts for a fused drowsy+grip alert (see backend_api.cpp)."""
+    body = {
+        "id_route": route_id,
+        "alert_type": "Drowsy",
+        "severity_level": "critical",
+        "source": "fusion",
+        "ai_metadata": {"scores": {"not_drowsy": 0.12, "drowsy": 0.88}},
+        "grip_status": "bad",
+        "coordinates": {"lat": 20.6582, "lon": -103.3761},
+        "speed_at_event": 0.0,
+    }
+    body.update(overrides)
+    return body
+
+
+def status_body(**overrides) -> dict:
+    """What the ESP32 posts for a route_status heartbeat."""
+    body = {
+        "current_coordinates": {"lat": 20.6582, "lon": -103.3761},
+        "current_speed": 0.0,
+        "odometer": 0.0,
+        "vigilance": "low",
+    }
+    body.update(overrides)
+    return body
