@@ -35,6 +35,20 @@ export function getAlert(id: string, token: string): Promise<Alert> {
   return apiFetch<Alert>(`/api/alerts/${id}`, { token }).then(normalizeAlert)
 }
 
+/** Guardian/root_admin only. `severity_level` must be strictly lower than the alert's current
+ * one (the backend 422s otherwise); `reason` is required. Also marks the alert reviewed. */
+export function deescalateAlert(
+  id: string,
+  input: { severity_level: AlertSeverity; reason: string },
+  token: string,
+): Promise<Alert> {
+  return apiFetch<Alert>(`/api/alerts/${id}/de-escalate`, {
+    method: 'POST',
+    body: input,
+    token,
+  }).then(normalizeAlert)
+}
+
 export function reviewAlert(
   id: string,
   input: { reviewed_by_operator: boolean; operator_notes: string },
