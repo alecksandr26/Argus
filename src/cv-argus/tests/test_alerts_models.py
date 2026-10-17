@@ -53,10 +53,8 @@ import pytest  # noqa: E402
 
 from cv_argus.alerts import route_status  # noqa: E402
 
-_CLOCK_BUG = "CV-13: records carry no monotonic time / boot id / clock-synced flag"
 
 
-@pytest.mark.xfail(strict=True, reason=_CLOCK_BUG)
 def test_alert_carries_mono_ms_boot_id_and_clock_synced():
     alert = Alert.new(AlertKind.DROWSINESS, level=2, source_id="cam0", payload={})
     assert isinstance(alert.mono_ms, int) and alert.mono_ms > 0
@@ -64,14 +62,12 @@ def test_alert_carries_mono_ms_boot_id_and_clock_synced():
     assert isinstance(alert.clock_synced, bool)
 
 
-@pytest.mark.xfail(strict=True, reason=_CLOCK_BUG)
 def test_mono_ms_is_monotonic_across_alerts():
     a = Alert.new(AlertKind.DROWSINESS, level=1, source_id="cam0", payload={})
     b = route_status("cam0")
     assert b.mono_ms >= a.mono_ms
 
 
-@pytest.mark.xfail(strict=True, reason=_CLOCK_BUG)
 def test_boot_id_is_stable_within_a_process():
     a = Alert.new(AlertKind.DROWSINESS, level=1, source_id="cam0", payload={})
     b = Alert.new(AlertKind.DROWSINESS, level=1, source_id="cam0", payload={})

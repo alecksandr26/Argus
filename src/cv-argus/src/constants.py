@@ -95,20 +95,29 @@ DEFAULT_SAMPLE_FPS = 5
 BUFFER_DIR_DEFAULT = "/app/data"
 BUFFER_DB_FILENAME_DEFAULT = "buffer.sqlite3"
 
-# --- Orchestrator decision loop (orchestrator/orchestrator.py) ---
-# How many consecutive Drowsy-level detections in a row are required before an Alert is
-# actually raised -- guards against a single flickering/misclassified frame spamming alerts.
-# 3 frames at SAMPLE_FPS=5 = ~0.6s of sustained "Drowsy" before alerting: short enough to react
-# to a real drowsy episode quickly, long enough to absorb one bad frame (a blink, a head turn
-# mid-detection) without firing on it alone.
+# --- Orchestrator reading policy (orchestrator/orchestrator.py) ---
+# The ESP32 fuses the camera's class with its grip sensor and needs to see the class over time
+# (5 s debounce, 20 s escalation, 10 s recovery in fusion_contract.py), so the orchestrator
+# reports a *reading* on every class change plus a keepalive while it stays the same -- not a
+# sparse "alert". (It used to emit only Drowsy, at most every 30 s, which left fusion unable to
+# ever see a recovery.)
+#
+# Consecutive frames of a different class before the reported class flips, in both directions:
+# 3 frames at SAMPLE_FPS=5 = ~0.6 s, enough to absorb one bad frame (a blink, a head turn).
 ORCHESTRATOR_DEBOUNCE_FRAMES = 3
-# Once an Alert has fired, suppress a repeat Alert for this many seconds even if the driver
-# stays classified Drowsy the whole time -- a real drowsy episode shouldn't re-fire every
-# debounce window while it's ongoing (that's notification-spam, not a detection problem); the
-# ESP32/backend already have this one Alert to act on. 30s is a starting default: long enough
-# not to spam, short enough that a second, independently worsening episode a minute later still
-# gets its own Alert.
-ORCHESTRATOR_ALERT_COOLDOWN_SECONDS = 30.0
+# Re-send the current class this often while it doesn't change. Must stay well under fusion's
+# 5 s debounce and 10 s recovery windows so those can elapse between readings, and under the
+# ESP32's camera-stale timeout so a live camera never looks offline.
+ORCHESTRATOR_KEEPALIVE_SECONDS = 2.0
+# Frames ignored after start: the LSTM window is mostly zero padding until it fills. 10 frames
+# = 2 s at 5 fps.
+ORCHESTRATOR_WARMUP_FRAMES = 10
+# Buffer housekeeping, run from the orchestrator loop: ACKed rows older than this are deleted,
+# and at most this many unsent rows are kept (oldest keepalives dropped first) through a long
+# Bluetooth outage. 20000 rows ~ 11 h of 2 s keepalives.
+BUFFER_KEEP_SENT_SECONDS = 24 * 3600
+BUFFER_MAX_UNSENT_ROWS = 20000
+BUFFER_MAINTENANCE_INTERVAL_SECONDS = 600.0
 # Cadence for the RouteStatus("OK") heartbeat when no Alert is due -- lets the backend/ESP32
 # distinguish "quiet because everything's fine" from "the Pi died". 60s default: frequent enough
 # that a stuck/crashed Pi is noticed within about a minute, infrequent enough not to flood the

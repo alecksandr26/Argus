@@ -18,7 +18,6 @@ import pytest
 from cv_argus.alerts import AlertKind
 from cv_argus.orchestrator import Orchestrator
 
-_BUG = "CV-01..04: orchestrator emits sparse Drowsy-only alerts, no readings stream"
 
 
 class _FakeBuffer:
@@ -98,7 +97,6 @@ def _classes(buf):
     return [r.payload["class_name"] for r in buf.readings()]
 
 
-@pytest.mark.xfail(strict=True, reason=_BUG)
 def test_steady_not_drowsy_emits_initial_reading_then_keepalives(clock):
     orch, buf = _orch()
     _feed(orch, clock, [ND()] * 3)
@@ -112,7 +110,6 @@ def test_steady_not_drowsy_emits_initial_reading_then_keepalives(clock):
     assert buf.readings()[-1].payload["transition"] is False
 
 
-@pytest.mark.xfail(strict=True, reason=_BUG)
 def test_drowsy_after_3_frames_emits_one_transition(clock):
     orch, buf = _orch(keepalive_seconds=999.0)
     _feed(orch, clock, [ND()] * 3)
@@ -125,7 +122,6 @@ def test_drowsy_after_3_frames_emits_one_transition(clock):
     assert _classes(buf) == ["Not Drowsy", "Drowsy"]  # no repeat transition
 
 
-@pytest.mark.xfail(strict=True, reason=_BUG)
 def test_not_drowsy_after_3_frames_emits_falling_transition(clock):
     orch, buf = _orch(keepalive_seconds=999.0)
     _feed(orch, clock, [D()] * 3)
@@ -136,7 +132,6 @@ def test_not_drowsy_after_3_frames_emits_falling_transition(clock):
     assert buf.readings()[-1].payload["transition"] is True
 
 
-@pytest.mark.xfail(strict=True, reason=_BUG)
 def test_flicker_shorter_than_hysteresis_emits_nothing_new(clock):
     orch, buf = _orch(keepalive_seconds=999.0)
     _feed(orch, clock, [ND()] * 3)
@@ -144,7 +139,6 @@ def test_flicker_shorter_than_hysteresis_emits_nothing_new(clock):
     assert _classes(buf) == ["Not Drowsy"]
 
 
-@pytest.mark.xfail(strict=True, reason=_BUG)
 def test_keepalive_repeats_state_with_fresh_probabilities(clock):
     orch, buf = _orch()
     _feed(orch, clock, [D(0.8)] * 3)
@@ -156,7 +150,6 @@ def test_keepalive_repeats_state_with_fresh_probabilities(clock):
     assert last.payload["probabilities"] == pytest.approx([0.07, 0.93])
 
 
-@pytest.mark.xfail(strict=True, reason=_BUG)
 def test_continuing_drowsy_episode_is_never_silent_for_more_than_keepalive(clock):
     """Replaces the 30 s cooldown: fusion needs to see the episode is still going."""
     orch, buf = _orch()
@@ -168,7 +161,6 @@ def test_continuing_drowsy_episode_is_never_silent_for_more_than_keepalive(clock
     assert max(gaps[1:]) <= 2.0 + 0.2 + 1e-6
 
 
-@pytest.mark.xfail(strict=True, reason=_BUG)
 def test_keepalive_also_fires_from_tick_when_frames_stop_arriving(clock):
     orch, buf = _orch()
     _feed(orch, clock, [ND()] * 3)
@@ -178,7 +170,6 @@ def test_keepalive_also_fires_from_tick_when_frames_stop_arriving(clock):
     assert len(buf.readings()) >= 3
 
 
-@pytest.mark.xfail(strict=True, reason="CV-04: no-face frames reset to 'not drowsy'")
 def test_none_detections_report_no_face_after_hysteresis(clock):
     orch, buf = _orch(keepalive_seconds=999.0)
     _feed(orch, clock, [ND()] * 3)
@@ -189,7 +180,6 @@ def test_none_detections_report_no_face_after_hysteresis(clock):
     assert last.payload["probabilities"] is None
 
 
-@pytest.mark.xfail(strict=True, reason="CV-04: no-face frames reset to 'not drowsy'")
 def test_no_face_during_drowsy_episode_never_reports_not_drowsy(clock):
     """A slumped driver often leaves the frame: that must not read as recovery."""
     orch, buf = _orch()
@@ -199,7 +189,6 @@ def test_no_face_during_drowsy_episode_never_reports_not_drowsy(clock):
     assert _classes(buf)[0] == "Drowsy"
 
 
-@pytest.mark.xfail(strict=True, reason="CV-06: warm-up frames (mostly padded window) are reported")
 def test_no_readings_during_warm_up_window(clock):
     orch, buf = _orch(warmup_frames=10)
     _feed(orch, clock, [D()] * 9)
@@ -208,7 +197,6 @@ def test_no_readings_during_warm_up_window(clock):
     assert _classes(buf) == ["Drowsy"]
 
 
-@pytest.mark.xfail(strict=True, reason="CV-12: one shared counter across camera sources")
 def test_two_sources_keep_independent_state(clock):
     orch, buf = _orch(keepalive_seconds=999.0)
     for _ in range(3):
@@ -220,7 +208,6 @@ def test_two_sources_keep_independent_state(clock):
     assert ("cam1", "Not Drowsy") in by_source
 
 
-@pytest.mark.xfail(strict=True, reason=_BUG)
 def test_heartbeat_still_every_60s_alongside_readings(clock):
     orch, buf = _orch()
     _feed(orch, clock, [ND()] * 3)

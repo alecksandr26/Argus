@@ -76,12 +76,10 @@ def test_parse_pull_rejects_negative_and_spaces():
     assert protocol.parse_pull(" PULL 5") is None
 
 
-@pytest.mark.xfail(strict=True, reason="SND-04: trailing \\r from a CRLF client isn't tolerated")
 def test_parse_pull_tolerates_trailing_carriage_return():
     assert protocol.parse_pull("PULL 5\r") == 5
 
 
-@pytest.mark.xfail(strict=True, reason="SND-05: no protocol maximum for PULL")
 def test_parse_pull_clamps_to_max():
     assert protocol.parse_pull("PULL 999999999") == protocol.MAX_PULL_LIMIT
 

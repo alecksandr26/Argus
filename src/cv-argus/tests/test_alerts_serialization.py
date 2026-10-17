@@ -115,7 +115,6 @@ def test_no_face_payload_round_trips():
     assert (back.level, back.payload) == (None, alert.payload)
 
 
-@pytest.mark.xfail(strict=True, reason="CV-13: clock fields aren't on the wire")
 def test_clock_fields_are_on_the_wire():
     alert = Alert.new(AlertKind.DROWSINESS, level=2, source_id="cam0", payload={})
     wire = json.loads(to_json(alert))
