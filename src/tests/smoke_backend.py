@@ -4,7 +4,8 @@
 NOT part of backend-argus's own hermetic pytest suite (src/backend-argus/tests/, which runs
 against mongomock-motor, no real service needed). This script does the opposite: it hits a
 real, already-running backend-argus over the network and prints a readable PASS/FAIL log per
-check, so you can start one (the in-memory `esp32_hil/bench_backend.py` is enough) and then run
+check, so you can start one (the in-memory
+`src/esp32-argus/test/hil/bench_backend.py` is enough) and then run
 this to actually confirm the connection works -- not just that the unit tests pass against a mock.
 
 Confirms, end to end against the real API:

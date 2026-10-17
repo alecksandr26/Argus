@@ -5,7 +5,7 @@ mongomock-motor instead of MongoDB. No Docker, no mongod; data lives only as lon
 Seeds one truck/driver/in-progress route with FIXED ids and a FIXED device key, so the values in
 the firmware's config.h stay valid across runs and you don't reflash every time.
 
-    python src/tests/esp32_hil/bench_backend.py            # serve on 0.0.0.0:8000 until Ctrl+C
+    python src/esp32-argus/test/hil/bench_backend.py         # serve on 0.0.0.0:8000 until Ctrl+C
 
 Env vars: ARGUS_BENCH_PORT (default 8000), ARGUS_BENCH_DEVICE_KEY (default below).
 Root admin login is backend-argus's own default (admin@argus.dev / changeme123), so
