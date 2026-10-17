@@ -36,7 +36,7 @@ bool smsWaitForNetwork() {
   return networkReady;
 }
 
-bool smsSendPanicAlert(double lat, double lon) {
+bool smsSendPanicAlert(bool hasFix, double lat, double lon) {
   if (!networkReady && !modem.isNetworkConnected()) {
     if (!smsWaitForNetwork()) {
       Serial.println("[sms] Skipping panic SMS -- no GSM network");
@@ -45,10 +45,14 @@ bool smsSendPanicAlert(double lat, double lon) {
   }
 
   String message = "EMERGENCIA\nUbicacion:\n";
-  message += "https://www.google.com/maps?q=";
-  message += String(lat, 6);
-  message += ",";
-  message += String(lon, 6);
+  if (hasFix) {
+    message += "https://www.google.com/maps?q=";
+    message += String(lat, 6);
+    message += ",";
+    message += String(lon, 6);
+  } else {
+    message += "no disponible (sin senal GPS)";
+  }
 
   Serial.println("[sms] Sending panic SMS...");
   bool ok = modem.sendSMS(SMS_DESTINATION_NUMBER, message);

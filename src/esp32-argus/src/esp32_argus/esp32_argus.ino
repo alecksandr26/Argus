@@ -99,7 +99,7 @@ void handlePanicButton() {
 
   // Hardware-direct fallback -- fires even if WiFi/backend-argus is unreachable. Never
   // gated on hasFix/wifi below; this is the point of keeping SIM800L/SMS at all.
-  smsSendPanicAlert(lat, lon);
+  smsSendPanicAlert(hasFix, lat, lon);
 
   // Normal path too, per README section 5: unconditional critical, no debounce, no
   // interaction with any open fusion incident.
