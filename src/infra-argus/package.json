@@ -11,6 +11,8 @@
     "synth": "cdk synth",
     "deploy": "bash scripts/deploy.sh",
     "destroy": "cdk destroy --all",
+    "hello:deploy": "cdk deploy --app 'npx ts-node --prefer-ts-exts bin/hello.ts' ArgusHello",
+    "hello:destroy": "cdk destroy --app 'npx ts-node --prefer-ts-exts bin/hello.ts' ArgusHello",
     "setup-secrets": "bash scripts/setup-secrets.sh",
     "kill": "bash scripts/kill.sh",
     "unkill": "bash scripts/unkill.sh",
