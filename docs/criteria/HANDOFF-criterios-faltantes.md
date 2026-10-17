@@ -133,7 +133,7 @@ Todo se edita en `docs/criteria/scripts/fill_report.py` (el script regenera el `
 | **UI/UX (5%)** | ❌ | El reporte **no tiene ninguna captura del frontend**. Agregar Live operations (mapa) y Alert triage. |
 
 Además, la plantilla `Formato_Proyecto_Modular V2.docx` pide **repositorio de código, versión actual y licencia**, y el reporte no los incluye.
-- [ ] Agregar la URL del repo, un tag/versión y una licencia (y un archivo `LICENSE` si no existe).
+- [ ] Agregar la URL del repo (`github.com/alecksandr26/Argus`), un tag/versión y la licencia (ya existe: **MIT**, ver `LICENSE`).
 
 ---
 
