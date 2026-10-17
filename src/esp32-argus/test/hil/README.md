@@ -52,8 +52,9 @@ Python venv. On a Linux machine with BlueZ (e.g. the real Pi), use `--rfcomm` in
    - Set `PI_BT_MAC_ADDRESS` to the **PC's** Bluetooth MAC, because the PC is the Pi here.
      `ipconfig /all` shows it as "Physical Address" under "Bluetooth Network Connection".
      `B0-DC-EF-34-4C-83` becomes `{ 0xB0, 0xDC, 0xEF, 0x34, 0x4C, 0x83 }`.
-   - Set `BENCH_FAKE_GPS` to `1`, since indoors the GPS has no fix and nothing gets relayed
-     without one. **Set it back to `0` before flashing a real truck.**
+   - `BENCH_FAKE_GPS`: `1` to test Bluetooth/HTTP indoors without a GPS fix (nothing gets
+     relayed without one), `0` to test the real NEO-6M (see "Testing the real GPS").
+     **It must be `0` on a real truck.**
 3. **Pair the ESP32 with Windows**: Settings → Bluetooth & devices → Add device → Bluetooth →
    **ESP32-Argus**.
 4. **Create an incoming Bluetooth COM port**: Settings → Bluetooth & devices → Devices → *More
@@ -65,14 +66,44 @@ Python venv. On a Linux machine with BlueZ (e.g. the real Pi), use `--rfcomm` in
 
 ```powershell
 .venv\Scripts\activate
-python src\esp32-argus\test\hil\esp32_hil.py --serial COM5
+python src\esp32-argus\test\hil\esp32_hil.py --serial auto
 ```
 
 Allow Python through the Windows Firewall (Private networks) the first time, or the ESP32's
 HTTP requests never arrive. Keep the Arduino Serial Monitor (115200) open on the USB port too,
 so you see the firmware's side.
 
-Options: `--duration 300`, `--drowsy-every 1`, `--heartbeat-every 10`.
+Options: `--duration 300`, `--drowsy-every 1`, `--heartbeat-every 10`, `--serial COM4,COM6`.
+`--serial auto` listens on every incoming Bluetooth port. That's useful because Windows
+advertises all of them, and the ESP32 connects to whichever one it finds first.
+
+## Testing the real GPS (NEO-6M)
+
+With `BENCH_FAKE_GPS 1`, every position is the fixed bench point `20.6597, -103.3496`, which
+proves nothing about the GPS. To check that the positions come from the NEO-6M:
+
+1. Set `BENCH_FAKE_GPS 0` in `config.h` and reflash.
+2. Put the GPS antenna **by a window or outside**. A cold start can take 1–15 min to get a
+   fix, and indoors often never does.
+3. Watch the Serial Monitor. Every 10 s it prints a status line, for example:
+   `[gps] chars=48211 bad=0 sats=7 fix=yes lat=20.659812 lon=-103.349655`
+
+   | What you see | Meaning |
+   |---|---|
+   | `chars=0` | No data from the NEO-6M: wiring (TX→GPIO 32, RX→GPIO 33), power, or baud |
+   | `chars` growing, `bad` growing fast | Data is corrupted: check the wiring/ground |
+   | `chars` growing, `sats=0..3`, `fix=no` | Working, but it can't see enough sky yet. Move it or wait |
+   | `fix=yes` | Ready. Compare `lat`/`lon` with Google Maps |
+
+4. Get where you really are: in Google Maps, right-click your spot and click the coordinates
+   to copy them. Then run:
+   ```powershell
+   python .\esp32_hil.py --serial auto --expect-location "20.659812, -103.349655" --tolerance-m 100
+   ```
+   This adds a 5th check. It fails if the ESP32 sent the fake bench position, sent no position,
+   or sent one farther than `--tolerance-m` from yours. It prints the farthest position as a
+   Google Maps link you can open. The NEO-6M is typically accurate to 2–10 m outdoors and
+   worse by a window. 100 m only catches real mistakes, like a fake or wrong position.
 
 ## Troubleshooting
 
@@ -80,7 +111,8 @@ Options: `--duration 300`, `--drowsy-every 1`, `--heartbeat-every 10`.
 |---|---|
 | Check 1 fails; Serial Monitor shows `[bt] Could not connect to the Pi's Bluetooth SPP server` | Wrong `PI_BT_MAC_ADDRESS`, not paired, or no *incoming* COM port (setup steps 2–4) |
 | `could not open port 'COM5'` | Wrong COM number, or another program has it open |
-| Serial Monitor shows `No GPS fix yet -- ... not relaying` | `BENCH_FAKE_GPS` is still `0` |
+| Serial Monitor shows `No GPS fix yet -- ... not relaying` | The NEO-6M has no fix yet (see `[gps]` lines and "Testing the real GPS"), or set `BENCH_FAKE_GPS 1` to test without it |
+| Check 5 says "sent the BENCH_FAKE_GPS position" | `BENCH_FAKE_GPS` is still `1` in the flashed firmware |
 | Serial Monitor shows `WiFi down` | Wrong `WIFI_SSID`/`WIFI_PASSWORD`, or a 5 GHz-only network (the ESP32 only does 2.4 GHz) |
 | Bluetooth works but checks 3–4 fail | Firewall blocking port 8000, ESP32 on a different network, or `BACKEND_BASE_URL` has a stale IP |
 | Backend rejects posts (401/403/404) | `DEVICE_API_KEY` / `ROUTE_ID` in `config.h` don't match what `bench_backend.py` prints |

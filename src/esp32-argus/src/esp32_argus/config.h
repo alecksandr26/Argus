@@ -86,9 +86,10 @@
 // handlePiRecord() relays nothing without one, so 1 makes gps_module report a fixed position
 // instead. GPS date/time stays real (empty with no fix), so an incident can't be resolved on
 // the bench. NEVER flash a truck with this set to 1: every alert would carry these coordinates.
-#define BENCH_FAKE_GPS 1
+#define BENCH_FAKE_GPS 0
 #define BENCH_GPS_LAT 20.6597
 #define BENCH_GPS_LON -103.3496
+#define GPS_LOG_INTERVAL_MS 10000UL // gpsLogStatus() cadence on Serial
 
 // Panic button + grip sensor -- GPIO mapping not finalized against real hardware yet
 // (src/esp32-argus/README.md section 4 says so explicitly: "none of them have a defined
