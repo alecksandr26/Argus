@@ -213,24 +213,72 @@ MRL_EYE_EXPECTED_IMAGES: int = 84_898
 MRL_EYE_EXPECTED_SUBJECTS: int = 37
 MRL_EYE_LICENCE: str = "unverified (no licence on dataset page; cite Fusek, ISVC 2018)"
 
-# Roboflow Universe projects with eye-state / yawn (and some head) boxes, RGB. ``version: None``
-# means "latest at download time" — the resolved number is written to the manifest; pin it here
-# afterwards so reruns are reproducible. Image counts are as listed on Universe, before dedupe.
+# Roboflow Universe projects with eye-state / yawn (and some head) boxes, RGB. Versions are pinned to
+# what was pulled on 2026-10-17 (version: None = "latest at download time", recorded in the
+# manifest). listed_images is the Universe listing; exports are ~3x larger (augmented copies).
 ROBOFLOW_EXPORT_FORMAT: str = "yolov8"
 ROBOFLOW_PROJECTS: tuple[dict, ...] = (
-    {"workspace": "drowsiness-74wtl", "project": "drowsiness-axuoa", "version": None,
+    {"workspace": "drowsiness-74wtl", "project": "drowsiness-axuoa", "version": 16,
      "listed_images": 820, "note": "7 classes: eyes + yawn + head"},
     {"workspace": "national-university-of-technology", "project": "drowsiness-aunvg",
-     "version": None, "listed_images": 990,
+     "version": 1, "listed_images": 990,
      "note": "closed-eyes, open-eyes, tired, yawn"},
-    {"workspace": "projects-7idri", "project": "drowsiness-detection-luvay", "version": None,
+    {"workspace": "projects-7idri", "project": "drowsiness-detection-luvay", "version": 2,
      "listed_images": 2055, "note": "Closed-Eye, Open-Eye, Yawn"},
     {"workspace": "drowsiness-detection-system", "project": "drowsiness-driver-jhmld",
-     "version": None, "listed_images": 9700,
+     "version": 1, "listed_images": 9700,
      "note": "11 classes, eye + mouth states; check for duplicate/inconsistent classes"},
-    {"workspace": "new-project-sfrql", "project": "drowsiness-hgjay", "version": None,
+    {"workspace": "new-project-sfrql", "project": "drowsiness-hgjay", "version": 1,
      "listed_images": 2069, "note": "face, close_eyes, open_eyes, yawn"},
 )
+
+# Merged parts dataset (scripts/build_parts_dataset.py → processed/parts_dataset/). Every source
+# label is mapped onto three classes or dropped (None). Decided from per-class contact sheets of
+# the real boxes, not from names: several projects reuse a name for a different box scope.
+PARTS_CLASSES: tuple[str, ...] = ("open_eye", "closed_eye", "yawn")
+PARTS_CLASS_PART: dict[str, str] = {"open_eye": "eye", "closed_eye": "eye", "yawn": "mouth"}
+ROBOFLOW_CLASS_MAP: dict[str, dict[str, str | None]] = {
+    "drowsiness-axuoa": {
+        "open_eyes": "open_eye", "closed_eyes": "closed_eye", "yawn": "yawn",
+        "no_yawn": None,        # closed mouth — not one of the three classes
+        "obstacle": None,       # sunglasses
+        "straight_head": None, "tilted_head": None,  # whole-head boxes; pose comes from landmarks
+    },
+    "drowsiness-aunvg": {
+        "open-eyes": "open_eye", "closed-eyes": "closed_eye", "yawn": "yawn",
+        "tired": None,          # half-open eyes, ambiguous
+    },
+    "drowsiness-detection-luvay": {
+        "Open-Eye": "open_eye", "Closed-Eye": "closed_eye", "Yawn": "yawn",  # eye boxes = whole image
+    },
+    "drowsiness-driver-jhmld": {
+        "Attentive eye": "open_eye", "open": "open_eye",
+        "Drowsy eye": "closed_eye",   # samples show shut lids
+        "close": "closed_eye",
+        "yawn": "yawn",
+        "Open-Mouth": "yawn",         # samples are wide-open yawning mouths
+        "Eyeclosed": None, "Yawn": None, "noYawn": None,  # whole-face boxes, not part crops
+        "closed": None,               # boxes the nose bridge between both eyes
+        "asleep": None,               # mixed / unreadable
+    },
+    "drowsiness-hgjay": {
+        "open_eyes": "open_eye", "close_eyes": "closed_eye",
+        "yawn": None,                 # whole-face boxes
+        "face": None,
+    },
+}
+PARTS_CROP_PAD_FRAC: float = 0.15       # grow each box 15% per side, then square it about its centre
+PARTS_MIN_CROP_PX: int = 12             # drop crops whose short side is smaller than this
+PARTS_SPLIT_FRACS: tuple[float, float, float] = (0.70, 0.15, 0.15)  # train / valid / test, by group
+PARTS_DHASH_SIZE: int = 8               # 64-bit difference hash — cross-project duplicate grouping
+
+# Infrared simulation (the cabin camera is a Pi NoIR OV5647 with IR LEDs). Applied to RGB
+# sources only, never to MRL (already IR) and never at inference. Red is the visible channel
+# closest to NIR skin/eye appearance; the result is then pulled toward MRL's real-IR intensity
+# distribution by histogram matching, blended at IR_HIST_MATCH_STRENGTH.
+IR_CHANNEL_WEIGHTS_BGR: tuple[float, float, float] = (0.05, 0.15, 0.80)
+IR_HIST_MATCH_STRENGTH: float = 0.5
+IR_REF_SAMPLE_IMAGES: int = 5000        # MRL images sampled to build the reference histogram
 
 
 # --------------------------------------------------------------------------------------------
