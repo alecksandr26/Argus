@@ -6,6 +6,7 @@ from typing import Optional
 from pydantic import BaseModel
 
 from app.geo import Coordinates
+from app.schemas.common import UtcDatetime
 from app.models.common import RouteStatus
 
 from .status_route import StatusRouteOut
@@ -42,13 +43,13 @@ class RouteOut(BaseModel):
     origin_name: str
     destination_name: str
     destination_coordinates: Coordinates
-    estimated_departure: datetime
-    estimated_arrival: Optional[datetime]
-    actual_departure: Optional[datetime]
-    actual_arrival: Optional[datetime]
+    estimated_departure: UtcDatetime
+    estimated_arrival: Optional[UtcDatetime]
+    actual_departure: Optional[UtcDatetime]
+    actual_arrival: Optional[UtcDatetime]
     operative_status: RouteStatus
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
 
 
 class RouteWithStatus(RouteOut):

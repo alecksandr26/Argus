@@ -38,7 +38,13 @@ class FakeLambda:
 
 @pytest.fixture
 def env(monkeypatch):
+    # Hermetic: never touch the developer's real AWS profile (e.g. an `aws login` session).
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("AWS_CONFIG_FILE", os.devnull)
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", os.devnull)
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
     monkeypatch.setenv("CLUSTER", "argus")
     monkeypatch.setenv("STARTED_BY", "argus-simulator")
     monkeypatch.setenv("MAX_MINUTES", "10")
