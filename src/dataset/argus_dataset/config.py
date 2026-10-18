@@ -199,6 +199,41 @@ FACE_DETECTOR_FILENAME: str = "blaze_face_short_range.tflite"
 
 
 # --------------------------------------------------------------------------------------------
+# External datasets for the "parts" architecture (eye/mouth crops → tiny CNNs). Pulled by
+# scripts/fetch_mrl_eye.py and scripts/fetch_roboflow_parts.py into raw/, catalogued in
+# raw/datasets_manifest.json. Download-only — nothing here changes an existing artifact, so none
+# of these are in _HASH_RELEVANT below (adding them would invalidate finished 01/02/06/09 runs).
+# --------------------------------------------------------------------------------------------
+# MRL Eye (Fusek, ISVC 2018) — https://mrl.cs.vsb.cz/eyedataset.html. Infrared grayscale eye
+# crops, one per image, labels in the filename. The page states no licence (citation only), so
+# the manifest records it as unverified.
+MRL_EYE_URL: str = "http://mrl.cs.vsb.cz/data/eyedataset/mrlEyes_2018_01.zip"
+MRL_EYE_ZIP_NAME: str = "mrlEyes_2018_01.zip"
+MRL_EYE_EXPECTED_IMAGES: int = 84_898
+MRL_EYE_EXPECTED_SUBJECTS: int = 37
+MRL_EYE_LICENCE: str = "unverified (no licence on dataset page; cite Fusek, ISVC 2018)"
+
+# Roboflow Universe projects with eye-state / yawn (and some head) boxes, RGB. ``version: None``
+# means "latest at download time" — the resolved number is written to the manifest; pin it here
+# afterwards so reruns are reproducible. Image counts are as listed on Universe, before dedupe.
+ROBOFLOW_EXPORT_FORMAT: str = "yolov8"
+ROBOFLOW_PROJECTS: tuple[dict, ...] = (
+    {"workspace": "drowsiness-74wtl", "project": "drowsiness-axuoa", "version": None,
+     "listed_images": 820, "note": "7 classes: eyes + yawn + head"},
+    {"workspace": "national-university-of-technology", "project": "drowsiness-aunvg",
+     "version": None, "listed_images": 990,
+     "note": "closed-eyes, open-eyes, tired, yawn"},
+    {"workspace": "projects-7idri", "project": "drowsiness-detection-luvay", "version": None,
+     "listed_images": 2055, "note": "Closed-Eye, Open-Eye, Yawn"},
+    {"workspace": "drowsiness-detection-system", "project": "drowsiness-driver-jhmld",
+     "version": None, "listed_images": 9700,
+     "note": "11 classes, eye + mouth states; check for duplicate/inconsistent classes"},
+    {"workspace": "new-project-sfrql", "project": "drowsiness-hgjay", "version": None,
+     "listed_images": 2069, "note": "face, close_eyes, open_eyes, yawn"},
+)
+
+
+# --------------------------------------------------------------------------------------------
 # config_hash — resume guard. Covers only the constants that change what an artifact contains.
 # If any of these move, `--resume` refuses to append to an artifact built under the old values
 # (use `--reset` to rebuild, or `--force` to override).
