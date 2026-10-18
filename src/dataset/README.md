@@ -206,6 +206,31 @@ children.
 
 ---
 
+## 7b. External datasets for the "parts" architecture (download-only)
+
+Experimental eye/mouth-crop architecture (tiny grayscale CNNs → temporal head). These scripts
+only **pull and catalogue** the external labelled sets into `raw/`. No cropping or relabelling
+happens here, and nothing touches the existing 01/02/06/09 artifacts. Each source gets an entry
+in `raw/datasets_manifest.json` (class list, counts, licence, checksum), and a rerun skips any
+source whose checksum still matches.
+
+```bash
+python scripts/fetch_mrl_eye.py                 # MRL Eye: ~342 MB zip, 84,898 IR eye crops, 37 subjects
+python scripts/fetch_roboflow_parts.py --list   # the 5 Roboflow Universe projects (config.ROBOFLOW_PROJECTS)
+ROBOFLOW_API_KEY=... python scripts/fetch_roboflow_parts.py   # YOLO exports -> raw/roboflow/<project>/v<N>/
+python scripts/datasets_status.py --classes     # table + on-disk check + each source's classes
+```
+
+- **Roboflow** needs a free API key (https://app.roboflow.com/settings/api), passed in the
+  environment and never committed. `version: None` in `config.ROBOFLOW_PROJECTS` means "latest".
+  The resolved version is written to the manifest; pin it in the config afterwards.
+- **Licences:** MRL's page states none (cite Fusek, ISVC 2018), so it's recorded as `unverified`.
+  Roboflow licences are read from each export's `README.roboflow.txt`.
+- Review each project's class list (`--classes`) before writing any label mapping. The 11-class
+  project especially needs care.
+
+---
+
 ## 8. Tests
 
 ```bash
