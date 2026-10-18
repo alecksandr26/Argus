@@ -1,0 +1,158 @@
+"""detection_dataset.py — face-crop YOLO dataset: geometry, labelling rules, grouping, zip.
+MediaPipe is never run here: the per-image MediaPipe cache rows are written by hand."""
+
+import importlib
+import io
+import zipfile
+
+import numpy as np
+import pytest
+
+cv2 = pytest.importorskip("cv2")
+
+
+@pytest.fixture()
+def env(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARGUS_DATASET_ROOT", str(tmp_path))
+    from argus_dataset import paths
+    importlib.reload(paths)
+    from argus_dataset import detection_dataset, external, parts_dataset
+    for m in (external, parts_dataset, detection_dataset):
+        importlib.reload(m)
+    paths.ensure_dirs()
+    return paths, external, detection_dataset
+
+
+# --- geometry ------------------------------------------------------------------------------
+
+def test_crop_square_pads_outside_frame(env):
+    dd = env[2]
+    img = np.full((100, 100, 3), 200, np.uint8)
+    x0, y0, side = dd.square_face_box(-10, -10, 40, 40, margin=0.0)
+    out = dd.crop_square(img, x0, y0, side, 40)
+    assert out.shape == (40, 40, 3)
+    assert out[0, 0].sum() == 0 and out[-1, -1].sum() == 600   # padded corner black, inside kept
+
+
+def test_map_box_to_crop(env):
+    dd = env[2]
+    # crop = x 20..70, y 20..70 of a 100x100 image; box centred at (45,45) size 10x10
+    assert dd.map_box_to_crop((0.45, 0.45, 0.1, 0.1), 100, 100, 20, 20, 50) == pytest.approx((0.5, 0.5, 0.2, 0.2))
+    assert dd.map_box_to_crop((0.9, 0.9, 0.1, 0.1), 100, 100, 20, 20, 50) is None      # centre outside
+    assert dd.map_box_to_crop((0.68, 0.45, 0.2, 0.1), 100, 100, 20, 20, 50) is not None  # 60% visible
+    assert dd.map_box_to_crop((0.68, 0.68, 0.2, 0.2), 100, 100, 20, 20, 50) is None      # 36% visible
+
+
+@pytest.mark.parametrize("pitch,yaw,expected", [
+    (0, 0, "head_straight"), (9, 20, "head_straight"), (25, 0, "head_down"),
+    (15, 0, None), (0, 40, None), (-25, 0, None),
+])
+def test_head_class(env, pitch, yaw, expected):
+    assert env[2].head_class(pitch, yaw) == expected
+
+
+def _mp(face=True, pose=True, ear_a=0.35, ear_b=0.35, **kw):
+    row = {"face_found": "1" if face else "0", "landmarks_found": "1" if pose else "0",
+           "fx": "20", "fy": "20", "fw": "60", "fh": "60", "pitch": "0", "yaw": "0", "roll": "0",
+           "a_x0": "0.30", "a_y0": "0.38", "a_x1": "0.42", "a_y1": "0.42", "a_ear": str(ear_a),
+           "b_x0": "0.58", "b_y0": "0.38", "b_x1": "0.70", "b_y1": "0.42", "b_ear": str(ear_b)}
+    row.update(kw)
+    return row
+
+
+def test_pseudo_eye_boxes(env):
+    dd = env[2]
+    new, amb = dd.pseudo_eye_boxes(_mp(ear_a=0.05, ear_b=0.4), [])
+    assert [c for c, _ in new] == ["closed_eye", "open_eye"] and not amb
+    covered = [("open_eye", (0.36, 0.40, 0.3, 0.2))]               # big human box over eye "a"
+    new, _ = dd.pseudo_eye_boxes(_mp(), covered)
+    assert len(new) == 1 and new[0][1][0] == pytest.approx(0.64)
+    assert dd.pseudo_eye_boxes(_mp(ear_a=0.2), [])[1] is True        # between thresholds
+
+
+def test_thumb_similarity_is_flip_invariant(env):
+    dd = env[2]
+    g = np.random.default_rng(0).integers(0, 255, (40, 40), dtype=np.uint8)
+    assert dd.thumb_similarity(dd.thumb(g), dd.thumb(g[:, ::-1].copy())) == pytest.approx(1.0, abs=1e-4)
+
+
+# --- plan rules on a fake export -----------------------------------------------------------
+
+def _export(paths, external, project, images):
+    """images: [(split, name, label_text)]; class ids follow the names list below."""
+    names = ["close_eyes", "face", "open_eyes", "yawn"]
+    root = paths.roboflow_raw_dir() / project / "v1"
+    for split, name, label in images:
+        (root / split / "images").mkdir(parents=True, exist_ok=True)
+        (root / split / "labels").mkdir(parents=True, exist_ok=True)
+        rng = np.random.default_rng(abs(hash(name)) % 2**32)
+        cv2.imwrite(str(root / split / "images" / f"{name}.jpg"), rng.integers(0, 255, (100, 100, 3), dtype=np.uint8))
+        (root / split / "labels" / f"{name}.txt").write_text(label)
+    entry = {"kind": "roboflow", "project": project, "version": 1, "location": f"raw/roboflow/{project}/v1",
+             "class_names": names, "licence": "CC BY 4.0", "workspace": "ws"}
+    external.upsert_source(f"roboflow/{project}", entry)
+    return root, entry
+
+
+TWO_EYES = "2 0.38 0.40 0.06 0.04\n0 0.62 0.40 0.06 0.04\n"   # open (img-left), closed (img-right)
+
+
+def test_plan_rules(env, monkeypatch):
+    paths, external, dd = env
+    root, e = _export(paths, external, "drowsiness-hgjay", [
+        ("train", "ok_jpg.rf.1", TWO_EYES), ("train", "rej_jpg.rf.2", "3 0.5 0.7 0.4 0.4\n" + TWO_EYES),
+        ("train", "close_jpg.rf.3", "2 0.5 0.5 1.0 1.0\n"), ("train", "noface_jpg.rf.4", "2 0.5 0.5 0.1 0.1\n"),
+    ])
+    img = lambda n: root / "train" / "images" / f"{n}.jpg"
+    p = dd.plan_roboflow_image(img("ok_jpg.rf.1"), e, _mp(), 100, 100)
+    assert p["status"] == "ok" and p["kind"] == "face" and p["head_class"] == "head_straight"
+    assert sorted(c for c, _ in p["boxes"]) == ["closed_eye", "head_straight", "open_eye"]
+    assert p["pseudo_eyes"] == 0                                    # both eyes already labelled
+    assert dd.plan_roboflow_image(img("rej_jpg.rf.2"), e, _mp(), 100, 100)["reason"] == "ambiguous_label:yawn"
+    c = dd.plan_roboflow_image(img("close_jpg.rf.3"), e, _mp(face=False), 100, 100)
+    assert c["status"] == "ok" and c["kind"] == "closeup" and c["head_class"] == ""
+    assert dd.plan_roboflow_image(img("noface_jpg.rf.4"), e, _mp(face=False), 100, 100)["reason"] == "no_face"
+    one = dd.plan_roboflow_image(img("ok_jpg.rf.1"), e, _mp(pose=False), 100, 100)
+    assert one["status"] == "ok"                                   # no pose: no head box, eyes still ok
+    monkeypatch.setattr(dd.config, "DET_PSEUDO_EYES", False)
+    root2, e2 = _export(paths, external, "drowsiness-axuoa", [("train", "x_jpg.rf.9", "2 0.38 0.40 0.06 0.04\n")])
+    e2["class_names"] = ["closed_eyes", "no_yawn", "obstacle", "open_eyes"]
+    (root2 / "train" / "labels" / "x_jpg.rf.9.txt").write_text("3 0.38 0.40 0.06 0.04\n")
+    assert dd.plan_roboflow_image(root2 / "train/images/x_jpg.rf.9.jpg", e2, _mp(), 100, 100)["reason"] == "eyes_incomplete"
+
+
+# --- end to end ----------------------------------------------------------------------------
+
+def test_build_and_zip(env):
+    paths, external, dd = env
+    root, e = _export(paths, external, "drowsiness-hgjay",
+                      [("train", f"s{i}_jpg.rf.{k}", TWO_EYES) for i in range(6) for k in "ab"])
+    mrl = paths.mrl_eye_raw_dir() / "mrlEyes_2018_01"
+    for s in range(1, 4):
+        (mrl / f"s{s:04d}").mkdir(parents=True)
+        for st in (0, 1):
+            cv2.imwrite(str(mrl / f"s{s:04d}" / f"s{s:04d}_0000{st}_0_0_{st}_0_1_01.png"),
+                        np.full((24, 24), 60 + 50 * st, np.uint8))
+    external.upsert_source("mrl_eye", {"kind": "mrl_eye", "location": "raw/mrl_eye/mrlEyes_2018_01",
+                                       "licence": "unverified", "classes": {"closed": 3, "open": 3}})
+    cache = {str(p): {**_mp(), "src_image": str(p)} for p in sorted(root.glob("*/images/*"))}
+    summary = dd.build(cache)
+    assert summary["images_ok"] == 12 + 6 and summary["groups_crossing_splits"] == 0
+
+    import pandas as pd
+    idx = pd.read_csv(paths.processed_dir() / "parts_det/index.csv", dtype=str, keep_default_na=False)
+    rf = idx[idx.source == "roboflow"]
+    assert rf.group_id.nunique() == 6                              # a/b augmented copies grouped
+    assert (rf.groupby("group_id").split.nunique() == 1).all()
+
+    z = zipfile.ZipFile(dd.export_zip())
+    names = set(z.namelist())
+    imgs = [n for n in names if "/images/" in n]
+    assert len(imgs) == 2 * 18
+    assert all(n.replace("/images/", "/labels/")[:-4] + ".txt" in names for n in imgs)
+    for line in z.read(next(n for n in names if n.startswith("gray/") and "/labels/" in n and "hgjay" in n)).decode().splitlines():
+        c, *box = line.split()
+        assert 0 <= int(c) < 5 and all(0 <= float(v) <= 1 for v in box)
+    assert {"README.txt", "index.csv", "data_gray.yaml", "data_ir.yaml"} <= names
+    assert "names: ['open_eye', 'closed_eye', 'yawn', 'head_straight', 'head_down']" in z.read("data_ir.yaml").decode()
+    assert len(pd.read_csv(io.BytesIO(z.read("index.csv")))) == 18
