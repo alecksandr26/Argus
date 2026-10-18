@@ -106,28 +106,50 @@ npm run hello:destroy      # delete it again
 
 If this fails, fix it first: the real deploy reaches AWS exactly the same way.
 
-### Step 3 — Secrets (once; re-run to rotate)
+### Step 3 — Local `.env` + secrets to AWS (once; re-run to rotate)
+
+Your secrets live in a **local, gitignored** file, `src/infra-argus/.env`. It's never committed
+and never deployed. `npm run setup-secrets` copies the secrets from it into AWS SSM Parameter
+Store (encrypted, free), and the deployed backend loads them from there at startup.
 
 ```bash
-npm run setup-secrets
+cp .env.example .env
+nano .env                  # or: code .env
 ```
 
-Prompts (input hidden) and stores three free SSM SecureString parameters:
+| `.env` variable | What to put | Goes to |
+|---|---|---|
+| `AWS_REGION` | `us-east-1` | used by the scripts |
+| `MONGODB_URI` | Atlas *Connect → Drivers* string: `mongodb+srv://user:pass@cluster.xxxx.mongodb.net/?retryWrites=true&w=majority` | SSM `/argus/mongo-uri` |
+| `JWT_SECRET` | any long random string: `openssl rand -hex 32` | SSM `/argus/jwt-secret` |
+| `ROOT_ADMIN_PASSWORD` | **the password you'll log in with as root_admin** (the simulator uses it too) | SSM `/argus/root-admin-password` |
+| `ROOT_ADMIN_EMAIL` | your root_admin login email | `cdk deploy -c rootAdminEmail` |
+| `ALERT_EMAIL` | where budget/kill-switch alerts go (empty = none) | `cdk deploy -c alertEmail` |
 
-| Parameter | What to enter |
-|---|---|
-| `/argus/mongo-uri` | the Atlas `mongodb+srv://...` connection string |
-| `/argus/jwt-secret` | any long random string, e.g. `openssl rand -hex 32` |
-| `/argus/root-admin-password` | **the password you'll log in with as root_admin** (the simulator uses it too) |
+Then push the secrets to AWS:
+
+```bash
+npm run setup-secrets      # prints "saved /argus/..." three times
+```
+
+- Quotes around values are fine, and so are Windows line endings.
+- Anything left empty in `.env` is prompted for instead, with input hidden.
+- A variable already exported in your shell overrides `.env`.
+- Use a **letters-and-numbers-only** Atlas password; `@ : / ? # %` break the URI.
+- To rotate a secret: edit `.env`, re-run `npm run setup-secrets`, then redeploy (Step 4) so the
+  Lambda picks up the new value.
+- **Never** paste the real `.env` contents into chats, issues, or commits. If a password leaks,
+  change it in Atlas (*Security → Database Access → Edit Password*) and rotate.
 
 ### Step 4 — Deploy
 
 ```bash
-npm run deploy -- -c alertEmail=you@example.com -c rootAdminEmail=you@example.com
+npm run deploy
 ```
 
-- `rootAdminEmail` is the root_admin login email (default `admin@argus.dev`).
-- `alertEmail` receives the budget and kill-switch alerts. Confirm the subscription emails AWS
+- `ROOT_ADMIN_EMAIL` and `ALERT_EMAIL` come from `.env`. A `-c` on the command line overrides
+  them, e.g. `npm run deploy -- -c alertEmail=other@example.com`.
+- `ALERT_EMAIL` receives the budget and kill-switch alerts. Confirm the subscription emails AWS
   sends you.
 - What it does: builds and tests the backend image, deploys the four stacks, builds the UI
   against the CloudFront URL, uploads it, and hits `/health`. It ends with
