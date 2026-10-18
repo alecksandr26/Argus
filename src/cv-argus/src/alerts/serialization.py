@@ -20,6 +20,9 @@ def to_dict(alert: Alert) -> dict[str, Any]:
         "source_id": alert.source_id,
         "payload": alert.payload,
         "geolocation": alert.geolocation,
+        "mono_ms": alert.mono_ms,
+        "boot_id": alert.boot_id,
+        "clock_synced": alert.clock_synced,
     }
 
 
@@ -36,6 +39,10 @@ def from_dict(data: dict[str, Any]) -> Alert:
         source_id=data["source_id"],
         payload=data.get("payload", {}),
         geolocation=data.get("geolocation"),
+        # Absent on records from a release that predates them.
+        mono_ms=data.get("mono_ms"),
+        boot_id=data.get("boot_id"),
+        clock_synced=data.get("clock_synced"),
     )
 
 

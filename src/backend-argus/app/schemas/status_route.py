@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.geo import Coordinates
+from app.schemas.common import UtcDatetime
+from app.schemas.ingestion import IngestionProvenance, LocationSource, TimeSource
 from app.models.common import Severity
 
 
-class StatusRouteCreate(BaseModel):
+class StatusRouteCreate(IngestionProvenance):
     """The body the ESP32 (or a privileged JWT, for manual testing) posts to
     `POST /api/routes/{id}/status`. Coordinates/speed/odometer are required here, not optional
     — cv-argus never produces geolocation itself (see the backend CLAUDE.md's "Coordination
@@ -16,8 +19,8 @@ class StatusRouteCreate(BaseModel):
     request is made."""
 
     current_coordinates: Coordinates
-    current_speed: float
-    odometer: float
+    current_speed: float = Field(ge=0, allow_inf_nan=False)
+    odometer: float = Field(ge=0, allow_inf_nan=False)
     vigilance: Severity = Severity.LOW
 
 
@@ -28,4 +31,8 @@ class StatusRouteOut(BaseModel):
     current_speed: float
     odometer: float
     vigilance: Severity
-    timestamp: datetime
+    timestamp: UtcDatetime
+    received_at: UtcDatetime
+    time_source: TimeSource
+    location_source: LocationSource
+    location_accuracy_m: Optional[float]

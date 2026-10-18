@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class GeoJSONPoint(BaseModel):
@@ -33,10 +33,12 @@ class GeoJSONPoint(BaseModel):
 
 
 class Coordinates(BaseModel):
-    """API-facing shape — matches `ui-argus/src/types.ts`'s `Coordinates` exactly."""
+    """API-facing shape — matches `ui-argus/src/types.ts`'s `Coordinates` exactly. Ranges are
+    checked here, at the boundary, so a bad position is a 422 instead of a 500 from
+    `GeoJSONPoint`'s own check inside the handler (BE-03)."""
 
-    lat: float
-    lon: float
+    lat: float = Field(ge=-90.0, le=90.0, allow_inf_nan=False)
+    lon: float = Field(ge=-180.0, le=180.0, allow_inf_nan=False)
 
 
 def to_geojson(coordinates: Coordinates) -> GeoJSONPoint:
