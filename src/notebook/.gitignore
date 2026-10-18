@@ -1,0 +1,2 @@
+# Ultralytics downloads pretrained weights into the working dir when a notebook runs locally.
+*.pt
