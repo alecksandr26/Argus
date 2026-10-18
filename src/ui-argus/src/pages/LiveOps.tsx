@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import FleetMap, { type FleetMapMarker } from '../components/FleetMap'
 import FilterChips from '../components/FilterChips'
+import SimulatorControl from '../components/SimulatorControl'
 import { useAuth } from '../context/AuthContext'
 import { listActiveRoutes } from '../api/routes'
 import { listAlerts } from '../api/alerts'
@@ -200,6 +201,9 @@ export default function LiveOps() {
           </div>
         }
       />
+
+      {/* root_admin only: cloud simulator on/off (10-minute sessions, see SimulatorControl) */}
+      {session!.user.role === 'root_admin' && <SimulatorControl token={token} />}
 
       {/* stat tiles */}
       <div

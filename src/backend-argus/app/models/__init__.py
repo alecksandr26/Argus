@@ -8,17 +8,19 @@ that) — Documents use Beanie's default `id: PydanticObjectId` rather than a ha
 from .alert import Alert
 from .driver import Driver
 from .route import Route
+from .simulator_session import SimulatorSession
 from .status_route import StatusRoute
 from .truck import Truck
 from .user import User
 
 # Beanie's init_beanie(document_models=...) call in app/database.py needs this list.
-DOCUMENT_MODELS = [User, Truck, Driver, Route, StatusRoute, Alert]
+DOCUMENT_MODELS = [User, Truck, Driver, Route, StatusRoute, Alert, SimulatorSession]
 
 __all__ = [
     "Alert",
     "Driver",
     "Route",
+    "SimulatorSession",
     "StatusRoute",
     "Truck",
     "User",
