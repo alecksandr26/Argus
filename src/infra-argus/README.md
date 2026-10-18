@@ -56,42 +56,126 @@ Simulator task ≈ $0.021/hour (Fargate Spot 1 vCPU + 2 GB ≈ $0.016 + public I
 `npm run osrm:remove` between demo periods drops the idle month to ~$0.07 (`npm run
 osrm:upload` restores it). If the Spot price or region differs, the order of magnitude doesn't.
 
-## Prerequisites (one time)
+## Step-by-step deploy (first time)
 
-1. **AWS account** and the AWS CLI logged in: `aws configure sso` (or `aws configure`).
-   Pick one region and use it for everything, e.g. `us-east-1`.
-2. **Node.js ≥ 22.22** and **Docker** running (Docker Desktop with WSL integration enabled, if
-   on WSL). The CDK CLI is installed by `npm install` here.
-3. **MongoDB Atlas M0** (free) cluster, in AWS, in the same region. Create a database user, and
-   under *Network Access* allow `0.0.0.0/0` (Lambda has no fixed IP without a NAT Gateway,
-   which would cost ~$32/month). Copy the `mongodb+srv://...` connection string.
-4. In this folder:
+Run everything in a WSL/Linux terminal, from this folder (`src/infra-argus`), unless a step says
+otherwise. Stop at any step that fails; later steps depend on it.
+
+### Step 0 — Machine setup (once per machine)
+
+1. **Node.js ≥ 22.22** (the UI's test tooling needs it; the CDK CLI itself is installed by
+   `npm install` below):
    ```bash
-   npm install
-   npx cdk bootstrap          # once per account/region; creates CDK's asset bucket + ECR repo
-   npm run setup-secrets      # prompts for Mongo URI, JWT secret, root admin password -> SSM
+   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+   nvm install 24
+   node --version
    ```
-   If ECS complains about its service-linked role on a brand-new account:
-   `aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com`.
+2. **Docker**: Docker Desktop → *Settings → Resources → WSL integration* → enable your distro.
+   `docker version` must work inside WSL (the deploy builds the backend and simulator images).
+3. **AWS CLI logged in, one region for everything**:
+   ```bash
+   aws configure sso                      # or: aws login / aws configure
+   export AWS_PROFILE=<profile> AWS_REGION=<region>    # e.g. us-east-1
+   aws sts get-caller-identity            # must print your account id
+   ```
+4. **MongoDB Atlas M0** (free): create a cluster on AWS in that region (or the nearest one Atlas
+   offers M0 in), create a database user, and under *Network Access* allow `0.0.0.0/0` (Lambda
+   has no fixed IP without a NAT Gateway, which would cost ~$32/month). Copy the
+   `mongodb+srv://...` connection string.
 
-## Deploy
+### Step 1 — Install and bootstrap (once per account + region)
+
+```bash
+npm install
+npx cdk bootstrap          # creates CDK's asset bucket + ECR repo in this account/region
+```
+
+On a brand-new account, if ECS later complains about its service-linked role:
+`aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com`.
+
+### Step 2 — Hello world ($0, recommended)
+
+Proves the account, region, login and CDK flow work with one throwaway Lambda (`ArgusHello`,
+`lib/hello-stack.ts`) before touching the real stacks. No Docker, Atlas or secrets needed.
+
+```bash
+npm run hello:deploy       # prints HelloUrl at the end
+curl <HelloUrl>            # {"message": "Hello from Argus", "region": "..."}
+npm run hello:destroy      # delete it again
+```
+
+If this fails, fix it first: the real deploy reaches AWS exactly the same way.
+
+### Step 3 — Secrets (once; re-run to rotate)
+
+```bash
+npm run setup-secrets
+```
+
+Prompts (input hidden) and stores three free SSM SecureString parameters:
+
+| Parameter | What to enter |
+|---|---|
+| `/argus/mongo-uri` | the Atlas `mongodb+srv://...` connection string |
+| `/argus/jwt-secret` | any long random string, e.g. `openssl rand -hex 32` |
+| `/argus/root-admin-password` | **the password you'll log in with as root_admin** (the simulator uses it too) |
+
+### Step 4 — Deploy
 
 ```bash
 npm run deploy -- -c alertEmail=you@example.com -c rootAdminEmail=you@example.com
-npm run osrm:upload        # once: ~8.6 GB from src/simulator-argus/osrm-data (setup_osrm.sh output)
 ```
 
-`deploy` builds and tests the backend image, deploys the four stacks, builds the UI against the
-CloudFront URL, uploads it, and hits `/health`. It prints the site URL at the end. Confirm the
-AWS budget/SNS subscription emails you'll receive.
-
+- `rootAdminEmail` is the root_admin login email (default `admin@argus.dev`).
+- `alertEmail` receives the budget and kill-switch alerts. Confirm the subscription emails AWS
+  sends you.
+- What it does: builds and tests the backend image, deploys the four stacks, builds the UI
+  against the CloudFront URL, uploads it, and hits `/health`. It ends with
+  `Argus is live at: https://xxxx.cloudfront.net`. The first run takes ~10–15 minutes, mostly
+  CloudFront.
 - **Lambda concurrency limit**: brand-new accounts sometimes have a limit of 10, which can't
   reserve any. If the deploy fails with *"decreases account's UnreservedConcurrentExecution
   below its minimum value"*, add `-c backendReservedConcurrency=none` (the kill switch still
   works) or ask AWS Support to raise the limit (free).
-- **OSRM data** must come from the same `osrm/osrm-backend` image the task runs (that's what
-  `src/simulator-argus/scripts/setup_osrm.sh` uses). The data lives in the main checkout's
-  `src/simulator-argus/osrm-data` (gitignored); point `OSRM_DATA_DIR=` at it if needed.
+
+### Step 5 — Test the root_admin user
+
+The backend creates the root_admin account (`rootAdminEmail` + the Step 3 password) the first
+time it starts, if no user with that email exists yet.
+
+- **Browser**: open the CloudFront URL and log in. As root_admin, *Live operations* shows the
+  *Fleet simulator* card (other roles don't see it).
+- **curl**: the API takes the SHA-256 hex of the password, not the password itself:
+  ```bash
+  URL=https://xxxx.cloudfront.net
+  curl $URL/health                       # {"status":"ok"}
+  curl -X POST $URL/api/auth/login -H 'content-type: application/json' \
+    -d "{\"email\":\"you@example.com\",\"password\":\"$(printf %s 'YOUR_PASSWORD' | sha256sum | cut -d' ' -f1)\"}"
+  ```
+  Expect an `access_token` and `"role": "root_admin"`. The first request after idle can take
+  2–4 s (Lambda cold start).
+- **Password rejected?** A user with that email already exists in that database, and startup
+  never overwrites an existing account (by design). Use a fresh database or a different
+  `rootAdminEmail`.
+
+### Step 6 (optional) — Real road routes for the simulator
+
+```bash
+npm run osrm:upload        # once: ~8.6 GB from src/simulator-argus/osrm-data (setup_osrm.sh output)
+```
+
+Without it the simulator still works, with straight-line routes. The OSRM data must come from the
+same `osrm/osrm-backend` image the task runs (that's what
+`src/simulator-argus/scripts/setup_osrm.sh` uses). It lives in the main checkout's
+`src/simulator-argus/osrm-data` (gitignored); point `OSRM_DATA_DIR=` at it if needed.
+
+### Step 7 — Tear down when done
+
+```bash
+npm run destroy            # deletes all four stacks, buckets included
+```
+
+Atlas and the SSM secrets are kept. Redeploying later is just Step 4 again.
 
 ## Using the simulator
 
