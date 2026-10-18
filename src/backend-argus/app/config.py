@@ -6,6 +6,8 @@ repo. Only `JWT_SECRET`'s default is unsafe to use past local dev; see `.env.exa
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -51,9 +53,36 @@ class Settings(BaseSettings):
     # committed.
     seed_credentials_file: str = ""
 
+    # root_admin-only on/off control of the cloud fleet simulator (see app/simulator_control.py
+    # and src/infra-argus). "disabled" (the default) makes every /api/simulator endpoint 503, so
+    # local dev keeps using `docker compose --profile simulator` exactly as before. "ecs" starts
+    # and stops one Fargate Spot task (simulator + OSRM containers) per session.
+    simulator_control: Literal["disabled", "ecs"] = "disabled"
+    simulator_ecs_cluster: str = ""
+    simulator_task_definition: str = ""
+    # Comma-separated, like CORS_ORIGINS.
+    simulator_subnets: str = ""
+    simulator_security_groups: str = ""
+    # The URL the simulator task posts to. Empty (the default) means "this backend's own URL, as
+    # seen on the start request" — see app/routers/simulator.py's `start_simulator`.
+    simulator_backend_url: str = ""
+    # Hard cost guardrails (src/infra-argus/README.md's R1/R3): every session is exactly this
+    # long — the API accepts no duration — and the monthly quota is charged a full session up
+    # front on every start.
+    simulator_session_minutes: int = 10
+    simulator_monthly_quota_minutes: int = 120
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def simulator_subnet_list(self) -> list[str]:
+        return [s.strip() for s in self.simulator_subnets.split(",") if s.strip()]
+
+    @property
+    def simulator_security_group_list(self) -> list[str]:
+        return [s.strip() for s in self.simulator_security_groups.split(",") if s.strip()]
 
 
 settings = Settings()
