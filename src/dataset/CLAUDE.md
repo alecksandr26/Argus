@@ -198,6 +198,60 @@ When you change feature extraction / windowing / sampling here:
    notebook's behaviour (zero-**pre**-padding, the `ear_mar_valid` gate, causal rolling, the
    `geometric_feature_seq` string format, `%.8g` / `%.6f` float formatting).
 
+## `detection_dataset.py`: the single dataset for the detector notebooks
+
+The single YOLO-format dataset for notebooks 12, 13 and 14 is `processed/parts_det/` and
+`parts_det.zip`. Images are face crops with 5 classes: `open_eye`, `closed_eye`, `yawn`,
+`head_straight`, `head_down`. It's built in two passes:
+
+- **MediaPipe pass.** BlazeFace runs on the full image, then FaceLandmarker IMAGE runs on the
+  square face crop, giving pose plus per-eye contour box and EAR. The pass is chunk-cached under
+  `.cache/det_mp/` (keyed by a hash of the chunk's paths) and resumable.
+- **Build.** Cheap; always rebuilt.
+
+The rules below each came from looking at real data:
+
+- **The face crop is square:** `max(w, h) × 1.5`, black-padded. cv-argus's crop is clipped and
+  not squared, so a future edge pipeline for these detectors must reproduce `square_face_box` +
+  `crop_square`.
+- **Pitch sign: positive means head down.** This was checked on contact sheets: yawning heads
+  thrown back read about −30°. `head_down` is genuinely rare in this data (about 190 boxes); it's
+  a data limit, not a bug. Head pose for the pipeline should still come from landmarks.
+- **Unlabelled-object guard.** Detectors learn unlabelled objects as background, so:
+  - images carrying ambiguous labels are rejected;
+  - face images need ≥ 2 eye boxes;
+  - eyes the annotators skipped are pseudo-labelled from landmarks
+    (`DET_PSEUDO_*`, calibrated on 4,071 human eyes).
+
+  An eye counts as already labelled if its landmark centre lies inside a human box; this catches
+  wide both-eyes or glasses boxes.
+- **Grouping:**
+  - Roboflow original stems group augmented copies. In `DET_STEM_UNRELIABLE_PROJECTS` (jhmld, a
+    merge of several sources with colliding names like `1.jpg`), stem-mates join only if their
+    16×16 thumbnails correlate ≥ 0.75 (flip-invariant).
+  - dHash joins exact re-uploads across projects only.
+
+  Without these rules, one chained group once held 6.4k images and 1.9k of the 2.5k yawns.
+- **Splits:** rank-based by group and per source (`parts_dataset.assign_splits`), with yawn
+  groups split separately. The result is about 68/16/16 for yawns, and 0 groups cross splits.
+
+## TODO (deferred): offline augmentation of the parts dataset
+
+Not built yet; parked on 2026-10-17 to prioritise the training notebook. The idea is a
+`scripts/augment_parts_dataset.py` that reads `processed/parts_dataset/` and writes a bigger,
+seeded (reproducible) `parts_dataset_aug/` + `.zip`. Rules agreed so far:
+
+- **Train split only.** Each copy keeps its source row's `group_id` and `split`, plus an
+  `augmented_from` column; valid/test stay untouched.
+- **Oversample `yawn`** (about 4% of crops). MRL is probably left alone: it's already 85k real-IR
+  images.
+- **Camera-realistic grayscale ops:** small affine (rotation/shift/scale), gamma/brightness,
+  blur, sensor noise, low-res down/up-scaling, IR corneal glints (eyes), radial LED falloff, and a
+  random blend between plain grayscale and `ir.to_ir_like` for RGB sources (covers daytime NoIR).
+- Roboflow exports already contain ~3× augmented copies (kept, grouped by original stem).
+- Open question: offline copies vs. on-the-fly augmentation in the training notebook. On-the-fly
+  is usually better, so offline is mainly worth it for a fixed, shareable zip.
+
 ## What's verified vs. not
 
 - **Verified:** the test suite (`pytest` → 39 pass, 2 skipped without `[dev]`; the 2 skips are

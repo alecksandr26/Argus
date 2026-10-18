@@ -280,6 +280,52 @@ IR_CHANNEL_WEIGHTS_BGR: tuple[float, float, float] = (0.05, 0.15, 0.80)
 IR_HIST_MATCH_STRENGTH: float = 0.5
 IR_REF_SAMPLE_IMAGES: int = 5000        # MRL images sampled to build the reference histogram
 
+# Detection dataset (scripts/build_detection_dataset.py → processed/parts_det/ + parts_det.zip).
+# ONE format for every detector notebook: YOLO detection labels on square **face crops** (the
+# input the edge will see after BlazeFace), plus MRL / eye-or-mouth close-ups as "closeup" images.
+DET_CLASSES: tuple[str, ...] = ("open_eye", "closed_eye", "yawn", "head_straight", "head_down")
+DET_IMG_SIZE: int = 192                 # stored face-crop side (px); notebooks resize to 160
+DET_FACE_MARGIN_FRAC: float = CROP_BBOX_MARGIN_FRAC  # 25% per side, same as cv-argus / 06
+DET_MIN_BOX_FRAC: float = 0.02          # drop boxes thinner than 2% of the crop after clipping
+DET_MIN_VISIBLE_FRAC: float = 0.5       # drop boxes with < 50% of their area inside the crop
+DET_CLOSEUP_MIN_BOX: float = 0.6        # no face + every box ≥ 60% of the image → close-up image
+DET_REQUIRE_BOTH_EYES: bool = True      # face images need ≥2 eye boxes (else eyes go unlabelled)
+# Pseudo-label eyes the annotators skipped (e.g. yawn-only images) from FaceLandmarker, so they
+# aren't learned as background. Calibrated on 4,071 human-labelled eyes (2026-10-17): landmark
+# contour centres sit within 13% of an eye-width of the human box (median); human boxes are ~1.4x
+# the contour width; open-eye EAR p10 = 0.21, closed-eye EAR p75 = 0.17.
+DET_PSEUDO_EYES: bool = True
+DET_PSEUDO_EYE_W_SCALE: float = 1.4     # pseudo box width = 1.4 x landmark contour width
+DET_PSEUDO_EYE_ASPECT: float = 0.75     # pseudo box height = 0.75 x its width
+DET_PSEUDO_EAR_CLOSED: float = 0.15     # EAR below → closed_eye
+DET_PSEUDO_EAR_OPEN: float = 0.25       # EAR above → open_eye; in between → reject image
+DET_PSEUDO_MATCH_DIST: float = 0.5      # an eye counts as labelled if a box centre is within
+                                        # 0.5 eye-widths of the landmark eye centre
+DET_MRL_MAX_PER_SUBJECT_CLASS: int = 300  # cap MRL so it doesn't swamp the ~10k Roboflow faces
+DET_JPEG_QUALITY: int = 95
+DET_SAME_ORIGINAL_CORR: float = 0.75    # stem-mates join one group only if their 16x16 thumbnails
+                                        # correlate ≥ this (flip-invariant); see detection_dataset
+# Projects whose original filenames collide across unrelated images (merged from several
+# sources). Measured: jhmld stem-mate similarity is bimodal (≈1.0 true copies vs ≈0.2 collisions).
+# Single-source projects keep plain stem grouping — their heavy augmentations (crop/rotate) make
+# true copies look dissimilar (axuoa median 0.35), so a similarity test would split them apart.
+DET_STEM_UNRELIABLE_PROJECTS: tuple[str, ...] = ("drowsiness-driver-jhmld",)
+DET_MP_CHUNK: int = 250                 # images per cached MediaPipe chunk (resume granularity)
+# Head position from FaceLandmarker pitch (degrees, geometry._rotation_matrix_to_euler). The sign
+# of "looking down" was checked on a contact sheet of real faces — see HEAD_DOWN_PITCH_SIGN.
+HEAD_DOWN_PITCH_SIGN: int = 1           # +1: positive pitch = head down; -1: negative = down
+HEAD_DOWN_PITCH_DEG: float = 20.0       # |pitch| beyond this, in the down direction → head_down
+HEAD_STRAIGHT_PITCH_DEG: float = 10.0   # |pitch| ≤ this and |yaw| ≤ HEAD_STRAIGHT_YAW_DEG → straight
+HEAD_STRAIGHT_YAW_DEG: float = 25.0     # in between: no head box (ambiguous band)
+# Whole images are rejected when they carry a label that marks an eye/mouth state we can't map
+# to a part box — otherwise that eye/mouth would be learned as background.
+ROBOFLOW_REJECT_IMAGE_LABELS: dict[str, tuple[str, ...]] = {
+    "drowsiness-aunvg": ("tired",),
+    "drowsiness-axuoa": ("obstacle",),
+    "drowsiness-driver-jhmld": ("closed", "asleep", "Yawn"),
+    "drowsiness-hgjay": ("yawn",),
+}
+
 
 # --------------------------------------------------------------------------------------------
 # config_hash — resume guard. Covers only the constants that change what an artifact contains.
