@@ -16,6 +16,12 @@ import socket
 from .transport import Listener, Transport
 
 
+# The longest line a client may send without a newline. Protocol lines are tiny (`PULL 50`, an
+# ACK of at most MAX_PULL_LIMIT 32-char ids ~ 1.7 KB); past this the client is broken, and
+# buffering further would grow memory without bound (SND-08).
+MAX_LINE_BYTES = 4096
+
+
 class BluetoothSppTransport(Transport):
     def __init__(self, sock: "socket.socket") -> None:
         self._sock = sock
@@ -29,6 +35,9 @@ class BluetoothSppTransport(Transport):
                 if not chunk:
                     return None  # clean disconnect
                 self._buf += chunk
+                if b"\n" not in self._buf and len(self._buf) > MAX_LINE_BYTES:
+                    self._buf = b""
+                    return None  # a runaway line: drop it and end the session
         except OSError:
             return None  # timeout or a socket error -- treated the same, see Transport docstring
         line, _, rest = self._buf.partition(b"\n")

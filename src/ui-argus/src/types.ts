@@ -123,6 +123,9 @@ export interface Route {
  * status and its alert history are directly comparable. */
 export type AlertSeverity = 'critical' | 'medium' | 'low'
 
+export type TimeSource = 'gps' | 'network' | 'server'
+export type LocationSource = 'gps' | 'cell'
+
 export interface StatusRoute {
   id_status_route: string
   id_route: string
@@ -133,7 +136,15 @@ export interface StatusRoute {
    * recently posted `Alert.severity_level` for this truck's route (see
    * `src/esp32-argus/README.md`'s fusion section), not a separate drowsiness-only reading. */
   vigilance: AlertSeverity
+  /** When the event happened (device GPS/network clock), else when the backend received it. */
   timestamp: string
+  /** When the backend received it; later than `timestamp` for records relayed from a backlog. */
+  received_at: string
+  /** Which clock `timestamp` came from. */
+  time_source: TimeSource
+  /** `cell` = approximate cell-tower position (no GPS fix); see `location_accuracy_m`. */
+  location_source: LocationSource
+  location_accuracy_m: number | null
 }
 
 /**
@@ -199,7 +210,16 @@ export interface Alert {
   media_url: string | null
   coordinates: Coordinates
   speed_at_event: number
+  /** When the event happened (device GPS/network clock), else when the backend received it. */
   timestamp: string
+  /** When the backend received it; later than `timestamp` for records relayed from a backlog. */
+  received_at: string
+  /** Which clock `timestamp` came from. */
+  time_source: TimeSource
+  /** `cell` = approximate cell-tower position (no GPS fix); see `location_accuracy_m`. */
+  location_source: LocationSource
+  location_accuracy_m: number | null
+  client_event_id: string | null
   reviewed_by_operator: boolean
   operator_notes: string
 }

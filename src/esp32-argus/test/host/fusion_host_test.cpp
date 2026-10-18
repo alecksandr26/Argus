@@ -2,6 +2,7 @@
 // g++ against shim/Arduino.h instead of the ESP32 toolchain. Mirrors the key cases in
 // src/cv-argus/tests/test_fusion_orchestrator_decision.py so the C++ port can't silently
 // drift from the Python reference. Run: ./run.sh
+// SOURCES: fusion.cpp
 #include <cstdio>
 #include <cstdlib>
 

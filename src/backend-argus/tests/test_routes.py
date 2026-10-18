@@ -107,3 +107,34 @@ async def test_active_endpoint_excludes_scheduled_routes(api_client, root_admin,
 
     active_resp = await api_client.get("/api/routes/active", headers=headers)
     assert active_resp.json() == []
+
+
+# --- /api/routes/active corner cases ---------------------------------------------------------
+
+from app.models.common import RouteStatus  # noqa: E402
+from tests.conftest import make_rig, status_body  # noqa: E402
+
+
+async def test_active_routes_lists_route_with_no_status_yet(api_client, root_admin, rig_a):
+    resp = await api_client.get("/api/routes/active", headers=auth_headers(root_admin))
+    [route] = [r for r in resp.json() if r["id_route"] == rig_a.route_id]
+    assert route.get("latest_status") is None
+
+
+async def test_active_routes_excludes_completed_and_cancelled(api_client, root_admin, mongo_client):
+    done = await make_rig("ACT-DONE", route_status=RouteStatus.COMPLETED)
+    cancelled = await make_rig("ACT-CANC", route_status=RouteStatus.CANCELLED)
+    live = await make_rig("ACT-LIVE", route_status=RouteStatus.IN_PROGRESS_ALERT)
+    ids = [r["id_route"] for r in (await api_client.get(
+        "/api/routes/active", headers=auth_headers(root_admin))).json()]
+    assert live.route_id in ids
+    assert done.route_id not in ids and cancelled.route_id not in ids
+
+
+async def test_active_routes_embeds_the_newest_of_several_statuses(api_client, root_admin, rig_a):
+    url = f"/api/routes/{rig_a.route_id}/status"
+    for vigilance in ("low", "medium", "critical"):
+        await api_client.post(url, json=status_body(vigilance=vigilance), headers=rig_a.headers)
+    resp = await api_client.get("/api/routes/active", headers=auth_headers(root_admin))
+    [route] = [r for r in resp.json() if r["id_route"] == rig_a.route_id]
+    assert route["latest_status"]["vigilance"] == "critical"

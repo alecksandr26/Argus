@@ -1,7 +1,21 @@
-# src/tests — manual smoke-check scripts
+# src/tests — cross-module checks, no Docker
 
-(Also here: `edge_chain/`, an automated pytest suite for the cv-argus → ESP32 → backend path,
-see its own README.md.)
+Everything here runs from **one Python venv** built from `requirements.txt` in this folder. No
+Docker, no MongoDB, no TensorFlow/MediaPipe. Use Python 3.12:
+
+```sh
+python3.12 -m venv .venv && source .venv/bin/activate     # Windows: py -3.12 -m venv .venv; .venv\Scripts\activate
+pip install -r src/tests/requirements.txt
+```
+
+| What | Kind | Needs |
+|---|---|---|
+| `smoke_cv_argus.py` | script | nothing else |
+| `smoke_backend.py` | script | a running backend (`src/esp32-argus/test/hil/bench_backend.py` is enough) |
+| `edge_chain/` | pytest suite, cv-argus → simulated ESP32 → backend, in one process | nothing else. See its README.md |
+
+The bench test against the **real ESP32** lives with the firmware, in
+`src/esp32-argus/test/hil/` (own `requirements.txt`).
 
 Two standalone Python scripts, not pytest, not mocked — each one connects to a real,
 already-running piece of Argus and prints a readable `[ OK ]`/`[FAIL]` log per check, so you can
@@ -24,24 +38,12 @@ throwaway truck → rotate its device key → create a driver + route → use th
 token, to `POST /api/routes/{id}/status` and `POST /api/alerts`) — the exact contract
 `src/esp32-argus`'s firmware uses. Cleans up everything it created, so it's safe to re-run.
 
-Zero dependencies (stdlib `urllib` only — nothing to `pip install`). The script itself never
-needs Docker; it just needs *some* real backend-argus + MongoDB already reachable over HTTP —
-Docker Compose is the easiest way to get both running together in one command:
+Stdlib only. It needs *some* backend-argus reachable over HTTP. The simplest is the in-memory
+bench backend, which is the real app on mongomock, with no Docker and no `mongod`:
 
 ```sh
-docker compose up --build          # from the repo root, starts backend-argus + mongo + ui-argus
-python src/tests/smoke_backend.py
-```
-
-**Without Docker** is possible but is genuinely more setup, not less — backend-argus needs a
-real MongoDB to talk to either way, so skipping Docker means installing/running `mongod`
-yourself plus the backend's own Python deps and server:
-
-```sh
-# a MongoDB instance running and reachable at mongodb://localhost:27017
-pip install -r src/backend-argus/requirements.txt
-cd src/backend-argus && uvicorn app.main:app --port 8000   # separate terminal
-python src/tests/smoke_backend.py
+python src/esp32-argus/test/hil/bench_backend.py   # terminal 1 (needs that folder's requirements.txt)
+python src/tests/smoke_backend.py                 # terminal 2
 ```
 
 Point it at a different host/port or different root_admin credentials with env vars —
@@ -61,7 +63,7 @@ the client's side of the exchange by hand, printing every line exchanged. This p
 server/buffer/alerts/protocol code works end to end; it does **not** prove real Bluetooth
 connectivity, which needs hardware no session has had access to.
 
-**No install, no Docker.** `alerts/`/`buffer/`/`sender/` are pure stdlib (no numpy/mediapipe/
+**Needs nothing from `requirements.txt`.** `alerts/`/`buffer/`/`sender/` are pure stdlib (no numpy/mediapipe/
 tensorflow/opencv in that import chain at all), so this script registers `cv_argus` as a module
 pointing straight at `src/cv-argus/src/` itself (the same name mapping `setup.py`'s
 `package_dir={"cv_argus": "src"}` does for a real install, just done at runtime via `importlib`

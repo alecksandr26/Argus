@@ -2,13 +2,18 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+import math
+
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth.bootstrap import ensure_root_admin
 from app.config import settings
 from app.database import init_db
-from app.routers import alerts, auth, drivers, routes, simulator, status_routes, trucks, users
+from app.routers import alerts, auth, devices, drivers, routes, simulator, status_routes, trucks, users
 
 
 @asynccontextmanager
@@ -48,6 +53,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def _json_safe(value):
+    """NaN/Infinity can't be encoded as JSON; render them as strings."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI's default 422 echoes each bad input back. A NaN/Infinity coordinate (which the
+    schemas reject) then can't be serialized and the 422 turns into a 500 (BE-03)."""
+    return JSONResponse(status_code=422, content={"detail": _json_safe(jsonable_encoder(exc.errors()))})
+
+
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(trucks.router)
@@ -55,6 +78,7 @@ app.include_router(drivers.router)
 app.include_router(routes.router)
 app.include_router(status_routes.router)
 app.include_router(alerts.router)
+app.include_router(devices.router)
 app.include_router(simulator.router)
 
 
