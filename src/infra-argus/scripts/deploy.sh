@@ -10,7 +10,11 @@ docker build -t argus/backend-argus:latest "$SRC_DIR/backend-argus"
 
 echo "==> Deploying stacks"
 cd "$INFRA_DIR"
-npx cdk deploy ArgusNetwork ArgusSimulator ArgusApp ArgusGuardrails "$@"
+CTX=()
+[ -n "${ROOT_ADMIN_EMAIL:-}" ] && CTX+=(-c "rootAdminEmail=$ROOT_ADMIN_EMAIL")
+[ -n "${ALERT_EMAIL:-}" ] && CTX+=(-c "alertEmail=$ALERT_EMAIL")
+# CLI args come last, so `-c ...` on the command line overrides .env.
+npx cdk deploy ArgusNetwork ArgusSimulator ArgusApp ArgusGuardrails "${CTX[@]}" "$@"
 
 SITE_URL="$(stack_output ArgusApp SiteUrl)"
 BUCKET="$(stack_output ArgusApp SiteBucketName)"

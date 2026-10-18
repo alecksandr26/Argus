@@ -74,10 +74,16 @@ otherwise. Stop at any step that fails; later steps depend on it.
    `docker version` must work inside WSL (the deploy builds the backend and simulator images).
 3. **AWS CLI logged in, one region for everything**:
    ```bash
-   aws configure sso                      # or: aws login / aws configure
-   export AWS_PROFILE=<profile> AWS_REGION=<region>    # e.g. us-east-1
+   aws login                              # opens the browser; pick region us-east-1
    aws sts get-caller-identity            # must print your account id
    ```
+   `aws login` gives **temporary** credentials (no long-lived keys to leak) and saves the
+   region in `~/.aws/config`. They **expire after a few hours**. When any `aws`/`cdk` command
+   says *"Your session has expired. Please reauthenticate using 'aws login'"*, just run
+   `aws login` again. Alternatives: `aws configure sso` (needs IAM Identity Center enabled), or
+   `aws configure` with access keys (works, but avoid: a leaked key works until you delete it).
+   If you sign in as the account **root** user, turn on MFA for it (console → account menu →
+   *Security credentials*), and prefer an admin IAM/Identity Center user for day-to-day work.
 4. **MongoDB Atlas M0** (free): create a cluster on AWS in that region (or the nearest one Atlas
    offers M0 in), create a database user, and under *Network Access* allow `0.0.0.0/0` (Lambda
    has no fixed IP without a NAT Gateway, which would cost ~$32/month). Copy the
@@ -106,28 +112,50 @@ npm run hello:destroy      # delete it again
 
 If this fails, fix it first: the real deploy reaches AWS exactly the same way.
 
-### Step 3 — Secrets (once; re-run to rotate)
+### Step 3 — Local `.env` + secrets to AWS (once; re-run to rotate)
+
+Your secrets live in a **local, gitignored** file, `src/infra-argus/.env`. It's never committed
+and never deployed. `npm run setup-secrets` copies the secrets from it into AWS SSM Parameter
+Store (encrypted, free), and the deployed backend loads them from there at startup.
 
 ```bash
-npm run setup-secrets
+cp .env.example .env
+nano .env                  # or: code .env
 ```
 
-Prompts (input hidden) and stores three free SSM SecureString parameters:
+| `.env` variable | What to put | Goes to |
+|---|---|---|
+| `AWS_REGION` | `us-east-1` | used by the scripts |
+| `MONGODB_URI` | Atlas *Connect → Drivers* string: `mongodb+srv://user:pass@cluster.xxxx.mongodb.net/?retryWrites=true&w=majority` | SSM `/argus/mongo-uri` |
+| `JWT_SECRET` | any long random string: `openssl rand -hex 32` | SSM `/argus/jwt-secret` |
+| `ROOT_ADMIN_PASSWORD` | **the password you'll log in with as root_admin** (the simulator uses it too) | SSM `/argus/root-admin-password` |
+| `ROOT_ADMIN_EMAIL` | your root_admin login email | `cdk deploy -c rootAdminEmail` |
+| `ALERT_EMAIL` | where budget/kill-switch alerts go (empty = none) | `cdk deploy -c alertEmail` |
 
-| Parameter | What to enter |
-|---|---|
-| `/argus/mongo-uri` | the Atlas `mongodb+srv://...` connection string |
-| `/argus/jwt-secret` | any long random string, e.g. `openssl rand -hex 32` |
-| `/argus/root-admin-password` | **the password you'll log in with as root_admin** (the simulator uses it too) |
+Then push the secrets to AWS:
+
+```bash
+npm run setup-secrets      # prints "saved /argus/..." three times
+```
+
+- Quotes around values are fine, and so are Windows line endings.
+- Anything left empty in `.env` is prompted for instead, with input hidden.
+- A variable already exported in your shell overrides `.env`.
+- Use a **letters-and-numbers-only** Atlas password; `@ : / ? # %` break the URI.
+- To rotate a secret: edit `.env`, re-run `npm run setup-secrets`, then redeploy (Step 4) so the
+  Lambda picks up the new value.
+- **Never** paste the real `.env` contents into chats, issues, or commits. If a password leaks,
+  change it in Atlas (*Security → Database Access → Edit Password*) and rotate.
 
 ### Step 4 — Deploy
 
 ```bash
-npm run deploy -- -c alertEmail=you@example.com -c rootAdminEmail=you@example.com
+npm run deploy
 ```
 
-- `rootAdminEmail` is the root_admin login email (default `admin@argus.dev`).
-- `alertEmail` receives the budget and kill-switch alerts. Confirm the subscription emails AWS
+- `ROOT_ADMIN_EMAIL` and `ALERT_EMAIL` come from `.env`. A `-c` on the command line overrides
+  them, e.g. `npm run deploy -- -c alertEmail=other@example.com`.
+- `ALERT_EMAIL` receives the budget and kill-switch alerts. Confirm the subscription emails AWS
   sends you.
 - What it does: builds and tests the backend image, deploys the four stacks, builds the UI
   against the CloudFront URL, uploads it, and hits `/health`. It ends with
@@ -202,6 +230,53 @@ Other roles don't see the card, and the API returns 403 for them.
 checking the bill, detach the `ArgusGuardrails-DenySimulatorStart…` policy from the backend's
 Lambda role in the IAM console, or reset it in *Billing → Budgets → argus-demo-monthly →
 Actions*.
+
+## Optional: let Claude Code inspect AWS and MongoDB (MCP servers)
+
+Two MCP servers let Claude Code look at the deployed system directly (stacks, logs, costs,
+collections, storage). They're configured per user in `~/.claude.json` (`-s user`), **never** in
+the repo's `.mcp.json`, because they carry credentials.
+
+| Server | What it gives Claude | Credentials it uses |
+|---|---|---|
+| `aws-mcp` | AWS API/docs access through `mcp-proxy-for-aws` | your current `aws login` session |
+| `mongodb` | read-only queries, collection sizes, `db.stats()` | the connection string in its env var |
+
+**Add them** (Node 24 + `uv` needed for `npx`/`uvx`):
+
+```bash
+# MongoDB (read-only): put the real connection string here yourself, never in chat or git
+claude mcp add mongodb -s user \
+  -e MDB_MCP_CONNECTION_STRING='mongodb+srv://<user>:<password>@<cluster>.mongodb.net/' \
+  -- npx -y mongodb-mcp-server@latest --readOnly
+
+# AWS (usually added already by the AWS CLI's MCP setup)
+claude mcp add aws-mcp -s user \
+  -- uvx mcp-proxy-for-aws@latest https://aws-mcp.us-east-1.api.aws/mcp
+
+claude mcp list          # both should show ✔ Connected
+```
+
+Keep `--readOnly` on the MongoDB server: Claude can then read but never write, update or
+delete. A database user with the *Only read any database* role adds a second layer.
+
+**MCP servers only connect when Claude Code starts.** After adding one, or after fixing a
+failure, restart Claude Code. The first start of each server downloads its package, which can
+exceed the default 30 s startup limit, so give it more time:
+
+```bash
+MCP_TIMEOUT=60000 claude
+```
+
+**Troubleshooting**
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `aws-mcp` → `-32602: Invalid request parameters` | the `aws login` session expired, so the proxy has no credentials | `aws login`, check `aws sts get-caller-identity`, restart Claude Code |
+| `mongodb` → `connection timed out after 30000ms` | first `npx` download was slow | restart with `MCP_TIMEOUT=60000 claude` |
+| `mongodb` connects but queries fail / TLS `alert number 80` | your IP isn't in Atlas *Network Access* | add `0.0.0.0/0`, wait until *Active* |
+| `claude mcp list` is ✔ but the tools don't show up in the session | the session started before the server was ready | restart Claude Code |
+| warning: *claude.ai connectors are disabled because ANTHROPIC_API_KEY…* | an API key in your shell overrides the claude.ai login | `unset ANTHROPIC_API_KEY` before `claude` if that's unintended (doesn't affect these two servers) |
 
 ## Clients pointing at the cloud
 
