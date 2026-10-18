@@ -1,0 +1,8 @@
+# The repo-root .gitignore ignores every `lib/`; this package's stacks live in lib/.
+!lib/
+node_modules/
+cdk.out/
+cdk.context.json
+*.js
+!jest.config.js
+*.d.ts

@@ -6,6 +6,7 @@ pydantic[email]==2.10.4
 pydantic-settings==2.7.0
 bcrypt==4.2.1
 PyJWT==2.10.1
+boto3==1.35.90
 python-dotenv==1.0.1
 
 # tests
