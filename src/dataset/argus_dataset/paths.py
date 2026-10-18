@@ -115,6 +115,25 @@ def geo_per_crop_cache() -> Path:
     return cache_dir() / "geo_per_crop.parquet"
 
 
+# --- external datasets (parts architecture) ---------------------------------------------------
+
+def external_raw_dir() -> Path:
+    """``raw/`` itself — the external datasets sit beside ``raw_videos/``, not inside it."""
+    return dataset_root() / "raw"
+
+
+def datasets_manifest_json() -> Path:
+    return external_raw_dir() / "datasets_manifest.json"
+
+
+def mrl_eye_raw_dir() -> Path:
+    return external_raw_dir() / "mrl_eye"
+
+
+def roboflow_raw_dir() -> Path:
+    return external_raw_dir() / "roboflow"
+
+
 # --- model bundles -------------------------------------------------------------------------
 
 def face_landmarker_path() -> Path:

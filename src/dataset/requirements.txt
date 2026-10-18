@@ -13,3 +13,7 @@ tqdm>=4.66,<5
 # Optional — `build_cnn_lstm_windows.py` writes its per-crop geometry cache as parquet.
 # pandas can fall back to CSV if pyarrow is missing, so this is a soft dependency.
 pyarrow>=15
+
+# `scripts/fetch_roboflow_parts.py` — Roboflow Universe exports for the parts architecture
+# (download-only). Pulls PyYAML, which `external.parse_data_yaml` uses when present.
+roboflow>=1.1,<2
