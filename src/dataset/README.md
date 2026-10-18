@@ -229,6 +229,32 @@ python scripts/datasets_status.py --classes     # table + on-disk check + each s
 - Review each project's class list (`--classes`) before writing any label mapping. The 11-class
   project especially needs care.
 
+### Merge into one 3-class dataset + IR filter + zip
+
+```bash
+python scripts/build_parts_dataset.py --preview --zip   # ~1 min build; zip ~1.2 GB
+```
+
+This merges MRL and the five Roboflow projects into `open_eye` / `closed_eye` / `yawn`, using
+`config.ROBOFLOW_CLASS_MAP`. Each project's mapping was decided from contact sheets of its real
+boxes, not from class names: several projects use the same name for whole-face boxes. Output
+goes to `processed/parts_dataset/`:
+
+- **`parts_dataset.csv`**: the single labels file, one row per crop across every source.
+- **`class_map.csv`**: what every source label became (or `DROP`).
+- **`rgb/<class>/`**: the colour crops.
+- **`ir/<class>/`**: IR-simulated grayscale crops, for the Pi NoIR camera. The simulation is a
+  red-dominant channel mix, then a histogram match toward real-IR MRL. MRL itself is already IR
+  and is left as-is.
+- **`preview/`**: RGB-vs-IR contact sheets.
+- **`processed/parts_dataset.zip`**: everything above, self-contained, with zip-relative paths
+  and a README listing licences.
+
+**Splits** are assigned per `group_id`. A group is an original image together with its Roboflow
+augmented copies and any near-duplicate frames (matched by dHash, which also catches
+consecutive video frames); for MRL a group is one subject. Copies therefore never straddle
+train, valid and test. Don't re-split by row.
+
 ---
 
 ## 8. Tests

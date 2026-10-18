@@ -134,6 +134,23 @@ def roboflow_raw_dir() -> Path:
     return external_raw_dir() / "roboflow"
 
 
+def parts_dataset_dir() -> Path:
+    """Merged 3-class parts dataset: ``{rgb,ir}/{open_eye,closed_eye,yawn}/`` + CSVs."""
+    return processed_dir() / "parts_dataset"
+
+
+def parts_dataset_csv() -> Path:
+    return parts_dataset_dir() / "parts_dataset.csv"
+
+
+def parts_class_map_csv() -> Path:
+    return parts_dataset_dir() / "class_map.csv"
+
+
+def ir_reference_hist() -> Path:
+    return parts_dataset_dir() / "ir_ref_hist.npy"
+
+
 # --- model bundles -------------------------------------------------------------------------
 
 def face_landmarker_path() -> Path:
