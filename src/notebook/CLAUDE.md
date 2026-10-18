@@ -130,6 +130,43 @@ Four model families share two dataset-creation notebooks:
                                                          └─► 09 dataset_creation_cnn_lstm ──► 10 cnn_lstm_training
 ```
 
+## Parts detectors: `12` / `13` / `14` (new architecture, not yet trained for real)
+
+This is a separate line of work from the drowsiness classifiers above. It's a light **per-frame
+detector** on a BlazeFace face crop that finds `open_eye`, `closed_eye`, `yawn`, `head_straight`
+and `head_down` boxes, meant to feed a later temporal (LSTM) stage over the 5 fps window. All
+three read one dataset, `Argus/dataset/parts_det.zip`, built locally by
+`src/dataset/scripts/build_detection_dataset.py` (see `src/dataset/CLAUDE.md`'s
+`detection_dataset.py` section). Upload it to Drive by hand.
+
+| # | Notebook | Model | Role |
+|---|---|---|---|
+| 12 | `tiny_grid_detector` | **our own YOLO-style CNN, from scratch in Keras**: step 1 YOLOv1-tiny (S×S grid, sum-squared loss); step 2 modern tiny YOLO (C2f-lite, SPPF-lite, decoupled anchor-free head, neighbour-cell assignment, GIoU + IoU-aware objectness), about 46k params | the thesis model |
+| 13 | `yolo_nano` | Ultralytics `yolo11n` + `yolov5nu`, pretrained, fine-tuned | off-the-shelf baseline (AGPL-3.0) |
+| 14 | `backbone_grid_detector` | MobileNetV3-Small *minimalistic* (ImageNet), FPN-lite neck, 12's head and loss, two-phase fine-tune | pretrained shared trunk; its **last cell is the 12/13/14 comparison table** |
+
+- **Shared cells are generated, not hand-copied.** Setup, loading, evaluation, latency, the
+  `tf.data` pipeline and the grid head/loss are byte-identical across notebooks, so the numbers
+  are comparable. If you edit one, edit all, or regenerate them.
+- **Configuration and outputs.** Set `VARIANT` (`mix` by default: a random gray/IR blend per
+  training image), `EVAL_VARIANT` (`ir`, matching the Pi NoIR camera), `INCLUDE_CLOSEUPS` and
+  `INCLUDE_PSEUDO_EYES` in Setup. Every notebook writes `models/parts_det/<name>_metrics.json`.
+- **Local runs.** `ARGUS_SMOKE=1` plus `ARGUS_DET_ZIP` / `ARGUS_PROJECT_FOLDER` /
+  `ARGUS_WORK_DIR` run a notebook locally on CPU as a few-step smoke test (all three were
+  executed end to end this way).
+- **Verified:** encode → loss → decode → eval for both of 12's detectors.
+  - Ideal network outputs give mAP@0.5 = 0.99.
+  - A 32-image memorisation test reaches 0.99 / 0.98 in eval mode.
+  - **BatchNorm lesson.** With Keras' default momentum 0.99, eval-mode mAP was 0.77 / **0.00** for
+    weights that scored 0.99 in train mode: the running statistics lagged behind fast-moving
+    weights. The fix has two parts:
+    - `BN_MOMENTUM = 0.97` (the YOLOv5 value);
+    - `recalibrate_bn()` after training, before evaluation and export.
+
+    Don't revert either.
+- **Not done yet:** a real GPU training run (no numbers exist), Pi timing of the `.tflite`
+  files, and the temporal stage.
+
 ## What we found
 
 **Update since this was first written, twice over: `src/cv-argus` moved from the geometric-only

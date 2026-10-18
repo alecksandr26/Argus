@@ -255,6 +255,39 @@ augmented copies and any near-duplicate frames (matched by dHash, which also cat
 consecutive video frames); for MRL a group is one subject. Copies therefore never straddle
 train, valid and test. Don't re-split by row.
 
+### Detection dataset, one YOLO-format zip for notebooks 12/13/14
+
+This is the dataset for every detector notebook; it supersedes `parts_dataset.zip` for that
+purpose. Images are **square face crops** (BlazeFace box + 25% margin, padded with black where it
+leaves the frame, 192 px), plus "close-up" images (MRL, Roboflow eye/mouth close-ups) whose box
+is the whole image.
+
+Classes: `open_eye`, `closed_eye`, `yawn`, `head_straight`, `head_down`.
+
+```bash
+python scripts/fetch_models.py                                    # MediaPipe bundles (once)
+python scripts/build_detection_dataset.py --mediapipe-only        # slow pass, resumable (~1 min / 8 workers)
+python scripts/build_detection_dataset.py --sheet --zip           # build + preview + processed/parts_det.zip
+```
+
+The output lands in `processed/parts_det/`:
+- `gray/` and `ir/`, each laid out as `{train,valid,test}/{images,labels}`;
+- `data_gray.yaml` and `data_ir.yaml`, both Ultralytics-ready;
+- `index.csv`, with one row per *source* image, including rejected ones and the reason.
+
+The build does the following:
+
+- **Head boxes** come from FaceLandmarker pitch. The sign was checked on real faces: positive
+  means looking down.
+- **Unlabelled eyes are pseudo-labelled** from landmarks (EAR < 0.15 closed, > 0.25 open,
+  otherwise the image is rejected). Without this, eyes the annotators skipped (e.g. on yawn-only
+  images) would be learned as background. Thresholds were calibrated on 4,071 human-labelled eyes.
+  These images are flagged in `index.csv` (`pseudo_eyes`).
+- **Ambiguous source labels** reject the whole image (`config.ROBOFLOW_REJECT_IMAGE_LABELS`).
+- **Splits** are by group and stratified on yawn. See `detection_dataset.py` for the grouping
+  rules, which were fixed after a filename-collision chain once merged 46% of the images into
+  one group.
+
 ---
 
 ## 8. Tests
