@@ -117,6 +117,12 @@ ENV PARTS_INT8_DRIVE_FILE_ID=${PARTS_INT8_DRIVE_FILE_ID}
 ARG PARTS_FLOAT_DRIVE_FILE_ID
 ENV PARTS_FLOAT_DRIVE_FILE_ID=${PARTS_FLOAT_DRIVE_FILE_ID}
 RUN python -m cv_argus.model.downloader && python -m cv_argus.pipeline.downloader
+# Load + run both parts models on THIS build's architecture (on the Pi, that's arm64), each in a
+# child process so a native TFLite crash is caught. Prints an OK/FAILED report and how closely
+# int8 and float agree. Fails the build only if the float model is broken; a broken int8 just
+# means the container falls back to float at startup (PARTS_INT8_FALLBACK, see
+# model/parts_probe.py).
+RUN python -m cv_argus.model.parts_probe
 
 # Still a volume even though the image already has the files: an empty named volume is
 # seeded from the image's /app/models contents on first mount (standard Docker behavior), so

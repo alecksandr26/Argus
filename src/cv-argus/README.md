@@ -81,6 +81,7 @@ including model-artifact overrides not covered here).
 | Variable | Default | What it does |
 |---|---|---|
 | `PARTS_PRECISION` | `int8` | `int8` (`.tflite`, ~0.7 ms/face) or `float` (`.keras`, ~5.5 ms/face): the same detector at two precisions. |
+| `PARTS_INT8_FALLBACK` | `1` | If the int8 model can't load or run on this device (it has failed on a Pi 5), use the float `.keras` instead. Checked at startup in a child process; `0` = fail instead. |
 | `PARTS_CLOSED_EYE_THRESHOLD` | `0.40` | An eye counts as closed when p_closed / (p_open + p_closed) ≥ this. 0.5 = plain argmax; lower = more sensitive. |
 | `PARTS_HEAD_DOWN_THRESHOLD` | `0.30` | Same for head down vs. straight. Lower than the eye one because `head_down` is the detector's weakest class. |
 | `RULE_*` | see `src/constants.py` | Rule timers in seconds, e.g. `RULE_EYES_CRITICAL_S=3.0`, `RULE_YAWN_RECENT_S=10`, `RULE_HEAD_GRACE_S=1.0`. |
@@ -368,6 +369,20 @@ logging_output          wait = time queued   proc ≈ 0       e2e = grab-to-here
 summaries, use the metrics log ("Measuring it for the report", above).
 
 ## Troubleshooting
+
+**The int8 model fails on the Raspberry Pi.** Nothing to do by hand: at startup the container
+loads the int8 model in a throwaway child process, and if that crashes or misbehaves it uses the
+float `.keras` instead. Look for this log line:
+
+```
+WARNING parts detector: int8 probe failed: <why> -- falling back to the float .keras model
+```
+
+The footer, the log lines and `metrics.jsonl` then say `float`. The Docker build already runs
+the same check (`RUN python -m cv_argus.model.parts_probe`) and prints `int8 OK/FAILED`, so a
+build on the Pi tells you up front. Float is ~5.5 ms per face on a desktop CPU instead of
+~0.7 ms (still small next to BlazeFace). Set `PARTS_INT8_FALLBACK=0` to make an int8 failure
+stop the container instead.
 
 - **`docker compose build` fails immediately, no network-related error** — check you're running
   the plugin form (`docker compose`, two words) and not the deprecated standalone
