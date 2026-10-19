@@ -218,6 +218,33 @@ The rules below each came from looking at real data:
 - **Pitch sign: positive means head down.** This was checked on contact sheets: yawning heads
   thrown back read about −30°. `head_down` is genuinely rare in this data (about 190 boxes); it's
   a data limit, not a bug. Head pose for the pipeline should still come from landmarks.
+- **Human head-pose labels beat pitch** (added 2026-10-19 for `vidyashree/headpose-w4zuc`, to
+  get more and better `head_down`). `ROBOFLOW_HEAD_CLASS_MAP` maps a source's head labels to
+  `head_straight` / `head_down` / `None` ("neither": no head box). Every class must be mapped:
+  `check_head_maps` hard-errors with a name-based suggestion, and `--label-sheet` draws the raw
+  labels so they can be checked first. The head box stays the **BlazeFace face box** (the same
+  scope as every pitch-labelled head); only when BlazeFace misses (`head_source = human_box`) is
+  the human head box used, with the crop built around it. `ROBOFLOW_HEADPOSE_PROJECTS` are
+  head-only. `parts_dataset` skips them, their eyes are pseudo-labelled, and
+  `DET_HEADPOSE_ALLOW_INCOMPLETE_EYES` keeps head-only images. The trade-off: rejecting them
+  would drop exactly the hard head-down cases, and keeping them means a visible but unlabelled
+  eye or yawn is learned as background. `lm_head_class` records what pitch said, so
+  `summarize()`'s `head_human_vs_landmarks` is the calibration check on `HEAD_*_DEG`.
+  - **First build with it (v3, 2026-10-19):**
+    - 4,065 of its 5,031 images were accepted. 838 were rejected as
+      `ambiguous_unlabelled_eye`: the source often labels one eye only.
+    - `head_down` grew from 189 to 644 boxes; 445 of the 522 `Head_down` images were kept.
+    - Every box in this export is a 4-corner polygon. `_read_yolo_labels` reads 4-corner
+      polygons as their bounding box. Longer polygons (jhmld's real segmentations) are still
+      skipped, so the older sources' output is unchanged.
+    - Its eye labels map through `ROBOFLOW_CLASS_MAP`: `Eye_forward`/`left`/`right` (gaze
+      direction) become `open_eye`, and `Eye_close` becomes `closed_eye`. Many `Eye_close`
+      boxes are downcast lids on lowered heads rather than fully shut eyes, which is a judgement
+      call.
+  - **Pitch vs. human, measured.** Where both exist, the pitch rule agreed on 412 of 445 human
+    `head_down` images. Against human labels, it called 444 turned/up heads (human: none)
+    `head_straight` and 75 `head_down`. So pitch-labelled `head_straight` in the older sources
+    likely includes turned heads; `HEAD_STRAIGHT_YAW_DEG` is the knob to tighten.
 - **Unlabelled-object guard.** Detectors learn unlabelled objects as background, so:
   - images carrying ambiguous labels are rejected;
   - face images need ≥ 2 eye boxes;

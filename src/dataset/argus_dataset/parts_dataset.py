@@ -143,6 +143,13 @@ def _read_yolo_labels(lbl: Path) -> tuple[list[tuple[int, float, float, float, f
         if len(parts) == 5:
             c, *xywh = parts
             boxes.append((int(float(c)), *map(float, xywh)))
+        elif len(parts) == 9:
+            # A 4-corner polygon: some exports (headpose-w4zuc) write every box this way. Taken
+            # as its bounding box. Longer polygons (real segmentations) are still skipped.
+            c, *xy = parts
+            xs, ys = [float(v) for v in xy[0::2]], [float(v) for v in xy[1::2]]
+            boxes.append((int(float(c)), (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2,
+                          max(xs) - min(xs), max(ys) - min(ys)))
         elif len(parts) > 5:
             polys += 1      # segmentation polygon — not a box, skipped
     return boxes, polys
@@ -153,7 +160,9 @@ def roboflow_rows(manifest: dict, ref_cdf: np.ndarray | None, stats: Counter,
     import cv2
     out_root = paths.parts_dataset_dir()
     rows, uf, hash_owner = [], _UnionFind(), {}
-    sources = [(k, e) for k, e in sorted(manifest["sources"].items()) if e.get("kind") == "roboflow"]
+    # Head-pose-only projects have no eye/mouth boxes to crop; they feed detection_dataset only.
+    sources = [(k, e) for k, e in sorted(manifest["sources"].items()) if e.get("kind") == "roboflow"
+               and e["project"] not in config.ROBOFLOW_HEADPOSE_PROJECTS]
     for key, e in sources:
         project, cmap = e["project"], config.ROBOFLOW_CLASS_MAP.get(e["project"])
         if cmap is None:

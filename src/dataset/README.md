@@ -216,7 +216,7 @@ source whose checksum still matches.
 
 ```bash
 python scripts/fetch_mrl_eye.py                 # MRL Eye: ~342 MB zip, 84,898 IR eye crops, 37 subjects
-python scripts/fetch_roboflow_parts.py --list   # the 5 Roboflow Universe projects (config.ROBOFLOW_PROJECTS)
+python scripts/fetch_roboflow_parts.py --list   # the 6 Roboflow Universe projects (config.ROBOFLOW_PROJECTS)
 ROBOFLOW_API_KEY=... python scripts/fetch_roboflow_parts.py   # YOLO exports -> raw/roboflow/<project>/v<N>/
 python scripts/datasets_status.py --classes     # table + on-disk check + each source's classes
 ```
@@ -235,7 +235,7 @@ python scripts/datasets_status.py --classes     # table + on-disk check + each s
 python scripts/build_parts_dataset.py --preview --zip   # ~1 min build; zip ~1.2 GB
 ```
 
-This merges MRL and the five Roboflow projects into `open_eye` / `closed_eye` / `yawn`, using
+This merges MRL and the five eye/yawn Roboflow projects (head-pose-only sources are skipped) into `open_eye` / `closed_eye` / `yawn`, using
 `config.ROBOFLOW_CLASS_MAP`. Each project's mapping was decided from contact sheets of its real
 boxes, not from class names: several projects use the same name for whole-face boxes. Output
 goes to `processed/parts_dataset/`:
@@ -278,7 +278,29 @@ The output lands in `processed/parts_det/`:
 The build does the following:
 
 - **Head boxes** come from FaceLandmarker pitch. The sign was checked on real faces: positive
-  means looking down.
+  means looking down. Where a source has **human head-pose labels**
+  (`config.ROBOFLOW_HEAD_CLASS_MAP`, e.g. `headpose-w4zuc`), the human label wins over the pitch
+  guess; `index.csv`'s `head_source` (`human` / `human_box` / `landmarks`) and `lm_head_class`
+  record which one was used and what the pitch rule said, and the build summary prints the
+  human-vs-pitch agreement.
+
+**Adding the head-pose source (`vidyashree/headpose-w4zuc`).** Its class names aren't visible
+without a key, so its map in `config.ROBOFLOW_HEAD_CLASS_MAP` ships empty and the build stops
+until it's filled in:
+
+```bash
+ROBOFLOW_API_KEY=... python scripts/fetch_roboflow_parts.py --projects headpose-w4zuc
+python scripts/build_detection_dataset.py --label-sheet headpose-w4zuc   # -> processed/label_sheet_headpose-w4zuc.jpg
+# look at the sheet, then map each label to head_straight / head_down / None in config.py
+# (the build's error prints a suggested map from the names; check it against the sheet)
+python scripts/build_detection_dataset.py --mediapipe-only && python scripts/build_detection_dataset.py --sheet --zip
+```
+
+Its images have only head boxes. Eyes are pseudo-labelled from landmarks. When BlazeFace misses
+a strongly turned or lowered head, the crop is made around the human head box instead
+(`head_source = human_box`, margin `DET_HEAD_BOX_MARGIN_FRAC`), and the image is kept even
+without eye boxes (`DET_HEADPOSE_ALLOW_INCOMPLETE_EYES`). Mouths in these images are unlabelled,
+so a yawn there is learned as background.
 - **Unlabelled eyes are pseudo-labelled** from landmarks (EAR < 0.15 closed, > 0.25 open,
   otherwise the image is rejected). Without this, eyes the annotators skipped (e.g. on yawn-only
   images) would be learned as background. Thresholds were calibrated on 4,071 human-labelled eyes.
