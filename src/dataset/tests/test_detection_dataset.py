@@ -218,6 +218,16 @@ def test_label_sheet(env, monkeypatch):
     assert sheet.shape[:2] == (3 * 160, 4 * 160)
 
 
+def test_four_corner_polygons_read_as_boxes(env, tmp_path):
+    from argus_dataset import parts_dataset
+    lbl = tmp_path / "x.txt"   # headpose-w4zuc writes every box as a 4-corner polygon
+    lbl.write_text("5 0.1 0.2 0.9 0.2 0.9 0.8 0.1 0.8\n1 0.5 0.5 0.2 0.1\n"
+                   "2 0.1 0.1 0.2 0.1 0.2 0.2 0.15 0.25 0.1 0.2\n")   # 5-point polygon: skipped
+    boxes, polys = parts_dataset._read_yolo_labels(lbl)
+    assert boxes[0] == pytest.approx((5, 0.5, 0.5, 0.8, 0.6)) and boxes[1] == (1, 0.5, 0.5, 0.2, 0.1)
+    assert len(boxes) == 2 and polys == 1
+
+
 def test_parts_dataset_skips_headpose_projects(env, monkeypatch):
     from collections import Counter
     _headpose(env, monkeypatch, [("train", "x_jpg.rf.1", "0 0.5 0.5 0.4 0.4\n")])

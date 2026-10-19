@@ -230,6 +230,21 @@ The rules below each came from looking at real data:
   would drop exactly the hard head-down cases, and keeping them means a visible but unlabelled
   eye or yawn is learned as background. `lm_head_class` records what pitch said, so
   `summarize()`'s `head_human_vs_landmarks` is the calibration check on `HEAD_*_DEG`.
+  - **First build with it (v3, 2026-10-19):**
+    - 4,065 of its 5,031 images were accepted. 838 were rejected as
+      `ambiguous_unlabelled_eye`: the source often labels one eye only.
+    - `head_down` grew from 189 to 644 boxes; 445 of the 522 `Head_down` images were kept.
+    - Every box in this export is a 4-corner polygon. `_read_yolo_labels` reads 4-corner
+      polygons as their bounding box. Longer polygons (jhmld's real segmentations) are still
+      skipped, so the older sources' output is unchanged.
+    - Its eye labels map through `ROBOFLOW_CLASS_MAP`: `Eye_forward`/`left`/`right` (gaze
+      direction) become `open_eye`, and `Eye_close` becomes `closed_eye`. Many `Eye_close`
+      boxes are downcast lids on lowered heads rather than fully shut eyes, which is a judgement
+      call.
+  - **Pitch vs. human, measured.** Where both exist, the pitch rule agreed on 412 of 445 human
+    `head_down` images. Against human labels, it called 444 turned/up heads (human: none)
+    `head_straight` and 75 `head_down`. So pitch-labelled `head_straight` in the older sources
+    likely includes turned heads; `HEAD_STRAIGHT_YAW_DEG` is the knob to tighten.
 - **Unlabelled-object guard.** Detectors learn unlabelled objects as background, so:
   - images carrying ambiguous labels are rejected;
   - face images need ≥ 2 eye boxes;

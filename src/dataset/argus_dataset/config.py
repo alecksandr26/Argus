@@ -230,11 +230,11 @@ ROBOFLOW_PROJECTS: tuple[dict, ...] = (
      "note": "11 classes, eye + mouth states; check for duplicate/inconsistent classes"},
     {"workspace": "new-project-sfrql", "project": "drowsiness-hgjay", "version": 1,
      "listed_images": 2069, "note": "face, close_eyes, open_eyes, yawn"},
-    # Head-pose-only source (added 2026-10-19): whole-head boxes labelled with several head
-    # positions, no eye/yawn boxes. Used by the detection dataset only (see
-    # ROBOFLOW_HEADPOSE_PROJECTS); unpinned until its first pull records a version.
-    {"workspace": "vidyashree", "project": "headpose-w4zuc", "version": None,
-     "listed_images": None, "note": "head-pose classes (multiple head positions), head boxes only"},
+    # Head-pose source (added 2026-10-19): whole-head boxes in 5 positions + per-eye boxes (gaze /
+    # closed), no yawn. Used by the detection dataset only (see ROBOFLOW_HEADPOSE_PROJECTS).
+    # Every box is exported as a 4-corner polygon; parts_dataset._read_yolo_labels converts them.
+    {"workspace": "vidyashree", "project": "headpose-w4zuc", "version": 3,
+     "listed_images": 5031, "note": "Head_down/forward/left/right/up + Eye_close/forward/left/right"},
 )
 
 # Merged parts dataset (scripts/build_parts_dataset.py → processed/parts_dataset/). Every source
@@ -270,6 +270,10 @@ ROBOFLOW_CLASS_MAP: dict[str, dict[str, str | None]] = {
         "open_eyes": "open_eye", "close_eyes": "closed_eye",
         "yawn": None,                 # whole-face boxes
         "face": None,
+    },
+    "headpose-w4zuc": {               # one box per eye; its Head_* labels: ROBOFLOW_HEAD_CLASS_MAP
+        "Eye_forward": "open_eye", "Eye_left": "open_eye", "Eye_right": "open_eye",  # = gaze
+        "Eye_close": "closed_eye",    # many are downcast lids on lowered heads, not fully shut
     },
 }
 PARTS_CROP_PAD_FRAC: float = 0.15       # grow each box 15% per side, then square it about its centre
@@ -330,11 +334,17 @@ HEAD_STRAIGHT_YAW_DEG: float = 25.0     # in between: no head box (ambiguous ban
 # check `scripts/build_detection_dataset.py --label-sheet <project>` before deciding, as with
 # ROBOFLOW_CLASS_MAP — names alone have misled us before.
 ROBOFLOW_HEAD_CLASS_MAP: dict[str, dict[str, str | None]] = {
-    "headpose-w4zuc": {},   # fill in after the first fetch (class names aren't public without a key)
+    # v3, decided from label_sheet_headpose-w4zuc.jpg (2026-10-19): every Head_* box is a whole
+    # head and the names match what's in the boxes.
+    "headpose-w4zuc": {
+        "Head_down": "head_down", "Head_forward": "head_straight",
+        "Head_left": None, "Head_right": None, "Head_up": None,   # turned / tilted back
+    },
 }
-# Projects that carry ONLY head boxes. parts_dataset.py skips them (nothing to crop); the
-# detection dataset pseudo-labels their eyes from landmarks and, if BlazeFace misses the face
-# (strong pose is the point of this data), crops around the human head box instead.
+# Head-pose sources: parts_dataset.py skips them (their point is the head boxes, and they have
+# no yawn labels); the detection dataset pseudo-labels any eyes they left unlabelled and, if
+# BlazeFace misses the face (strong pose is the point of this data), crops around the human head
+# box instead. Their eye boxes, if any, go through ROBOFLOW_CLASS_MAP as usual.
 ROBOFLOW_HEADPOSE_PROJECTS: tuple[str, ...] = ("headpose-w4zuc",)
 # Head-pose images whose eyes can't be (fully) labelled — no landmarks on a turned/lowered head —
 # are kept with just their head box. Trade-off: a visible-but-unlabelled eye is learned as
