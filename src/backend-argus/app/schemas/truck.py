@@ -38,5 +38,9 @@ class TruckOut(BaseModel):
     raspberry_pi_mac: Optional[str]
     esp32_id: Optional[str]
     operative_status: TruckStatus
+    # Device-credential status only -- never the key or its hash.
+    has_device_key: bool = False
+    device_key_issued_at: Optional[UtcDatetime] = None
+    device_last_seen_at: Optional[UtcDatetime] = None
     created_at: UtcDatetime
     updated_at: UtcDatetime

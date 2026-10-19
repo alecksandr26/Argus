@@ -4,6 +4,7 @@ the full rationale.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from beanie import PydanticObjectId
@@ -62,12 +63,33 @@ async def get_device_api_key(
     return x_device_api_key
 
 
+# How stale `Truck.device_last_seen_at` may get before a device request refreshes it -- so a
+# device posting every few seconds costs one extra write a minute, not one per request.
+DEVICE_LAST_SEEN_RESOLUTION = timedelta(seconds=60)
+
+
 async def device_key_matches(device_key: Optional[str], truck: Optional[Truck]) -> bool:
     """bcrypt-verifies `device_key` against `truck`'s stored hash, off the event loop (bcrypt is
-    deliberately slow and would otherwise stall every other request, BE-19)."""
+    deliberately slow and would otherwise stall every other request, BE-19). A match also
+    records the truck's device as seen (throttled, see `DEVICE_LAST_SEEN_RESOLUTION`)."""
     if not device_key or truck is None or not truck.device_api_key_hash:
         return False
-    return await run_in_threadpool(verify_secret, device_key, truck.device_api_key_hash)
+    if not await run_in_threadpool(verify_secret, device_key, truck.device_api_key_hash):
+        return False
+    await _touch_device_last_seen(truck)
+    return True
+
+
+async def _touch_device_last_seen(truck: Truck) -> None:
+    now = datetime.now(timezone.utc)
+    last = truck.device_last_seen_at
+    if last is not None and last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)  # Mongo hands datetimes back naive (UTC)
+    if last is not None and now - last < DEVICE_LAST_SEEN_RESOLUTION:
+        return
+    # A targeted $set, not truck.save(): the caller may hold this document and save it later.
+    await Truck.find_one(Truck.id == truck.id).update({"$set": {"device_last_seen_at": now}})
+    truck.device_last_seen_at = now
 
 
 async def authorize_device_or_user(
