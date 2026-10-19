@@ -245,6 +245,39 @@ The rules below each came from looking at real data:
     `head_down` images. Against human labels, it called 444 turned/up heads (human: none)
     `head_straight` and 75 `head_down`. So pitch-labelled `head_straight` in the older sources
     likely includes turned heads; `HEAD_STRAIGHT_YAW_DEG` is the knob to tighten.
+  - **Head-label gaps, measured on v3 (2026-10-19), not yet acted on.** 6,989 of the 12,901
+    accepted face crops (54%) have **no head box**, and the detector learns those faces as
+    "not a head". By landmark pose, the gaps are:
+    - 2,828 turned (|yaw| > 25);
+    - 2,140 in the 10–20° pitch band that is neither straight nor down;
+    - 1,206 looking up (pitch < −10; yawning heads thrown back are 474 of these);
+    - 444 that pitch calls straight but humans call turned;
+    - 296 with no landmarks.
+
+    In test, 1,073 of 2,004 face crops have no head box, so a head prediction on one is scored
+    as a false alarm. That caps `head_straight` / `head_down` precision (0.78 / 0.52 in
+    notebook 12's first run), and the worst test images show plausible `head_straight`
+    predictions on exactly those faces.
+
+    **Calibration against headpose-w4zuc's human labels:**
+
+    | label | pitch median | pitch 5–95% | |yaw| median |
+    |---|---|---|---|
+    | `Head_forward` | 7.6° | −6.9° … 19.6° | 5.9° |
+    | `Head_down` | 34.9° | 25.2° … 42.0° | 17.2° |
+    | `Head_left` / `Head_right` | — | — | 31–32° |
+
+    - A single down cut at 20° separates forward from down well (down recall 0.99, forward kept
+      0.96). The straight band ending at **10°** is what discards 35% of human-forward heads.
+    - For turned heads, |yaw| > 16–19 is the best cut (balanced accuracy 0.93 vs 0.87 at 25).
+    - Candidate change: `HEAD_STRAIGHT_PITCH_DEG` 10 → 18 and `HEAD_STRAIGHT_YAW_DEG` 25 → 19.
+      This would give about 970 of the 1,069 landmark-labelled faces in the 10–20° band a
+      `head_straight` box. It is calibrated on one source and camera, so check the label sheets
+      after the rebuild.
+    - Also lost: 77 human `Head_down` images, rejected by the eye guard
+      (`ambiguous_unlabelled_eye`).
+    - `head_down` is still only 644 boxes (97 in test, from 54 groups), so its AP carries
+      about ±0.10.
 - **Unlabelled-object guard.** Detectors learn unlabelled objects as background, so:
   - images carrying ambiguous labels are rejected;
   - face images need ≥ 2 eye boxes;
