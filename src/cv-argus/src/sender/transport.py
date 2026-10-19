@@ -14,6 +14,10 @@ class Transport(ABC):
     `Listener` below.
     """
 
+    #: The connected client's address (a Bluetooth MAC for `BluetoothSppTransport`), when the
+    #: transport knows it — what `SenderServer`'s peer allowlist checks.
+    peer: str | None = None
+
     @abstractmethod
     def readline(self, timeout: float | None = None) -> bytes | None:
         """Read one newline-delimited message, without the trailing newline. Returns `None` on

@@ -171,7 +171,7 @@ class TestBuildSenderListener:
         built = {}
 
         class _FakeListener:
-            def __init__(self, channel):
+            def __init__(self, channel, security="medium"):
                 built["channel"] = channel
 
         monkeypatch.setattr(main, "BluetoothSppListener", _FakeListener)
@@ -185,7 +185,7 @@ class TestBuildSenderListener:
         built = {}
 
         class _FakeListener:
-            def __init__(self, channel):
+            def __init__(self, channel, security="medium"):
                 built["channel"] = channel
 
         monkeypatch.setattr(main, "BluetoothSppListener", _FakeListener)
@@ -204,6 +204,62 @@ class TestBuildSenderListener:
         monkeypatch.setenv("SENDER_TRANSPORT", "carrier_pigeon")
         with pytest.raises(SystemExit, match="Unknown SENDER_TRANSPORT"):
             main._build_sender_listener()
+
+    def test_security_defaults_to_medium_and_reads_env(self, monkeypatch):
+        monkeypatch.setenv("SENDER_TRANSPORT", "bluetooth")
+        built = []
+
+        class _FakeListener:
+            def __init__(self, channel, security):
+                built.append(security)
+
+        monkeypatch.setattr(main, "BluetoothSppListener", _FakeListener)
+        monkeypatch.delenv("BLUETOOTH_SECURITY", raising=False)
+        main._build_sender_listener()
+        monkeypatch.setenv("BLUETOOTH_SECURITY", "low")
+        main._build_sender_listener()
+        assert built == ["medium", "low"]
+
+    def test_unknown_security_exits(self, monkeypatch):
+        from cv_argus.sender import bluetooth_transport
+
+        monkeypatch.setenv("SENDER_TRANSPORT", "bluetooth")
+        monkeypatch.setenv("BLUETOOTH_SECURITY", "paranoid")
+        monkeypatch.setattr(main, "BluetoothSppListener", bluetooth_transport.BluetoothSppListener)
+        with pytest.raises(SystemExit, match="BLUETOOTH_SECURITY"):
+            main._build_sender_listener()
+
+
+class TestDeviceConfigEnv:
+    def test_unprovisioned_is_none_with_a_warning(self, monkeypatch, caplog):
+        for name in ("ARGUS_TRUCK_ID", "ARGUS_DEVICE_API_KEY", "ARGUS_BACKEND_URL"):
+            monkeypatch.delenv(name, raising=False)
+        with caplog.at_level(logging.WARNING, logger=LOGGER):
+            assert main._device_config() is None
+        assert "argus-device.env" in caplog.text
+
+    def test_full_set_loads_and_never_logs_the_key(self, monkeypatch, caplog):
+        monkeypatch.setenv("ARGUS_TRUCK_ID", "t-1")
+        monkeypatch.setenv("ARGUS_DEVICE_API_KEY", "super-secret")
+        monkeypatch.setenv("ARGUS_BACKEND_URL", "https://x.example/")
+        with caplog.at_level(logging.INFO, logger=LOGGER):
+            config = main._device_config()
+        assert (config.truck_id, config.backend_url) == ("t-1", "https://x.example")
+        assert "t-1" in caplog.text
+        assert "super-secret" not in caplog.text
+
+    def test_partial_set_exits(self, monkeypatch):
+        monkeypatch.setenv("ARGUS_TRUCK_ID", "t-1")
+        monkeypatch.delenv("ARGUS_DEVICE_API_KEY", raising=False)
+        monkeypatch.delenv("ARGUS_BACKEND_URL", raising=False)
+        with pytest.raises(SystemExit, match="ARGUS_DEVICE_API_KEY"):
+            main._device_config()
+
+    def test_allowed_peers(self, monkeypatch):
+        monkeypatch.delenv("ESP32_BT_MAC", raising=False)
+        assert main._allowed_peers() is None
+        monkeypatch.setenv("ESP32_BT_MAC", "AA:BB:CC:DD:EE:FF, 11:22:33:44:55:66")
+        assert main._allowed_peers() == ["AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66"]
 
 
 class TestBuildPipeline:

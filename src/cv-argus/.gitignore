@@ -1,3 +1,6 @@
+# Truck credentials from the dashboard -- a secret, never commit it.
+argus-device.env
+
 # Recorded clips for scripts/demo.sh --camera src/demo_clips/<clip>.mp4 (local only).
 src/demo_clips/
 

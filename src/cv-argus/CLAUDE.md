@@ -243,6 +243,9 @@ Env vars `main.py` reads (all optional, all with defaults):
 | `BUFFER_DIR` / `BUFFER_DB_FILENAME` | `/app/data` / `buffer.sqlite3` | where `buffer/`'s SQLite alert queue lives — see "`buffer/`'s SQLite file needs a volume" and `buffer/store.py` |
 | `SENDER_TRANSPORT` | `bluetooth` (code) / `none` (this repo's compose files) | `bluetooth` (real `BluetoothSppListener`) or `none` (no `SenderServer` started — alerts accumulate unsent in `buffer/`). The compose-file default is `none` because neither compose file passes through real Bluetooth access yet — see "Open decisions" |
 | `BLUETOOTH_CHANNEL` | `4` | only read when `SENDER_TRANSPORT=bluetooth`: the RFCOMM channel `BluetoothSppListener` binds |
+| `BLUETOOTH_SECURITY` | `medium` | RFCOMM `BT_SECURITY` level set on the listening socket (`low`/`medium`/`high`) — see "Device credentials" below |
+| `ESP32_BT_MAC` | unset | optional peer allowlist for `SenderServer` |
+| `ARGUS_TRUCK_ID`/`ARGUS_DEVICE_API_KEY`/`ARGUS_BACKEND_URL` | unset | `sender/device_config.py`'s `DeviceConfig`, from the dashboard's `argus-device.env` (`docker-compose.yml` `env_file`, runtime only) |
 | model-artifact overrides | see `constants.py` | `MODEL_DIR`, `*_DRIVE_FILE_ID`, `*_FILENAME`, `*_BUNDLE_URL` — see "Model download strategy" |
 
 `docker compose` passes `/dev/video0` through by default — adjust the `devices:` entry to
@@ -626,6 +629,20 @@ silently no-opping). `sender/__init__.py` re-exports both lazily (mirrors `pipel
 `_LAZY` `__getattr__` pattern) for the same reason. `transport.py`'s `FakeTransport`/
 `FakeListener` (an in-memory, queue-backed duplex pair) are what every `sender/` test actually
 runs against — no real socket anywhere in the unit suite.
+
+**Device credentials — `CONFIG`.** This module never calls the backend, but it *holds* the
+truck's backend credentials: `sender/device_config.py`'s `DeviceConfig` (truck id, device API
+key, backend URL), read from `ARGUS_*` env vars that `docker-compose.yml` loads from the
+dashboard-issued `argus-device.env`. A session may be a single `CONFIG` request instead of
+`PULL`/`ACK`; `SenderServer` answers `CONFIG {json}` or `NOCONFIG`. The point is that the Pi is
+the provisioned, re-deployable half of the truck, so the ESP32 firmware stays generic (no
+per-truck key flashed in). Because that reply carries a secret, `BluetoothSppListener` sets
+`BT_SECURITY` (default `medium`: paired + encrypted) on the listening socket, which the kernel
+applies to every accepted connection, and `ESP32_BT_MAC` optionally allowlists the peer. The key
+is never logged and `repr(DeviceConfig)` masks it. A partial `ARGUS_*` set is a `SystemExit` at
+startup. `tests/test_sender_device_config.py` covers all of it over fakes (including the
+`setsockopt` call); the real RFCOMM security handshake is unverified until real Pi + ESP32
+hardware runs it.
 
 This satisfies the grading-criteria constraint behind all of it (3.2's "not a pre-built
 client/server service" note): the PULL/ACK grammar is a protocol this project defines and

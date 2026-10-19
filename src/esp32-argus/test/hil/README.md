@@ -10,14 +10,16 @@ PC: backend-argus (real app, in memory) ◀────────────�
 
 `esp32_hil.py` feeds the Pi buffer what cv-argus produces (`Drowsy` readings every second, a
 `route_status` heartbeat every 10 s). It prints every line the ESP32 exchanges over Bluetooth and
-every alert/status the ESP32 posts to the backend. Then it checks the four hops:
+every alert/status the ESP32 posts to the backend (the device key in the `CONFIG` reply is
+masked). Then it checks five hops:
 
-1. The ESP32 connected over Bluetooth and sent `PULL`.
-2. The ESP32 ACKed records, so they left the Pi buffer.
-3. A route status reached the backend over HTTP.
-4. A fusion alert reached the backend over HTTP.
+1. The ESP32 fetched its backend credentials over Bluetooth (`CONFIG`).
+2. The ESP32 connected over Bluetooth and sent `PULL`.
+3. The ESP32 ACKed records, so they left the Pi buffer.
+4. A route status reached the backend over HTTP.
+5. A fusion alert reached the backend over HTTP.
 
-It stops as soon as all four have happened (or after `--duration`, default 120 s) and exits `0`
+It stops as soon as the relay checks (3–5) have happened (or after `--duration`, default 120 s) and exits `0`
 only if every check passed.
 
 `bench_backend.py` is the backend half on its own: the real FastAPI app on `mongomock` instead
@@ -46,9 +48,9 @@ Python venv. On a Linux machine with BlueZ (e.g. the real Pi), use `--rfcomm` in
    ```
 2. **Firmware `config.h`**, then flash:
    - Set `WIFI_SSID` / `WIFI_PASSWORD` to the **same WiFi network as the PC**.
-   - Copy `BACKEND_BASE_URL`, `DEVICE_API_KEY` and `ROUTE_ID` exactly as
-     `python src\esp32-argus\test\hil\bench_backend.py` prints them (Ctrl+C after). Only the
-     IP can change between runs.
+   - Nothing backend-related goes in `config.h` anymore: `esp32_hil.py` serves the bench
+     backend URL (this PC's LAN IP) and the bench device key over Bluetooth (`CONFIG`), and the
+     ESP32 looks its route up from the key. A new IP between runs needs no reflash.
    - Set `PI_BT_MAC_ADDRESS` to the **PC's** Bluetooth MAC, because the PC is the Pi here.
      `ipconfig /all` shows it as "Physical Address" under "Bluetooth Network Connection".
      `B0-DC-EF-34-4C-83` becomes `{ 0xB0, 0xDC, 0xEF, 0x34, 0x4C, 0x83 }`.
@@ -114,6 +116,7 @@ proves nothing about the GPS. To check that the positions come from the NEO-6M:
 | Serial Monitor shows `No GPS fix yet -- ... not relaying` | The NEO-6M has no fix yet (see `[gps]` lines and "Testing the real GPS"), or set `BENCH_FAKE_GPS 1` to test without it |
 | Check 5 says "sent the BENCH_FAKE_GPS position" | `BENCH_FAKE_GPS` is still `1` in the flashed firmware |
 | Serial Monitor shows `WiFi down` | Wrong `WIFI_SSID`/`WIFI_PASSWORD`, or a 5 GHz-only network (the ESP32 only does 2.4 GHz) |
-| Bluetooth works but checks 3–4 fail | Firewall blocking port 8000, ESP32 on a different network, or `BACKEND_BASE_URL` has a stale IP |
-| Backend rejects posts (401/403/404) | `DEVICE_API_KEY` / `ROUTE_ID` in `config.h` don't match what `bench_backend.py` prints |
+| Bluetooth works but checks 4–5 fail | Firewall blocking port 8000, or the ESP32 on a different network from the PC (the URL it gets over `CONFIG` is this PC's LAN IP) |
+| Check 1 fails, Serial shows `[creds] Using credentials ... (NVS cache)` | An older run's credentials are cached and the `CONFIG` fetch didn't connect; same causes as a failed `PULL` |
+| Backend rejects posts (401) | The ESP32 is using stale cached credentials; it re-fetches `CONFIG` on the next poll — watch for a second `CONFIG` line |
 | Check 4 fails but 1–3 pass | Fusion hasn't confirmed yet (5 s debounce). Run longer, and leave the grip input (GPIO 19) unconnected so it reads "bad grip" |

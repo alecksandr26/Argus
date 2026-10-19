@@ -16,3 +16,5 @@ models/
 # nothing in the Dockerfile ever COPYs `scripts/` in at all, so leaving it un-ignored here was
 # only bloating `Sending build context to Docker daemon` for no reason.
 scripts/output/
+# Truck credentials: runtime env only (docker-compose env_file), never in the image.
+argus-device.env

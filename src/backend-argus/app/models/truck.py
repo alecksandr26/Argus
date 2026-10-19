@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 
 import pymongo
@@ -23,6 +24,10 @@ class Truck(TimestampedDocument):
     # SHA-256 of the same key (`app.auth.security.key_fingerprint`), indexed, so a device can be
     # identified from its key alone. None for keys issued before this field existed.
     device_api_key_fingerprint: Optional[str] = None
+    # When the current key was issued (rotate-key), and when a request last authenticated with
+    # it -- what the dashboard's "Onboard device" panel shows. Both None until a key exists.
+    device_key_issued_at: Optional[datetime] = None
+    device_last_seen_at: Optional[datetime] = None
 
     class Settings:
         name = "trucks"

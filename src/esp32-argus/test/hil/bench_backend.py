@@ -2,8 +2,9 @@
 same device-key auth), served by uvicorn on the LAN so the ESP32 can reach it over WiFi, but on
 mongomock-motor instead of MongoDB. No Docker, no mongod; data lives only as long as the process.
 
-Seeds one truck/driver/in-progress route with FIXED ids and a FIXED device key, so the values in
-the firmware's config.h stay valid across runs and you don't reflash every time.
+Seeds one truck/driver/in-progress route with FIXED ids and a FIXED device key. The ESP32 gets
+the key and backend URL from the Pi over Bluetooth (CONFIG), so `esp32_hil.py` hands them to its
+SenderServer as a DeviceConfig (`bench_device_config()`) -- nothing to copy into config.h.
 
     python src/esp32-argus/test/hil/bench_backend.py         # serve on 0.0.0.0:8000 until Ctrl+C
 
@@ -33,6 +34,7 @@ from app.models.driver import Driver
 from app.models.route import Route
 from app.models.truck import Truck
 from beanie import PydanticObjectId
+from cv_argus.sender.device_config import DeviceConfig
 
 TRUCK_ID = "64b0a0000000000000000001"
 DRIVER_ID = "64b0a0000000000000000002"
@@ -96,11 +98,13 @@ def lan_ip() -> str:
             return "127.0.0.1"
 
 
-def config_h_values() -> str:
-    return (
-        f'#define BACKEND_BASE_URL "http://{lan_ip()}:{PORT}"\n'
-        f'#define DEVICE_API_KEY "{DEVICE_API_KEY}"\n'
-        f'#define ROUTE_ID "{ROUTE_ID}"'
+def bench_device_config() -> DeviceConfig:
+    """What the dashboard's argus-device.env would say for the seeded truck, pointed at this
+    machine's LAN address. The PC-as-Pi serves it to the ESP32 on CONFIG."""
+    return DeviceConfig(
+        truck_id=TRUCK_ID,
+        device_api_key=DEVICE_API_KEY,
+        backend_url=f"http://{lan_ip()}:{PORT}",
     )
 
 
@@ -135,8 +139,11 @@ if __name__ == "__main__":
     backend = BenchBackend()
     backend.start()
     print(f"bench backend-argus (in-memory) on http://0.0.0.0:{PORT}")
-    print("Put these in src/esp32-argus/src/esp32_argus/config.h:\n")
-    print(config_h_values())
+    config = bench_device_config()
+    print("argus-device.env for a Pi serving this bench truck (the ESP32 gets it via CONFIG):\n")
+    print(f"ARGUS_TRUCK_ID={config.truck_id}")
+    print(f"ARGUS_DEVICE_API_KEY={config.device_api_key}")
+    print(f"ARGUS_BACKEND_URL={config.backend_url}")
     print("\nCtrl+C to stop.")
     try:
         while True:

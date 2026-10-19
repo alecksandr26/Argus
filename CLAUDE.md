@@ -91,7 +91,9 @@ session that's touched this repo.
   initiates periodic pulls of unsent records — the Pi doesn't push), and is the device that talks
   to the backend over **HTTP** — authenticated with a per-truck device API key rather than a user
   login, now that `src/backend-argus` exists (see that module's `CLAUDE.md`, "Device (ESP32)
-  auth"). The grip sensor does **not** feed the Pi's AI-orchestrator decision node — it, the panic
+  auth"). That key is issued from the dashboard (Fleet → "Generate device credentials"), held by
+  the Pi (`argus-device.env`), and fetched by the ESP32 over Bluetooth (`CONFIG`), so no
+  per-truck value is flashed into the firmware — see `src/esp32-argus/README.md` section 1b. The grip sensor does **not** feed the Pi's AI-orchestrator decision node — it, the panic
   button, and geolocation all wire directly to the ESP32 (see
   `docs/designs/semantic-design-overview.md`), independent of the camera pipeline. This makes the
   ESP32 the actual fusion point for drowsiness + grip: it **fuses** the Pi's relayed drowsiness
@@ -271,9 +273,9 @@ is missing or done.
   split from the SIM800L, which this firmware keeps **SMS-only**, fired specifically (and only)
   by the panic button as a hardware-direct fallback that still works if WiFi/the backend is
   unreachable. See its own `README.md` for the full protocol/field-mapping contracts this
-  implements and `config.h` for every per-deployment placeholder (WiFi creds, backend URL,
-  device API key, route id, the Pi's Bluetooth MAC, GPIO pins) that needs a real value before
-  flashing. Written and reviewed by hand; **not yet compiled or run against real hardware** — no
+  implements and `config.h` for every per-site placeholder (WiFi creds, the Pi's Bluetooth MAC,
+  GPIO pins) that needs a real value before flashing — the backend URL, device API key and route
+  id are no longer compiled in (fetched from the Pi via `CONFIG` and from the backend). Written and reviewed by hand; **not yet compiled or run against real hardware** — no
   Arduino toolchain or physical ESP32/SIM800L/NEO-6M harness has been available in any session
   that's touched this repo.
 - `src/infra-argus/` — **AWS CDK (TypeScript) demo deployment, cheapest possible, pay-per-use**:

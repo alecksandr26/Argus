@@ -13,13 +13,19 @@ actually be present on the current platform.
 
 import importlib
 
+from .device_config import DeviceConfig
 from .protocol import (
+    CONFIG_REQUEST,
     DEFAULT_PULL_LIMIT,
     END_LINE,
+    NOCONFIG_LINE,
     format_ack,
     format_acked,
+    format_config,
     format_pull,
     parse_ack,
+    parse_config,
+    parse_config_request,
     parse_pull,
 )
 from .server import SenderServer
@@ -33,13 +39,19 @@ __all__ = [
     "BluetoothSppTransport",
     "BluetoothSppListener",
     "SenderServer",
+    "DeviceConfig",
     "DEFAULT_PULL_LIMIT",
     "END_LINE",
+    "CONFIG_REQUEST",
+    "NOCONFIG_LINE",
     "parse_pull",
     "format_pull",
     "parse_ack",
     "format_ack",
     "format_acked",
+    "parse_config_request",
+    "format_config",
+    "parse_config",
 ]
 
 _LAZY = {

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -78,15 +80,35 @@ async def delete_truck(truck_id: str) -> Message:
 @router.post(
     "/{truck_id}/rotate-key",
     response_model=DeviceKeyResponse,
-    dependencies=[Depends(require_role(Role.ROOT_ADMIN))],
+    dependencies=[Depends(require_role(Role.ROOT_ADMIN, Role.ADMIN))],
 )
 async def rotate_device_key(truck_id: str) -> DeviceKeyResponse:
-    """Issues a new device API key for this truck's ESP32, invalidating any previous one. The
-    plaintext key is returned exactly once here and never again — provision it into the ESP32's
-    firmware config out of band."""
+    """Issues a new device API key for this truck, invalidating any previous one. The plaintext
+    key is returned exactly once here and never again. The dashboard turns it into an
+    `argus-device.env` for the truck's Raspberry Pi (`cv-argus`), which hands it to the ESP32
+    over Bluetooth (`CONFIG`). `admin` may do this too, since it owns the truck roster."""
     truck = await _get_or_404(truck_id)
     plaintext = generate_device_api_key()
     truck.device_api_key_hash = hash_secret(plaintext)
     truck.device_api_key_fingerprint = key_fingerprint(plaintext)
+    truck.device_key_issued_at = datetime.now(timezone.utc)
+    truck.device_last_seen_at = None
     await truck.touch_and_save()
     return DeviceKeyResponse(id_truck=str(truck.id), device_api_key=plaintext)
+
+
+@router.delete(
+    "/{truck_id}/device-key",
+    response_model=TruckOut,
+    dependencies=[Depends(require_role(Role.ROOT_ADMIN, Role.ADMIN))],
+)
+async def revoke_device_key(truck_id: str) -> TruckOut:
+    """Revokes this truck's device key outright (a lost or compromised Pi). Every later device
+    request with it is a 401 until a new key is issued via rotate-key."""
+    truck = await _get_or_404(truck_id)
+    truck.device_api_key_hash = None
+    truck.device_api_key_fingerprint = None
+    truck.device_key_issued_at = None
+    truck.device_last_seen_at = None
+    await truck.touch_and_save()
+    return truck_out(truck)

@@ -17,23 +17,18 @@
 
 // =====================================================
 // backend-argus HTTP -- see src/backend-argus/CLAUDE.md's "Device (ESP32) auth" section.
-// BACKEND_BASE_URL must be reachable from THIS device's WiFi network -- e.g. the LAN IP of
-// whatever machine is running `docker compose up` on port 8000, not "localhost" (which
-// from this device's own network stack means itself, not the dev machine).
+// Nothing per-truck lives here anymore: the backend URL and device API key come from the Pi
+// over Bluetooth (CONFIG -- credentials.h), which got them from the dashboard's
+// argus-device.env; the route id comes from GET /api/devices/me/active-route. One firmware
+// image fits every truck. The backend URL in argus-device.env must be reachable from THIS
+// device's WiFi (a LAN IP or the public https:// URL, never "localhost").
 // =====================================================
-#define BACKEND_BASE_URL "http://192.168.100.67:8000"
-
-// Per-truck device API key -- minted once via POST /api/trucks/{id}/rotate-key
-// (root_admin only, see backend CLAUDE.md), provisioned here out of band. Never commit a
-// real deployment key to source control -- this placeholder is intentionally a dummy.
-#define DEVICE_API_KEY "argus-bench-device-key"
-
-// UNDEFINED per src/esp32-argus/README.md section 2's field-mapping table: nothing today
-// tells this device which Route document a given truck's alert/status belongs to.
-// Hardcoding one route id per truck here is a stopgap, not the real answer (the README's
-// own suggestion -- this device querying "the truck's current in-progress route" -- isn't
-// built anywhere yet). Flagged, not solved.
-#define ROUTE_ID "64b0a0000000000000000003"
+// Generous on purpose: a Lambda cold start behind CloudFront can take several seconds.
+#define BACKEND_HTTP_TIMEOUT_MS 15000
+// How often to retry GET /api/devices/me/active-route while the truck has no active route.
+#define ACTIVE_ROUTE_RETRY_MS 30000UL
+// How often to ask the Pi for CONFIG again after it answered NOCONFIG (not provisioned).
+#define CONFIG_RETRY_INTERVAL_MS 60000UL
 
 // =====================================================
 // Bluetooth SPP client -- pulling from cv-argus's sender/ module (the Pi runs the SPP

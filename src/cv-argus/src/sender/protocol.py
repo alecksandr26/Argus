@@ -13,13 +13,23 @@ over HTTP before acking it, and if that outlasts the Pi's ACK wait it acks on it
 connection instead (SND-01/02). A trailing `\\r` (a CRLF client) is tolerated, and `PULL n` is
 clamped to `MAX_PULL_LIMIT` so one request can't make the Pi stream an unbounded batch (SND-05).
 
+A session may instead carry one `CONFIG` request: the ESP32 fetching this truck's backend
+credentials (see `device_config.py`), at boot and again whenever the backend answers 401:
+
+    Client -> Server:  CONFIG\\n
+    Server -> Client:  CONFIG {"truck_id":...,"device_api_key":...,"backend_url":...}\\n
+                       or NOCONFIG\\n                         (none provisioned on this Pi)
+
 Case-sensitive by design — simpler to reason about on constrained ESP32 firmware than a
 case-insensitive parser would be.
 """
 
+import json
 import re
 
 END_LINE = "END"
+CONFIG_REQUEST = "CONFIG"
+NOCONFIG_LINE = "NOCONFIG"
 # Mirrors buffer.Buffer.fetch_unsent's own default -- kept in sync by hand, there's no shared
 # constant between the two packages worth introducing for one number.
 DEFAULT_PULL_LIMIT = 50
@@ -58,3 +68,26 @@ def format_ack(ids: list[str]) -> str:
 
 def format_acked(n: int) -> str:
     return f"ACKED {n}"
+
+
+def parse_config_request(line: str) -> bool:
+    return line.rstrip("\r") == CONFIG_REQUEST
+
+
+def format_config(payload: dict[str, str]) -> str:
+    """`CONFIG <json>` -- compact and newline-free, like every other line of this protocol."""
+    return f"{CONFIG_REQUEST} {json.dumps(payload, separators=(',', ':'))}"
+
+
+def parse_config(line: str) -> dict[str, str] | None:
+    """The client side of `format_config` (what the ESP32 does): the payload, or `None` for
+    `NOCONFIG` or a malformed line."""
+    prefix = CONFIG_REQUEST + " "
+    line = line.rstrip("\r")
+    if not line.startswith(prefix):
+        return None
+    try:
+        payload = json.loads(line[len(prefix) :])
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
