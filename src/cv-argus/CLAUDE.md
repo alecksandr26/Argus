@@ -121,15 +121,31 @@ held.
   `payload.severity` / `reason` (e.g. `alert_type = reason`).
 
 **Logs and measurements (for the report):**
-- `OUTPUTS=logging` prints **one line per frame**: severity + reason + trigger time, the binary
-  class, eye/mouth/head states, the eye and head timers, BlazeFace / model / stage ms and
-  end-to-end ms.
+- `OUTPUTS=logging` prints **one line per frame**, led by the **criticality** (not the binary
+  class, which stays in the metrics record and the buffered reading):
+  ```
+  [pi_camera] criticality=LOW (no_face 13.6s) | face=no | eyes=- mouth=- head=- | eyes_closed 0.0s
+  head_down 0.0s | ms blazeface 6.8 crop 0.6 infer 0.7 decode 0.3 track 0.1 rules 0.0 queue 0.3
+  e2e 7.2 | cpu 23% [12 30 25 26] proc 45% | ram 412MB sys 18%
+  ```
+  `ms` lists every pipeline step in order, so the bottleneck is visible frame by frame.
+  `queue` is end-to-end time minus the measured work, i.e. time spent waiting between stages.
+  `cpu` is the board's busy % (all cores, then each core); `proc` is cv-argus's own CPU in % of
+  one core. `ram` is cv-argus's resident memory; `sys` is the board's RAM in use.
+  - These come from `pipeline/resources.py`, stdlib-only reads of `/proc`, re-sampled every
+    `RESOURCE_SAMPLE_S` (1 s).
+  - CPU is left out until at least 0.2 s of real time has passed (a replayed video file can
+    finish in under a second).
+  - The container sees the host's cores, so the per-core list is the Pi's 4 cores.
 - `OUTPUTS=metrics` (`MetricsLogOutputStage`) appends the same facts as one JSON object per frame
   to `METRICS_LOG_PATH`. That defaults to `$BUFFER_DIR/metrics.jsonl`, on the `buffer-data`
-  volume. Each record also has every track (id, label, score) and `timing_ms` with `face`,
-  `crop`, `infer`, `decode`, `track`, `rules` and `parts_stage`.
+  volume. Each record also has every track (id, label, score), `timing_ms` with `face`,
+  `crop`, `infer`, `decode`, `track`, `rules` and `parts_stage`, plus `queue_ms`, `e2e_ms` and
+  `res` (the CPU/RAM sample above).
 - `scripts/summarize_metrics.py metrics.jsonl [--csv out]` turns the log into:
-  - latency mean / p50 / p95 / p99 / max per phase;
+  - latency mean / p50 / p95 / p99 / max per step, plus queueing and end to end;
+  - CPU (board total, each core, cv-argus's own) and RAM mean / p95 / max over distinct
+    samples (`out_resources.csv` with `--csv`);
   - state shares: face found, eyes open / closed, mouth, head, severity, reason;
   - alert-episode counts.
 - `scripts/demo.sh` turns on all three outputs. The per-stage `StageStats` interval lines

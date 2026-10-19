@@ -86,6 +86,7 @@ including model-artifact overrides not covered here).
 | `PARTS_HEAD_DOWN_THRESHOLD` | `0.30` | Same for head down vs. straight. Lower than the eye one because `head_down` is the detector's weakest class. |
 | `RULE_*` | see `src/constants.py` | Rule timers in seconds, e.g. `RULE_EYES_CRITICAL_S=3.0`, `RULE_YAWN_RECENT_S=10`, `RULE_HEAD_GRACE_S=1.0`. |
 | `METRICS_LOG_PATH` | `$BUFFER_DIR/metrics.jsonl` | Where `OUTPUTS=metrics` writes one JSON line per frame (see "Measuring it for the report"). |
+| `RESOURCE_SAMPLE_S` | `1` | How often the CPU-per-core / RAM reading in the logs and metrics is re-sampled, in seconds. |
 | `DEMO_STREAM_WIDTH` | unset | Downscale the MJPEG stream to this width (boxes are drawn first, so they stay aligned). |
 | `CAMERA_SOURCE` | `0` | Passed to `cv2.VideoCapture`: an integer camera index, a `/dev/videoN` path, or a video file path (for testing/demoing with no camera attached). |
 | `SOURCE` | `video_capture` | Where frames come from: `video_capture` (`cv2.VideoCapture`, driven by `CAMERA_SOURCE`) or `picamera` (the Pi 5's CSI camera — see "On the Pi 5" below). |
@@ -244,16 +245,29 @@ doesn't reset a timer.
 - the eye / mouth / head states and every tracked part with its confidence;
 - the timers;
 - the time of every step, in ms: BlazeFace, crop, model inference, decode, tracker, rules, the
-  whole stage, and end to end.
+  whole stage, the queueing between stages, and end to end;
+- CPU and RAM (`res`), re-sampled every `RESOURCE_SAMPLE_S` (1 s):
+  - CPU: busy % of each core and the average over all cores, plus cv-argus's own CPU as % of
+    one core;
+  - RAM: cv-argus's memory and the board's RAM in use.
+
+The console shows the same thing as one line per frame, led by the criticality:
+
+```
+[pi_camera] criticality=LOW (no_face 13.6s) | face=no | eyes=- mouth=- head=- | eyes_closed 0.0s head_down 0.0s | ms blazeface 6.8 crop 0.6 infer 0.7 decode 0.3 track 0.1 rules 0.0 queue 0.3 e2e 7.2 | cpu 23% [12 30 25 26] proc 45% | ram 412MB sys 18%
+```
 
 ```sh
 docker compose cp cv-argus:/app/data/metrics.jsonl .
 python3 scripts/summarize_metrics.py metrics.jsonl            # tables
-python3 scripts/summarize_metrics.py metrics.jsonl --csv run  # + run_latency.csv, run_states.csv
+python3 scripts/summarize_metrics.py metrics.jsonl --csv run  # + run_latency/_states/_resources.csv
 ```
 
-The summary has mean / p50 / p95 / p99 / max per step, the share of frames in each state and
-severity, and how many MEDIUM/CRITICAL episodes fired. Example, int8 in Docker under the
+The summary has:
+- mean / p50 / p95 / p99 / max per step, including queueing;
+- the share of frames in each state and severity;
+- how many MEDIUM/CRITICAL episodes fired;
+- CPU (board, each core, cv-argus) and RAM mean / p95 / max over the run. Example, int8 in Docker under the
 4-core Pi limit on a desktop CPU, 127 frames of a face clip:
 
 | step | mean | p95 |

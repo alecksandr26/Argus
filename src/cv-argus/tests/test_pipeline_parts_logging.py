@@ -57,14 +57,26 @@ def test_per_frame_timings_and_report_record():
     assert rec["severity"] == "critical" and rec["eyes"] == ["closed_eye"] and rec["eyes_closed"]
     assert rec["class_name"] == "Drowsy" and rec["timers"]["eyes_closed"] >= 3.0
     line = format_parts_line(rec)
-    assert "CRITICAL (eyes_closed" in line and "eyes=closed" in line and "infer 1.0ms" in line
+    assert "criticality=CRITICAL (eyes_closed" in line and "eyes=closed" in line
+    # Every pipeline step that ran, in order, plus queueing and end to end.
+    assert "ms crop " in line and " infer 1.0 decode 0.1 track " in line and " rules " in line
+    assert " queue " in line and " e2e " in line
+    assert rec["queue_ms"] >= 0.0
+    # The line reports criticality, not the ESP32's binary class (that stays in the record).
+    assert "Drowsy" not in line and "p=" not in line
 
 
 def test_report_record_for_a_faceless_frame():
     ctx = PartsInferenceStage(_StubDetector(pd_.OPEN_EYE)).process_item(_ctx(0, face=False))
     rec = parts_frame_record(ctx)
     assert rec["face"] is False and rec["class_name"] is None and rec["eyes"] == []
-    assert "no face" in format_parts_line(rec)
+    line = format_parts_line(rec)
+    assert line.startswith("[default] criticality=NONE | face=no | eyes=-")
+
+
+def test_quiet_frame_says_criticality_none():
+    line = format_parts_line(parts_frame_record(_run(pd_.OPEN_EYE, 1)[-1]))
+    assert "criticality=NONE | face=yes | eyes=open" in line and "blazeface" not in line
 
 
 def test_non_parts_frames_have_no_record():
@@ -104,3 +116,18 @@ def test_summarize_metrics_script():
     assert {r["phase"] for r in latency} >= {"infer", "e2e"}
     assert states["eyes=closed"] == 20 and states["severity=critical"] >= 1
     assert episodes == {"medium:eyes_closed": 1, "critical:eyes_closed": 1}
+    assert "queue" in {r["phase"] for r in latency}
+
+
+def test_summarize_resources_dedupes_repeated_samples():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "summarize_metrics.py"
+    if not path.exists():
+        pytest.skip("scripts/ not present")
+    spec = importlib.util.spec_from_file_location("summarize_metrics", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    a = {"cpu_cores": [10.0, 20.0], "cpu_total": 15.0, "proc_cpu": 30.0, "rss_mb": 400.0, "mem_used_pct": 20.0}
+    b = {"cpu_cores": [30.0, 40.0], "cpu_total": 35.0, "proc_cpu": 50.0, "rss_mb": 420.0, "mem_used_pct": 22.0}
+    rows = {r["metric"]: r for r in mod.summarize_resources([{"res": a}] * 5 + [{"res": b}] * 5)}
+    assert rows["cpu_total_pct"]["n"] == 2 and rows["cpu_total_pct"]["mean"] == 25.0
+    assert rows["cpu1_pct"]["max"] == 40.0 and rows["rss_mb"]["max"] == 420.0

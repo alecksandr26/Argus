@@ -2,8 +2,14 @@
 
 For the `parts` pipeline, both sinks here report *what the detector saw and how the rules judged
 it*, not only `Drowsy`/`Not Drowsy`:
-- `LoggingOutputStage` logs one readable line per frame: the severity and reason, the eye, mouth
-  and head states, and the model's inference time.
+- `LoggingOutputStage` logs one readable line per frame, led by the **criticality** (none / low /
+  medium / critical) and its reason, then the eye, mouth and head states and the timings. The
+  binary `Drowsy`/`Not Drowsy` class is left out of the line on purpose: it's only the ESP32
+  contract's coarse view of the same criticality (see `orchestrator/parts_rules.to_detection`),
+  and it's still in the metrics record and the buffered reading. Each line also carries the
+  time of **every pipeline step** (BlazeFace, crop, infer, decode, track, rules, the queueing
+  between stages, end to end), so the bottleneck is visible frame by frame, and the board's
+  CPU per core / RAM (`resources.py`, re-sampled once a second).
 - `MetricsLogOutputStage` (`OUTPUTS=...,metrics`) appends the same facts as one JSON object per
   frame to `METRICS_LOG_PATH`, along with every timing (BlazeFace, crop, infer, decode, track,
   rules, end to end). This is the measurement log for the report; `scripts/summarize_metrics.py`
@@ -29,6 +35,7 @@ import time
 from pathlib import Path
 
 from .. import constants
+from .resources import shared_sampler
 from .stage import FrameContext, OutputStage
 
 logger = logging.getLogger(__name__)
@@ -49,6 +56,8 @@ def parts_frame_record(ctx: FrameContext) -> dict | None:
     mouth = next((t for t in tracks if t.kind == "mouth"), None)
     head = max((t for t in tracks if t.kind == "head"), key=lambda t: (t.visible, t.score), default=None)
     det = ctx.detection
+    timing = {k: round(v, 3) for k, v in ctx.features.get("timing_ms", {}).items()}
+    e2e = 1000.0 * (time.monotonic() - ctx.created_at)
     return {
         "t_ms": ctx.timestamp_ms,
         "wall_ms": int(time.time() * 1000),
@@ -68,22 +77,49 @@ def parts_frame_record(ctx: FrameContext) -> dict | None:
         "timers": {k: round(v, 2) for k, v in state.timers.items()},
         "yawn_events": state.yawn_events,
         "precision": parts["precision"],
-        "timing_ms": {k: round(v, 3) for k, v in ctx.features.get("timing_ms", {}).items()},
-        "e2e_ms": round(1000.0 * (time.monotonic() - ctx.created_at), 3),
+        "timing_ms": timing,
+        "e2e_ms": round(e2e, 3),
+        # Capture-to-here minus the measured work: time spent waiting in queues between stages.
+        "queue_ms": round(max(0.0, e2e - timing.get("face", 0.0) - timing.get("parts_stage", 0.0)), 3),
+        "res": shared_sampler().current(),
     }
 
 
+# Pipeline steps in order, as (timing_ms key, label in the log line).
+_STEPS = (("face", "blazeface"), ("crop", "crop"), ("infer", "infer"), ("decode", "decode"),
+          ("track", "track"), ("rules", "rules"))
+
+
 def format_parts_line(rec: dict) -> str:
-    """The human-readable log line for one `parts_frame_record`."""
+    """The human-readable log line for one `parts_frame_record`.
+
+    `[src] criticality=LOW (no_face 13.6s) | face=no | eyes=- mouth=- head=- | eyes_closed 0.0s
+    head_down 0.0s | ms blazeface 6.8 crop 0.6 infer 0.7 decode 0.3 track 0.1 rules 0.0 queue 0.3
+    e2e 7.2 | cpu 23% [12 30 25 26] proc 45% | ram 412MB sys 18%`
+    """
     sev = rec["severity"].upper()
-    verdict = sev if rec["severity"] == "none" else f"{sev} ({rec['reason']} {rec['trigger_s']:.1f}s)"
+    verdict = f"criticality={sev}"
+    if rec["severity"] != "none":
+        verdict += f" ({rec['reason']} {rec['trigger_s']:.1f}s)"
     eyes = "/".join(_short(e) for e in rec["eyes"]) or "-"
     tm = rec["timing_ms"]
-    timing = " ".join(f"{k} {tm[k]:.1f}ms" for k in ("face", "infer", "parts_stage") if k in tm)
-    cls = f"{rec['class_name']} p={rec['p_drowsy']:.2f}" if rec["class_name"] else "no face"
-    return (f"[{rec['source']}] {verdict} | {cls} | eyes={eyes} mouth={_short(rec['mouth'])} "
+    steps = " ".join(f"{label} {tm[k]:.1f}" for k, label in _STEPS if k in tm)
+    line = (f"[{rec['source']}] {verdict} | face={'yes' if rec['face'] else 'no'} | "
+            f"eyes={eyes} mouth={_short(rec['mouth'])} "
             f"head={_short(rec['head'])} | eyes_closed {rec['timers'].get('eyes_closed', 0):.1f}s "
-            f"head_down {rec['timers'].get('head_down', 0):.1f}s | {timing} e2e {rec['e2e_ms']:.1f}ms")
+            f"head_down {rec['timers'].get('head_down', 0):.1f}s | "
+            f"ms {steps} queue {rec['queue_ms']:.1f} e2e {rec['e2e_ms']:.1f}")
+    res = rec.get("res") or {}
+    if res.get("cpu_cores") is not None:
+        cores = " ".join(f"{c:.0f}" for c in res["cpu_cores"])
+        line += f" | cpu {res['cpu_total']:.0f}% [{cores}]"
+        if res.get("proc_cpu") is not None:
+            line += f" proc {res['proc_cpu']:.0f}%"
+    if res.get("rss_mb") is not None:
+        line += f" | ram {res['rss_mb']:.0f}MB"
+        if res.get("mem_used_pct") is not None:
+            line += f" sys {res['mem_used_pct']:.0f}%"
+    return line
 
 
 class LoggingOutputStage(OutputStage):
