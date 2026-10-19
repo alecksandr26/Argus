@@ -54,6 +54,7 @@ __all__ = [
     "FaceDetectorCropStage",
     "FaceLandmarkerCropStage",
     "FusedInferenceStage",
+    "PartsInferenceStage",
     "LoggingOutputStage",
     "MjpegStreamOutputStage",
     "download_face_landmarker_bundle",
@@ -67,6 +68,7 @@ _LAZY = {
     "FaceDetectorCropStage": (".face_detector_stage", "FaceDetectorCropStage"),
     "FaceLandmarkerCropStage": (".face_landmarker_crop_stage", "FaceLandmarkerCropStage"),
     "FusedInferenceStage": (".inference_stages", "FusedInferenceStage"),
+    "PartsInferenceStage": (".parts_stages", "PartsInferenceStage"),
     "MjpegStreamOutputStage": (".mjpeg_output_stage", "MjpegStreamOutputStage"),
 }
 

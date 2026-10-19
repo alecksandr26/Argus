@@ -158,10 +158,14 @@ class MjpegStreamOutputStage(OutputStage):
         port: int = 8080,
         jpeg_quality: int = 80,
         name: str = "mjpeg_stream",
+        width: int | None = None,
+        camera_label: str = "",
         **kwargs,
     ) -> None:
         super().__init__(name, **kwargs)
         self._jpeg_quality = jpeg_quality
+        self._width = width            # DEMO_STREAM_WIDTH: downscale the annotated stream
+        self._camera_label = camera_label
         self._broadcaster = _FrameBroadcaster()
         self._fps = 0.0
         self._last_frame_time: float | None = None
@@ -183,7 +187,16 @@ class MjpegStreamOutputStage(OutputStage):
         self._last_frame_time = now
 
         frame = ctx.frame_bgr.copy()  # don't mutate what other output stages might still see
-        draw_detection_overlay(frame, ctx, self._fps)
+        if "parts" in ctx.features:
+            from .parts_overlay import draw_parts_overlay
+            draw_parts_overlay(frame, ctx, self._fps, self._camera_label)
+        else:
+            draw_detection_overlay(frame, ctx, self._fps)
+        if self._width and frame.shape[1] != self._width:
+            # Resize the *finished* image: boxes were drawn at native resolution, so they stay
+            # exactly on the eyes; only the stream's bandwidth changes.
+            scale = self._width / frame.shape[1]
+            frame = cv2.resize(frame, (self._width, int(round(frame.shape[0] * scale))), interpolation=cv2.INTER_AREA)
         ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self._jpeg_quality])
         if ok:
             self._broadcaster.publish(encoded.tobytes())

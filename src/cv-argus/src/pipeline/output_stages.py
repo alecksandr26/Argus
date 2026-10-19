@@ -34,10 +34,13 @@ class LoggingOutputStage(OutputStage):
         if ctx.detection is None:
             logger.debug("[%s] no detection this frame (face_found=%s)", ctx.source_id, ctx.face_found)
             return
+        extras = ctx.detection.extras
         logger.info(
-            "[%s] %s (level=%d, probabilities=%s)",
+            "[%s] %s (level=%d, probabilities=%s)%s",
             ctx.source_id,
             ctx.detection.class_name,
             ctx.detection.level,
             ctx.detection.probabilities,
+            # The parts pipeline's rule verdict, e.g. " severity=critical reason=eyes_closed".
+            f" severity={extras['severity']} reason={extras['reason']}" if "severity" in extras else "",
         )

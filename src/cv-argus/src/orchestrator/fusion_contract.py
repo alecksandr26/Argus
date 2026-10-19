@@ -15,9 +15,8 @@ for deletion.
 **The base matrix** (confirmed directly with the user, not guessed): both signals bad ->
 critical, both good -> low, either one alone bad -> medium. See `BASE_MATRIX` below.
 
-**The three timing windows** (debounce / escalation / recovery) mirror `orchestrator.py`'s own
-`ORCHESTRATOR_DEBOUNCE_FRAMES`/`ORCHESTRATOR_ALERT_COOLDOWN_SECONDS` precedent, extended to a
-joint two-signal state instead of the camera alone:
+**The three timing windows** (debounce / escalation / recovery) extend the camera-only
+debounce in `orchestrator.py` (`ORCHESTRATOR_DEBOUNCE_FRAMES`) to a joint two-signal state:
 
 - **Debounce**: the combined `(drowsy, grip)` state must hold for `debounce_seconds` before it
   first triggers an alert at that severity, so one noisy frame or a momentary hand-off-wheel
@@ -108,8 +107,7 @@ _SEVERITY_RANK: dict[Severity, int] = {
 
 @dataclass(frozen=True)
 class FusionConfig:
-    """Timing windows in seconds. Proposed defaults, the same order of magnitude as cv-argus's
-    own `ORCHESTRATOR_ALERT_COOLDOWN_SECONDS` (30.0) — not tuned against a real drive yet.
+    """Timing windows in seconds. Proposed defaults, not tuned against a real drive yet.
 
     `escalation_seconds` specifically was reconsidered and deliberately kept at 20.0, not
     guessed at once and left alone: a faster window was considered (and would shrink the total

@@ -116,6 +116,11 @@ ARG CNN_MODEL_DRIVE_FILE_ID
 ENV CNN_MODEL_DRIVE_FILE_ID=${CNN_MODEL_DRIVE_FILE_ID}
 ARG FUSED_MODEL_DRIVE_FILE_ID
 ENV FUSED_MODEL_DRIVE_FILE_ID=${FUSED_MODEL_DRIVE_FILE_ID}
+# PIPELINE=parts: notebook 12's tiny YOLO detector, both precisions (int8 .tflite + float .keras).
+ARG PARTS_INT8_DRIVE_FILE_ID
+ENV PARTS_INT8_DRIVE_FILE_ID=${PARTS_INT8_DRIVE_FILE_ID}
+ARG PARTS_FLOAT_DRIVE_FILE_ID
+ENV PARTS_FLOAT_DRIVE_FILE_ID=${PARTS_FLOAT_DRIVE_FILE_ID}
 RUN python -m cv_argus.model.downloader && python -m cv_argus.pipeline.downloader
 
 # Still a volume even though the image already has the files: an empty named volume is

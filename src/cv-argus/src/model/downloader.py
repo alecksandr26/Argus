@@ -139,11 +139,35 @@ def download_fused_model(
     return _download_from_drive(file_id, model_dir, filename, label="fused CNN+LSTM model")
 
 
+def _download_parts(kind: str, label: str, file_id, model_dir, filename) -> Path:
+    file_id = file_id or os.environ.get(f"PARTS_{kind}_DRIVE_FILE_ID") or getattr(constants, f"PARTS_{kind}_DRIVE_FILE_ID")
+    model_dir = Path(model_dir or os.environ.get("MODEL_DIR") or constants.MODEL_DIR_DEFAULT)
+    filename = filename or os.environ.get(f"PARTS_{kind}_FILENAME") or getattr(constants, f"PARTS_{kind}_FILENAME")
+    return _download_from_drive(file_id, model_dir, filename, label=label)
+
+
+def download_parts_int8_model(file_id=None, model_dir=None, filename=None) -> Path:
+    """The "parts" detector (notebook 12's `tiny_yolo_w1`) as full-integer int8 TFLite, the
+    default `PARTS_PRECISION`. Checked-in Drive id `constants.PARTS_INT8_DRIVE_FILE_ID`,
+    overridable by the env var of the same name."""
+    return _download_parts("INT8", "parts detector (int8 tflite)", file_id, model_dir, filename)
+
+
+def download_parts_float_model(file_id=None, model_dir=None, filename=None) -> Path:
+    """The same detector as the float `.keras` (`PARTS_PRECISION=float`), kept to check whether
+    int8 quantisation costs accuracy."""
+    return _download_parts("FLOAT", "parts detector (float keras)", file_id, model_dir, filename)
+
+
 if __name__ == "__main__":
     # `python -m cv_argus.model.downloader` — called from the Dockerfile at build time. Both
     # downloads are required: the fused model is what this container deploys, and it needs the
     # CNN checkpoint as its frozen embedding backbone (see fused_detector.py). Either one
     # failing should fail the whole image build, not silently produce an image that can't start.
+    # The parts detector (PIPELINE=parts) is baked in too, both precisions, so switching
+    # PARTS_PRECISION or PIPELINE never needs a network at container start.
     logging.basicConfig(level=logging.INFO)
     download_cnn_model()
     download_fused_model()
+    download_parts_int8_model()
+    download_parts_float_model()

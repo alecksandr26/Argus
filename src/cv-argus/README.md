@@ -89,6 +89,10 @@ including model-artifact overrides not covered here).
 
 | Variable | Default | What it does |
 |---|---|---|
+| `PIPELINE` | `fused` | `fused` (CNN+LSTM) or `parts` (tiny YOLO + tracker + rules — see "Demo: the parts pipeline"). |
+| `PARTS_PRECISION` | `int8` | `PIPELINE=parts` only: `int8` (`.tflite`, ~0.6 ms/face) or `float` (`.keras`, ~5.5 ms/face). |
+| `RULE_*` | see `src/constants.py` | `PIPELINE=parts` rule thresholds in seconds, e.g. `RULE_EYES_CRITICAL_S=3.0`, `RULE_YAWN_RECENT_S=10`. |
+| `DEMO_STREAM_WIDTH` | unset | Downscale the MJPEG stream to this width (boxes are drawn first, so they stay aligned). |
 | `CAMERA_SOURCE` | `0` | Passed to `cv2.VideoCapture`: an integer camera index, a `/dev/videoN` path, or a video file path (for testing/demoing with no camera attached). |
 | `SOURCE` | `video_capture` | Where frames come from: `video_capture` (`cv2.VideoCapture`, driven by `CAMERA_SOURCE`) or `picamera` (the Pi 5's CSI camera — see "On the Pi 5" below). |
 | `OUTPUTS` | `logging` | Comma-separated sink(s): `logging` (text only) and/or `mjpeg` (the browser-viewable demo stream — e.g. `OUTPUTS=logging,mjpeg`). |
@@ -102,10 +106,13 @@ including model-artifact overrides not covered here).
 | `SENDER_TRANSPORT` | `none` (this file) / `bluetooth` (main.py's own default) | `bluetooth` (real `BluetoothSppListener` — needs a real adapter + device passthrough, see "Prerequisites") or `none` (no `SenderServer`; alerts just accumulate unsent in `buffer/`). |
 | `BLUETOOTH_CHANNEL` | `4` | Only read when `SENDER_TRANSPORT=bluetooth`: the RFCOMM channel `BluetoothSppListener` binds. |
 
-There's one detection pipeline — the frozen-CNN-embedding + geometric-feature + LSTM classifier
-— see `CLAUDE.md`'s "Current status" for its measured accuracy and caveats. Downstream of a
-detection, `orchestrator/` decides whether to raise an Alert (debounce + cooldown) or emit a
-periodic RouteStatus("OK") heartbeat, `buffer/` persists both to SQLite, and `sender/` answers
+There are two detection pipelines, chosen with `PIPELINE`:
+- `fused` (default): the frozen-CNN-embedding + geometric-feature + LSTM classifier. See
+  `CLAUDE.md`'s "Current status" for its accuracy and caveats.
+- `parts`: the tiny YOLO detector + tracker + rules (see "Demo: the parts pipeline").
+
+Downstream of a detection, `orchestrator/` reports the debounced class as a *reading* on every
+change, plus a keepalive, and emits a periodic RouteStatus("OK") heartbeat, `buffer/` persists both to SQLite, and `sender/` answers
 the ESP32's Bluetooth poll for unsent records — see `CLAUDE.md`'s "`orchestrator/`, `buffer/`,
 `sender/`, `alerts/` — done" for the full design.
 
@@ -180,6 +187,64 @@ doesn't restart forever while you're iterating.
 down` / `docker stop`), at which point it shuts every pipeline stage down in order and exits
 cleanly. A **video-file** `CAMERA_SOURCE` also makes it exit on its own when the file ends;
 a live camera runs until stopped.
+
+## Demo: the "parts" pipeline (tiny YOLO + rules)
+
+`PIPELINE=parts` is the simpler, explainable pipeline:
+
+1. BlazeFace finds the face, which is cropped square and converted to gray, exactly as in
+   training.
+2. Our own **46k-parameter detector** (notebook 12, `tiny_yolo_w1`) finds open/closed eyes, a
+   yawning mouth, and head straight or down.
+3. A tracker gives each part a stable ID.
+4. **Deterministic rules with timers** decide the severity.
+
+```sh
+scripts/demo.sh                                   # parts, int8, webcam 0 -> http://localhost:8080/stream
+scripts/demo.sh --precision float                 # same detector as float .keras (does int8 lose accuracy?)
+scripts/demo.sh --camera 1                        # another webcam (or --camera /dev/video2)
+scripts/demo.sh --camera src/demo_clips/x.mp4     # a recorded clip (keep clips under src/demo_clips/, gitignored)
+scripts/demo.sh --camera picam                    # Pi 5 CSI camera (adds docker-compose.pi.yml)
+scripts/demo.sh --pipeline fused                  # the CNN+LSTM, for comparison
+```
+
+What the stream shows:
+- The face box, the dashed square the model saw, and each tracked part as `ID class confidence`
+  (E = eye, M = mouth, H = head). Boxes are remapped from the 160 px crop onto the frame.
+- A **severity banner** with the reason.
+- **Timer bars** for *eyes closed*, *head down* and *mouth open*, with ticks at the
+  LOW / MEDIUM / CRITICAL thresholds.
+- A footer with precision, model ms and fps.
+
+**Severity rules** (seconds; each is a `RULE_*` env var, overridable in `.env`):
+
+| Situation | LOW | MEDIUM | CRITICAL |
+|---|---|---|---|
+| Eyes closed | 1.0 | 2.0 | **3.0** |
+| Eyes closed, mouth open now or a yawn in the last 10 s | 0.7 | 1.3 | **2.0** |
+| Head down + eyes closed or hidden | | | **3.0** (2.0 after a yawn) |
+| Head down, eyes open (looking down) | | 3.0 | |
+| Yawning alone: ≥ 3 yawns (≥ 1.5 s each) in 5 min | yes | never | never |
+| No face for 3 s after one was seen | yes | | |
+
+Closed eyes and head down are the risks; yawning only makes those fire sooner. Severity rises
+immediately and drops only after 2 s clear. A one-frame flicker (≤ 0.4 s) doesn't reset a timer.
+
+**Measured on a desktop CPU** (real models, a 128-frame face clip):
+
+| | int8 | float |
+|---|---|---|
+| Model per face | **0.6 ms** | 5.5 ms |
+| Whole parts stage | 1.5 ms | |
+| BlazeFace | about 2 ms | |
+| Agreement with the other precision | same severity on 98.4% of frames | |
+
+int8 is the default. The Pi 5 is slower and **unmeasured**.
+
+The ESP32 and backend are unchanged:
+- MEDIUM and CRITICAL go out as `Drowsy` (`p_drowsy` 0.75 / 0.95); none and LOW go out as
+  `Not Drowsy`.
+- `severity`, `reason`, `trigger_s` and `timers` ride along in the buffered reading's payload.
 
 ## Demo: watching it work
 

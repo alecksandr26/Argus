@@ -132,8 +132,9 @@ class TestBuildOutputs:
         built = {}
 
         class _FakeMjpeg:
-            def __init__(self, host, port):
+            def __init__(self, host, port, **kwargs):
                 built["host"], built["port"] = host, port
+                built.update(kwargs)
 
         monkeypatch.setattr(main, "MjpegStreamOutputStage", _FakeMjpeg)
         monkeypatch.setenv("OUTPUTS", "mjpeg")
@@ -142,7 +143,25 @@ class TestBuildOutputs:
 
         outputs = main._build_outputs()
         assert isinstance(outputs[0], _FakeMjpeg)
-        assert built == {"host": "127.0.0.1", "port": 9111}
+        assert built == {"host": "127.0.0.1", "port": 9111, "width": None, "camera_label": "0"}
+
+    def test_mjpeg_stream_width_and_camera_label(self, monkeypatch):
+        built = {}
+
+        class _FakeMjpeg:
+            def __init__(self, **kwargs):
+                built.update(kwargs)
+
+        monkeypatch.setattr(main, "MjpegStreamOutputStage", _FakeMjpeg)
+        monkeypatch.setenv("OUTPUTS", "mjpeg")
+        monkeypatch.setenv("DEMO_STREAM_WIDTH", "960")
+        monkeypatch.setenv("CAMERA_SOURCE", "/videos/clip.mp4")
+        main._build_outputs()
+        assert built["width"] == 960 and built["camera_label"] == "clip.mp4"
+        monkeypatch.setenv("DEMO_STREAM_WIDTH", "nope")
+        monkeypatch.setenv("SOURCE", "picamera")
+        main._build_outputs()
+        assert built["width"] is None and built["camera_label"] == "picam"
 
 
 class TestBuildSenderListener:
@@ -237,6 +256,65 @@ class TestBuildPipeline:
         inference_stage = pipeline.stages[3]
         assert bridges[0].input_queue in inference_stage.output_queues
         assert pipeline.stages[-1] is bridges[0]
+
+
+class TestPipelineSwitch:
+    """`PIPELINE` picks the model stages after BlazeFace; everything else is shared."""
+
+    def _fake(self, monkeypatch, made):
+        from cv_argus.pipeline.stage import Stage
+
+        def factory(label):
+            class _FakeStage(Stage):
+                def __init__(self, *args, **kwargs):
+                    super().__init__(label)
+                    made.append(label)
+
+                def process_item(self, item):
+                    return item
+            return _FakeStage
+
+        monkeypatch.delenv("SOURCE", raising=False)
+        monkeypatch.setenv("OUTPUTS", "logging")
+        monkeypatch.setattr(main, "download_face_detector_bundle", lambda: "b")
+        monkeypatch.setattr(main, "download_face_landmarker_bundle", lambda: "b")
+        monkeypatch.setattr(main, "FaceDetectorCropStage", factory("blazeface"))
+        monkeypatch.setattr(main, "FaceLandmarkerCropStage", factory("landmarker"))
+        monkeypatch.setattr(main, "FusedInferenceStage", factory("fused"))
+        monkeypatch.setattr(main, "PartsInferenceStage", factory("parts"))
+        monkeypatch.setattr(main.FusedDrowsinessDetector, "from_env", staticmethod(lambda: object()))
+        monkeypatch.setattr(main.PartsDetector, "from_env", staticmethod(lambda: object()))
+
+    def _orch(self):
+        import queue
+
+        class _O:
+            input_queue = queue.Queue()
+        return _O()
+
+    def test_default_is_fused(self, monkeypatch):
+        made = []
+        self._fake(monkeypatch, made)
+        monkeypatch.delenv("PIPELINE", raising=False)
+        names = [s.name for s in main._build_pipeline(self._orch()).stages]
+        assert names[1:4] == ["blazeface", "landmarker", "fused"]
+
+    def test_parts_skips_the_landmarker_and_feeds_the_bridge(self, monkeypatch):
+        from cv_argus.orchestrator import OrchestratorBridgeOutputStage
+        made = []
+        self._fake(monkeypatch, made)
+        monkeypatch.setenv("PIPELINE", "parts")
+        p = main._build_pipeline(self._orch())
+        names = [s.name for s in p.stages]
+        assert names[1:3] == ["blazeface", "parts"] and "landmarker" not in made
+        bridge = p.stages[-1]
+        assert isinstance(bridge, OrchestratorBridgeOutputStage)
+        assert bridge.input_queue in p.stages[2].output_queues
+
+    def test_unknown_pipeline_is_rejected(self, monkeypatch):
+        monkeypatch.setenv("PIPELINE", "lstm")
+        with pytest.raises(SystemExit, match="PIPELINE"):
+            main._pipeline_name()
 
 
 class TestLatencyLogInterval:

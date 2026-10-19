@@ -93,6 +93,9 @@ class FaceDetectorCropStage(Stage):
         # for inference, but lets a demo/overlay stage (see mjpeg_output_stage.py) draw it
         # without redoing detection itself.
         ctx.features["face_bbox"] = (x0, y0, x1, y1)
+        # The raw BlazeFace box (origin, size), before margin/clipping: the parts pipeline
+        # rebuilds its square, black-padded training crop from this (model/parts_geometry.py).
+        ctx.features["face_bbox_raw"] = (bbox.origin_x, bbox.origin_y, bbox.width, bbox.height)
         ctx.face_found = True
         return ctx
 

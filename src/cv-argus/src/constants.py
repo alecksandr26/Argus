@@ -78,6 +78,52 @@ FUSED_MODEL_DROWSY_INDEX = 1     # index of "Drowsy" in the model's 2-class soft
 # accuracy bug, not a crash.
 FUSED_MODEL_THRESHOLD = 0.57
 
+# --- "Parts" pipeline (PIPELINE=parts): tiny YOLO-style detector + rule engine ---
+# notebook/12_tiny_grid_detector.ipynb's step-2 model "tiny_yolo_w1" (46k params). On the test
+# face crops it scored eye-state accuracy 0.95, mAP@0.5 0.63, and int8 was as accurate as float.
+# Both files are shared "Anyone with the link"; the env vars of the same name override the ids.
+PARTS_INT8_DRIVE_FILE_ID = "1r5E0CqKLd6zktj-ZqhYCo2pFtf-Abniz"    # tiny_yolo_w1_20261018_2048_int8.tflite
+PARTS_INT8_FILENAME = "parts_tiny_yolo_w1_int8.tflite"
+PARTS_FLOAT_DRIVE_FILE_ID = "1_CIhATJl1osw_q7G-qyrxMoKMd5ojl-M"   # tiny_yolo_w1_20261018_2048.keras
+PARTS_FLOAT_FILENAME = "parts_tiny_yolo_w1.keras"
+PARTS_DEFAULT_PRECISION = "int8"    # PARTS_PRECISION=int8|float
+# Must match the training data (src/dataset/argus_dataset/config.py DET_*) and notebook 12's IMG.
+PARTS_CLASSES = ("open_eye", "closed_eye", "yawn", "head_straight", "head_down")
+PARTS_IMG_SIZE = 160                # model input side
+PARTS_STORED_CROP_SIZE = 192        # DET_IMG_SIZE: the crop is made at this size, then resized
+PARTS_FACE_MARGIN_FRAC = 0.25       # DET_FACE_MARGIN_FRAC: square side = max(w,h) * 1.5
+PARTS_CONF_THRESHOLD = 0.25         # detection score kept for tracking (= notebook CONF_THR)
+PARTS_NMS_IOU = 0.5
+PARTS_TFLITE_THREADS = 1            # measured fastest: 1.35 ms vs 1.69 ms at 4 threads
+
+# Tracker (model/parts_tracker.py). At SAMPLE_FPS=5 a frame is 0.2 s.
+PARTS_TRACK_IOU = 0.3               # match a detection to a track at IoU >= this
+PARTS_TRACK_MAX_MISSES = 3          # a track survives 3 unmatched frames (0.6 s)
+PARTS_TRACK_VOTE_FRAMES = 3         # state = majority over the last 3 frames (smooths flicker)
+
+# Rule engine (orchestrator/parts_rules.py). Seconds; every one overridable by its env var.
+# Eyes-closed ladder: closed >= LOW -> low, >= MEDIUM -> medium, >= CRITICAL -> critical.
+RULE_EYES_LOW_S = 1.0
+RULE_EYES_MEDIUM_S = 2.0
+RULE_EYES_CRITICAL_S = 3.0
+# After a yawn within RULE_YAWN_RECENT_S, the same ladder fires earlier (fatigue context).
+RULE_YAWN_RECENT_S = 10.0
+RULE_EYES_LOW_YAWN_S = 0.7
+RULE_EYES_MEDIUM_YAWN_S = 1.3
+RULE_EYES_CRITICAL_YAWN_S = 2.0
+# Head down: with eyes closed/not visible -> critical; with eyes open (looking down) -> medium.
+RULE_HEAD_DOWN_S = 3.0
+RULE_HEAD_DOWN_YAWN_S = 2.0         # head down + eyes closed/not visible after a recent yawn
+# A yawn *event* = mouth open this long; 3 events in the window -> low "fatigue".
+RULE_YAWN_EVENT_S = 1.5
+RULE_YAWN_COUNT = 3
+RULE_YAWN_WINDOW_S = 300.0
+RULE_NO_FACE_S = 3.0                # face lost this long (after having one) -> low "not visible"
+RULE_GRACE_S = 0.4                  # a gap this short doesn't reset a running timer (2 frames)
+RULE_RECOVERY_S = 2.0               # severity only drops after all signals are clear this long
+# Severity -> the existing reading contract (ESP32: p_drowsy >= 0.57 means drowsy).
+RULE_P_DROWSY = {"none": 0.05, "low": 0.30, "medium": 0.75, "critical": 0.95}
+
 # --- Capture / runtime ---
 # Frames per second the pipeline samples from the camera (see pipeline/sources.py +
 # main.py's SAMPLE_FPS env var). Default 5 to match how the deployed model was trained:

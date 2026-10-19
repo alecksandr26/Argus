@@ -95,3 +95,18 @@ def test_model_dir_env_var_is_honoured(tmp_path, fake_gdown, monkeypatch):
     monkeypatch.setenv("MODEL_DIR", str(tmp_path))
     result = download_cnn_model(file_id="x")
     assert result.parent == tmp_path
+
+
+@pytest.mark.parametrize("fn,kind", [
+    (downloader.download_parts_int8_model, "INT8"),
+    (downloader.download_parts_float_model, "FLOAT"),
+])
+def test_parts_models_use_their_own_ids_and_filenames(tmp_path, fake_gdown, monkeypatch, fn, kind):
+    monkeypatch.delenv(f"PARTS_{kind}_DRIVE_FILE_ID", raising=False)
+    path = fn(model_dir=tmp_path)
+    assert path.name == getattr(constants, f"PARTS_{kind}_FILENAME")
+    assert fake_gdown[0]["id"] == getattr(constants, f"PARTS_{kind}_DRIVE_FILE_ID")
+    monkeypatch.setenv(f"PARTS_{kind}_DRIVE_FILE_ID", "override")
+    path.unlink()
+    fn(model_dir=tmp_path)
+    assert fake_gdown[-1]["id"] == "override"

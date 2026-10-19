@@ -15,9 +15,14 @@ binary — `Not Drowsy` vs. `Drowsy`**, and this module now labels binary too:
 `detector.py`'s `_CLASS_NAMES` and `mjpeg_output_stage.py`'s status-colour map are both
 `{Not Drowsy, Drowsy}`.
 
-**This module deploys exactly one pipeline: the binary frozen-CNN-embedding +
-geometric-feature-fusion + LSTM classifier** (`notebook/11_cnn_lstm_training_drive_pull.ipynb`'s
-frozen-embedding variant). End to end: a MediaPipe BlazeFace face crop → a frozen
+**Two pipelines, picked by `PIPELINE`:**
+- **`fused`** (default) is described below.
+- **`parts`** is the simpler, explainable alternative being evaluated on branch
+  `feature/parts-rules-demo`: tiny YOLO detector, then tracker, then deterministic rules. See
+  "The `parts` pipeline" section.
+
+**`PIPELINE=fused`: the binary frozen-CNN-embedding + geometric-feature-fusion + LSTM
+classifier** (`notebook/11_cnn_lstm_training_drive_pull.ipynb`'s frozen-embedding variant). End to end: a MediaPipe BlazeFace face crop → a frozen
 **convolutional** network's 64-dim penultimate embedding, fused per frame with a 10-feature
 MediaPipe FaceLandmarker geometric subset (EAR/MAR ratios + selected blendshapes) → an **LSTM**
 over a rolling window of up to 100 frames, output **`Not Drowsy` vs. `Drowsy`**. See "Current
@@ -43,7 +48,7 @@ and a real entry point (`src/main.py` plus `src/__main__.py`, so it's runnable a
 `python -m cv_argus` — the Dockerfile's `CMD` — as well as `python -m cv_argus.main`, or
 installed as the `cv-argus-run` console script via `setup.py`'s `entry_points`) all exist.
 
-**This module deploys one pipeline: the binary frozen-CNN-embedding +
+**The default pipeline (`PIPELINE=fused`) is the binary frozen-CNN-embedding +
 geometric-feature-fusion + LSTM classifier, `notebook/11_cnn_lstm_training_drive_pull.ipynb`'s
 frozen-embedding variant.** Measured **84.24% test accuracy / 0.8375 macro-F1** (binary
 `Not Drowsy` / `Drowsy`) on held-out subjects — by far the best result in the project, roughly
@@ -90,6 +95,78 @@ WAL-mode SQLite queue; `sender/` answers the ESP32's Bluetooth PULL/ACK poll aga
 queue. See "`orchestrator/`, `buffer/`, `sender/`, `alerts/` — done" below for the full design,
 and "Module status at a glance" for what's still genuinely untested (no ESP32 hardware/firmware
 exists in this repo, and neither compose file wires real Bluetooth device passthrough yet).
+
+## The `parts` pipeline (`PIPELINE=parts`): tiny YOLO + tracker + rules
+
+This is the simpler, explainable alternative to the CNN+LSTM, the user's direction. A
+per-frame detector reports what is *visible*, and hand-written rules with timers decide the
+severity. It is on branch `feature/parts-rules-demo`, merging to `main` only if the live demo
+works. `fused` stays the default.
+
+```
+BlazeFace (FaceDetectorCropStage, sets face_bbox_raw)
+  → PartsInferenceStage:
+      model/parts_geometry   square ×1.5 black-padded crop → gray → 160×160     [= training]
+      model/parts_detector   notebook 12 tiny_yolo_w1 (46k params), int8 .tflite | float .keras
+                             → 20×20 grid decode + NMS (verbatim from notebook 12)
+      model/parts_geometry   remap crop-normalised boxes → frame pixels
+      model/parts_tracker    IoU tracker: stable IDs, survives 3 misses, 3-frame majority vote
+      orchestrator/parts_rules   timers → severity + reason → DetectionResult (+ extras)
+  → outputs (MJPEG overlay: pipeline/parts_overlay.py) + orchestrator bridge (unchanged)
+```
+
+**Training fidelity (binding):**
+- `square_face_box` / `crop_square` are verbatim copies of `src/dataset/argus_dataset/
+  detection_dataset.py`, the code that built `parts_det.zip`.
+  `src/dataset/tests/test_parts_crop_equiv.py` checks the two are pixel-identical. Change both or
+  neither.
+- Inference only converts frames to gray. IR simulation is a training-time augmentation and is
+  never applied here.
+- Decode and NMS are verbatim from notebook 12.
+- `PARTS_*` constants mirror the dataset's `DET_*` constants.
+
+**Box remapping:** a crop-normalised `(u, v)` maps to frame pixel `(x0 + u·side, y0 + v·side)`.
+The overlay draws on the same `frame_bgr` that inference used, at native resolution;
+`DEMO_STREAM_WIDTH` resizes the *finished* image. So the boxes can't drift from the eyes. This is
+tested by a round trip including faces cut off at the frame edge, and seen on real frames.
+
+**Severity rules** (`orchestrator/parts_rules.py`; thresholds are `RULE_*` in `constants.py`, each
+overridable by env var):
+- **Eyes closed:** LOW 1 s / MEDIUM 2 s / **CRITICAL 3 s**. With the mouth open now or a yawn
+  < 10 s ago, this becomes 0.7 / 1.3 / **2.0 s**.
+- **Head down + eyes closed or hidden:** CRITICAL at 3 s (2 s after a yawn).
+- **Head down with eyes open:** MEDIUM at 3 s.
+- **Yawning alone** (3 yawns ≥ 1.5 s within 5 min): never above LOW.
+- **No face for 3 s:** LOW.
+
+Escalation is immediate; recovery takes 2 s clear. A gap of no more than 0.4 s doesn't reset a
+timer. This needs an epsilon: a one-frame gap at 5 fps is `0.4000000000000004` in float, and
+without it a single flicker reset the timer (found by the tests). Only the **two best eye tracks**
+are judged, visible first and then by confidence. A live run showed a ghost "closed eye" by the
+ear, and with ghosts counted, int8 and float agreed on only 89% of frames instead of 98%.
+`trigger_s` keeps the closure length visible while the alarm is held.
+
+**Contract (downstream unchanged):** the ESP32 reads only `class_name` and `probabilities`.
+- MEDIUM and CRITICAL → `Drowsy` (`p_drowsy` 0.75 / 0.95, at or above its 0.57 threshold).
+- none and LOW → `Not Drowsy`.
+- `severity`, `reason`, `trigger_s`, `timers`, `yawn_events` and `model` travel in
+  `DetectionResult.extras`, which the orchestrator merges into the payload. Today's firmware
+  ignores them.
+- `ctx.detection` is `None` only when there's no face *and* no active rule, which keeps "No
+  Face" semantics while a held alarm survives the face dropping out of view.
+- **Known latency:** the ESP32 still applies its own 5 s debounce plus grip fusion, so a Pi
+  CRITICAL reaches the backend about 5 s later. The follow-up is to let the firmware use
+  `payload.severity` / `reason` (e.g. `alert_type = reason`).
+
+**Measured** on a desktop CPU with the real models on a 128-frame face clip:
+- int8: **0.6 ms** model, 1.5 ms whole stage. Float: 5.5 ms.
+- BlazeFace: about 2 ms.
+- int8 vs float: same severity on 98.4% of frames.
+
+Not measured: a Pi 5, real cabin NoIR footage, and accuracy on unseen drivers (the clip came
+from the detector's training data). `head_down` is the detector's weakest class (AP about 0.25,
+few examples) and head pose comes **only** from it (a user decision; no FaceLandmarker in this
+pipeline).
 
 ## Python packaging: `src/` on disk, `cv_argus` at import time
 
@@ -311,8 +388,8 @@ src/
 │                   # orchestrator/, buffer/, and sender/ all depend on this, not vice versa
 ├── orchestrator/   # DONE — OrchestratorBridgeOutputStage (bridge.py, a thin always-on
 │                   # pipeline sink) + Orchestrator (orchestrator.py, its own decision-loop
-│                   # thread): debounce/cooldown before raising an Alert, a periodic
-│                   # RouteStatus("OK") heartbeat otherwise — the "Alert/RouteStatus
+│                   # thread): debounced class *readings* on every change plus
+│                   # keepalives, and a periodic RouteStatus("OK") heartbeat — the "Alert/RouteStatus
 │                   # Orchestration (Decision Making)" box in the design diagram. Builds
 │                   # records via alerts/ and calls buffer/.enqueue(). Also holds
 │                   # fusion_contract.py — the typed contract + reference decision logic for
@@ -521,9 +598,10 @@ pipelines share it before they were removed in favor of the fused one:
 `src/main.py` wires all of this together: `SOURCE` picks where frames come from
 (`video_capture` default / `picamera`), and `OUTPUTS` picks one or more sinks (comma-separated,
 `logging` default) — connected to the same inference stage via repeated `Stage.connect()` calls
-(fan-out), not a new mechanism. There's one pipeline shape now, built by `_build_pipeline()` —
-no `PIPELINE` env var to pick between model families anymore (see "Current status" above for
-why the earlier `cnn`/`lstm` options were removed). Runs until a signal arrives or the source
+(fan-out), not a new mechanism. `PIPELINE` (`fused` default, or `parts`) picks the model stages
+after the shared BlazeFace stage (`_PIPELINE_BUILDERS` in `main.py`). Both end in a stage that
+sets `ctx.detection`, so the outputs and orchestrator are identical. The older `cnn`/`lstm`
+options stay removed (see "Current status"). Runs until a signal arrives or the source
 (e.g. a video file) ends on its own — see `Pipeline.is_alive()` in `stage.py`.
 
 ### `orchestrator/`, `buffer/`, `sender/`, `alerts/` — done
@@ -579,15 +657,22 @@ detection)` onto a plain `queue.Queue` that `Orchestrator` owns, via `put_nowait
 (a dropped detection just costs one fewer sample toward the debounce counter, never blocks the
 pipeline). `orchestrator.py`'s `Orchestrator` runs a single `while` loop on its own thread,
 gated by `queue.get(timeout=ORCHESTRATOR_LOOP_POLL_SECONDS)`: every wake — a real detection or a
-timeout — checks both "should I alert" and "is a heartbeat due", matching the draw.io diagram's
-one Orchestration box producing both message kinds. Debounce
-(`ORCHESTRATOR_DEBOUNCE_FRAMES = 3`, ~0.6s of sustained `Drowsy` at 5fps) is **rising-edge
-only** — there's no symmetric hysteresis counter to "clear" the streak, a deliberate
-simplification since the cooldown (`ORCHESTRATOR_ALERT_COOLDOWN_SECONDS = 30.0`) already stops a
-continuing episode from re-alerting every debounce window. `ORCHESTRATOR_HEARTBEAT_INTERVAL_
-SECONDS = 60.0` paces the `RouteStatus("OK")` heartbeat when no alert is due; an alert also
-resets the heartbeat clock (no immediate double-fire). All four constants live in
-`constants.py` with their reasoning. `start()`/`stop()`/`join()`/`is_alive` mirror
+timeout — checks both "is a reading due" and "is a heartbeat due", matching the draw.io
+diagram's one Orchestration box producing both message kinds.
+
+It reports **readings, not sparse alerts**: one `drowsiness` record whenever the debounced class
+changes, plus a keepalive every `ORCHESTRATOR_KEEPALIVE_SECONDS` while it stays the same. That way
+the ESP32's fusion can see an incident end, not only start.
+- **Debounce** (`ORCHESTRATOR_DEBOUNCE_FRAMES = 3`, about 0.6 s at 5 fps) applies in **both**
+  directions.
+- The first `ORCHESTRATOR_WARMUP_FRAMES` are ignored.
+- `ORCHESTRATOR_HEARTBEAT_INTERVAL_SECONDS = 60.0` paces the `RouteStatus("OK")` heartbeat.
+- `DetectionResult.extras` (the parts pipeline's severity, reason and timers) is merged into the
+  payload *before* the three contract keys (`class_name`, `probabilities`, `transition`), so it can
+  never overwrite them.
+
+The constants live in `constants.py` with their reasoning. The 30 s alert cooldown older docs
+mention was removed when readings replaced alerts. `start()`/`stop()`/`join()`/`is_alive` mirror
 `Pipeline`'s own method names (not by inheritance — `Orchestrator` isn't a `Stage`/`Pipeline`
 subclass) so `main.py` can treat all three top-level components uniformly.
 
@@ -715,7 +800,7 @@ All six pieces are done now:
 | `model/` | **done** — fused CNN-embedding/geometric-feature/LSTM inference (the model this container deploys — best measured accuracy in the project, not yet cross-validated) plus the CNN checkpoint loader it depends on as a frozen embedding backbone, gdown download for both |
 | `pipeline/` | **done** — threaded Stage/Pipeline abstraction, two MediaPipe stages, one inference-stage wrapper, both bundle downloads; wired into `src/main.py` |
 | `alerts/` | **done** — `Alert`/`AlertKind` data model + `route_status()` factory + serialization, no logic/I/O — see "done" section above |
-| `orchestrator/` | **done** — bridge stage + its own decision-loop thread (debounce/cooldown, periodic heartbeat); not yet run against a real multi-hour drive to validate the debounce/cooldown defaults in practice |
+| `orchestrator/` | **done** — bridge stage + its own decision-loop thread (debounced readings + keepalives, periodic heartbeat), plus `parts_rules.py` (the `parts` pipeline's rule engine); not yet run against a real multi-hour drive to validate the defaults in practice |
 | `buffer/` | **done** — WAL-mode SQLite queue, enqueue/fetch_unsent/mark_sent, `tmp_path`-tested including a real two-thread concurrency smoke test |
 | `sender/` | **done** as a Pi-side implementation — custom Bluetooth SPP PULL/ACK protocol, unit-tested against `FakeTransport`; **not** run against real ESP32 hardware/firmware (none exists in this repo) |
 
@@ -730,7 +815,7 @@ limitations, not glossed over**: no ESP32 firmware/hardware exists anywhere in t
 the Bluetooth link has never been exercised end to end against a real device; neither compose
 file wires actual Bluetooth device passthrough yet (`docker-compose.yml` defaults
 `SENDER_TRANSPORT=none` for exactly this reason — see "Open decisions"); and the
-debounce/cooldown/heartbeat constants in `constants.py` are reasoned-through defaults, not
+debounce/keepalive/heartbeat constants in `constants.py` are reasoned-through defaults, not
 tuned against a real recorded drive.
 
 ## Tests

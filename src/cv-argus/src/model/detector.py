@@ -10,7 +10,7 @@ the root `CLAUDE.md` and `src/cv-argus/CLAUDE.md`'s "Current status" for why. `l
 class — `fused_features.py` calls it directly for its EAR/MAR math.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -26,6 +26,10 @@ class DetectionResult:
 
     level: int
     probabilities: np.ndarray  # shape (2,), softmax over [Not Drowsy, Drowsy] in order
+    # Optional detector-specific context merged into the buffered reading's payload by the
+    # orchestrator (e.g. the parts pipeline's {severity, reason, timers}). Empty for the fused
+    # detector. Readers that don't know these keys ignore them, so this is backward compatible.
+    extras: dict = field(default_factory=dict)
 
     @property
     def class_name(self) -> str:

@@ -17,6 +17,8 @@ services:
       args:
         CNN_MODEL_DRIVE_FILE_ID: ${CNN_MODEL_DRIVE_FILE_ID:-}
         FUSED_MODEL_DRIVE_FILE_ID: ${FUSED_MODEL_DRIVE_FILE_ID:-}
+        PARTS_INT8_DRIVE_FILE_ID: ${PARTS_INT8_DRIVE_FILE_ID:-}
+        PARTS_FLOAT_DRIVE_FILE_ID: ${PARTS_FLOAT_DRIVE_FILE_ID:-}
     image: argus/cv-argus:dev
     # --- Raspberry Pi 5 simulation (ON BY DEFAULT) --------------------------------------------
     # `docker compose up` gives you a stand-in for the truck-cabin Pi 5: 4 cores, 8 GB, 5 fps.
@@ -37,6 +39,12 @@ services:
       - path: .env
         required: false
     environment:
+      # Which model runs after BlazeFace: "fused" (CNN+LSTM, default) or "parts" (tiny YOLO +
+      # tracker + rules). PARTS_PRECISION=int8|float switches the parts detector's precision;
+      # RULE_* thresholds (see src/constants.py) pass through from .env.
+      - PIPELINE=${PIPELINE:-fused}
+      - PARTS_PRECISION=${PARTS_PRECISION:-int8}
+      - DEMO_STREAM_WIDTH=${DEMO_STREAM_WIDTH:-}
       - CAMERA_SOURCE=${CAMERA_SOURCE:-0}
       - SOURCE=${SOURCE:-video_capture}
       - OUTPUTS=${OUTPUTS:-logging}

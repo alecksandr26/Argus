@@ -25,7 +25,7 @@ class OrchestratorBridgeOutputStage(OutputStage):
 
     Uses `put_nowait` + drop-on-full rather than blocking — `Orchestrator`'s own decision loop
     must never stall the pipeline. A dropped detection here just means one fewer sample toward
-    the debounce counter, not a correctness problem (see `orchestrator.py`'s cooldown/debounce
+    the debounce counter, not a correctness problem (see `orchestrator.py`'s debounce/keepalive
     design): this is a deliberately always-on, structural sink, not one of `main.py`'s
     `OUTPUTS=` demo/observability toggles.
     """
