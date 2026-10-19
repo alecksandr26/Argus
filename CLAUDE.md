@@ -268,16 +268,19 @@ is missing or done.
   multi-tab sketch (`src/esp32_argus/esp32_argus.ino` + per-concern `.h`/`.cpp` pairs: GPS,
   SIM800L/SMS, WiFi, the backend HTTP client, the Bluetooth client pulling from `cv-argus`, the
   drowsy+grip fusion state machine ported 1:1 from `cv-argus`'s `fusion_contract.py`, the panic
-  button, the grip sensor). WiFi (joining a mobile-network-backed network, not the SIM800L's own
-  GPRS) is this device's main transport to `backend-argus` and the Bluetooth pull — a deliberate
-  split from the SIM800L, which this firmware keeps **SMS-only**, fired specifically (and only)
-  by the panic button as a hardware-direct fallback that still works if WiFi/the backend is
-  unreachable. See its own `README.md` for the full protocol/field-mapping contracts this
-  implements and `config.h` for every per-site placeholder (WiFi creds, the Pi's Bluetooth MAC,
-  GPIO pins) that needs a real value before flashing — the backend URL, device API key and route
-  id are no longer compiled in (fetched from the Pi via `CONFIG` and from the backend). Written and reviewed by hand; **not yet compiled or run against real hardware** — no
-  Arduino toolchain or physical ESP32/SIM800L/NEO-6M harness has been available in any session
-  that's touched this repo.
+  button, the grip sensor). Mobile data over the SIM800L's GPRS (the modem's own HTTPS stack) is
+  the first-choice transport to `backend-argus`, with WiFi (e.g. a phone hotspot) as the
+  fallback and the only path for PUT — see its `README.md`'s network-path decision, including
+  why the AWS deployment needs `https://` (CloudFront answers 403 to plain HTTP) and why the
+  SIM800L's TLS 1.0 still reaches the default `*.cloudfront.net` domain. The SIM800L also sends
+  the panic SMS, fired specifically (and only) by the panic button as a hardware-direct
+  fallback that still works if the backend is unreachable. See its own `README.md` for the full
+  protocol/field-mapping contracts this implements. `config.h` holds only wiring/timing and the
+  Pi's Bluetooth MAC: the backend URL, device key, WiFi network and mobile-data APN all come from
+  the Pi over Bluetooth (`CONFIG`, set in cv-argus's `argus-device.env` + `.env`), and the route
+  from `GET /api/devices/me/active-route`, so one firmware image fits every truck. It compiles and has been flashed to a real
+  ESP32, and `test/hil/` passed over WiFi against a bench backend (see
+  `src/esp32_argus/CLAUDE.md`); the GPRS path and the AWS/HTTPS path haven't run on hardware yet.
 - `src/infra-argus/` — **AWS CDK (TypeScript) demo deployment, cheapest possible, pay-per-use**:
   `backend-argus` as its **unchanged** Docker image on Lambda (via the Lambda Web Adapter, a
   wrapper image in `docker/backend-lambda/`, no backend code changes for Lambda) behind a

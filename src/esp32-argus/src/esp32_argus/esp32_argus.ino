@@ -8,18 +8,20 @@
 //     boot and after any 401, so a key issued/rotated in the dashboard reaches this device
 //     without a reflash. Cached in NVS for boots where the Pi isn't up yet.
 //   - Fuses a pulled drowsiness reading with this device's own live grip-sensor reading
-//     into a severity (fusion.*), and relays the result to backend-argus over WiFi
-//     (wifi_client.*, backend_api.*), attaching its own GPS reading (gps_module.*) --
-//     cv-argus never has GPS and never computes a grip-aware severity itself.
+//     into a severity (fusion.*), and relays the result to backend-argus over mobile data
+//     (SIM800L GPRS, gprs_http.*) with WiFi as the fallback (wifi_client.*, backend_api.*),
+//     attaching its own GPS reading (gps_module.*) -- cv-argus never has GPS and never
+//     computes a grip-aware severity itself.
 //   - Relays a pulled route_status heartbeat the same way, mirroring vigilance onto the
 //     fusion engine's last-confirmed severity.
 //   - Handles the panic button (panic_button.*) completely outside the fusion loop:
 //     unconditional `critical`, no debounce, fires both an SMS (sms_module.* via the
-//     SIM800L -- a hardware-direct fallback that works even without WiFi) and the normal
-//     POST /api/alerts.
+//     SIM800L -- a hardware-direct fallback that works even when the backend is
+//     unreachable) and the normal POST /api/alerts.
 //
 // See config.h for every placeholder that needs a real value before this is flashed.
 
+#include "ack_policy.h"
 #include "backend_api.h"
 #include "bluetooth_client.h"
 #include "config.h"
@@ -47,8 +49,8 @@ bool handlePiRecord(const PiRecord& record) {
   }
 
   wifiEnsureConnected();
-  if (!wifiIsConnected()) {
-    Serial.println("[main] WiFi down -- not relaying");
+  if (!backendIsReachable()) {
+    Serial.println("[main] No mobile data or WiFi -- not relaying");
     return false;
   }
 
@@ -58,9 +60,18 @@ bool handlePiRecord(const PiRecord& record) {
 
   if (record.kind == PiRecordKind::ROUTE_STATUS) {
     // odometer: no sensor on this device at all (see config.h) -- 0.0f, not a fabricated
-    // running total from GPS-distance integration.
-    return backendPostRouteStatus(lat, lon, speedKmh, /*odometer=*/0.0f,
-                                   fusion.confirmedSeverity());
+    // running total from GPS-distance integration. The Pi record id dedups retries; the
+    // GPS time (when fresh) is when this position was actually read.
+    int status = backendPostRouteStatus(lat, lon, speedKmh, /*odometer=*/0.0f,
+                                        fusion.confirmedSeverity(), record.id, gpsUtcIso8601());
+    RelayAction action = relayActionFor(status, true);
+    if (action != RelayAction::Ack) {
+      Serial.print("[main] route_status ");
+      Serial.print(record.id);
+      Serial.print(": ");
+      Serial.println(relayActionName(action));
+    }
+    return shouldAck(action);
   }
 
   // DROWSINESS: feed the fusion engine -- never a 1:1 relay, see
@@ -126,14 +137,14 @@ void handlePanicButton() {
   // Normal path too, per README section 5: unconditional critical, no debounce, no
   // interaction with any open fusion incident.
   wifiEnsureConnected();
-  if (hasFix && wifiIsConnected()) {
+  if (hasFix && backendIsReachable()) {
     backendPostAlert(Severity::Critical, "panic_button", /*isFusionSource=*/false,
                       /*pNotDrowsy=*/0.0f, /*pDrowsy=*/0.0f, /*gripStatus=*/GripState::GOOD,
                       /*isEscalation=*/false, /*relatedAlertId=*/String(), lat, lon,
                       (float)gpsSpeedKmh());
   } else {
     Serial.println("[main] Panic SMS sent, but couldn't also POST /api/alerts "
-                    "(no GPS fix and/or WiFi down)");
+                    "(no GPS fix and/or no mobile data or WiFi)");
   }
 }
 
@@ -150,8 +161,8 @@ void setup() {
   panicButtonBegin();
   gripSensorBegin();
   smsBegin();
+  credentialsBegin();  // before wifiBegin(): the WiFi to join is in the NVS cache
   wifiBegin();
-  credentialsBegin();
   bluetoothClientBegin();
 }
 

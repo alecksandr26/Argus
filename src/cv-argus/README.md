@@ -103,6 +103,8 @@ including model-artifact overrides not covered here).
 | `BLUETOOTH_SECURITY` | `medium` | RFCOMM security the ESP32's link must meet: `medium` = paired + encrypted (required: `CONFIG` sends the device key), `high` = also MITM-protected pairing (an ESP32 without display/keypad can't do it), `low` = anything in range, bench only. |
 | `ESP32_BT_MAC` | unset | Optional comma-separated MAC allowlist (this truck's ESP32). Unset = any paired device. |
 | `ARGUS_TRUCK_ID` / `ARGUS_DEVICE_API_KEY` / `ARGUS_BACKEND_URL` | unset | This truck's backend credentials, from `argus-device.env` — see "Provisioning a truck" below. All three or none; a partial set stops startup. |
+| `ARGUS_WIFI_SSID` / `ARGUS_WIFI_PASSWORD` | unset | The WiFi the ESP32 falls back to (phone hotspot / 4G MiFi, 2.4 GHz). Set in `.env`, sent in `CONFIG`; used verbatim (spaces included). Unset = the ESP32's WiFi stays off. |
+| `ARGUS_GPRS_APN` / `ARGUS_GPRS_USER` / `ARGUS_GPRS_PASSWORD` | unset | The SIM's mobile-data APN. Set in `.env`, sent in `CONFIG`. Set = the ESP32 uses mobile data first, WiFi second; unset = WiFi only. Carrier values in `.env.example`. |
 
 ## Provisioning a truck
 
@@ -117,6 +119,12 @@ is the one that actually calls the backend (one firmware image fits every truck)
    gitignored and dockerignored: loaded at runtime only, never baked into the image), then
    `docker compose up -d`. The log shows `Device credentials loaded for truck <id>` (never the
    key).
+   **The ESP32's network goes in this directory's `.env`** (not in `argus-device.env`, which
+   the dashboard regenerates on every key rotation): `ARGUS_WIFI_SSID`/`ARGUS_WIFI_PASSWORD`
+   for WiFi and/or `ARGUS_GPRS_APN` (+ `_USER`/`_PASSWORD`) for the SIM's mobile data — see
+   `.env.example`. The ESP32 gets them in the same `CONFIG` reply, so nothing about the network
+   is flashed into its firmware either; after changing them, `docker compose up -d` and the
+   ESP32 picks them up within 10 minutes.
 3. **Pair the ESP32 once** on the Pi host, since the link must be encrypted
    (`BLUETOOTH_SECURITY=medium`):
    ```sh
@@ -131,7 +139,7 @@ is the one that actually calls the backend (one firmware image fits every truck)
    Not yet run on the real Pi + ESP32 pair: if `bluetoothctl` asks to confirm a passkey or
    authorize a service, answer `yes`. `BLUETOOTH_SECURITY=low` skips this for a quick bench
    test, but sends the key unencrypted.
-4. The ESP32 asks for `CONFIG` at boot and after any `401`, caches it, and finds its route with
+4. The ESP32 asks for `CONFIG` at boot, after any `401` and every 10 minutes, caches it, and finds its route with
    `GET /api/devices/me/active-route`. The Fleet screen's Devices column shows "Key · seen …"
    once it's reporting.
 

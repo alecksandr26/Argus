@@ -8,7 +8,8 @@ SenderServer as a DeviceConfig (`bench_device_config()`) -- nothing to copy into
 
     python src/esp32-argus/test/hil/bench_backend.py         # serve on 0.0.0.0:8000 until Ctrl+C
 
-Env vars: ARGUS_BENCH_PORT (default 8000), ARGUS_BENCH_DEVICE_KEY (default below).
+Env vars: ARGUS_BENCH_PORT (default 8000), ARGUS_BENCH_DEVICE_KEY (default below), and for
+esp32_hil.py ARGUS_WIFI_SSID / ARGUS_WIFI_PASSWORD (the WiFi the ESP32 joins, served in CONFIG).
 Root admin login is backend-argus's own default (admin@argus.dev / changeme123), so
 `smoke_backend.py` runs against this too.
 """
@@ -99,12 +100,22 @@ def lan_ip() -> str:
 
 
 def bench_device_config() -> DeviceConfig:
-    """What the dashboard's argus-device.env would say for the seeded truck, pointed at this
-    machine's LAN address. The PC-as-Pi serves it to the ESP32 on CONFIG."""
+    """What the dashboard's argus-device.env (plus the Pi's .env network settings) would say for
+    the seeded truck, pointed at this machine's LAN address. The PC-as-Pi serves it to the ESP32
+    on CONFIG. The WiFi comes from ARGUS_WIFI_SSID / ARGUS_WIFI_PASSWORD, the same variables a
+    real Pi reads; no APN, since the mobile network can't reach a LAN address."""
+    ssid = os.environ.get("ARGUS_WIFI_SSID") or None
+    if ssid is None:
+        raise SystemExit(
+            "Set ARGUS_WIFI_SSID (and ARGUS_WIFI_PASSWORD) to this PC's 2.4 GHz WiFi: the ESP32 "
+            "gets its network from CONFIG now, so without them it can't reach the bench backend."
+        )
     return DeviceConfig(
         truck_id=TRUCK_ID,
         device_api_key=DEVICE_API_KEY,
         backend_url=f"http://{lan_ip()}:{PORT}",
+        wifi_ssid=ssid,
+        wifi_password=os.environ.get("ARGUS_WIFI_PASSWORD") or None,
     )
 
 

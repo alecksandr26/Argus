@@ -64,6 +64,37 @@ static void overlongValueIsRejected() {
   CHECK(parseConfigLine(line, c) == ConfigLineResult::Malformed);
 }
 
+static void networkSettingsAreOptionalAndVerbatim() {
+  DeviceCredentials c;
+  CHECK(parseConfigLine(GOOD, c) == ConfigLineResult::Ok);
+  CHECK(c.wifiSsid.empty() && c.gprsApn.empty());
+  CHECK(!c.useGprs());  // no APN: WiFi only
+
+  const char* line =
+      R"(CONFIG {"truck_id":"t","device_api_key":"k","backend_url":"https://x",)"
+      R"("wifi_ssid":"Casa ","wifi_password":"pw","gprs_apn":"internet.itelcel.com",)"
+      R"("gprs_user":"webgprs","gprs_password":"webgprs2002"})";
+  CHECK(parseConfigLine(line, c) == ConfigLineResult::Ok);
+  CHECK(c.wifiSsid == "Casa ");  // trailing space kept
+  CHECK(c.wifiPassword == "pw");
+  CHECK(c.gprsApn == "internet.itelcel.com");
+  CHECK(c.gprsUser == "webgprs");
+  CHECK(c.gprsPassword == "webgprs2002");
+  CHECK(c.useGprs());
+}
+
+static void malformedNetworkSettingRejectsTheLine() {
+  std::string overlong = R"(CONFIG {"truck_id":"t","device_api_key":"k","backend_url":"https://x",)";
+  overlong += R"("wifi_ssid":")" + std::string(201, 's') + R"("})";
+  const char* wrongType =
+      R"(CONFIG {"truck_id":"t","device_api_key":"k","backend_url":"https://x","gprs_apn":5})";
+  DeviceCredentials c;
+  c.apiKey = "previous";
+  CHECK(parseConfigLine(overlong, c) == ConfigLineResult::Malformed);
+  CHECK(parseConfigLine(wrongType, c) == ConfigLineResult::Malformed);
+  CHECK(c.apiKey == "previous");
+}
+
 static void validity() {
   DeviceCredentials c;
   CHECK(!c.valid());
@@ -81,6 +112,8 @@ int main() {
   RUN(noConfig);
   RUN(malformedLeavesOutputUntouched);
   RUN(overlongValueIsRejected);
+  RUN(networkSettingsAreOptionalAndVerbatim);
+  RUN(malformedNetworkSettingRejectsTheLine);
   RUN(validity);
   return report("device_config_host_test");
 }

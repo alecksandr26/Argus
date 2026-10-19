@@ -46,20 +46,26 @@ Python venv. On a Linux machine with BlueZ (e.g. the real Pi), use `--rfcomm` in
    .venv\Scripts\activate
    pip install -r src\esp32-argus\test\hil\requirements.txt
    ```
-2. **Firmware `config.h`**, then flash:
-   - Set `WIFI_SSID` / `WIFI_PASSWORD` to the **same WiFi network as the PC**.
-   - Nothing backend-related goes in `config.h` anymore: `esp32_hil.py` serves the bench
-     backend URL (this PC's LAN IP) and the bench device key over Bluetooth (`CONFIG`), and the
-     ESP32 looks its route up from the key. A new IP between runs needs no reflash.
+2. **WiFi for the ESP32**, set in the shell that runs `esp32_hil.py` (the **same 2.4 GHz
+   network as the PC**). The ESP32 gets it over Bluetooth (`CONFIG`), like on a truck:
+   ```powershell
+   $env:ARGUS_WIFI_SSID = "Casa "        # exactly, trailing space included
+   $env:ARGUS_WIFI_PASSWORD = "..."
+   ```
+3. **Firmware `config.h`**, then flash:
+   - Nothing network- or backend-related goes in `config.h` anymore: `esp32_hil.py` serves the
+     WiFi network, the bench backend URL (this PC's LAN IP) and the bench device key over
+     Bluetooth (`CONFIG`), and the ESP32 looks its route up from the key. A new IP or WiFi
+     between runs needs no reflash. No APN is served, so the ESP32 stays on WiFi.
    - Set `PI_BT_MAC_ADDRESS` to the **PC's** Bluetooth MAC, because the PC is the Pi here.
      `ipconfig /all` shows it as "Physical Address" under "Bluetooth Network Connection".
      `B0-DC-EF-34-4C-83` becomes `{ 0xB0, 0xDC, 0xEF, 0x34, 0x4C, 0x83 }`.
    - `BENCH_FAKE_GPS`: `1` to test Bluetooth/HTTP indoors without a GPS fix (nothing gets
      relayed without one), `0` to test the real NEO-6M (see "Testing the real GPS").
      **It must be `0` on a real truck.**
-3. **Pair the ESP32 with Windows**: Settings → Bluetooth & devices → Add device → Bluetooth →
+4. **Pair the ESP32 with Windows**: Settings → Bluetooth & devices → Add device → Bluetooth →
    **ESP32-Argus**.
-4. **Create an incoming Bluetooth COM port**: Settings → Bluetooth & devices → Devices → *More
+5. **Create an incoming Bluetooth COM port**: Settings → Bluetooth & devices → Devices → *More
    Bluetooth settings* → **COM Ports** tab → Add… → **Incoming** → OK. Note the port number,
    e.g. `COM5`. This is the port the ESP32's `SerialBT.connect()` reaches. It's not the USB
    port (`COM3`) used for flashing.
@@ -115,7 +121,7 @@ proves nothing about the GPS. To check that the positions come from the NEO-6M:
 | `could not open port 'COM5'` | Wrong COM number, or another program has it open |
 | Serial Monitor shows `No GPS fix yet -- ... not relaying` | The NEO-6M has no fix yet (see `[gps]` lines and "Testing the real GPS"), or set `BENCH_FAKE_GPS 1` to test without it |
 | Check 5 says "sent the BENCH_FAKE_GPS position" | `BENCH_FAKE_GPS` is still `1` in the flashed firmware |
-| Serial Monitor shows `WiFi down` | Wrong `WIFI_SSID`/`WIFI_PASSWORD`, or a 5 GHz-only network (the ESP32 only does 2.4 GHz) |
+| Serial Monitor shows `No mobile data or WiFi` | Wrong `ARGUS_WIFI_SSID`/`ARGUS_WIFI_PASSWORD` (exact, spaces included), or a 5 GHz-only network (the ESP32 only does 2.4 GHz) |
 | Bluetooth works but checks 4–5 fail | Firewall blocking port 8000, or the ESP32 on a different network from the PC (the URL it gets over `CONFIG` is this PC's LAN IP) |
 | Check 1 fails, Serial shows `[creds] Using credentials ... (NVS cache)` | An older run's credentials are cached and the `CONFIG` fetch didn't connect; same causes as a failed `PULL` |
 | Backend rejects posts (401) | The ESP32 is using stale cached credentials; it re-fetches `CONFIG` on the next poll — watch for a second `CONFIG` line |

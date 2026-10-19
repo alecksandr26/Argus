@@ -246,6 +246,7 @@ Env vars `main.py` reads (all optional, all with defaults):
 | `BLUETOOTH_SECURITY` | `medium` | RFCOMM `BT_SECURITY` level set on the listening socket (`low`/`medium`/`high`) — see "Device credentials" below |
 | `ESP32_BT_MAC` | unset | optional peer allowlist for `SenderServer` |
 | `ARGUS_TRUCK_ID`/`ARGUS_DEVICE_API_KEY`/`ARGUS_BACKEND_URL` | unset | `sender/device_config.py`'s `DeviceConfig`, from the dashboard's `argus-device.env` (`docker-compose.yml` `env_file`, runtime only) |
+| `ARGUS_WIFI_SSID`/`ARGUS_WIFI_PASSWORD`/`ARGUS_GPRS_APN`/`ARGUS_GPRS_USER`/`ARGUS_GPRS_PASSWORD` | unset | optional `DeviceConfig` network fields, from `.env` (per installation), sent to the ESP32 in `CONFIG`; verbatim, not stripped |
 | model-artifact overrides | see `constants.py` | `MODEL_DIR`, `*_DRIVE_FILE_ID`, `*_FILENAME`, `*_BUNDLE_URL` — see "Model download strategy" |
 
 `docker compose` passes `/dev/video0` through by default — adjust the `devices:` entry to
@@ -636,7 +637,11 @@ key, backend URL), read from `ARGUS_*` env vars that `docker-compose.yml` loads 
 dashboard-issued `argus-device.env`. A session may be a single `CONFIG` request instead of
 `PULL`/`ACK`; `SenderServer` answers `CONFIG {json}` or `NOCONFIG`. The point is that the Pi is
 the provisioned, re-deployable half of the truck, so the ESP32 firmware stays generic (no
-per-truck key flashed in). Because that reply carries a secret, `BluetoothSppListener` sets
+per-truck key flashed in). The same reply also carries the ESP32's network settings — WiFi
+SSID/password and the SIM's APN (`ARGUS_WIFI_*`/`ARGUS_GPRS_*`, optional, from `.env` rather
+than `argus-device.env` so a key rotation doesn't wipe them, and never `.strip()`ped since an
+SSID may end in a space) — so the firmware carries no network config either; no APN means the
+ESP32 stays on WiFi. Because that reply carries secrets, `BluetoothSppListener` sets
 `BT_SECURITY` (default `medium`: paired + encrypted) on the listening socket, which the kernel
 applies to every accepted connection, and `ESP32_BT_MAC` optionally allowlists the peer. The key
 is never logged and `repr(DeviceConfig)` masks it. A partial `ARGUS_*` set is a `SystemExit` at

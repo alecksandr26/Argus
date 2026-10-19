@@ -33,6 +33,19 @@ bool readField(JsonVariantConst value, String& out, bool trimSlash) {
   return true;
 }
 
+// An optional field: absent (or null) leaves `out` empty and is fine; present must be a string
+// within MAX_FIELD_LEN. Copied verbatim -- no trimming, an SSID may end in a space.
+bool readOptionalField(JsonVariantConst value, String& out) {
+  if (value.isNull()) {
+    out = String("");
+    return true;
+  }
+  const char* s = value.as<const char*>();
+  if (s == nullptr || strlen(s) > MAX_FIELD_LEN) return false;
+  out = String(s);
+  return true;
+}
+
 }  // namespace
 
 bool DeviceCredentials::valid() const {
@@ -54,6 +67,13 @@ ConfigLineResult parseConfigLine(const String& line, DeviceCredentials& out) {
   if (!readField(doc["truck_id"], parsed.truckId, false) ||
       !readField(doc["device_api_key"], parsed.apiKey, false) ||
       !readField(doc["backend_url"], parsed.backendUrl, true) || !parsed.valid()) {
+    return ConfigLineResult::Malformed;
+  }
+  if (!readOptionalField(doc["wifi_ssid"], parsed.wifiSsid) ||
+      !readOptionalField(doc["wifi_password"], parsed.wifiPassword) ||
+      !readOptionalField(doc["gprs_apn"], parsed.gprsApn) ||
+      !readOptionalField(doc["gprs_user"], parsed.gprsUser) ||
+      !readOptionalField(doc["gprs_password"], parsed.gprsPassword)) {
     return ConfigLineResult::Malformed;
   }
   out = parsed;
