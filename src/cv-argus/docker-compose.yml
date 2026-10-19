@@ -36,6 +36,13 @@ services:
       # no .env at all. `required: false` stops Compose erroring on a missing file.
       - path: .env
         required: false
+      # This truck's backend credentials (ARGUS_TRUCK_ID / ARGUS_DEVICE_API_KEY /
+      # ARGUS_BACKEND_URL), downloaded from the dashboard: Fleet -> truck -> "Generate device
+      # credentials". Runtime-only: never a build arg, so the key is never baked into the image.
+      # cv-argus hands them to the ESP32 over Bluetooth (CONFIG). Don't add these three to the
+      # `environment:` block below -- it would override this file with empty values.
+      - path: argus-device.env
+        required: false
     environment:
       - CAMERA_SOURCE=${CAMERA_SOURCE:-0}
       - SOURCE=${SOURCE:-video_capture}
@@ -64,6 +71,11 @@ services:
       # just accumulate unsent in buffer/ -- nothing is lost, there's just nothing serving them.
       - SENDER_TRANSPORT=${SENDER_TRANSPORT:-none}
       - BLUETOOTH_CHANNEL=${BLUETOOTH_CHANNEL:-4}
+      # The link the ESP32 connects over must be paired + encrypted ("medium") -- CONFIG sends
+      # the device key across it. "low" is for an unpaired bench setup only.
+      - BLUETOOTH_SECURITY=${BLUETOOTH_SECURITY:-medium}
+      # Optional: only this truck's ESP32 (comma-separated MACs) may connect at all.
+      - ESP32_BT_MAC=${ESP32_BT_MAC:-}
     # Only actually listened on when OUTPUTS includes "mjpeg" (see src/main.py,
     # pipeline/mjpeg_output_stage.py) — harmless to always publish otherwise, nothing binds the
     # container-side port if that output stage was never built. No authentication on that

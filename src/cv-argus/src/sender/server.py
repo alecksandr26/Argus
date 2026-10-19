@@ -14,14 +14,22 @@ pulling successfully but then failing its own HTTP relay to the backend.
 One session at a time (sequential accept loop) — matches the one-Pi-one-ESP32 topology assumed
 throughout this design; a concurrent-client upgrade would be a change to this file, not to the
 protocol itself, and isn't built speculatively here.
+
+A session can also be a `CONFIG` request (see `protocol.py`): this answers with the truck's
+`DeviceConfig` — the backend credentials provisioned from the dashboard — or `NOCONFIG`.
+`allowed_peers` (the `ESP32_BT_MAC` env var) optionally restricts every session to this truck's
+own ESP32. A MAC can be spoofed, so this is a second layer on top of the encrypted, paired link
+`BluetoothSppListener` requires, not a replacement for it.
 """
 
 import logging
 import threading
+from collections.abc import Iterable
 
 from ..alerts import serialization as alerts_serialization
 from ..buffer import Buffer
 from . import protocol
+from .device_config import DeviceConfig
 from .transport import Listener, Transport
 
 logger = logging.getLogger(__name__)
@@ -44,9 +52,17 @@ class SenderServer:
         *,
         accept_timeout: float = 1.0,
         ack_timeout: float = 10.0,
+        device_config: DeviceConfig | None = None,
+        allowed_peers: Iterable[str] | None = None,
     ) -> None:
         self._buffer = buffer
         self._listener = listener
+        self._device_config = device_config
+        self._allowed_peers = (
+            frozenset(p.strip().upper() for p in allowed_peers if p.strip())
+            if allowed_peers is not None
+            else None
+        ) or None
         self._accept_timeout = accept_timeout
         self._ack_timeout = ack_timeout
         self._stop_event = threading.Event()
@@ -96,10 +112,18 @@ class SenderServer:
         logger.info("sender: stopped")
 
     def _handle_session(self, transport: Transport) -> None:
+        if self._allowed_peers is not None and (
+            (transport.peer or "").upper() not in self._allowed_peers
+        ):
+            logger.warning("sender: rejecting session from unlisted peer %s", transport.peer)
+            return
         line = transport.readline(timeout=5.0)
         if line is None:
             return
         request = line.decode()
+        if protocol.parse_config_request(request):
+            self._answer_config(transport)
+            return
         ack_ids = protocol.parse_ack(request)
         if ack_ids is not None:
             # A standalone ACK for rows pulled in an earlier session (see protocol.py).
@@ -130,3 +154,12 @@ class SenderServer:
 
         updated = self._buffer.mark_sent(ids)
         transport.write((protocol.format_acked(updated) + "\n").encode())
+
+    def _answer_config(self, transport: Transport) -> None:
+        if self._device_config is None:
+            logger.warning("sender: ESP32 asked for CONFIG but this Pi has no device credentials")
+            transport.write((protocol.NOCONFIG_LINE + "\n").encode())
+            return
+        # Never log the key itself -- only which truck's credentials went out.
+        logger.info("sender: sent device credentials for truck %s", self._device_config.truck_id)
+        transport.write((protocol.format_config(self._device_config.to_wire()) + "\n").encode())

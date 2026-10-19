@@ -1,0 +1,2 @@
+# Truck credentials from the dashboard -- a secret, never commit it.
+argus-device.env

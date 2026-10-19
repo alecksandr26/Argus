@@ -51,6 +51,13 @@ Env vars:
 - `SENDER_TRANSPORT` (default `"bluetooth"`) — `"bluetooth"` (real `BluetoothSppListener`,
   `BLUETOOTH_CHANNEL` env var, default `4`) or `"none"` (no `SenderServer` at all — a dev/CI
   opt-out for a machine with no Bluetooth adapter). See `cv_argus.sender`.
+- `BLUETOOTH_SECURITY` (default `"medium"`: paired + encrypted link required) — `low`/`medium`/
+  `high`, the RFCOMM security level the listener demands. See `sender.bluetooth_transport`.
+- `ESP32_BT_MAC` (unset by default) — comma-separated Bluetooth MACs allowed to connect; unset
+  accepts any paired device.
+- `ARGUS_TRUCK_ID`/`ARGUS_DEVICE_API_KEY`/`ARGUS_BACKEND_URL` (unset by default) — this truck's
+  backend credentials, from the dashboard's `argus-device.env`. Served to the ESP32 on `CONFIG`;
+  all three or none. See `cv_argus.sender.device_config`.
 """
 
 import cv_argus.bootstrap  # noqa: F401 -- MUST be first: sets thread env vars before tf/cv2 load
@@ -79,7 +86,7 @@ from cv_argus.pipeline import (
     download_face_detector_bundle,
     download_face_landmarker_bundle,
 )
-from cv_argus.sender import BluetoothSppListener, SenderServer
+from cv_argus.sender import BluetoothSppListener, DeviceConfig, SenderServer
 from cv_argus.supervisor import exit_code, first_dead
 
 logger = logging.getLogger(__name__)
@@ -164,10 +171,37 @@ def _build_sender_listener():
     kind = os.environ.get("SENDER_TRANSPORT", "bluetooth").strip().lower()
     if kind == "bluetooth":
         channel = int(os.environ.get("BLUETOOTH_CHANNEL", "4"))
-        return BluetoothSppListener(channel=channel)
+        security = os.environ.get("BLUETOOTH_SECURITY", "medium")
+        try:
+            return BluetoothSppListener(channel=channel, security=security)
+        except ValueError as exc:
+            raise SystemExit(f"BLUETOOTH_SECURITY: {exc}") from None
     if kind == "none":
         return None
     raise SystemExit(f"Unknown SENDER_TRANSPORT={kind!r} -- expected 'bluetooth' or 'none'")
+
+
+def _device_config() -> DeviceConfig | None:
+    """This truck's backend credentials (`ARGUS_*`, from the dashboard's `argus-device.env`),
+    served to the ESP32 on `CONFIG`. A partial set stops startup rather than running a truck
+    whose ESP32 can never authenticate."""
+    try:
+        config = DeviceConfig.from_env()
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    if config is None:
+        logger.warning(
+            "No device credentials (ARGUS_TRUCK_ID/ARGUS_DEVICE_API_KEY/ARGUS_BACKEND_URL) -- "
+            "the ESP32 can't reach the backend until argus-device.env is installed"
+        )
+    else:
+        logger.info("Device credentials loaded for truck %s (%s)", config.truck_id, config.backend_url)
+    return config
+
+
+def _allowed_peers() -> list[str] | None:
+    raw = os.environ.get("ESP32_BT_MAC", "").strip()
+    return [mac.strip() for mac in raw.split(",") if mac.strip()] or None
 
 
 def _build_pipeline(orchestrator: Orchestrator) -> Pipeline:
@@ -217,7 +251,16 @@ def main() -> None:
     orchestrator = Orchestrator(buffer)
     pipeline = _build_pipeline(orchestrator)
     listener = _build_sender_listener()
-    sender = SenderServer(buffer, listener) if listener is not None else None
+    sender = (
+        SenderServer(
+            buffer,
+            listener,
+            device_config=_device_config(),
+            allowed_peers=_allowed_peers(),
+        )
+        if listener is not None
+        else None
+    )
 
     stop_event = threading.Event()
     dead: str | None = None
