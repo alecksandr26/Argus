@@ -1,0 +1,775 @@
+{
+ "generated_by": "generate_fusion_vectors.py",
+ "config": {
+  "debounce_seconds": 5.0,
+  "escalation_seconds": 20.0,
+  "recovery_seconds": 10.0
+ },
+ "cases": [
+  {
+   "name": "medium_after_debounce",
+   "steps": [
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 0.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 2.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 4.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 5.0,
+     "expect": {
+      "severity": "medium",
+      "alert": {
+       "severity": "medium",
+       "grip": "good",
+       "related": null
+      },
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 6.0,
+     "expect": {
+      "severity": "medium",
+      "alert": {
+       "severity": "medium",
+       "grip": "good",
+       "related": null
+      },
+      "resolved": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "blip_shorter_than_debounce",
+   "steps": [
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 0.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 2.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 4.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "good",
+     "at": 5.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "good",
+     "at": 7.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "good",
+     "at": 9.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "drowsy_bad_grip_goes_straight_to_critical",
+   "steps": [
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "bad",
+     "at": 0.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "bad",
+     "at": 3.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "bad",
+     "at": 5.0,
+     "expect": {
+      "severity": "critical",
+      "alert": {
+       "severity": "critical",
+       "grip": "bad",
+       "related": null
+      },
+      "resolved": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "grip_only_incident",
+   "steps": [
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "bad",
+     "at": 0.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "bad",
+     "at": 2.5,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "bad",
+     "at": 5.0,
+     "expect": {
+      "severity": "medium",
+      "alert": {
+       "severity": "medium",
+       "grip": "bad",
+       "related": null
+      },
+      "resolved": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "medium_escalates_to_critical",
+   "steps": [
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 0.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 5.0,
+     "expect": {
+      "severity": "medium",
+      "alert": {
+       "severity": "medium",
+       "grip": "good",
+       "related": null
+      },
+      "resolved": null
+     }
+    },
+    {
+     "op": "posted",
+     "id": "m1"
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 10.0,
+     "expect": {
+      "severity": "medium",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 20.0,
+     "expect": {
+      "severity": "medium",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 24.5,
+     "expect": {
+      "severity": "medium",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 25.0,
+     "expect": {
+      "severity": "critical",
+      "alert": {
+       "severity": "critical",
+       "grip": "good",
+       "related": "m1"
+      },
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 26.0,
+     "expect": {
+      "severity": "critical",
+      "alert": {
+       "severity": "critical",
+       "grip": "good",
+       "related": "m1"
+      },
+      "resolved": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "recovery_resolves_the_open_incident",
+   "steps": [
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 0.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 5.0,
+     "expect": {
+      "severity": "medium",
+      "alert": {
+       "severity": "medium",
+       "grip": "good",
+       "related": null
+      },
+      "resolved": null
+     }
+    },
+    {
+     "op": "posted",
+     "id": "m1"
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "good",
+     "at": 6.0,
+     "expect": {
+      "severity": "medium",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "good",
+     "at": 10.0,
+     "expect": {
+      "severity": "medium",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "good",
+     "at": 15.5,
+     "expect": {
+      "severity": "medium",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "good",
+     "at": 16.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": "m1"
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "good",
+     "at": 17.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "recovery_interrupted_restarts",
+   "steps": [
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 0.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 5.0,
+     "expect": {
+      "severity": "medium",
+      "alert": {
+       "severity": "medium",
+       "grip": "good",
+       "related": null
+      },
+      "resolved": null
+     }
+    },
+    {
+     "op": "posted",
+     "id": "m1"
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "good",
+     "at": 6.0,
+     "expect": {
+      "severity": "medium",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "good",
+     "at": 12.0,
+     "expect": {
+      "severity": "medium",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 13.0,
+     "expect": {
+      "severity": "medium",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "good",
+     "at": 14.0,
+     "expect": {
+      "severity": "medium",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "good",
+     "at": 20.0,
+     "expect": {
+      "severity": "medium",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "good",
+     "at": 24.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": "m1"
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "good",
+     "at": 25.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "failed_post_is_raised_again",
+   "steps": [
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "bad",
+     "at": 0.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "bad",
+     "at": 5.0,
+     "expect": {
+      "severity": "critical",
+      "alert": {
+       "severity": "critical",
+       "grip": "bad",
+       "related": null
+      },
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "bad",
+     "at": 6.0,
+     "expect": {
+      "severity": "critical",
+      "alert": {
+       "severity": "critical",
+       "grip": "bad",
+       "related": null
+      },
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "bad",
+     "at": 7.0,
+     "expect": {
+      "severity": "critical",
+      "alert": {
+       "severity": "critical",
+       "grip": "bad",
+       "related": null
+      },
+      "resolved": null
+     }
+    },
+    {
+     "op": "posted",
+     "id": "c1"
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "bad",
+     "at": 8.0,
+     "expect": {
+      "severity": "critical",
+      "alert": null,
+      "resolved": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "partial_improvement_keeps_severity",
+   "steps": [
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "bad",
+     "at": 0.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "bad",
+     "at": 5.0,
+     "expect": {
+      "severity": "critical",
+      "alert": {
+       "severity": "critical",
+       "grip": "bad",
+       "related": null
+      },
+      "resolved": null
+     }
+    },
+    {
+     "op": "posted",
+     "id": "c1"
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 6.0,
+     "expect": {
+      "severity": "critical",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 9.0,
+     "expect": {
+      "severity": "critical",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "good",
+     "at": 10.0,
+     "expect": {
+      "severity": "critical",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "good",
+     "at": 20.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": "c1"
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": false,
+     "grip": "good",
+     "at": 21.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "escalation_supersedes_unposted_medium",
+   "steps": [
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 0.0,
+     "expect": {
+      "severity": "low",
+      "alert": null,
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "good",
+     "at": 5.0,
+     "expect": {
+      "severity": "medium",
+      "alert": {
+       "severity": "medium",
+       "grip": "good",
+       "related": null
+      },
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "bad",
+     "at": 6.0,
+     "expect": {
+      "severity": "medium",
+      "alert": {
+       "severity": "medium",
+       "grip": "good",
+       "related": null
+      },
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "bad",
+     "at": 11.0,
+     "expect": {
+      "severity": "critical",
+      "alert": {
+       "severity": "critical",
+       "grip": "bad",
+       "related": null
+      },
+      "resolved": null
+     }
+    },
+    {
+     "op": "update",
+     "drowsy": true,
+     "grip": "bad",
+     "at": 12.0,
+     "expect": {
+      "severity": "critical",
+      "alert": {
+       "severity": "critical",
+       "grip": "bad",
+       "related": null
+      },
+      "resolved": null
+     }
+    }
+   ]
+  }
+ ]
+}

@@ -21,7 +21,11 @@ after the first real-hardware bench run.
 
 Fusion cases exist twice on purpose: the Python reference (`test_fusion_orchestrator_decision.py`)
 and its C++ mirror (`fusion_corner_host_test.cpp`) take the same inputs and expect the same
-outputs, so the firmware can't drift from the contract.
+outputs, so the firmware can't drift from the contract. On top of that, one shared file of
+scripted cases (`src/esp32-argus/test/vectors/fusion_vectors.json`, written by
+`generate_fusion_vectors.py` from the Python reference) is replayed against `fusion.cpp`
+(`fusion_vectors_host_test.cpp`) and against the Python contract the chain sim drives
+(`src/tests/edge_chain/test_firmware_vectors.py`) — X-15.
 
 ## Top 15
 
@@ -194,6 +198,68 @@ outputs, so the firmware can't drift from the contract.
 | X-12 | `""` vs null for `related_alert_id` | 🔴 FUS-07 |
 | X-13 | edge_chain hand-built records hid Top #1 | ✅ `test_edge_chain_scenarios.py` drives the real Orchestrator |
 | X-14 | Record id as idempotency key unused | 🔴 BE-06 |
+
+## Chain audit, 2026-10-18
+
+A second read-only audit against `main` after the cv-argus reading policy landed (it emits
+`No Face`, 2 s keepalives and clock fields; the firmware hasn't changed since the first audit).
+Grouped by what each test protects. Chain tests here are `xfail(strict=True,
+raises=AssertionError)`, so a known bug only counts when the test's own assertion fails.
+
+**What the camera sends (cv-argus → ESP32)**
+
+| ID | Scenario | Status | Tests |
+|---|---|---|---|
+| REC-18a | `No Face` (probabilities `null`) is read as p(Drowsy)=0: a driver slumping out of frame recovers the open incident | 🔴 | `test_no_face_mid_incident_does_not_recover` (+ control `test_not_drowsy_after_an_incident_resolves_it` ✅), `no_face_fusion_host_test` |
+| REC-18b | Sustained `No Face` from a calm state raises nothing | 🔴 | `test_driver_slumps_out_of_frame_raises_an_alert` (CV-04), `fusion_corner_host_test` (`noFaceSustainedCountsAsDrowsy`) |
+| REC-19 | A NaN probability is written as a bare `NaN` token; ArduinoJson 7.4.3 rejects the whole line (`InvalidInput`), so it's never ACKed and blocks the queue | 🔴 | `test_wire_json_is_strict_even_with_nan_probabilities`, `test_nan_detection_is_never_reported_with_nan_probabilities`, `pi_record_edge_host_test`, `test_poison_record_does_not_block_records_behind_it` |
+| REC-20 | `clock_synced: false`: `created_at_ms` must never become the event time | ✅ guard / 🔴 parse | `test_unsynced_pi_clock_never_becomes_the_event_time`, `pi_record_edge_host_test` (`clockSyncedFalseIsParsed`) |
+| X-16 | The firmware ignores `source_id`: two cameras reset each other's debounce, nothing is raised | 🔴 | `test_two_cameras_do_not_reset_each_others_fusion` |
+
+**Pi health**
+
+| ID | Scenario | Status | Tests |
+|---|---|---|---|
+| CV-15 | A pipeline that hangs without exiting keeps sending keepalives of the last class: a frozen camera looks like an alert driver | 🔴 | `test_stalled_pipeline_keepalives_stop_or_carry_their_age` (+ `test_keepalive_while_frames_flow_is_not_marked_stale` ✅) |
+| BUF-06 | `cap_unsent` only drops keepalives, so transitions and heartbeats grow without bound during a permanent outage (e.g. a rotated key) | 🔴 | `test_unsent_backlog_stays_bounded_without_keepalives` |
+
+**GPS and time on the ESP32**
+
+| ID | Scenario | Status | Tests |
+|---|---|---|---|
+| GPS-07a | NEO-6M week-rollover dates (1999/2006) are used as GPS time: every resolve 422s, and every record once `occurred_at` is sent | 🔴 | `gps_time_host_test` |
+| GPS-07b | Stale GPS time after signal loss counts as valid | 🔴 | `gps_time_host_test` (`staleTimeIsRejected`) |
+
+**Data correctness after a backlog (ESP32 → backend)**
+
+| ID | Scenario | Status | Tests |
+|---|---|---|---|
+| FUS-15a | Every backlogged status row gets the ESP32's position at relay time | 🔴 | `test_backlog_replay_does_not_stamp_relay_time_position` |
+| FUS-15b | A re-served heartbeat carries the vigilance at relay time (calm stored as `critical`) | 🔴 | `test_backlog_heartbeat_keeps_its_own_vigilance` |
+
+**Route lifecycle**
+
+| ID | Scenario | Status | Tests |
+|---|---|---|---|
+| NET-12 | Route completed and replaced mid-incident: later records get 409 forever; after a refetch an escalation would link across routes (422) | 🔴 | `test_route_change_mid_incident_has_no_stuck_records` |
+| BE-26a | Device writes accept a `scheduled` route that `/me/active-route` never returns | 🔴 | `test_a_route_a_device_can_write_to_is_one_it_can_find` |
+| BE-26b | A truck in `maintenance`/`inactive` still ingests | ⏸ 🔴 proposed policy, needs a decision | `test_device_writes_for_a_truck_out_of_service_are_409` |
+
+**Connectivity**
+
+| ID | Scenario | Status | Tests |
+|---|---|---|---|
+| NET-13 | `wifiEnsureConnected()` restarts an attempt still associating every 10 s, so a slow AP/DHCP never connects | 🔴 | `wifi_retry_host_test`; HIL operator step still to add |
+| BT-20 | ESP32 resets between END and ACK (half-open link): the Pi waits out its 10 s ACK wait and the next poll fails | 🔴 | `test_esp32_reset_between_end_and_ack_recovers_on_next_poll`; HIL still to add |
+
+**The test harness**
+
+| ID | Scenario | Status | Tests |
+|---|---|---|---|
+| X-15 | Three hand-kept copies of the ESP32 logic (`fusion.cpp`, `esp32_sim.py`, the HIL `virtual_esp32.py`) can drift | ✅ | `fusion_vectors_host_test`, `test_firmware_vectors.py` (`virtual_esp32.py` joins once the HIL suite is on main) |
+| X-17 | The HIL suite runs a scripted Pi, never cv-argus's real `SenderServer` | ⏸ | Needs the HIL suite (`run_suite.py`, uncommitted in the `esp32-hil-suite` worktree) on main |
+| X-18 | With 2 s keepalives and 5 s polls, the alert lands between the debounce and one poll later | ✅ guard | `test_debounce_lands_within_one_poll_of_target` |
+| X-19 | Hollow chain xfails: `Scenario` called a missing `dev.tick()` and the sim crashed on `No Face`/unknown rows, so known failures failed for the wrong reason (and `drop_next_ack` was never read, so that test XPASSed on main) | ✅ fixed | `esp32_sim.py` now mirrors today's firmware (no-op `tick()`, real lost ACK, ArduinoJson parse rules); `test_poison_record_*` now uses a real poison row (REC-19) |
 
 ## Docs drift
 
