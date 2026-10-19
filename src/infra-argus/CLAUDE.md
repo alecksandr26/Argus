@@ -64,7 +64,13 @@ network namespace, so the simulator reaches OSRM on `localhost`:
    images need no custom build.
 2. `osrm` (stock `osrm/osrm-backend`, same image `setup_osrm.sh` preprocessed with, since the
    file format is version-specific), `--mmap` so 2 GB of RAM is enough. Its health check is a
-   bash `/dev/tcp` probe, because the image has no curl.
+   bash `/dev/tcp` probe, because the image has no curl. If the graph is missing (`osrm:upload`
+   never run) or `osrm-routed` exits, the container touches `/tmp/osrm-off`, sleeps, and the
+   health check passes on that marker, so the simulator still starts and its `osrm_client`
+   falls back to straight lines. Before this, an empty bucket made the essential `osrm`
+   container exit ("Required files are missing") and took the whole task down before the
+   simulator ever ran — the first real deploy hit exactly that. It depends on `osrm-data`
+   with `COMPLETE`, not `SUCCESS`, for the same reason.
 3. `simulator`: the **unchanged** `src/simulator-argus` image (its own pytest gate runs during
    the asset build), started only once `osrm` is healthy, wrapped in `sh -c '… timeout "$m"m
    python -m simulator_argus'`. The minutes come from the backend's override but are clamped to
