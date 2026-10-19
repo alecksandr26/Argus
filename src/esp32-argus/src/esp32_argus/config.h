@@ -5,10 +5,9 @@
 // cannot know on its own -- fill them in before flashing, don't leave the placeholder in.
 
 // =====================================================
-// WiFi -- the main transport to backend-argus and (indirectly, see bluetooth_client.h)
-// the Bluetooth pull from cv-argus. Per-project decision: this device's WiFi radio joins
-// a mobile-network-backed WiFi link, NOT the SIM800L's own GPRS -- the SIM800L is kept
-// SMS-only now (see sms_module.h).
+// WiFi -- the fallback transport to backend-argus (mobile data over the SIM800L is tried
+// first, see the GPRS section below), and the only path for PUT requests. Point it at a phone
+// hotspot or a 4G MiFi router in the truck to get mobile data over WiFi.
 // =====================================================
 #define WIFI_SSID "Casa " // trailing space is part of the real SSID (2.4 GHz; "Casa 5g" is 5 GHz-only)
 #define WIFI_PASSWORD "1212121212"
@@ -21,7 +20,8 @@
 // over Bluetooth (CONFIG -- credentials.h), which got them from the dashboard's
 // argus-device.env; the route id comes from GET /api/devices/me/active-route. One firmware
 // image fits every truck. The backend URL in argus-device.env must be reachable from THIS
-// device's WiFi (a LAN IP or the public https:// URL, never "localhost").
+// device (a LAN IP with USE_GPRS 0, or the public https:// URL, never "localhost"). The AWS
+// URL must be https://: CloudFront's /api/* is HTTPS-only and answers 403 to plain http://.
 // =====================================================
 // Generous on purpose: a Lambda cold start behind CloudFront can take several seconds.
 #define BACKEND_HTTP_TIMEOUT_MS 15000
@@ -29,6 +29,20 @@
 #define ACTIVE_ROUTE_RETRY_MS 30000UL
 // How often to ask the Pi for CONFIG again after it answered NOCONFIG (not provisioned).
 #define CONFIG_RETRY_INTERVAL_MS 60000UL
+
+// =====================================================
+// Mobile data (SIM800L GPRS) -- tried first for every GET/POST; WiFi is the fallback. Only a
+// transport failure (no network, no bearer, modem error) switches to WiFi, for
+// GPRS_HOLD_OFF_MS, then mobile data is tried again (see transport_policy.h). Set USE_GPRS 0
+// to go WiFi-only (bench, or a truck with a 4G hotspot and no data plan on the SIM).
+// =====================================================
+#define USE_GPRS 1
+// Telcel's public APN. Other carriers: AT&T Mexico "internet.attmex.mx" (no user/password),
+// Movistar Mexico "internet.movistar.mx" (user/password "movistar").
+#define GPRS_APN "internet.itelcel.com"
+#define GPRS_USER "webgprs"
+#define GPRS_PASSWORD "webgprs2002"
+#define GPRS_HOLD_OFF_MS 300000UL // 5 minutes on WiFi after a mobile-data transport failure
 
 // =====================================================
 // Bluetooth SPP client -- pulling from cv-argus's sender/ module (the Pi runs the SPP
@@ -64,7 +78,7 @@
 // Hardware pins
 // =====================================================
 
-// SIM800L -- SMS only now (see sms_module.h). Pins as originally wired.
+// SIM800L -- panic SMS (sms_module.h) and mobile data (gprs_http.h). Pins as originally wired.
 #define MODEM_RST 5
 #define MODEM_PWKEY 4
 #define MODEM_POWER_ON 23

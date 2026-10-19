@@ -58,6 +58,9 @@ String gpsMapsLink() {
 
 String gpsUtcIso8601() {
   if (!gps.date.isValid() || !gps.time.isValid()) return String();
+  // A stale reading (GPS signal lost minutes ago) or a week-number-rollover date (1999/2006)
+  // would be rejected by the backend's occurred_at window with a 422 -- report "no time".
+  if (gps.time.age() > 5000 || gps.date.year() < 2024) return String();
   char buf[25];
   snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ", gps.date.year(),
            gps.date.month(), gps.date.day(), gps.time.hour(), gps.time.minute(),

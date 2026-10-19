@@ -2,15 +2,13 @@
 
 #include <Arduino.h>
 
-// SIM800L -- SMS only. Kept as a hardware-direct fallback for the panic button
-// specifically: it still works even when WiFi/backend-argus is unreachable, since it
-// never touches either. This device's main data transport to backend-argus is WiFi (see
-// wifi_client.h/backend_api.h), not this modem's GPRS -- a deliberate project decision,
-// not a limitation of the hardware.
+// SIM800L panic SMS -- a hardware-direct fallback for the panic button specifically: it
+// still goes out even when backend-argus is unreachable over both mobile data and WiFi. The
+// same modem also carries mobile-data HTTP (gprs_http.h); both share modem.h's UART.
 //
-// Talks to the modem with raw AT commands over its own HardwareSerial, not TinyGsm --
-// this module's usage is narrow enough (power-on, poll network registration, send one
-// SMS) that the full TinyGsm library was pure flash-size overhead for what it bought here.
+// Raw AT commands (modem.h), not TinyGsm -- this module's usage is narrow enough (power-on,
+// poll network registration, send one SMS) that the full TinyGsm library was pure flash-size
+// overhead for what it bought here.
 
 void smsBegin();
 

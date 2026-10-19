@@ -94,7 +94,7 @@ implemented vs. still genuinely missing, item by item:**
    `src/cv-argus/src/orchestrator/fusion_contract.py`'s `FusionOrchestrator` (severity matrix,
    debounce/escalation/recovery, no automatic de-escalation, escalation-as-a-new-linked-row).
 5. **Panic button** (`panic_button.*`) — debounced, edge-triggered, bypasses the fusion loop
-   entirely per spec; also fires an SMS via the SIM800L (`sms_module.*`, kept SMS-only) as a
+   entirely per spec; also fires an SMS via the SIM800L (`sms_module.*`; the same modem also carries mobile data, `gprs_http.*`) as a
    hardware-direct fallback that still works if WiFi/the backend is down.
 6. **Grip sensor** (`grip_sensor.*`) — a debounced digital-input wrapper feeding the fusion loop.
 

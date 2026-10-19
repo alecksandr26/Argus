@@ -28,9 +28,12 @@ firmware actually does with it.
 | `credentials.*` | the credentials currently in use, cached in NVS; re-fetched from the Pi at every boot and after any 401 (see section 1b) |
 | `root_ca.h` | Amazon Root CA 1, pinned for `https://` backends (the AWS CloudFront deployment) |
 | `gps_module.*` | NEO-6M over `TinyGPSPlus` — lat/lon/speed/satellite count, plus a GPS-derived UTC timestamp (`gpsUtcIso8601()`) used for `Alert.resolved_at`, so this device never needs an NTP-synced clock |
-| `sms_module.*` | SIM800L via raw AT commands (no TinyGsm — see that file's comment) — **SMS only**. Deliberately *not* this device's data transport (see the network-path decision below); kept purely as the panic button's hardware-direct fallback |
-| `wifi_client.*` | this device's main transport — joins a mobile-network-backed WiFi link (not the SIM800L's own GPRS), with non-blocking reconnect |
-| `backend_api.*` | `backendPostAlert()` / `backendResolveAlert()` / `backendPostRouteStatus()` — the three HTTP calls into `backend-argus`, field-mapped per section 2 below; resolves the route via `GET /api/devices/me/active-route`; HTTPS with a pinned CA for `https://` URLs |
+| `sms_module.*` | panic SMS through the SIM800L — the panic button's hardware-direct fallback, which still goes out when the backend is unreachable |
+| `modem.*` | the SIM800L's UART + raw AT helpers (no TinyGsm — see `sms_module.cpp`), shared by SMS and mobile data |
+| `gprs_http.*` | HTTPS GET/POST over the SIM800L's mobile data (`AT+SAPBR` bearer, `AT+HTTP*` with `AT+HTTPSSL=1`) — the **first-choice** transport, see the network-path decision below |
+| `modem_parse.*` / `transport_policy.*` / `ack_policy.*` | pure, host-tested logic: SIM800L response parsers; GPRS-first/WiFi-fallback selection; what to do with a pulled record per HTTP status (200/201 ack, 400/409/422 ack-and-drop, 401/403/404/5xx/transport errors hold) |
+| `wifi_client.*` | the **fallback** transport (a phone hotspot or 4G MiFi works), with non-blocking reconnect; the only path for PUT |
+| `backend_api.*` | `backendPostAlert()` / `backendResolveAlert()` / `backendPostRouteStatus()` — the three HTTP calls into `backend-argus`, field-mapped per section 2 below; resolves the route via `GET /api/devices/me/active-route`; picks the transport, and on WiFi verifies an `https://` backend against the pinned CA (`root_ca.h`) |
 | `bluetooth_client.*` | the PULL/ACK client (section 1) via ESP32's built-in classic Bluetooth (`BluetoothSerial`) — a separate radio from WiFi, both run concurrently |
 | `fusion.*` | `FusionOrchestrator` — a 1:1 C++ port of `cv-argus`'s `fusion_contract.py` (section 5) |
 | `panic_button.*` / `grip_sensor.*` | debounced digital-input wrappers; GPIO pins are placeholders (see `config.h`) — real hardware mapping isn't finalized |
@@ -42,12 +45,28 @@ sketch**: flash it first on a new harness to confirm the modem, SIM, and GPS wir
 before debugging the full multi-module firmware. Its pins and destination number match
 `config.h`.
 
-**Network-path decision, confirmed directly with the user:** this device's WiFi radio is the
-transport for both `backend-argus` HTTP calls and (once pulled) relaying `cv-argus` records
-onward — reusing a mobile-network-backed WiFi connection, not the SIM800L's own GPRS data
-channel. The SIM800L is kept **SMS-only**, and SMS fires **only** from the panic button
+**Network-path decision (user decision, replacing the earlier WiFi-only one):** mobile data
+over the SIM800L's GPRS is the first-choice transport for every `GET`/`POST`, and WiFi (e.g. a phone
+hotspot or a 4G MiFi in the cab) is the fallback. Only a *transport* failure (no registration,
+no bearer, a SIM800L 6xx code) switches to WiFi, for `GPRS_HOLD_OFF_MS`, before mobile data is
+tried again; a server answer, even a 4xx/5xx, never does (`transport_policy.h`). `PUT
+/api/alerts/{id}` (resolving an incident) is WiFi-only, because the SIM800L's `AT+HTTPACTION`
+has no PUT. Set `USE_GPRS 0` for WiFi-only (the bench backend on a LAN IP can't be reached over
+mobile data).
+
+**Reaching the AWS deployment** (`src/infra-argus`): the backend URL the Pi hands over
+(`ARGUS_BACKEND_URL`, section 1b) is the CloudFront URL and must be `https://`. CloudFront's
+`/api/*` behavior is HTTPS-only and answers **403** to plain HTTP. Over WiFi the ESP32 does TLS
+itself and checks the chain against `root_ca.h` (Amazon Root CA 1). Over GPRS the TLS runs on the SIM800L, whose SSL is TLS 1.0 without SNI; CloudFront's
+default `*.cloudfront.net` certificate accepts exactly that (checked with `openssl s_client
+-tls1 -noservername -cipher AES128-SHA` against the live distribution). Two consequences: the
+modem doesn't verify the certificate (encrypted, not authenticated), and moving the API to a
+custom domain with a TLS 1.2-only policy would break the GPRS path. GPRS also needs a SIM with a
+data plan and 2G coverage, and the carrier's APN in `config.h` (Telcel by default).
+
+The SIM800L still sends the panic **SMS**, and SMS fires **only** from the panic button
 (`handlePanicButton()` in the main sketch) — a redundant, hardware-direct channel alongside the
-normal `POST /api/alerts`, so an emergency location text still goes out even if WiFi or
+normal `POST /api/alerts`, so an emergency location text still goes out even if
 `backend-argus` itself is down. It does *not* fire for any fused drowsy+grip severity.
 
 **Before you flash this**, fill in the per-site placeholders in `config.h`:

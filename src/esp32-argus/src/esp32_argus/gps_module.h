@@ -27,5 +27,6 @@ String gpsMapsLink();  // "https://www.google.com/maps?q=<lat>,<lon>" for the pa
 
 // UTC date/time from the GPS fix itself, formatted as "YYYY-MM-DDTHH:MM:SSZ" -- used for
 // Alert.resolved_at (see backend_api.h) so this device doesn't need an NTP-synced clock
-// just to say "now" in UTC. Returns "" if the GPS has no valid date/time yet.
+// just to say "now" in UTC. Returns "" if the GPS has no valid date/time yet, if the last
+// time sentence is more than 5 s old, or if the date is implausible (before 2024).
 String gpsUtcIso8601();
