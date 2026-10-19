@@ -7,7 +7,11 @@
 // HTTP client for backend-argus. Field mapping mirrors src/esp32-argus/README.md
 // section 2's table and src/backend-argus/app/schemas/alert.py / schemas/status_route.py
 // exactly -- see those for the authoritative shapes. Auth: X-Device-Api-Key on every
-// request (see backend CLAUDE.md's "Device (ESP32) auth").
+// request (see backend CLAUDE.md's "Device (ESP32) auth"), using the credentials the Pi hands
+// over via CONFIG (credentials.h) -- nothing per-truck is compiled in. The route id comes from
+// GET /api/devices/me/active-route, not config.h. A call returns false/!ok without sending
+// anything while there are no credentials or no active route; the record then stays unacked
+// on the Pi and is retried on a later pull.
 
 struct AlertPostResult {
   bool ok = false;
@@ -31,7 +35,7 @@ AlertPostResult backendPostAlert(Severity severity, const String& alertType,
 // reviewed_by_operator/operator_notes).
 bool backendResolveAlert(const String& alertId, const String& resolvedAtIso8601);
 
-// POST /api/routes/{ROUTE_ID}/status. odometer has no real sensor on this device (see
+// POST /api/routes/{active route}/status. odometer has no real sensor on this device (see
 // config.h/README.md) -- pass 0.0f, not a fabricated running total.
 bool backendPostRouteStatus(double lat, double lon, float speedKmh, float odometer,
                              Severity vigilance);

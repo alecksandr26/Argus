@@ -23,11 +23,14 @@ firmware actually does with it.
 | File | Responsibility |
 |---|---|
 | `esp32_argus.ino` | `setup()`/`loop()` — wires every module together; `handlePiRecord()` (dispatches a pulled record to the fusion engine or straight to a route-status POST) and `handlePanicButton()` live here |
-| `config.h` | every pin, timing constant, and per-deployment placeholder (WiFi creds, backend URL, device API key, route id, the Pi's Bluetooth MAC) — see "Before you flash this" below |
+| `config.h` | every pin, timing constant, and per-site placeholder (WiFi creds, the Pi's Bluetooth MAC) — nothing per-truck; see "Before you flash this" below |
+| `device_config.*` | pure parser for the Pi's `CONFIG` reply (backend URL, device API key, truck id) — host-tested in `test/host/device_config_host_test.cpp` |
+| `credentials.*` | the credentials currently in use, cached in NVS; re-fetched from the Pi at every boot and after any 401 (see section 1b) |
+| `root_ca.h` | Amazon Root CA 1, pinned for `https://` backends (the AWS CloudFront deployment) |
 | `gps_module.*` | NEO-6M over `TinyGPSPlus` — lat/lon/speed/satellite count, plus a GPS-derived UTC timestamp (`gpsUtcIso8601()`) used for `Alert.resolved_at`, so this device never needs an NTP-synced clock |
 | `sms_module.*` | SIM800L via raw AT commands (no TinyGsm — see that file's comment) — **SMS only**. Deliberately *not* this device's data transport (see the network-path decision below); kept purely as the panic button's hardware-direct fallback |
 | `wifi_client.*` | this device's main transport — joins a mobile-network-backed WiFi link (not the SIM800L's own GPRS), with non-blocking reconnect |
-| `backend_api.*` | `backendPostAlert()` / `backendResolveAlert()` / `backendPostRouteStatus()` — the three HTTP calls into `backend-argus`, field-mapped per section 2 below |
+| `backend_api.*` | `backendPostAlert()` / `backendResolveAlert()` / `backendPostRouteStatus()` — the three HTTP calls into `backend-argus`, field-mapped per section 2 below; resolves the route via `GET /api/devices/me/active-route`; HTTPS with a pinned CA for `https://` URLs |
 | `bluetooth_client.*` | the PULL/ACK client (section 1) via ESP32's built-in classic Bluetooth (`BluetoothSerial`) — a separate radio from WiFi, both run concurrently |
 | `fusion.*` | `FusionOrchestrator` — a 1:1 C++ port of `cv-argus`'s `fusion_contract.py` (section 5) |
 | `panic_button.*` / `grip_sensor.*` | debounced digital-input wrappers; GPIO pins are placeholders (see `config.h`) — real hardware mapping isn't finalized |
@@ -47,11 +50,11 @@ channel. The SIM800L is kept **SMS-only**, and SMS fires **only** from the panic
 normal `POST /api/alerts`, so an emergency location text still goes out even if WiFi or
 `backend-argus` itself is down. It does *not* fire for any fused drowsy+grip severity.
 
-**Before you flash this**, fill in every placeholder in `config.h`: `WIFI_SSID`/`WIFI_PASSWORD`,
-`BACKEND_BASE_URL` (reachable from this device's WiFi network, not `localhost`),
-`DEVICE_API_KEY` (minted via `POST /api/trucks/{id}/rotate-key`), `ROUTE_ID` (see section 2's
-`id_route` gap below — still genuinely unsolved, this is a stopgap), and `PI_BT_MAC_ADDRESS`
-(the Pi's Bluetooth MAC, from `hciconfig`/`bluetoothctl`). Required Arduino libraries (Library
+**Before you flash this**, fill in the per-site placeholders in `config.h`:
+`WIFI_SSID`/`WIFI_PASSWORD` and `PI_BT_MAC_ADDRESS` (the Pi's Bluetooth MAC, from
+`hciconfig`/`bluetoothctl`). **Nothing per-truck is compiled in anymore**: the backend URL and
+device API key come from the Pi over Bluetooth (section 1b), and the route from the backend
+(section 2), so one firmware image fits every truck. Required Arduino libraries (Library
 Manager names): `TinyGPSPlus`, `ArduinoJson` (v7+ — this code uses v7's `JsonDocument`
 API), plus `BluetoothSerial`/`WiFi`/`HTTPClient`, which ship with the ESP32 board package
 itself (no `TinyGSM` — `sms_module.cpp` talks to the SIM800L with raw AT commands instead, see
@@ -113,6 +116,35 @@ again on your next `PULL`. Rows are delivered at-least-once, never silently drop
 - `"route_status"` → `{"status": "OK"}` — this is genuinely all cv-argus produces for a status
   ping; see the gap notes in section 2 for what that means for `current_speed`/`odometer`.
 
+## 1b. Credentials — fetched from the Pi, not flashed in
+
+A truck is provisioned from the dashboard: **Fleet → truck → "Generate device credentials"**
+(root_admin/admin) issues a device key (`POST /api/trucks/{id}/rotate-key`, shown once) and
+downloads an `argus-device.env` (`ARGUS_TRUCK_ID`, `ARGUS_DEVICE_API_KEY`, `ARGUS_BACKEND_URL`).
+That file goes next to `cv-argus`'s `docker-compose.yml` on the truck's Pi. The Pi then serves
+it to this device over the same Bluetooth link, as one more request in the protocol above:
+
+```
+you  -> Pi:   CONFIG\n
+Pi   -> you:  CONFIG {"truck_id":"...","device_api_key":"...","backend_url":"https://..."}\n
+              or NOCONFIG\n                 (no argus-device.env on the Pi yet)
+```
+
+When this device asks (`refreshCredentialsIfStale()` in the main sketch, before a pull):
+- **every boot**, so a key rotated in the dashboard reaches the truck after the Pi restarts;
+- **after any `401`** from the backend (a rotated or revoked key);
+- every `CONFIG_RETRY_INTERVAL_MS` while the Pi answers `NOCONFIG`.
+
+The last good copy is cached in NVS (`credentials.cpp`), so a truck that boots before its Pi
+still reaches the backend. No credentials at all → this device doesn't pull, and records stay
+queued on the Pi. The key never goes to `Serial`.
+
+**Link security**: the Pi requires a paired, encrypted RFCOMM link (`cv-argus`'s
+`BLUETOOTH_SECURITY=medium`), because this reply carries the key. This side pairs automatically
+(SSP "Just Works": no display or keypad); the Pi side is approved once with `bluetoothctl` (see
+`src/cv-argus/README.md`). Just Works gives encryption but no MITM protection during pairing,
+which is the known limit of a display-less device.
+
 ## 2. HTTP relay to `backend-argus`
 
 `backend-argus` (merged to `main` — real, tested code) already has endpoints built and auth
@@ -120,11 +152,13 @@ designed specifically anticipating this device as the caller — see
 `src/backend-argus/CLAUDE.md`'s "Device (ESP32) auth" section for the full rationale. What you
 need to do:
 
-- **Auth**: send `X-Device-Api-Key: <key>` on every request. The key is per-truck, generated
-  once via `POST /api/trucks/{id}/rotate-key` (an admin action, not something this firmware
-  does itself), provisioned into your firmware config out of band. It's checked against the
-  specific truck that owns the route you're posting to — a stolen key only works for its own
-  truck's data.
+- **Auth**: send `X-Device-Api-Key: <key>` on every request. The key is per-truck, issued from
+  the dashboard and handed over by the Pi (section 1b). It's checked against the specific truck
+  that owns the route you're posting to — a stolen key only works for its own truck's data.
+- **Transport**: `https://` backend URLs (the AWS deployment: CloudFront only serves `/api/*`
+  over HTTPS) use `WiFiClientSecure` with Amazon Root CA 1 pinned (`root_ca.h`); `http://`
+  (a LAN bench backend) uses plain `WiFiClient`. Timeouts are `BACKEND_HTTP_TIMEOUT_MS` (15 s)
+  to ride out Lambda cold starts.
 - **`kind: "drowsiness"` records** → `POST /api/alerts`
 - **`kind: "route_status"` records** → `POST /api/routes/{id}/status`
 
@@ -135,7 +169,7 @@ don't guess a wrong answer into firmware code):**
 |---|---|---|
 | `ai_metadata.scores.not_drowsy`/`.drowsy` | `payload.probabilities[0]`/`[1]` | ✅ direct — required (and only meaningful) when `source == "fusion"`; the whole `ai_metadata` object is omitted/`null` for a `panic_button` alert, not just its sub-fields |
 | `coordinates`, `speed_at_event` | your own GPS/speed reading | ✅ direct (this device's job — `geolocation` is always `null` from cv-argus, see section 3) |
-| `id_route` | — | ❓ **undefined.** `cv-argus`'s `Alert.source_id` is a camera/stream id, not a route id. Nothing today tells this device which `Route` document a given truck's alert belongs to. Needs a real answer before this can be built — e.g. this device queries the backend for "the truck's current in-progress route" and caches it, or `cv-argus`/the Pi gets extended to carry route context. Not solved anywhere yet. |
+| `id_route` | `GET /api/devices/me/active-route` (the backend resolves the truck from the key) | ✅ **solved.** Looked up on the first write, cached, and dropped on a `404`/`409` (route ended) or a `401`; retried at most every `ACTIVE_ROUTE_RETRY_MS` while the truck has no active route. Until it has one, writes aren't sent and records stay unacked on the Pi. `cv-argus`'s `Alert.source_id` is a camera id, never a route id. |
 | `severity_level` (`critical`/`medium`/`low`) | thresholds on `payload.probabilities[1]` (`p(Drowsy)`), fused with the local grip reading | ✅ **recommended, not undefined anymore** — see section 5's fusion matrix below. Short version: `p(Drowsy) >= 0.57` (matches `src/cv-argus`'s own `FUSED_MODEL_THRESHOLD` decision boundary) counts as the fusion matrix's `Drowsy` state, `< 0.57` as `Not Drowsy`; combined with `good`/`bad` grip per the matrix, never derived from `p(Drowsy)` alone. |
 | `source` (`fusion`/`panic_button`) | which decision path fired | ✅ `"fusion"` for every drowsiness+grip-evaluated alert (section 5); `"panic_button"` for a direct panic-button press (section 5, unconditional `critical`, no debounce) |
 | `grip_status` (`good`/`bad`) | your own grip-sensor reading at the moment of the fusion decision | ✅ required (and only meaningful) when `source == "fusion"`; `null` for `panic_button` |

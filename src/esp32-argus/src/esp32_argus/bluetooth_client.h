@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 
+#include "device_config.h"
+
 // Pulls queued Alert/RouteStatus records off the Pi's Bluetooth SPP server --
 // src/cv-argus/src/sender/protocol.py's PULL/ACK grammar, with this device as the client
 // (see src/esp32-argus/README.md section 1). The Pi never pushes; this module always
@@ -32,3 +34,8 @@ void bluetoothClientBegin();
 // Returns the number of rows pulled (0 is normal -- the Pi had nothing queued), or -1 on
 // a connection/protocol failure (nothing gets ACKed in that case either).
 int bluetoothPullAlerts(bool (*onRecord)(const PiRecord& record));
+
+// Connects to the Pi, asks for this truck's backend credentials (`CONFIG`, see
+// device_config.h), and disconnects. Returns the parsed outcome; a connection failure or a
+// timeout comes back as Malformed with `out` untouched.
+ConfigLineResult bluetoothFetchConfig(DeviceCredentials& out);

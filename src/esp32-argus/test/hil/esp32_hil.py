@@ -25,10 +25,11 @@ import _imports  # noqa: F401  (path wiring, must come first)
 
 import httpx
 
-from bench_backend import BenchBackend, ROUTE_ID, config_h_values
+from bench_backend import BenchBackend, ROUTE_ID, bench_device_config
 from cv_argus.alerts import Alert, AlertKind, route_status
 from cv_argus.buffer import open_buffer
 from cv_argus.sender import SenderServer
+from cv_argus.sender.protocol import parse_config
 from cv_argus.sender.transport import Listener, Transport
 
 ROOT_ADMIN = {
@@ -116,7 +117,7 @@ class SerialSppListener(Listener):
     only while a program holds the port open. With more than one incoming port Windows
     advertises them all and the ESP32 takes whichever it finds first, so this listens on every
     one given. A COM port has no accept event, so a session starts when the first byte (the
-    PULL) arrives."""
+    CONFIG or PULL) arrives."""
 
     def __init__(self, port_names: list[str]) -> None:
         import serial
@@ -153,8 +154,10 @@ class SerialSppListener(Listener):
 
 
 class LoggingTransport(Transport):
-    """Prints every line in both directions, and counts PULLs/ACKs for the final checks."""
+    """Prints every line in both directions, and counts CONFIGs/PULLs/ACKs for the final checks.
+    The device key in a CONFIG reply is masked."""
 
+    configs = 0
     pulls = 0
     acks = 0
 
@@ -166,7 +169,9 @@ class LoggingTransport(Transport):
         if line is not None:
             text = line.decode(errors="replace")
             print(f"  [bt] ESP32 -> PC: {text}")
-            if text.startswith("PULL"):
+            if text == "CONFIG":
+                LoggingTransport.configs += 1
+            elif text.startswith("PULL"):
                 LoggingTransport.pulls += 1
             elif text.startswith("ACK"):
                 LoggingTransport.acks += 1
@@ -174,6 +179,9 @@ class LoggingTransport(Transport):
 
     def write(self, data: bytes) -> None:
         for line in data.decode(errors="replace").splitlines():
+            config = parse_config(line)
+            if config is not None:
+                line = f"CONFIG truck_id={config.get('truck_id')} backend_url={config.get('backend_url')} device_api_key=***"
             print(f"  [bt] PC -> ESP32: {line[:100]}{'...' if len(line) > 100 else ''}")
         self._inner.write(data)
 
@@ -263,12 +271,20 @@ def main() -> int:
 
     backend = BenchBackend()
     backend.start()
-    print("Bench backend up. The firmware's config.h must have:\n")
-    print(config_h_values())
-    print()
+    device_config = bench_device_config()
+    print(
+        f"Bench backend up at {device_config.backend_url}. The ESP32 gets that URL and the "
+        "bench device key from this PC over Bluetooth (CONFIG) -- config.h only needs WiFi and "
+        "PI_BT_MAC_ADDRESS.\n"
+    )
 
     buffer = open_buffer(Path(tempfile.mkdtemp(prefix="argus-hil-")) / "buffer.sqlite3")
-    server = SenderServer(buffer, LoggingListener(make_listener(args)), accept_timeout=0.5)
+    server = SenderServer(
+        buffer,
+        LoggingListener(make_listener(args)),
+        accept_timeout=0.5,
+        device_config=device_config,
+    )
     server.start()
 
     http = httpx.Client(base_url=backend.local_url, timeout=5.0)
@@ -329,6 +345,9 @@ def main() -> int:
 
     print()
     results = [
+        _log(LoggingTransport.configs > 0,
+             "ESP32 fetched its backend credentials over Bluetooth (CONFIG)",
+             f"{LoggingTransport.configs} request(s)"),
         _log(LoggingTransport.pulls > 0, "ESP32 connected over Bluetooth and sent PULL",
              f"{LoggingTransport.pulls} pull(s)"),
         _log(LoggingTransport.acks > 0, "ESP32 ACKed relayed records",

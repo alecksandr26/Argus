@@ -4,6 +4,9 @@
 //
 //   - Pulls queued Alert/RouteStatus records off the Pi's Bluetooth SPP server
 //     (bluetooth_client.*), polling PI_BT_POLL_INTERVAL_MS -- the Pi never pushes.
+//   - Gets this truck's backend credentials from the Pi too (CONFIG, credentials.*): at
+//     boot and after any 401, so a key issued/rotated in the dashboard reaches this device
+//     without a reflash. Cached in NVS for boots where the Pi isn't up yet.
 //   - Fuses a pulled drowsiness reading with this device's own live grip-sensor reading
 //     into a severity (fusion.*), and relays the result to backend-argus over WiFi
 //     (wifi_client.*, backend_api.*), attaching its own GPS reading (gps_module.*) --
@@ -20,6 +23,7 @@
 #include "backend_api.h"
 #include "bluetooth_client.h"
 #include "config.h"
+#include "credentials.h"
 #include "fusion.h"
 #include "gps_module.h"
 #include "grip_sensor.h"
@@ -91,6 +95,23 @@ bool handlePiRecord(const PiRecord& record) {
   return ok;
 }
 
+// Asks the Pi for CONFIG when the cached credentials are stale (every boot, after a 401, and
+// periodically after a NOCONFIG). A failed fetch keeps whatever NVS copy exists.
+void refreshCredentialsIfStale() {
+  if (!credentialsStale()) return;
+  DeviceCredentials fresh;
+  switch (bluetoothFetchConfig(fresh)) {
+    case ConfigLineResult::Ok:
+      credentialsApply(fresh);
+      break;
+    case ConfigLineResult::NoConfig:
+      credentialsNoneOnPi();
+      break;
+    case ConfigLineResult::Malformed:
+      break;  // still stale: retried on the next poll
+  }
+}
+
 void handlePanicButton() {
   Serial.println("[main] PANIC BUTTON pressed");
 
@@ -130,6 +151,7 @@ void setup() {
   gripSensorBegin();
   smsBegin();
   wifiBegin();
+  credentialsBegin();
   bluetoothClientBegin();
 }
 
@@ -150,6 +172,11 @@ void loop() {
 
   if (now - lastBtPollAt >= PI_BT_POLL_INTERVAL_MS) {
     lastBtPollAt = now;
+    refreshCredentialsIfStale();
+    if (!credentialsReady()) {
+      // Nothing could be relayed, so don't pull: records stay safely queued on the Pi.
+      return;
+    }
     int pulled = bluetoothPullAlerts(handlePiRecord);
     if (pulled > 0) {
       Serial.print("[main] Pulled ");

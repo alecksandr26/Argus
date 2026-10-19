@@ -29,12 +29,45 @@ from cv_argus.orchestrator.fusion_contract import (
     GripState,
     Severity,
 )
-from cv_argus.sender import END_LINE, FakeListener, FakeTransport, format_ack, format_pull
+from cv_argus.sender import (
+    CONFIG_REQUEST,
+    END_LINE,
+    NOCONFIG_LINE,
+    FakeListener,
+    FakeTransport,
+    format_ack,
+    format_pull,
+    parse_config,
+)
 
 # config.h's DROWSY_PROBABILITY_THRESHOLD, itself cv-argus's FUSED_MODEL_THRESHOLD.
 DROWSY_PROBABILITY_THRESHOLD = 0.57
 PI_BT_PULL_COUNT = 50
 PI_BT_LINE_TIMEOUT_S = 3.0
+
+
+def fetch_config(listener: FakeListener) -> dict[str, str] | str | None:
+    """bluetooth_client.cpp's bluetoothFetchConfig() + device_config.cpp's parseConfigLine():
+    the credentials dict, `NOCONFIG_LINE` when the Pi has none, or `None` on a failure."""
+    client, server_side = FakeTransport.pair()
+    listener.offer(server_side)
+    client.write((CONFIG_REQUEST + "\n").encode())
+    line = client.readline(timeout=PI_BT_LINE_TIMEOUT_S)
+    client.close()
+    if line is None:
+        return None
+    text = line.decode()
+    if text == NOCONFIG_LINE:
+        return NOCONFIG_LINE
+    return parse_config(text)
+
+
+async def resolve_active_route(http: AsyncClient, device_key: str) -> str | None:
+    """backend_api.cpp's ensureActiveRoute(): the truck's route id from its key alone."""
+    resp = await http.get(
+        "/api/devices/me/active-route", headers={"X-Device-Api-Key": device_key}
+    )
+    return resp.json()["id_route"] if resp.status_code == 200 else None
 
 
 @dataclass

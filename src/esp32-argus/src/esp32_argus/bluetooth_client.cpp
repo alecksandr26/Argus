@@ -66,6 +66,29 @@ void bluetoothClientBegin() {
   SerialBT.begin("ESP32-Argus", /*isMaster=*/true);
 }
 
+ConfigLineResult bluetoothFetchConfig(DeviceCredentials& out) {
+  // The Pi only accepts a paired, encrypted link (cv-argus BLUETOOTH_SECURITY=medium), since
+  // this reply carries the device key. Pairing is SSP "Just Works": automatic on this side,
+  // pre-approved on the Pi with bluetoothctl (see src/cv-argus/README.md).
+  if (!SerialBT.connect(piMac)) {
+    Serial.println("[bt] CONFIG: could not connect to the Pi's Bluetooth SPP server");
+    return ConfigLineResult::Malformed;
+  }
+  SerialBT.print("CONFIG\n");
+  String line;
+  ConfigLineResult result = ConfigLineResult::Malformed;
+  if (readLine(line, PI_BT_LINE_TIMEOUT_MS)) {
+    result = parseConfigLine(line, out);
+    if (result == ConfigLineResult::Malformed) {
+      Serial.println("[bt] CONFIG: malformed reply from the Pi");
+    }
+  } else {
+    Serial.println("[bt] CONFIG: timed out waiting for the Pi");
+  }
+  SerialBT.disconnect();
+  return result;
+}
+
 int bluetoothPullAlerts(bool (*onRecord)(const PiRecord& record)) {
   if (!SerialBT.connect(piMac)) {
     Serial.println("[bt] Could not connect to the Pi's Bluetooth SPP server");
