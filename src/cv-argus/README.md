@@ -192,7 +192,7 @@ scripts/demo.sh                                   # int8, webcam 0 -> http://loc
 scripts/demo.sh --precision float                 # same detector as float .keras (does int8 lose accuracy?)
 scripts/demo.sh --camera 1                        # another webcam (or --camera /dev/video2)
 scripts/demo.sh --camera src/demo_clips/x.mp4     # a recorded clip (keep clips under src/demo_clips/, gitignored)
-scripts/demo.sh --camera picam                    # Pi 5 CSI camera (adds docker-compose.pi.yml)
+scripts/demo.sh --camera picam                    # Pi 5 CSI camera (adds docker-compose.pi.yml + this host's camera nodes)
 scripts/demo.sh --eye-threshold 0.35 --head-threshold 0.25   # more sensitive closed / down
 ```
 

@@ -1,2 +1,5 @@
 # Recorded clips for scripts/demo.sh --camera src/demo_clips/<clip>.mp4 (local only).
 src/demo_clips/
+
+# Written by scripts/demo.sh --camera picam (host-specific device list).
+docker-compose.pi-devices.yml
