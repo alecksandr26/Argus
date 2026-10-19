@@ -10,7 +10,7 @@ packaging" section for why `picamera2`, gated to arm platforms in `requirements.
 **Frame-rate cap (`target_fps` / `frame_rate`, default `constants.DEFAULT_SAMPLE_FPS` = 5).**
 The deployed model was trained on frames sampled at 5 fps, so the pipeline samples at that rate
 too — and it does so *here*, at the source, so the skipped frames never cost a MediaPipe /
-CNN / LSTM cycle downstream:
+detector cycle downstream (the rule timers assume ~5 fps frame timestamps too):
 
 - a live camera is decimated with `cap.grab()` (pulls the next frame off the driver *without
   decoding* it — cheap) and only `cap.retrieve()`-decoded + emitted once `1/target_fps` has
@@ -169,7 +169,7 @@ class PiCameraSource(SourceStage):
     intuitive but correct: picamera2's format names follow libcamera/DRM little-endian naming,
     so `"RGB888"` yields numpy arrays in **[B, G, R]** order and `"BGR888"` yields [R, G, B]
     (see the picamera2 manual's pixel-format table). Asking for `"BGR888"` here would silently
-    feed the CNN red/blue-swapped crops — no exception, just degraded accuracy.
+    feed the detector red/blue-swapped frames — no exception, just degraded accuracy.
 
     `frame_rate` (default `constants.DEFAULT_SAMPLE_FPS` = 5) is applied as the sensor's
     `FrameRate` control, so the camera reads out at that rate and the ISP does no work for

@@ -8,27 +8,24 @@ Everything the rest of the codebase needs from this subpackage is re-exported he
 - `VideoCaptureSource`/`PiCameraSource` (`sources.py`) — where frames come from: a camera, a
   video file (both via `cv2.VideoCapture`, same `CAMERA_SOURCE` convention as before), or the
   Pi's CSI camera.
-- `FaceDetectorCropStage` (`face_detector_stage.py`) / `FaceLandmarkerCropStage`
-  (`face_landmarker_crop_stage.py`) — the two MediaPipe stages: BlazeFace face cropping, then
-  FaceLandmarker (on the crop, `IMAGE` mode) for the geometric-feature fusion vector — see the
-  latter's module docstring for why it runs on a crop, not the full frame.
-- `FusedInferenceStage` (`inference_stages.py`) — wraps `model/`'s `FusedDrowsinessDetector`,
-  turning a `FrameContext`'s MediaPipe output into a `DetectionResult`.
-- `LoggingOutputStage` (`output_stages.py`) — the placeholder sink until `orchestrator/` exists.
+- `FaceDetectorCropStage` (`face_detector_stage.py`) — MediaPipe BlazeFace: the face box.
+- `PartsInferenceStage` (`parts_stages.py`) — square gray crop -> tiny YOLO -> tracker -> rules,
+  setting `ctx.detection` (see that module's docstring).
+- `LoggingOutputStage` / `MetricsLogOutputStage` (`output_stages.py`) — one readable log line
+  per frame, and one JSON line per frame with every timing (`OUTPUTS=metrics`) for measurement.
 - `MjpegStreamOutputStage` (`mjpeg_output_stage.py`) — a demo-only sink that draws a live
-  overlay (drowsiness class, face box, fps) and serves it as a browser-viewable MJPEG stream.
+  overlay (part boxes, severity, timers, fps) and serves it as a browser-viewable MJPEG stream.
   Opt-in via `OUTPUTS` (see `src/main.py`) — see that module's docstring for the security note
   on why this isn't on by default.
-- `download_face_landmarker_bundle`/`download_face_detector_bundle` (`downloader.py`) — fetch
-  the two MediaPipe model bundles above, called by the Dockerfile at build time.
+- `download_face_detector_bundle` (`downloader.py`) — fetches the BlazeFace bundle, called by
+  the Dockerfile at build time.
 
 `src/main.py` builds a `Pipeline` out of these (see its module docstring) — that's the one
 place all of this actually gets wired together and run.
 
 **Lazy submodule imports, deliberately** — everything above is importable as
-`cv_argus.pipeline.<Name>`, but `sources.py`/`face_detector_stage.py`/
-`face_landmarker_crop_stage.py`/`inference_stages.py`/`mjpeg_output_stage.py` (which need
-`cv2`/`mediapipe`/`tensorflow`, the last transitively via `cv_argus.model`) are only imported on
+`cv_argus.pipeline.<Name>`, but `sources.py`/`face_detector_stage.py`/`parts_stages.py`/
+`mjpeg_output_stage.py` (which need `cv2`/`mediapipe`/`tensorflow`) are only imported on
 first attribute access via `__getattr__` (PEP 562), not eagerly below. `stage.py` (needs only
 `numpy`), `downloader.py`, and `output_stages.py` (need neither) stay eager. This keeps
 `Stage`/`SourceStage`/`OutputStage`/`Pipeline`/`FrameContext` importable and testable (see
@@ -39,7 +36,7 @@ only actually touching a stage class that needs one of those libraries pulls it 
 
 import importlib
 
-from .downloader import download_face_detector_bundle, download_face_landmarker_bundle
+from .downloader import download_face_detector_bundle
 from .output_stages import LoggingOutputStage, MetricsLogOutputStage
 from .stage import FrameContext, OutputStage, Pipeline, SourceStage, Stage
 
@@ -52,13 +49,10 @@ __all__ = [
     "VideoCaptureSource",
     "PiCameraSource",
     "FaceDetectorCropStage",
-    "FaceLandmarkerCropStage",
-    "FusedInferenceStage",
     "PartsInferenceStage",
     "LoggingOutputStage",
     "MetricsLogOutputStage",
     "MjpegStreamOutputStage",
-    "download_face_landmarker_bundle",
     "download_face_detector_bundle",
 ]
 
@@ -67,8 +61,6 @@ _LAZY = {
     "VideoCaptureSource": (".sources", "VideoCaptureSource"),
     "PiCameraSource": (".sources", "PiCameraSource"),
     "FaceDetectorCropStage": (".face_detector_stage", "FaceDetectorCropStage"),
-    "FaceLandmarkerCropStage": (".face_landmarker_crop_stage", "FaceLandmarkerCropStage"),
-    "FusedInferenceStage": (".inference_stages", "FusedInferenceStage"),
     "PartsInferenceStage": (".parts_stages", "PartsInferenceStage"),
     "MjpegStreamOutputStage": (".mjpeg_output_stage", "MjpegStreamOutputStage"),
 }

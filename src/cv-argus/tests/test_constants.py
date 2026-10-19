@@ -1,62 +1,57 @@
 """`constants.py` internal-consistency guards.
 
-These constants are wired into model-load-time shapes (`FusedDrowsinessDetector.__init__`),
-the deployed threshold, and the Docker build args. A mismatch here would only surface as a
-crash (or, worse, a silent accuracy bug) once a real `.keras` file is loaded — cheap to catch
-at the constant level instead.
+These constants are wired into the parts detector's input/output shapes, its decision
+thresholds, the rule engine, and the Docker build args. A mismatch here would only surface as a
+crash (or, worse, a silent accuracy bug) once a real model file is loaded — cheap to catch at the
+constant level instead.
 """
 
 from cv_argus import constants
-from cv_argus.model import fused_features
 
 
-def test_geo_feature_count_matches_the_name_list():
-    assert constants.FUSED_MODEL_NUM_GEO_FEATURES == len(fused_features.FUSED_GEO_FEATURE_NAMES)
-    assert constants.FUSED_MODEL_NUM_GEO_FEATURES == fused_features.NUM_FUSED_GEO_FEATURES == 10
+def test_parts_classes_match_the_detector_ids():
+    from cv_argus.model import parts_detector as pd_
+    assert constants.PARTS_CLASSES == ("open_eye", "closed_eye", "yawn", "head_straight", "head_down")
+    assert (pd_.OPEN_EYE, pd_.CLOSED_EYE, pd_.YAWN, pd_.HEAD_STRAIGHT, pd_.HEAD_DOWN) == (0, 1, 2, 3, 4)
 
 
-def test_fused_dim_is_embedding_plus_geo():
-    # FusedDrowsinessDetector builds its window buffer as (max_timesteps, embed_dim + num_geo).
-    assert constants.FUSED_MODEL_EMBED_DIM == 64
-    fused_dim = constants.FUSED_MODEL_EMBED_DIM + constants.FUSED_MODEL_NUM_GEO_FEATURES
-    assert fused_dim == 74  # the (100, 74) input shape documented in CLAUDE.md
+def test_parts_crop_geometry_matches_training():
+    # 192 stored crop -> 160 model input, square side = max(w, h) * (1 + 2 * 0.25).
+    assert constants.PARTS_IMG_SIZE == 160 and constants.PARTS_STORED_CROP_SIZE == 192
+    assert constants.PARTS_FACE_MARGIN_FRAC == 0.25
 
 
-def test_threshold_is_a_probability():
-    assert 0.0 < constants.FUSED_MODEL_THRESHOLD < 1.0
+def test_decision_thresholds_are_probabilities():
+    for thr in (constants.PARTS_CONF_THRESHOLD, constants.PARTS_CLOSED_EYE_THRESHOLD,
+                constants.PARTS_HEAD_DOWN_THRESHOLD):
+        assert 0.0 < thr < 1.0
+    assert 1 <= constants.PARTS_HEAD_DOWN_VOTES <= constants.PARTS_TRACK_VOTE_FRAMES
 
 
-def test_max_timesteps_positive():
-    assert constants.FUSED_MODEL_MAX_TIMESTEPS == 100
-    assert constants.FUSED_MODEL_MAX_TIMESTEPS > 0
+def test_rule_ladders_are_increasing():
+    assert constants.RULE_EYES_LOW_S < constants.RULE_EYES_MEDIUM_S < constants.RULE_EYES_CRITICAL_S
+    assert (constants.RULE_EYES_LOW_YAWN_S < constants.RULE_EYES_MEDIUM_YAWN_S
+            < constants.RULE_EYES_CRITICAL_YAWN_S <= constants.RULE_EYES_CRITICAL_S)
+    assert constants.RULE_HEAD_DOWN_YAWN_S <= constants.RULE_HEAD_DOWN_S
 
 
-def test_drowsy_index_is_one():
-    # Binary softmax [Not Drowsy, Drowsy]; index 1 is the class the threshold is applied to.
-    assert constants.FUSED_MODEL_DROWSY_INDEX == 1
+def test_p_drowsy_crosses_the_esp32_threshold_only_at_medium():
+    # The ESP32 treats p_drowsy >= 0.57 as drowsy; only medium/critical may reach it.
+    p = constants.RULE_P_DROWSY
+    assert p["none"] < p["low"] < 0.57 <= p["medium"] < p["critical"] <= 1.0
 
 
-def test_cnn_img_size_positive():
-    assert constants.CNN_IMG_SIZE == 96
-    assert constants.CNN_IMG_SIZE > 0
+def test_drive_file_ids_are_non_empty_and_distinct():
+    assert constants.PARTS_INT8_DRIVE_FILE_ID and constants.PARTS_FLOAT_DRIVE_FILE_ID
+    assert constants.PARTS_INT8_DRIVE_FILE_ID != constants.PARTS_FLOAT_DRIVE_FILE_ID
 
 
-def test_drive_file_ids_are_non_empty():
-    assert constants.CNN_MODEL_DRIVE_FILE_ID
-    assert constants.FUSED_MODEL_DRIVE_FILE_ID
-    # They must be different artifacts (fused model vs. its embedding backbone).
-    assert constants.CNN_MODEL_DRIVE_FILE_ID != constants.FUSED_MODEL_DRIVE_FILE_ID
-
-
-def test_bundle_urls_are_https_and_named_files():
-    assert constants.FACE_LANDMARKER_BUNDLE_URL.startswith("https://")
+def test_bundle_url_is_https_and_named_file():
     assert constants.FACE_DETECTOR_BUNDLE_URL.startswith("https://")
-    assert constants.FACE_LANDMARKER_BUNDLE_URL.endswith(constants.FACE_LANDMARKER_BUNDLE_FILENAME)
     assert constants.FACE_DETECTOR_BUNDLE_URL.endswith(constants.FACE_DETECTOR_BUNDLE_FILENAME)
 
 
 def test_model_filenames_have_expected_extensions():
-    assert constants.CNN_MODEL_FILENAME.endswith(".keras")
-    assert constants.FUSED_MODEL_FILENAME.endswith(".keras")
-    assert constants.FACE_LANDMARKER_BUNDLE_FILENAME.endswith(".task")
+    assert constants.PARTS_INT8_FILENAME.endswith(".tflite")
+    assert constants.PARTS_FLOAT_FILENAME.endswith(".keras")
     assert constants.FACE_DETECTOR_BUNDLE_FILENAME.endswith(".tflite")

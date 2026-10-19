@@ -1,7 +1,8 @@
 """Cross-check the NumPy geometry port against the real tf.keras GeometricRatioFeatureLayer.
 
-Skipped unless TensorFlow and the sibling ``cv_argus`` package are importable
-(``pip install -e .[dev]`` and have ``src/cv-argus`` on the path). This is the fidelity guard
+Skipped unless TensorFlow is importable. The reference layer is ``reference_geometric_layer.py``
+next to this file: a verbatim copy of the notebooks' class (it used to live in cv-argus, which no
+longer deploys the CNN+LSTM; see branch archive/cnn-lstm-fused). This is the fidelity guard
 that lets the pipeline drop TensorFlow without a 6th verbatim copy of the layer.
 """
 
@@ -16,15 +17,14 @@ try:
     import importlib.util
     from pathlib import Path
 
-    _layers_py = Path(__file__).resolve().parents[2] / "cv-argus" / "src" / "model" / "layers.py"
-    # Load layers.py directly by path — going through the `model` package __init__ would pull in
-    # gdown and the rest of cv_argus's runtime deps, which aren't installed here.
+    _layers_py = Path(__file__).resolve().parent / "reference_geometric_layer.py"
+    # Load it by path: tests/ is not a package, and this keeps the fixture out of argus_dataset.
     _spec = importlib.util.spec_from_file_location("_cvargus_layers", _layers_py)
     _mod = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_mod)
     GeometricRatioFeatureLayer = _mod.GeometricRatioFeatureLayer
 except Exception:  # pragma: no cover
-    pytest.skip("cv_argus GeometricRatioFeatureLayer not importable", allow_module_level=True)
+    pytest.skip("reference GeometricRatioFeatureLayer not importable", allow_module_level=True)
 
 
 def _random_rotation(rng):

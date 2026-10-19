@@ -1,10 +1,10 @@
-"""`FaceDetectorCropStage`: MediaPipe Face Detector (BlazeFace, short_range) -> a cropped face
-image, feeding `FaceLandmarkerCropStage` and ultimately `FusedInferenceStage`. Ports
-`notebook/06_dataset_creation_face_crops.ipynb`'s `FaceCropExtractionPipeline` extraction logic
-verbatim (`VIDEO` running mode, `min_detection_confidence`, `bbox_margin_frac`, highest-
-confidence-detection selection when more than one face is found) because the deployed model's
-frozen CNN embedding backbone was trained on crops built exactly this way — diverging here is a
-silent train/inference skew, not something that would show up as an exception.
+"""`FaceDetectorCropStage`: MediaPipe Face Detector (BlazeFace, short_range) -> the face box,
+feeding `PartsInferenceStage`. Detection follows `notebook/06_dataset_creation_face_crops.ipynb`
+and the parts dataset builder (`VIDEO` running mode, `min_detection_confidence`, the
+highest-confidence face when more than one is found), because the parts detector was trained on
+crops built from exactly this detector's boxes. It publishes the raw box (`face_bbox_raw`, which
+`PartsInferenceStage` turns into the square training crop) and a margin-expanded box for the
+overlay (`face_bbox`).
 """
 
 import logging
@@ -36,11 +36,10 @@ def _expand_and_clip_bbox(
 
 
 class FaceDetectorCropStage(Stage):
-    """Runs MediaPipe's Face Detector on each frame and, when a face is found, crops it (with
-    margin) and converts it to RGB for the frozen CNN embedder. Frames with no confident
-    detection are passed through with `face_found=False` rather than dropped —
-    `FaceLandmarkerCropStage`/`FusedInferenceStage` and the output stage decide what "no
-    detection this frame" means; this stage only reports it.
+    """Runs MediaPipe's Face Detector on each frame and records the best face's box. Frames with
+    no confident detection are passed through with `face_found=False` rather than dropped —
+    `PartsInferenceStage` (whose rules count "no face" time) and the outputs decide what that
+    means; this stage only reports it.
     """
 
     def __init__(
@@ -91,13 +90,6 @@ class FaceDetectorCropStage(Stage):
             ctx.face_found = False
             return ctx
 
-        crop_bgr = frame_bgr[y0:y1, x0:x1]
-        # BGR -> RGB explicitly: notebook 06 wrote crops via cv2.imwrite(BGR array), which
-        # encodes a standard RGB-ordered JPEG; 07_cnn_training.ipynb then read them back with
-        # tf.io.decode_jpeg (RGB). The CNN was trained on RGB pixels. There's no JPEG file here
-        # to do that conversion for us implicitly, so it has to happen explicitly -- skipping
-        # this doesn't error, it silently feeds a channel-swapped image and degrades accuracy.
-        ctx.features["face_crop_rgb"] = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
         # Pixel-space box on the *original* frame (post-margin, pre-clip-to-crop) -- not needed
         # for inference, but lets a demo/overlay stage (see mjpeg_output_stage.py) draw it
         # without redoing detection itself.

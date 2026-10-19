@@ -6,13 +6,12 @@ management (no GCP setup, no secret to mount on the Pi), at the cost of the mode
 link-accessible to anyone who has the ID. Every Drive file this module downloads must be shared
 as "Anyone with the link" (Viewer), or `gdown` can't fetch it without extra auth.
 
-This only downloads — it doesn't load a model into memory or know anything about Keras.
-`CnnDrowsinessDetector`/`FusedDrowsinessDetector` (`cnn_detector.py`/`fused_detector.py`) are
-what call these functions and then load the resulting file.
+This only downloads — it doesn't load a model into memory. `PartsDetector.from_env()`
+(`parts_detector.py`) calls these functions and then loads the resulting file.
 
-The MediaPipe Face Landmarker/Face Detector `.task`/`.tflite` bundles are a separate, unrelated
-download — see `pipeline/downloader.py` for those. They don't live here because they aren't this
-module's dependency (neither class here touches MediaPipe); they're `pipeline/`'s.
+The MediaPipe Face Detector (BlazeFace) `.tflite` bundle is a separate download — see
+`pipeline/downloader.py`. It doesn't live here because it's `pipeline/`'s dependency, not this
+module's (nothing in `model/` touches MediaPipe).
 """
 
 import logging
@@ -74,71 +73,6 @@ def _download_from_drive(
     return destination
 
 
-def download_cnn_model(
-    file_id: str | None = None,
-    model_dir: str | os.PathLike | None = None,
-    filename: str | None = None,
-) -> Path:
-    """Ensure the trained CNN face-crop checkpoint is present locally, downloading if needed.
-
-    Required, not for its own classification (see `cnn_detector.py`'s module docstring), but as
-    the frozen embedding backbone `download_fused_model()`'s model depends on.
-    `constants.CNN_MODEL_DRIVE_FILE_ID` gives this a checked-in default, so this succeeds with no
-    environment configuration at all; the `CNN_MODEL_DRIVE_FILE_ID` env var still overrides it,
-    for swapping in a newer trained model without a code change. An env var
-    present-but-set-to-empty-string (e.g. an unset Docker build `ARG` substituted in) is treated
-    the same as absent, falling through to the `constants.py` default either way.
-
-    Called from the Dockerfile at *build* time (`python -m cv_argus.model.downloader`) — baked
-    into the image rather than fetched at container start, so the device can boot and start
-    monitoring the driver even if the truck has no signal at that exact moment.
-
-    Returns the local path to the model file.
-    """
-    file_id = (
-        file_id
-        or os.environ.get("CNN_MODEL_DRIVE_FILE_ID")
-        or constants.CNN_MODEL_DRIVE_FILE_ID
-    )
-    model_dir = Path(
-        model_dir or os.environ.get("MODEL_DIR") or constants.MODEL_DIR_DEFAULT
-    )
-    filename = (
-        filename or os.environ.get("CNN_MODEL_FILENAME") or constants.CNN_MODEL_FILENAME
-    )
-    return _download_from_drive(file_id, model_dir, filename, label="CNN model")
-
-
-def download_fused_model(
-    file_id: str | None = None,
-    model_dir: str | os.PathLike | None = None,
-    filename: str | None = None,
-) -> Path:
-    """Ensure the trained fused CNN-embedding + geometric-feature + LSTM classifier
-    (`best_cnn_lstm_frozen_embedding.keras`, `notebook/11_cnn_lstm_training_drive_pull.ipynb`)
-    is present locally, downloading if needed. Required — this is the model this container
-    deploys.
-
-    `constants.FUSED_MODEL_DRIVE_FILE_ID` gives this a checked-in default (same "Anyone with the
-    link isn't a secret" rationale `CNN_MODEL_DRIVE_FILE_ID` is checked in under), so this
-    succeeds with no environment configuration; `FUSED_MODEL_DRIVE_FILE_ID` still overrides it.
-
-    Returns the local path to the model file.
-    """
-    file_id = (
-        file_id
-        or os.environ.get("FUSED_MODEL_DRIVE_FILE_ID")
-        or constants.FUSED_MODEL_DRIVE_FILE_ID
-    )
-    model_dir = Path(
-        model_dir or os.environ.get("MODEL_DIR") or constants.MODEL_DIR_DEFAULT
-    )
-    filename = (
-        filename or os.environ.get("FUSED_MODEL_FILENAME") or constants.FUSED_MODEL_FILENAME
-    )
-    return _download_from_drive(file_id, model_dir, filename, label="fused CNN+LSTM model")
-
-
 def _download_parts(kind: str, label: str, file_id, model_dir, filename) -> Path:
     file_id = file_id or os.environ.get(f"PARTS_{kind}_DRIVE_FILE_ID") or getattr(constants, f"PARTS_{kind}_DRIVE_FILE_ID")
     model_dir = Path(model_dir or os.environ.get("MODEL_DIR") or constants.MODEL_DIR_DEFAULT)
@@ -161,13 +95,8 @@ def download_parts_float_model(file_id=None, model_dir=None, filename=None) -> P
 
 if __name__ == "__main__":
     # `python -m cv_argus.model.downloader` — called from the Dockerfile at build time. Both
-    # downloads are required: the fused model is what this container deploys, and it needs the
-    # CNN checkpoint as its frozen embedding backbone (see fused_detector.py). Either one
-    # failing should fail the whole image build, not silently produce an image that can't start.
-    # The parts detector (PIPELINE=parts) is baked in too, both precisions, so switching
-    # PARTS_PRECISION or PIPELINE never needs a network at container start.
+    # precisions of the parts detector are baked in, so switching PARTS_PRECISION never needs a
+    # network at container start. Either download failing fails the image build.
     logging.basicConfig(level=logging.INFO)
-    download_cnn_model()
-    download_fused_model()
     download_parts_int8_model()
     download_parts_float_model()

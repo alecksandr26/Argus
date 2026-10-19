@@ -1,8 +1,8 @@
 """NumPy port of the notebooks' ``GeometricRatioFeatureLayer``.
 
 The notebooks compute the 7 geometric features (EAR x2, MAR, head-pose pitch/yaw/roll, and a
-pose-validity flag) with a ``tf.keras.layers.Layer`` (``src/cv-argus/src/model/layers.py``,
-also copied verbatim into notebooks 01/02/09). That layer is pure arithmetic on values
+pose-validity flag) with a ``tf.keras.layers.Layer`` (reference copy:
+``tests/reference_geometric_layer.py``, also copied verbatim into notebooks 01/02/09). That layer is pure arithmetic on values
 MediaPipe already returns — landmark coordinates and the facial transformation matrix — so
 here it is reimplemented in NumPy. This keeps TensorFlow (~0.5 GB resident per process) out of
 every spawned worker.

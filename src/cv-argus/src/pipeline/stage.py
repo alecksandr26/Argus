@@ -5,7 +5,7 @@ calls `process_item()` on each one, and pushes whatever comes back onto every qu
 `output_queues`. Subclasses implement `process_item()` (or, for a source/sink, `produce()`/
 `handle()` — see `SourceStage`/`OutputStage` below) only; the threading, queueing, backpressure,
 and shutdown plumbing here is shared by every concrete stage in this package
-(`FaceDetectorCropStage`, `FusedInferenceStage`, `LoggingOutputStage`, ...), which is the whole
+(`FaceDetectorCropStage`, `PartsInferenceStage`, `LoggingOutputStage`, ...), which is the whole
 point of having this base class: a new stage (a video-overlay output stage, a future model
 family's stages, ...) only has to write its own `process_item()`.
 
@@ -57,7 +57,7 @@ class FrameContext:
     """The one item type that flows through every pipeline in this package.
 
     `features` is a deliberately open bag for stage-specific intermediate values (a MediaPipe
-    stage's `"face_crop_rgb"` or `"landmarks_xy"`/`"rotation_matrix"`/`"blendshape_scores"`) —
+    stage's `"face_bbox_raw"`, or the parts stage's `"parts"` and `"timing_ms"`) —
     new stages don't require editing this shared class. `detection` stays a first-class typed
     field instead, since *every* pipeline in this package converges on the same
     `DetectionResult` shape (see `model/detector.py`) — a deliberate middle ground between
@@ -121,8 +121,8 @@ class Stage(ABC):
         calls chain: `source.connect(a).connect(b).connect(c)`.
 
         Calling `connect()` twice on the same upstream stage fans its output out to two
-        downstream chains for free (e.g. running the CNN and LSTM pipelines off one camera
-        simultaneously) — there's no separate "fan-out stage" needed for that.
+        downstream chains for free (e.g. the logging, metrics and MJPEG sinks off one
+        inference stage) — there's no separate "fan-out stage" needed for that.
         """
         if downstream.input_queue is None:
             raise ValueError(

@@ -212,34 +212,27 @@ class TestBuildPipeline:
     whether the orchestrator bridge stage actually gets wired in, not about the real pipeline.
     """
 
-    def test_wires_the_orchestrator_bridge_stage(self, monkeypatch):
+    def test_wires_parts_stage_then_outputs_and_bridge(self, monkeypatch):
         import queue
 
         from cv_argus.orchestrator import OrchestratorBridgeOutputStage
         from cv_argus.pipeline.stage import Stage
 
+        def factory(label):
+            class _FakeStage(Stage):
+                def __init__(self, *args, **kwargs):
+                    super().__init__(label)
+
+                def process_item(self, item):
+                    return item
+            return _FakeStage
+
         monkeypatch.delenv("SOURCE", raising=False)
         monkeypatch.setenv("OUTPUTS", "logging")
         monkeypatch.setattr(main, "download_face_detector_bundle", lambda: "fake_bundle")
-        monkeypatch.setattr(main, "download_face_landmarker_bundle", lambda: "fake_bundle")
-
-        class _FakeFusedDrowsinessDetector:
-            @staticmethod
-            def from_env():
-                return object()
-
-        monkeypatch.setattr(main, "FusedDrowsinessDetector", _FakeFusedDrowsinessDetector)
-
-        class _FakeStage(Stage):
-            def __init__(self, *args, **kwargs):
-                super().__init__("fake_stage")
-
-            def process_item(self, item):
-                return item
-
-        monkeypatch.setattr(main, "FaceDetectorCropStage", _FakeStage)
-        monkeypatch.setattr(main, "FaceLandmarkerCropStage", _FakeStage)
-        monkeypatch.setattr(main, "FusedInferenceStage", _FakeStage)
+        monkeypatch.setattr(main, "FaceDetectorCropStage", factory("blazeface"))
+        monkeypatch.setattr(main, "PartsInferenceStage", factory("parts"))
+        monkeypatch.setattr(main.PartsDetector, "from_env", staticmethod(lambda: object()))
 
         class _FakeOrchestrator:
             def __init__(self):
@@ -248,73 +241,15 @@ class TestBuildPipeline:
         orchestrator = _FakeOrchestrator()
         pipeline = main._build_pipeline(orchestrator)
 
+        names = [s.name for s in pipeline.stages]
+        assert names[1:3] == ["blazeface", "parts"]
         bridges = [s for s in pipeline.stages if isinstance(s, OrchestratorBridgeOutputStage)]
         assert len(bridges) == 1
         assert bridges[0]._out_queue is orchestrator.input_queue
-        # bridge is connected from the inference stage (stages[3]: source, crop, landmarker,
-        # inference, *outputs, bridge), same fan-out mechanism OUTPUTS=logging,mjpeg already uses.
-        inference_stage = pipeline.stages[3]
-        assert bridges[0].input_queue in inference_stage.output_queues
+        # bridge is connected from the inference stage (stages[2]: source, blazeface, parts,
+        # *outputs, bridge), same fan-out mechanism OUTPUTS=logging,mjpeg already uses.
+        assert bridges[0].input_queue in pipeline.stages[2].output_queues
         assert pipeline.stages[-1] is bridges[0]
-
-
-class TestPipelineSwitch:
-    """`PIPELINE` picks the model stages after BlazeFace; everything else is shared."""
-
-    def _fake(self, monkeypatch, made):
-        from cv_argus.pipeline.stage import Stage
-
-        def factory(label):
-            class _FakeStage(Stage):
-                def __init__(self, *args, **kwargs):
-                    super().__init__(label)
-                    made.append(label)
-
-                def process_item(self, item):
-                    return item
-            return _FakeStage
-
-        monkeypatch.delenv("SOURCE", raising=False)
-        monkeypatch.setenv("OUTPUTS", "logging")
-        monkeypatch.setattr(main, "download_face_detector_bundle", lambda: "b")
-        monkeypatch.setattr(main, "download_face_landmarker_bundle", lambda: "b")
-        monkeypatch.setattr(main, "FaceDetectorCropStage", factory("blazeface"))
-        monkeypatch.setattr(main, "FaceLandmarkerCropStage", factory("landmarker"))
-        monkeypatch.setattr(main, "FusedInferenceStage", factory("fused"))
-        monkeypatch.setattr(main, "PartsInferenceStage", factory("parts"))
-        monkeypatch.setattr(main.FusedDrowsinessDetector, "from_env", staticmethod(lambda: object()))
-        monkeypatch.setattr(main.PartsDetector, "from_env", staticmethod(lambda: object()))
-
-    def _orch(self):
-        import queue
-
-        class _O:
-            input_queue = queue.Queue()
-        return _O()
-
-    def test_default_is_fused(self, monkeypatch):
-        made = []
-        self._fake(monkeypatch, made)
-        monkeypatch.delenv("PIPELINE", raising=False)
-        names = [s.name for s in main._build_pipeline(self._orch()).stages]
-        assert names[1:4] == ["blazeface", "landmarker", "fused"]
-
-    def test_parts_skips_the_landmarker_and_feeds_the_bridge(self, monkeypatch):
-        from cv_argus.orchestrator import OrchestratorBridgeOutputStage
-        made = []
-        self._fake(monkeypatch, made)
-        monkeypatch.setenv("PIPELINE", "parts")
-        p = main._build_pipeline(self._orch())
-        names = [s.name for s in p.stages]
-        assert names[1:3] == ["blazeface", "parts"] and "landmarker" not in made
-        bridge = p.stages[-1]
-        assert isinstance(bridge, OrchestratorBridgeOutputStage)
-        assert bridge.input_queue in p.stages[2].output_queues
-
-    def test_unknown_pipeline_is_rejected(self, monkeypatch):
-        monkeypatch.setenv("PIPELINE", "lstm")
-        with pytest.raises(SystemExit, match="PIPELINE"):
-            main._pipeline_name()
 
 
 class TestLatencyLogInterval:

@@ -15,7 +15,7 @@ FROM python:3.11-slim-bookworm AS base
 #                      libGLESv2.so.2/libEGL.so.1 for their GPU tensor-op path even when the
 #                      pipeline never touches a display — missing these fails with
 #                      "OSError: libGLESv2.so.2: cannot open shared object file" the first time
-#                      any FaceDetector/FaceLandmarker is actually constructed (not at import
+#                      any FaceDetector is actually constructed (not at import
 #                      time, so `pip install` and the download step both succeed regardless).
 #   ffmpeg          - video container/codec support for cv2.VideoCapture (camera + files)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -101,22 +101,17 @@ RUN pytest
 FROM base AS runtime
 COPY --from=test /app/src ./src
 
-# Model artifacts (the fused CNN-embedding/LSTM classifier this container deploys, the CNN
-# checkpoint it depends on as a frozen embedding backbone, and the two MediaPipe bundles both
-# pipeline stages need) are baked into the image at BUILD time, not fetched at container start —
-# see model/downloader.py and pipeline/downloader.py. This device has to be able to boot and
-# start monitoring the driver in a moving truck that may have no signal right then; a runtime
-# download dependency is a liability a build-time one isn't. Accepted trade-off: a new trained
-# model needs an image rebuild + redeploy, not just a container restart. `docker build` succeeds
-# with no ARG/`.env` at all — both Drive file ids have checked-in defaults in constants.py — and
-# both downloads are required: a failure in either fails the whole build (see
-# model/downloader.py's `__main__` block).
+# Model artifacts (notebook 12's tiny YOLO parts detector at both precisions, int8 .tflite +
+# float .keras, and the MediaPipe BlazeFace bundle) are baked into the image at BUILD time, not
+# fetched at container start — see model/downloader.py and pipeline/downloader.py. This device
+# has to be able to boot and start monitoring the driver in a moving truck that may have no
+# signal right then; a runtime download dependency is a liability a build-time one isn't.
+# Accepted trade-off: a new trained model needs an image rebuild + redeploy, not just a
+# container restart. `docker build` succeeds with no ARG/`.env` at all — both Drive file ids
+# have checked-in defaults in constants.py — and every download is required: a failure fails
+# the whole build. (The old CNN+LSTM artifacts are no longer downloaded; that pipeline lives on
+# branch archive/cnn-lstm-fused.)
 ENV MODEL_DIR=/app/models
-ARG CNN_MODEL_DRIVE_FILE_ID
-ENV CNN_MODEL_DRIVE_FILE_ID=${CNN_MODEL_DRIVE_FILE_ID}
-ARG FUSED_MODEL_DRIVE_FILE_ID
-ENV FUSED_MODEL_DRIVE_FILE_ID=${FUSED_MODEL_DRIVE_FILE_ID}
-# PIPELINE=parts: notebook 12's tiny YOLO detector, both precisions (int8 .tflite + float .keras).
 ARG PARTS_INT8_DRIVE_FILE_ID
 ENV PARTS_INT8_DRIVE_FILE_ID=${PARTS_INT8_DRIVE_FILE_ID}
 ARG PARTS_FLOAT_DRIVE_FILE_ID

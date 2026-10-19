@@ -1,10 +1,10 @@
-"""The "parts" pipeline's inference stage (`PIPELINE=parts`).
+"""The "parts" pipeline's inference stage, the model stage cv-argus runs.
 
 One stage does crop → detect → remap → track → rules, because the steps are strictly
 sequential, per camera stream, and each costs milliseconds; splitting them across threads
 would only add queue hops. The model maths lives in `model/` (`parts_geometry`,
 `parts_detector`, `parts_tracker`) and the decision logic in `orchestrator/parts_rules`. This
-stage is the glue, like `FusedInferenceStage`.
+stage is the glue.
 
 It reads `ctx.features["face_bbox_raw"]` from `FaceDetectorCropStage` (BlazeFace). No
 FaceLandmarker: head pose comes from the detector's own `head_*` classes, a user decision.
@@ -16,8 +16,10 @@ It writes:
   view while an alarm is held keeps the alarm.
 - `ctx.features["parts"]`: everything the demo overlay draws. That covers the tracks (boxes
   already remapped to **frame pixels**), the crop square, the rule state and the precision.
+- `ctx.features["timing_ms"]`: this frame's crop / infer / decode / track / rules times (ms),
+  next to BlazeFace's `face`, for the metrics log.
 
-Unlike `FusedInferenceStage`, frames **without** a face still tick the rule engine, because
+Frames **without** a face still tick the rule engine, because
 "face lost for 3 s" is itself a rule and timers need every timestamp.
 """
 

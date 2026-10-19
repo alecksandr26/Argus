@@ -1,31 +1,19 @@
-"""Fetches pretrained MediaPipe model bundles used by pipeline/'s camera-loop stages.
+"""Fetches the pretrained MediaPipe Face Detector bundle `FaceDetectorCropStage` needs.
 
-Two bundles, each a plain, public, unauthenticated HTTP download — no Drive file ID, no
-sharing settings, no credentials, unlike `cv_argus.model.downloader`'s trained-model fetches.
-Both are needed by the fused pipeline, run back to back on the same face crop — see
-`face_landmarker_crop_stage.py`'s module docstring for why two separate MediaPipe tasks:
+A plain, public, unauthenticated HTTP download — no Drive file ID, no sharing settings, no
+credentials, unlike `cv_argus.model.downloader`'s trained-model fetches.
 
-- `download_face_landmarker_bundle()` — the Face Landmarker `.task` bundle
-  `FaceLandmarkerCropStage` needs (478 landmarks + blendshapes + head pose, run in `IMAGE` mode
-  on the crop). Same URL/behavior as `notebook/01_dataset_creation_lstm.ipynb`'s "Downloading and
-  Setting Up the MediaPipe Model Bundle" cell.
 - `download_face_detector_bundle()` — the Face Detector (BlazeFace, short_range/float16)
-  `.tflite` bundle `FaceDetectorCropStage` needs (bounding-box-only, no landmarks) to produce
-  the crop in the first place. Same URL/behavior as `notebook/06_dataset_creation_face_crops
-  .ipynb`'s "MediaPipe Face Detector Setup" cell — a different, lighter model from the Landmarker
-  above, not a typo.
+  `.tflite` bundle (bounding-box-only, no landmarks). Same URL/behavior as
+  `notebook/06_dataset_creation_face_crops.ipynb`'s "MediaPipe Face Detector Setup" cell and the
+  parts dataset builder.
 
-Both live here rather than in `model/` because they're this subpackage's dependency (neither
-detector class in `model/` touches MediaPipe) — the stages in `pipeline/` that wrap
-`FaceLandmarker`/`FaceDetector` are what actually use these downloaded bundles.
+It lives here rather than in `model/` because it's this subpackage's dependency (nothing in
+`model/` touches MediaPipe).
 
-URLs/filenames default from `constants.py` (see its docstring), overridable per-bundle via the
-matching environment variable — an empty-string env var (e.g. an unset Docker build `ARG`
-substituted in) is treated the same as an absent one, same convention as
-`cv_argus.model.downloader`. Neither bundle needs a readiness gate the way the CNN's trained
-`.keras` artifact does (see `model/downloader.py`): these are Google's own pretrained,
-public-by-default weights, not a project-trained artifact — safe to always fetch at build time
-regardless of which model family ends up deployed.
+URL/filename default from `constants.py` (see its docstring), overridable via the matching
+environment variable — an empty-string env var (e.g. an unset Docker build `ARG` substituted in)
+is treated the same as an absent one, same convention as `cv_argus.model.downloader`.
 """
 
 import logging
@@ -67,39 +55,6 @@ def _download_bundle(url: str, model_dir: Path, filename: str, *, label: str) ->
     return destination
 
 
-def download_face_landmarker_bundle(
-    model_dir: str | os.PathLike | None = None,
-    filename: str | None = None,
-    url: str | None = None,
-) -> Path:
-    """Ensure the pretrained MediaPipe Face Landmarker `.task` bundle is present locally.
-
-    Reads `MODEL_DIR` (shared with `cv_argus.model.downloader` — one cache directory for all
-    startup artifacts) plus `FACE_LANDMARKER_BUNDLE_URL`/`FACE_LANDMARKER_BUNDLE_FILENAME` from
-    the environment for any argument left as `None`, falling back to `constants.py`'s defaults
-    if unset.
-
-    Called from the Dockerfile at *build* time (see the `RUN python -m
-    cv_argus.pipeline.downloader` step there) — baked into the image alongside the trained
-    model(s), for the same reason: the device needs to boot and start monitoring the driver
-    even with no signal in the truck at that moment, not depend on a runtime download.
-
-    Returns the local path to the bundle file.
-    """
-    model_dir = Path(model_dir or os.environ.get("MODEL_DIR") or constants.MODEL_DIR_DEFAULT)
-    filename = (
-        filename
-        or os.environ.get("FACE_LANDMARKER_BUNDLE_FILENAME")
-        or constants.FACE_LANDMARKER_BUNDLE_FILENAME
-    )
-    url = (
-        url
-        or os.environ.get("FACE_LANDMARKER_BUNDLE_URL")
-        or constants.FACE_LANDMARKER_BUNDLE_URL
-    )
-    return _download_bundle(url, model_dir, filename, label="Face Landmarker bundle")
-
-
 def download_face_detector_bundle(
     model_dir: str | os.PathLike | None = None,
     filename: str | None = None,
@@ -110,11 +65,10 @@ def download_face_detector_bundle(
 
     Reads `MODEL_DIR` plus `FACE_DETECTOR_BUNDLE_URL`/`FACE_DETECTOR_BUNDLE_FILENAME` from the
     environment for any argument left as `None`, falling back to `constants.py`'s defaults if
-    unset. Needed by `FaceDetectorCropStage` — a different, lighter bundle from the Landmarker
-    one above (bounding-box-only, no landmarks/blendshapes), matching
-    `notebook/06_dataset_creation_face_crops.ipynb`'s "MediaPipe Face Detector Setup" cell.
+    unset. Needed by `FaceDetectorCropStage`.
 
-    Called from the Dockerfile at *build* time, same as the Landmarker bundle above.
+    Called from the Dockerfile at *build* time (`python -m cv_argus.pipeline.downloader`), so the
+    device can start monitoring with no signal in the truck at that moment.
 
     Returns the local path to the bundle file.
     """
@@ -136,4 +90,3 @@ if __name__ == "__main__":
     # `python -m cv_argus.pipeline.downloader` — called from the Dockerfile at build time.
     logging.basicConfig(level=logging.INFO)
     download_face_detector_bundle()
-    download_face_landmarker_bundle()

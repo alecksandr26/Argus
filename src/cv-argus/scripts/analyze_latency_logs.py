@@ -4,11 +4,14 @@ optionally, a chart) so a slow pipeline can be picked apart offline instead of s
 
 Every `LATENCY_LOG_INTERVAL` seconds each stage logs one line like:
 
-    05:26:17 INFO cv_argus.pipeline.stats: stats fused_inference.process: n=17 \
-        wait(mean=2938.6ms p50=2933.1 p95=2997.2 max=3024.2) \
-        proc(mean=602.3ms p50=598.7 p95=621.5 max=662.0) \
-        embed(mean=18.4ms ...) lstm(mean=583.8ms ...) \
-        inq(avg=4.0 max=4) drop=0 life(n=252 max=738.7ms)
+    05:26:17 INFO cv_argus.pipeline.stats: stats parts_inference.process: n=50 \
+        wait(mean=0.4ms p50=0.3 p95=0.9 max=1.2) \
+        proc(mean=1.6ms p50=1.5 p95=2.1 max=3.0) \
+        crop(mean=0.3ms ...) infer(mean=0.6ms ...) decode(...) rules(...) \
+        inq(avg=0.0 max=1) drop=0 life(n=252 max=3.0ms)
+
+(These are interval summaries per stage. For per-frame numbers, use `OUTPUTS=metrics` and
+`scripts/summarize_metrics.py`.)
 
 This turns a whole run of those into one row per (stage, report), with a stable column set —
 load it in pandas / a spreadsheet, or pass `--plot` for a quick 2x2 matplotlib overview.
@@ -49,8 +52,10 @@ _TIME_RE = re.compile(r"(?:^|\s)(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:
 _COLUMNS = [
     ("proc", ("mean", "p50", "p95", "max")),
     ("wait", ("mean", "p50", "p95", "max")),
-    ("embed", ("mean", "p95")),
-    ("lstm", ("mean", "p95")),
+    ("crop", ("mean", "p95")),
+    ("infer", ("mean", "p95")),
+    ("decode", ("mean", "p95")),
+    ("rules", ("mean", "p95")),
     ("inq", ("avg", "max")),
     ("e2e", ("mean", "p95")),
 ]

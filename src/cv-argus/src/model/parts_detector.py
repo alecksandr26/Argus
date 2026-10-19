@@ -25,7 +25,7 @@ is detected at all.
   That was measured fastest: a model this small doesn't split across cores (1.35 ms on 1 thread
   vs 1.69 ms on 4).
 - `float`: the original `.keras`, called through a fixed-shape `tf.function` (the same trick as
-  `fused_detector.py`, to avoid eager-dispatch overhead).
+  the old fused detector, to avoid eager-dispatch overhead).
 
 On 40 real test face crops the two agreed on 97% of grid-cell classes. Both expose
 `predict(x) -> raw grid`, so everything downstream is identical.

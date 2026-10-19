@@ -94,6 +94,8 @@ def test_metrics_output_is_selectable(monkeypatch, tmp_path):
 def test_summarize_metrics_script():
     recs = [parts_frame_record(c) for c in _run(pd_.CLOSED_EYE, 20)]
     path = Path(__file__).resolve().parents[1] / "scripts" / "summarize_metrics.py"
+    if not path.exists():   # the Docker test stage copies src/ and tests/ only, not scripts/
+        pytest.skip("scripts/ not present")
     spec = importlib.util.spec_from_file_location("summarize_metrics", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

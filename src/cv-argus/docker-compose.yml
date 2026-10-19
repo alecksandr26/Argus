@@ -15,8 +15,6 @@ services:
       # to pass them through as build args. Both have checked-in defaults (see src/constants.py),
       # so `docker compose build` succeeds even with no `.env` at all.
       args:
-        CNN_MODEL_DRIVE_FILE_ID: ${CNN_MODEL_DRIVE_FILE_ID:-}
-        FUSED_MODEL_DRIVE_FILE_ID: ${FUSED_MODEL_DRIVE_FILE_ID:-}
         PARTS_INT8_DRIVE_FILE_ID: ${PARTS_INT8_DRIVE_FILE_ID:-}
         PARTS_FLOAT_DRIVE_FILE_ID: ${PARTS_FLOAT_DRIVE_FILE_ID:-}
     image: argus/cv-argus:dev
@@ -39,11 +37,14 @@ services:
       - path: .env
         required: false
     environment:
-      # Which model runs after BlazeFace: "fused" (CNN+LSTM, default) or "parts" (tiny YOLO +
-      # tracker + rules). PARTS_PRECISION=int8|float switches the parts detector's precision;
-      # RULE_* thresholds (see src/constants.py) pass through from .env.
-      - PIPELINE=${PIPELINE:-fused}
+      # The parts detector (tiny YOLO + tracker + rules). PARTS_PRECISION=int8|float switches
+      # its precision; the two decision thresholds tune open/closed and straight/down (blank =
+      # the src/constants.py default); RULE_* thresholds pass through from .env.
       - PARTS_PRECISION=${PARTS_PRECISION:-int8}
+      - PARTS_CLOSED_EYE_THRESHOLD=${PARTS_CLOSED_EYE_THRESHOLD:-}
+      - PARTS_HEAD_DOWN_THRESHOLD=${PARTS_HEAD_DOWN_THRESHOLD:-}
+      # OUTPUTS=...,metrics writes one JSON line per frame here (on the buffer-data volume).
+      - METRICS_LOG_PATH=${METRICS_LOG_PATH:-}
       - DEMO_STREAM_WIDTH=${DEMO_STREAM_WIDTH:-}
       - CAMERA_SOURCE=${CAMERA_SOURCE:-0}
       - SOURCE=${SOURCE:-video_capture}
@@ -53,8 +54,8 @@ services:
       - SAMPLE_FPS=${SAMPLE_FPS:-5}
       - CV_ARGUS_NUM_THREADS=${CV_ARGUS_NUM_THREADS:-4}
       # Diagnostics: per-stage timing / queue-depth / dropped-frame / end-to-end latency lines
-      # every LATENCY_LOG_INTERVAL seconds (0 disables). LOG_LEVEL=DEBUG also shows per-frame
-      # detection lines. See cv_argus.pipeline.latency and the README's "Finding the bottleneck".
+      # every LATENCY_LOG_INTERVAL seconds (0 disables). The logging output also prints one line
+      # per frame (severity, eye/mouth/head states, inference ms). See cv_argus.pipeline.latency.
       - LATENCY_LOG_INTERVAL=${LATENCY_LOG_INTERVAL:-10}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DEMO_STREAM_HOST=${DEMO_STREAM_HOST:-0.0.0.0}
