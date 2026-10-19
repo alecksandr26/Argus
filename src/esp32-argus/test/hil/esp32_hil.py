@@ -134,7 +134,7 @@ class SerialSppListener(Listener):
                     f"COM ports on this PC: {ports or 'none'}\n"
                     "Use the *incoming Bluetooth* COM port, not the USB one. If none is listed,\n"
                     "create it: Bluetooth settings > More Bluetooth options > COM Ports > Add >\n"
-                    "Incoming. See README.md, setup step 4."
+                    "Incoming. See README.md, setup step 5."
                 ) from None
         print(f"Listening on {', '.join(port_names)}")
 
@@ -210,7 +210,7 @@ def make_listener(args: argparse.Namespace) -> Listener:
         if not names:
             raise SystemExit(
                 "No incoming Bluetooth COM port found. Create one: Bluetooth settings > More\n"
-                "Bluetooth options > COM Ports > Add > Incoming. See README.md, setup step 4."
+                "Bluetooth options > COM Ports > Add > Incoming. See README.md, setup step 5."
             )
         return SerialSppListener(names)
     from cv_argus.sender import BluetoothSppListener

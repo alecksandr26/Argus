@@ -23,7 +23,7 @@ firmware actually does with it.
 | File | Responsibility |
 |---|---|
 | `esp32_argus.ino` | `setup()`/`loop()` — wires every module together; `handlePiRecord()` (dispatches a pulled record to the fusion engine or straight to a route-status POST) and `handlePanicButton()` live here |
-| `config.h` | every pin, timing constant, and per-site placeholder (WiFi creds, the Pi's Bluetooth MAC) — nothing per-truck; see "Before you flash this" below |
+| `config.h` | every pin and timing constant, plus the Pi's Bluetooth MAC — nothing per-truck or per-network; see "Before you flash this" below |
 | `device_config.*` | pure parser for the Pi's `CONFIG` reply (backend URL, device API key, truck id) — host-tested in `test/host/device_config_host_test.cpp` |
 | `credentials.*` | the credentials currently in use, cached in NVS; re-fetched from the Pi at every boot and after any 401 (see section 1b) |
 | `root_ca.h` | Amazon Root CA 1, pinned for `https://` backends (the AWS CloudFront deployment) |
@@ -51,8 +51,10 @@ hotspot or a 4G MiFi in the cab) is the fallback. Only a *transport* failure (no
 no bearer, a SIM800L 6xx code) switches to WiFi, for `GPRS_HOLD_OFF_MS`, before mobile data is
 tried again; a server answer, even a 4xx/5xx, never does (`transport_policy.h`). `PUT
 /api/alerts/{id}` (resolving an incident) is WiFi-only, because the SIM800L's `AT+HTTPACTION`
-has no PUT. Set `USE_GPRS 0` for WiFi-only (the bench backend on a LAN IP can't be reached over
-mobile data).
+has no PUT. Both networks come from the Pi, not the firmware: `ARGUS_WIFI_SSID`/
+`ARGUS_WIFI_PASSWORD` and `ARGUS_GPRS_APN`/`ARGUS_GPRS_USER`/`ARGUS_GPRS_PASSWORD` in its `.env`,
+sent inside the `CONFIG` reply (section 1b). No APN = WiFi only (right for the bench backend on
+a LAN IP, which the mobile network can't reach).
 
 **Reaching the AWS deployment** (`src/infra-argus`): the backend URL the Pi hands over
 (`ARGUS_BACKEND_URL`, section 1b) is the CloudFront URL and must be `https://`. CloudFront's
@@ -62,18 +64,19 @@ default `*.cloudfront.net` certificate accepts exactly that (checked with `opens
 -tls1 -noservername -cipher AES128-SHA` against the live distribution). Two consequences: the
 modem doesn't verify the certificate (encrypted, not authenticated), and moving the API to a
 custom domain with a TLS 1.2-only policy would break the GPRS path. GPRS also needs a SIM with a
-data plan and 2G coverage, and the carrier's APN in `config.h` (Telcel by default).
+data plan and 2G coverage, and the carrier's APN in the Pi's `.env` (see
+`src/cv-argus/.env.example` for Telcel, AT&T and Movistar values).
 
 The SIM800L still sends the panic **SMS**, and SMS fires **only** from the panic button
 (`handlePanicButton()` in the main sketch) — a redundant, hardware-direct channel alongside the
 normal `POST /api/alerts`, so an emergency location text still goes out even if
 `backend-argus` itself is down. It does *not* fire for any fused drowsy+grip severity.
 
-**Before you flash this**, fill in the per-site placeholders in `config.h`:
-`WIFI_SSID`/`WIFI_PASSWORD` and `PI_BT_MAC_ADDRESS` (the Pi's Bluetooth MAC, from
-`hciconfig`/`bluetoothctl`). **Nothing per-truck is compiled in anymore**: the backend URL and
-device API key come from the Pi over Bluetooth (section 1b), and the route from the backend
-(section 2), so one firmware image fits every truck. Required Arduino libraries (Library
+**Before you flash this**, the only per-site value in `config.h` is `PI_BT_MAC_ADDRESS` (the
+Pi's Bluetooth MAC, from `hciconfig`/`bluetoothctl` — this device needs it to reach the Pi at
+all). **Nothing per-truck or per-network is compiled in**: the backend URL, device API key, WiFi
+network and mobile-data APN come from the Pi over Bluetooth (section 1b), and the route from
+the backend (section 2), so one firmware image fits every truck. Required Arduino libraries (Library
 Manager names): `TinyGPSPlus`, `ArduinoJson` (v7+ — this code uses v7's `JsonDocument`
 API), plus `BluetoothSerial`/`WiFi`/`HTTPClient`, which ship with the ESP32 board package
 itself (no `TinyGSM` — `sms_module.cpp` talks to the SIM800L with raw AT commands instead, see
@@ -145,18 +148,28 @@ it to this device over the same Bluetooth link, as one more request in the proto
 
 ```
 you  -> Pi:   CONFIG\n
-Pi   -> you:  CONFIG {"truck_id":"...","device_api_key":"...","backend_url":"https://..."}\n
+Pi   -> you:  CONFIG {"truck_id":"...","device_api_key":"...","backend_url":"https://...",
+                      "wifi_ssid":"...","wifi_password":"...","gprs_apn":"...",
+                      "gprs_user":"...","gprs_password":"..."}\n
               or NOCONFIG\n                 (no argus-device.env on the Pi yet)
 ```
+
+The five network fields are optional and come from the Pi's own `.env` (`ARGUS_WIFI_SSID`,
+`ARGUS_WIFI_PASSWORD`, `ARGUS_GPRS_APN`, `ARGUS_GPRS_USER`, `ARGUS_GPRS_PASSWORD`), not from
+`argus-device.env`, which the dashboard regenerates on every key rotation. Absent WiFi = WiFi
+stays off; absent APN = no mobile data. Values are used verbatim (an SSID may end in a space).
+A new SSID makes `wifi_client.cpp` reconnect; a new APN makes `gprs_http.cpp` reopen the bearer.
 
 When this device asks (`refreshCredentialsIfStale()` in the main sketch, before a pull):
 - **every boot**, so a key rotated in the dashboard reaches the truck after the Pi restarts;
 - **after any `401`** from the backend (a rotated or revoked key);
-- every `CONFIG_RETRY_INTERVAL_MS` while the Pi answers `NOCONFIG`.
+- every `CONFIG_RETRY_INTERVAL_MS` while the Pi answers `NOCONFIG`;
+- every `CONFIG_REFRESH_INTERVAL_MS` (10 min) otherwise, so a changed `.env` on the Pi (new
+  WiFi, new APN) arrives without a reboot.
 
 The last good copy is cached in NVS (`credentials.cpp`), so a truck that boots before its Pi
 still reaches the backend. No credentials at all → this device doesn't pull, and records stay
-queued on the Pi. The key never goes to `Serial`.
+queued on the Pi. The key and the WiFi/APN passwords never go to `Serial`.
 
 **Link security**: the Pi requires a paired, encrypted RFCOMM link (`cv-argus`'s
 `BLUETOOTH_SECURITY=medium`), because this reply carries the key. This side pairs automatically

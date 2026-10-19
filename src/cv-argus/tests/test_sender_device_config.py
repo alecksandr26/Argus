@@ -41,6 +41,42 @@ class TestDeviceConfig:
         assert "secret-key" not in repr(CONFIG)
 
 
+class TestNetworkSettings:
+    NETWORK = {
+        "ARGUS_WIFI_SSID": "Casa ",  # a real SSID with a trailing space
+        "ARGUS_WIFI_PASSWORD": "wifi-secret",
+        "ARGUS_GPRS_APN": "internet.itelcel.com",
+        "ARGUS_GPRS_USER": "webgprs",
+        "ARGUS_GPRS_PASSWORD": "webgprs2002",
+    }
+
+    def test_network_settings_are_sent_verbatim(self):
+        wire = DeviceConfig.from_env({**ENV, **self.NETWORK}).to_wire()
+        assert wire["wifi_ssid"] == "Casa "  # not stripped
+        assert wire["wifi_password"] == "wifi-secret"
+        assert wire["gprs_apn"] == "internet.itelcel.com"
+        assert wire["gprs_user"] == "webgprs"
+        assert wire["gprs_password"] == "webgprs2002"
+
+    def test_unset_or_empty_network_settings_are_left_out(self):
+        wire = DeviceConfig.from_env({**ENV, "ARGUS_GPRS_APN": ""}).to_wire()
+        assert set(wire) == {"truck_id", "device_api_key", "backend_url"}
+
+    def test_network_settings_alone_are_not_a_config(self):
+        # Without credentials the ESP32 can't reach the backend anyway: still NOCONFIG.
+        assert DeviceConfig.from_env(self.NETWORK) is None
+
+    def test_repr_masks_the_passwords(self):
+        text = repr(DeviceConfig.from_env({**ENV, **self.NETWORK}))
+        assert "wifi-secret" not in text and "webgprs2002" not in text
+        assert "internet.itelcel.com" in text
+
+    def test_served_in_the_config_reply(self, tmp_path):
+        config = DeviceConfig.from_env({**ENV, **self.NETWORK})
+        lines = _session({"device_config": config}, "CONFIG", tmp_path=tmp_path)
+        assert protocol.parse_config(lines[0])["wifi_ssid"] == "Casa "
+
+
 class TestConfigGrammar:
     def test_request(self):
         assert protocol.parse_config_request("CONFIG")

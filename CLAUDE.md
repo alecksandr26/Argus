@@ -267,9 +267,10 @@ is missing or done.
   SIM800L's TLS 1.0 still reaches the default `*.cloudfront.net` domain. The SIM800L also sends
   the panic SMS, fired specifically (and only) by the panic button as a hardware-direct
   fallback that still works if the backend is unreachable. See its own `README.md` for the full
-  protocol/field-mapping contracts this implements and `config.h` for the per-site values (WiFi
-  creds, APN, the Pi's Bluetooth MAC, GPIO pins); the backend URL and device key come from the Pi
-  over Bluetooth (`CONFIG`) and the route from `GET /api/devices/me/active-route`. It compiles and has been flashed to a real
+  protocol/field-mapping contracts this implements. `config.h` holds only wiring/timing and the
+  Pi's Bluetooth MAC: the backend URL, device key, WiFi network and mobile-data APN all come from
+  the Pi over Bluetooth (`CONFIG`, set in cv-argus's `argus-device.env` + `.env`), and the route
+  from `GET /api/devices/me/active-route`, so one firmware image fits every truck. It compiles and has been flashed to a real
   ESP32, and `test/hil/` passed over WiFi against a bench backend (see
   `src/esp32_argus/CLAUDE.md`); the GPRS path and the AWS/HTTPS path haven't run on hardware yet.
 - `src/infra-argus/` — **AWS CDK (TypeScript) demo deployment, cheapest possible, pay-per-use**:

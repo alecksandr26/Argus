@@ -1,12 +1,18 @@
 #include "gprs_http.h"
 
 #include "config.h"
+#include "credentials.h"
 #include "modem.h"
 #include "modem_parse.h"
 
 namespace {
 
 constexpr int kTransportError = -1;
+
+// The APN settings the open bearer was opened with, so new ones from the Pi reopen it.
+String bearerApn;
+String bearerUser;
+String bearerPassword;
 
 // Bearer profile 1 carries every request. AT+SAPBR=2,1 answers "+SAPBR: 1,<status>,<ip>",
 // status 1 = connected.
@@ -18,19 +24,33 @@ bool bearerIsOpen() {
 }
 
 bool ensureBearer() {
-  if (bearerIsOpen()) return true;
-
-  Serial.println("[gprs] Opening GPRS bearer...");
-  modemSendAT("AT+SAPBR=3,1,\"CONTYPE\",\"GPRS\"", "OK", 2000UL);
-  modemSendAT("AT+SAPBR=3,1,\"APN\",\"" GPRS_APN "\"", "OK", 2000UL);
-  if (strlen(GPRS_USER) > 0) modemSendAT("AT+SAPBR=3,1,\"USER\",\"" GPRS_USER "\"", "OK", 2000UL);
-  if (strlen(GPRS_PASSWORD) > 0) {
-    modemSendAT("AT+SAPBR=3,1,\"PWD\",\"" GPRS_PASSWORD "\"", "OK", 2000UL);
+  const DeviceCredentials& creds = credentials();
+  bool settingsChanged = creds.gprsApn != bearerApn || creds.gprsUser != bearerUser ||
+                         creds.gprsPassword != bearerPassword;
+  bool open = bearerIsOpen();
+  if (open && !settingsChanged) return true;
+  if (open) {
+    Serial.println("[gprs] New APN settings from the Pi -- reopening the bearer");
+    modemSendAT("AT+SAPBR=0,1", "OK", 65000UL);
   }
+
+  Serial.print("[gprs] Opening GPRS bearer, APN ");
+  Serial.println(creds.gprsApn);
+  modemSendAT("AT+SAPBR=3,1,\"CONTYPE\",\"GPRS\"", "OK", 2000UL);
+  modemSendAT("AT+SAPBR=3,1,\"APN\",\"" + creds.gprsApn + "\"", "OK", 2000UL);
+  if (creds.gprsUser.length() > 0) {
+    modemSendAT("AT+SAPBR=3,1,\"USER\",\"" + creds.gprsUser + "\"", "OK", 2000UL);
+  }
+  if (creds.gprsPassword.length() > 0) {
+    modemSendAT("AT+SAPBR=3,1,\"PWD\",\"" + creds.gprsPassword + "\"", "OK", 2000UL);
+  }
+  bearerApn = creds.gprsApn;
+  bearerUser = creds.gprsUser;
+  bearerPassword = creds.gprsPassword;
   // Can take up to 85 s per the SIM800 manual. It also answers ERROR if the bearer raced open,
   // so re-check the status instead of trusting this reply.
   modemSendAT("AT+SAPBR=1,1", "OK", 85000UL);
-  bool open = bearerIsOpen();
+  open = bearerIsOpen();
   Serial.println(open ? "[gprs] Bearer open" : "[gprs] Could not open the GPRS bearer");
   return open;
 }

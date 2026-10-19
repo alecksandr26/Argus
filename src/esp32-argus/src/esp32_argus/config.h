@@ -1,16 +1,17 @@
 #pragma once
 
-// Central config for the Argus ESP32 ("Message Sender Orchestrator") firmware. Every
-// `CHANGE_ME` placeholder below is a real per-device/per-deployment value this firmware
-// cannot know on its own -- fill them in before flashing, don't leave the placeholder in.
+// Central config for the Argus ESP32 ("Message Sender Orchestrator") firmware: wiring, timing
+// and tuning only. Nothing deployment-specific lives here -- the backend URL, device key, WiFi
+// network and mobile-data APN all come from the Pi over Bluetooth (CONFIG, credentials.h), set
+// in its argus-device.env / .env, and the route comes from the backend. One firmware image fits
+// every truck; the only per-site value left is the Pi's Bluetooth MAC below (this device needs
+// it to reach the Pi at all).
 
 // =====================================================
-// WiFi -- the fallback transport to backend-argus (mobile data over the SIM800L is tried
-// first, see the GPRS section below), and the only path for PUT requests. Point it at a phone
-// hotspot or a 4G MiFi router in the truck to get mobile data over WiFi.
+// WiFi -- the fallback transport to backend-argus, and the only path for PUT requests. The
+// network (ARGUS_WIFI_SSID / ARGUS_WIFI_PASSWORD) comes from the Pi; a phone hotspot or a 4G
+// MiFi router in the truck works. 2.4 GHz only.
 // =====================================================
-#define WIFI_SSID "Casa " // trailing space is part of the real SSID (2.4 GHz; "Casa 5g" is 5 GHz-only)
-#define WIFI_PASSWORD "1212121212"
 #define WIFI_CONNECT_TIMEOUT_MS 20000UL
 #define WIFI_RETRY_INTERVAL_MS 10000UL
 
@@ -20,7 +21,7 @@
 // over Bluetooth (CONFIG -- credentials.h), which got them from the dashboard's
 // argus-device.env; the route id comes from GET /api/devices/me/active-route. One firmware
 // image fits every truck. The backend URL in argus-device.env must be reachable from THIS
-// device (a LAN IP with USE_GPRS 0, or the public https:// URL, never "localhost"). The AWS
+// device (a LAN IP with no APN set, or the public https:// URL, never "localhost"). The AWS
 // URL must be https://: CloudFront's /api/* is HTTPS-only and answers 403 to plain http://.
 // =====================================================
 // Generous on purpose: a Lambda cold start behind CloudFront can take several seconds.
@@ -29,19 +30,16 @@
 #define ACTIVE_ROUTE_RETRY_MS 30000UL
 // How often to ask the Pi for CONFIG again after it answered NOCONFIG (not provisioned).
 #define CONFIG_RETRY_INTERVAL_MS 60000UL
+// How often to re-ask the Pi for CONFIG even when everything works, so a changed .env on the
+// Pi (new WiFi, new APN) reaches this device without a reboot or a 401.
+#define CONFIG_REFRESH_INTERVAL_MS 600000UL
 
 // =====================================================
-// Mobile data (SIM800L GPRS) -- tried first for every GET/POST; WiFi is the fallback. Only a
-// transport failure (no network, no bearer, modem error) switches to WiFi, for
-// GPRS_HOLD_OFF_MS, then mobile data is tried again (see transport_policy.h). Set USE_GPRS 0
-// to go WiFi-only (bench, or a truck with a 4G hotspot and no data plan on the SIM).
+// Mobile data (SIM800L GPRS) -- tried first for every GET/POST when the Pi sends an APN
+// (ARGUS_GPRS_APN, with optional ARGUS_GPRS_USER / ARGUS_GPRS_PASSWORD); no APN = WiFi only.
+// WiFi is the fallback. Only a transport failure (no network, no bearer, modem error) switches
+// to WiFi, for GPRS_HOLD_OFF_MS, then mobile data is tried again (see transport_policy.h).
 // =====================================================
-#define USE_GPRS 1
-// Telcel's public APN. Other carriers: AT&T Mexico "internet.attmex.mx" (no user/password),
-// Movistar Mexico "internet.movistar.mx" (user/password "movistar").
-#define GPRS_APN "internet.itelcel.com"
-#define GPRS_USER "webgprs"
-#define GPRS_PASSWORD "webgprs2002"
 #define GPRS_HOLD_OFF_MS 300000UL // 5 minutes on WiFi after a mobile-data transport failure
 
 // =====================================================

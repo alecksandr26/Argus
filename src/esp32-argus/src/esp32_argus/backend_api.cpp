@@ -85,7 +85,7 @@ HttpResult sendRequest(const char* method, const String& path, const String& bod
   String url = credentials().backendUrl + path;
 
   bool modemCanDoIt = strcmp(method, "POST") == 0 || strcmp(method, "GET") == 0;
-  if (USE_GPRS && modemCanDoIt && transport.pick(millis()) == Transport::Gprs) {
+  if (credentials().useGprs() && modemCanDoIt && transport.pick(millis()) == Transport::Gprs) {
     result.status = gprsHttpRequest(method, url, credentials().apiKey, body, &result.body);
     transport.report(Transport::Gprs, result.status > 0, millis());
     if (result.status > 0) return result;
@@ -151,7 +151,7 @@ bool ensureActiveRoute() {
 
 bool backendIsReachable() {
   if (wifiIsConnected()) return true;
-  return USE_GPRS && transport.pick(millis()) == Transport::Gprs && modemIsRegistered();
+  return credentials().useGprs() && transport.pick(millis()) == Transport::Gprs && modemIsRegistered();
 }
 
 AlertPostResult backendPostAlert(Severity severity, const String& alertType,

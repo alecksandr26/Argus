@@ -161,8 +161,8 @@ void setup() {
   panicButtonBegin();
   gripSensorBegin();
   smsBegin();
+  credentialsBegin();  // before wifiBegin(): the WiFi to join is in the NVS cache
   wifiBegin();
-  credentialsBegin();
   bluetoothClientBegin();
 }
 

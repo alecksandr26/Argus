@@ -2,8 +2,11 @@
 
 #include "device_config.h"
 
-// The backend credentials this device is currently using, cached in NVS (Preferences) so a
+// The backend credentials this device is currently using -- plus its WiFi and mobile-data
+// settings, which come along in the same CONFIG reply -- cached in NVS (Preferences) so a
 // reboot while the Pi is still booting doesn't leave the truck unable to reach the backend.
+// wifi_client.cpp and gprs_http.cpp follow changes on their own (new SSID -> reconnect, new
+// APN -> reopen the bearer).
 //
 // The Pi is the source of truth (its argus-device.env, issued from the dashboard), so the cache
 // starts out *stale* on every boot and is re-fetched over Bluetooth (CONFIG) before the next
