@@ -218,6 +218,18 @@ The rules below each came from looking at real data:
 - **Pitch sign: positive means head down.** This was checked on contact sheets: yawning heads
   thrown back read about −30°. `head_down` is genuinely rare in this data (about 190 boxes); it's
   a data limit, not a bug. Head pose for the pipeline should still come from landmarks.
+- **Human head-pose labels beat pitch** (added 2026-10-19 for `vidyashree/headpose-w4zuc`, to
+  get more and better `head_down`). `ROBOFLOW_HEAD_CLASS_MAP` maps a source's head labels to
+  `head_straight` / `head_down` / `None` ("neither": no head box). Every class must be mapped:
+  `check_head_maps` hard-errors with a name-based suggestion, and `--label-sheet` draws the raw
+  labels so they can be checked first. The head box stays the **BlazeFace face box** (the same
+  scope as every pitch-labelled head); only when BlazeFace misses (`head_source = human_box`) is
+  the human head box used, with the crop built around it. `ROBOFLOW_HEADPOSE_PROJECTS` are
+  head-only. `parts_dataset` skips them, their eyes are pseudo-labelled, and
+  `DET_HEADPOSE_ALLOW_INCOMPLETE_EYES` keeps head-only images. The trade-off: rejecting them
+  would drop exactly the hard head-down cases, and keeping them means a visible but unlabelled
+  eye or yawn is learned as background. `lm_head_class` records what pitch said, so
+  `summarize()`'s `head_human_vs_landmarks` is the calibration check on `HEAD_*_DEG`.
 - **Unlabelled-object guard.** Detectors learn unlabelled objects as background, so:
   - images carrying ambiguous labels are rejected;
   - face images need ≥ 2 eye boxes;

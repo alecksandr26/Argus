@@ -26,7 +26,7 @@ def main() -> None:
     if args.list or not specs:
         for s in config.ROBOFLOW_PROJECTS:
             print(f"{s['workspace']}/{s['project']}  v{s['version'] or 'latest'}  "
-                  f"~{s['listed_images']} imgs  — {s['note']}")
+                  f"~{s['listed_images'] or '?'} imgs  — {s['note']}")
         if not specs:
             raise SystemExit(f"no configured project matches {args.projects}")
         return

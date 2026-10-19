@@ -142,7 +142,7 @@ three read one dataset, `Argus/dataset/parts_det.zip`, built locally by
 | # | Notebook | Model | Role |
 |---|---|---|---|
 | 12 | `tiny_grid_detector` | **our own YOLO-style CNN, from scratch in Keras**: step 1 YOLOv1-tiny (S×S grid, sum-squared loss); step 2 modern tiny YOLO (C2f-lite, SPPF-lite, decoupled anchor-free head, neighbour-cell assignment, GIoU + IoU-aware objectness), about 46k params | the thesis model |
-| 13 | `yolo_nano` | Ultralytics `yolo11n` + `yolov5nu`, pretrained, fine-tuned | off-the-shelf baseline (AGPL-3.0) |
+| 13 | `yolo_nano` | Ultralytics `yolo11n` (step 1) + `yolov5nu` (step 2), pretrained, fine-tuned; own sections for dataset checks / labelled examples, per-step test confusion matrix (with a background row/col) + predicted-vs-labelled images, and a step 1 vs 2 comparison (figures → `models/parts_det/figures/`) | off-the-shelf baseline (AGPL-3.0) |
 | 14 | `backbone_grid_detector` | MobileNetV3-Small *minimalistic* (ImageNet), FPN-lite neck, 12's head and loss, two-phase fine-tune | pretrained shared trunk; its **last cell is the 12/13/14 comparison table** |
 
 - **Shared cells are generated, not hand-copied.** Setup, loading, evaluation, latency, the

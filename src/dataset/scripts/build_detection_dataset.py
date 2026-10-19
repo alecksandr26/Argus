@@ -7,6 +7,10 @@ the MediaPipe models (fetch_models.py).
   python scripts/build_detection_dataset.py --mediapipe-only   # slow pass only (resumable)
   python scripts/build_detection_dataset.py --sheet            # build + contact sheet (pitch check)
   python scripts/build_detection_dataset.py --zip              # build + processed/parts_det.zip
+  python scripts/build_detection_dataset.py --label-sheet headpose-w4zuc   # raw labels, before mapping
+
+A head-pose source (config.ROBOFLOW_HEADPOSE_PROJECTS) must have every class in
+config.ROBOFLOW_HEAD_CLASS_MAP before the build runs; the error prints a suggested map.
 """
 import argparse
 import json
@@ -25,7 +29,14 @@ def main() -> None:
     ap.add_argument("--mediapipe-only", action="store_true", help="run/resume the MediaPipe pass, then stop")
     ap.add_argument("--sheet", action="store_true", help="write preview_faces.jpg (boxes + pitch)")
     ap.add_argument("--zip", action="store_true", help="package processed/parts_det.zip")
+    ap.add_argument("--label-sheet", metavar="PROJECT",
+                    help="draw samples of every raw label of one pulled Roboflow project, then stop")
     args = ap.parse_args()
+
+    if args.label_sheet:
+        print(f"-> {dd.label_sheet(args.label_sheet)}")
+        return
+    dd.check_head_maps(external.load_manifest())   # fail before the slow pass, not after it
 
     images = dd.roboflow_images(external.load_manifest())
     cache = dd.run_mediapipe_pass(images, args.workers, progress=lambda it, **k: tqdm(it, **k))

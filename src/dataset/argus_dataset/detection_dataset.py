@@ -5,7 +5,8 @@ Images are **square face crops**, the input the edge will see after BlazeFace. E
 labels for ``config.DET_CLASSES``:
   * ``open_eye`` / ``closed_eye`` / ``yawn``: the Roboflow part boxes merged through
     ``ROBOFLOW_CLASS_MAP``, mapped into face-crop coordinates;
-  * ``head_straight`` / ``head_down``: one box on the face, auto-labelled from FaceLandmarker pitch.
+  * ``head_straight`` / ``head_down``: one box on the face. From a human head-pose label where the
+    source has one (``ROBOFLOW_HEAD_CLASS_MAP``), else auto-labelled from FaceLandmarker pitch.
 
 MRL eye photos and Roboflow eye/mouth close-ups (no face) go in as ``kind=closeup`` with
 full-image boxes and no head box.
@@ -42,7 +43,7 @@ from . import config, external, ir, parts_dataset, paths
 INDEX_COLUMNS = [
     "image_id", "status", "reason", "kind", "source", "project", "licence", "group_id", "split",
     "src_image", "face_x0", "face_y0", "face_side", "pitch", "yaw", "roll", "head_class",
-    "n_eye_boxes", "n_yawn_boxes", "pseudo_eyes", "raw_labels", "gray_path", "ir_path", "label_path",
+    "head_source", "lm_head_class", "n_eye_boxes", "n_yawn_boxes", "pseudo_eyes", "raw_labels", "gray_path", "ir_path", "label_path",
 ]
 MP_COLUMNS = ["src_image", "face_found", "fx", "fy", "fw", "fh", "face_score",
               "landmarks_found", "pitch", "yaw", "roll",
@@ -273,43 +274,101 @@ def _rel(p) -> str:
     return Path(p).resolve().relative_to(paths.dataset_root().resolve()).as_posix()
 
 
+def suggest_head_map(names) -> dict[str, str | None]:
+    """A starting point for a ``ROBOFLOW_HEAD_CLASS_MAP`` entry, from label names only. Printed
+    by the unmapped-class error for a human to check against ``label_sheet``; never applied."""
+    out = {}
+    for n in names:
+        k = n.lower().replace("-", "_").replace(" ", "_")
+        if any(w in k for w in ("down", "bow", "nod", "lower")):
+            out[n] = "head_down"
+        elif any(w in k for w in ("front", "forward", "straight", "center", "centre")):
+            out[n] = "head_straight"
+        else:
+            out[n] = None
+    return out
+
+
+def check_head_maps(manifest: dict) -> None:
+    """Every class of a head-pose project must be mapped, as a part or a head label. Hard error,
+    like parts_dataset's unmapped-class check."""
+    for _, e in sorted(manifest["sources"].items()):
+        project = e.get("project")
+        if e.get("kind") != "roboflow" or (project not in config.ROBOFLOW_HEAD_CLASS_MAP
+                                           and project not in config.ROBOFLOW_HEADPOSE_PROJECTS):
+            continue
+        hmap = config.ROBOFLOW_HEAD_CLASS_MAP.get(project, {})
+        unknown = [n for n in e["class_names"]
+                   if n not in hmap and n not in config.ROBOFLOW_CLASS_MAP.get(project, {})]
+        if unknown:
+            raise SystemExit(
+                f"{project}: classes {unknown} missing from config.ROBOFLOW_HEAD_CLASS_MAP.\n"
+                f"  Look at them first:  python scripts/build_detection_dataset.py --label-sheet {project}\n"
+                f"  Suggested from the names only (check before pasting):\n"
+                f"    {project!r}: {suggest_head_map(e['class_names'])!r},")
+
+
+def _human_head(boxes, raw, hmap):
+    """The largest human head-pose box as (class or None, box), or None if the image has none."""
+    heads = [(hmap[n], tuple(b)) for (_, *b), n in zip(boxes, raw) if n in hmap]
+    return max(heads, key=lambda h: h[1][2] * h[1][3]) if heads else None
+
+
 def plan_roboflow_image(img_path: Path, entry: dict, mp_row: dict | None, W: int, H: int) -> dict:
     """Decide everything about one Roboflow image without touching pixels: kind, crop square,
     mapped boxes, head class, accept/reject. Pure, so it's unit-tested directly."""
     project, names = entry["project"], entry["class_names"]
-    cmap = config.ROBOFLOW_CLASS_MAP[project]
+    cmap = config.ROBOFLOW_CLASS_MAP.get(project, {})
+    hmap = config.ROBOFLOW_HEAD_CLASS_MAP.get(project, {})
+    headpose_only = project in config.ROBOFLOW_HEADPOSE_PROJECTS
     reject_labels = set(config.ROBOFLOW_REJECT_IMAGE_LABELS.get(project, ()))
     lbl = img_path.parent.parent / "labels" / (img_path.stem + ".txt")
     boxes, _ = parts_dataset._read_yolo_labels(lbl) if lbl.exists() else ([], 0)
     raw = [names[c] if c < len(names) else f"id_{c}" for c, *_ in boxes]
     plan = {"raw_labels": "|".join(sorted(set(raw))), "status": "rejected", "reason": "",
-            "kind": "", "boxes": [], "head_class": "", "crop": None}
+            "kind": "", "boxes": [], "head_class": "", "head_source": "", "lm_head_class": "",
+            "crop": None}
     if reject_labels & set(raw):
         plan["reason"] = "ambiguous_label:" + ",".join(sorted(reject_labels & set(raw)))
         return plan
     parts = [(cmap[n], tuple(b)) for (c, *b), n in zip(boxes, raw) if cmap.get(n)]
-    face = mp_row and str(mp_row.get("face_found")) == "1"
-    if face:
-        x0, y0, side = square_face_box(*(float(mp_row[k]) for k in ("fx", "fy", "fw", "fh")))
+    human = _human_head(boxes, raw, hmap)
+    face = bool(mp_row) and str(mp_row.get("face_found")) == "1"
+    pose = face and str(mp_row.get("landmarks_found")) == "1"
+    if face or (headpose_only and human):
+        if face:
+            fbox = tuple(float(mp_row[k]) for k in ("fx", "fy", "fw", "fh"))
+            x0, y0, side = square_face_box(*fbox)
+        else:   # BlazeFace missed a turned/lowered head: crop around the human head box instead
+            xc, yc, w, h = human[1]
+            fbox = ((xc - w / 2) * W, (yc - h / 2) * H, w * W, h * H)
+            x0, y0, side = square_face_box(*fbox, margin=config.DET_HEAD_BOX_MARGIN_FRAC)
         mapped = [(cls, m) for cls, b in parts if (m := map_box_to_crop(b, W, H, x0, y0, side))]
         plan.update(kind="face", crop=(x0, y0, side))
-        if str(mp_row.get("landmarks_found")) == "1" and config.DET_PSEUDO_EYES:
+        if pose and config.DET_PSEUDO_EYES:
             pseudo, ambiguous = pseudo_eye_boxes(mp_row, mapped)
             if ambiguous:
                 plan["reason"] = "ambiguous_unlabelled_eye"
                 return plan
             mapped += pseudo
             plan["pseudo_eyes"] = len(pseudo)
-        if str(mp_row.get("landmarks_found")) == "1":
-            hc = head_class(float(mp_row["pitch"]), float(mp_row["yaw"]))
-            if hc:
-                face_box = map_box_to_crop(
-                    ((float(mp_row["fx"]) + float(mp_row["fw"]) / 2) / W,
-                     (float(mp_row["fy"]) + float(mp_row["fh"]) / 2) / H,
-                     float(mp_row["fw"]) / W, float(mp_row["fh"]) / H), W, H, x0, y0, side)
-                if face_box:
-                    mapped.append((hc, face_box))
-                    plan["head_class"] = hc
+        hc = None
+        if pose:
+            plan["lm_head_class"] = head_class(float(mp_row["pitch"]), float(mp_row["yaw"])) or ""
+            hc, plan["head_source"] = plan["lm_head_class"] or None, "landmarks"
+        # A human head-pose label wins over the pitch guess, but only if it is the same head (its
+        # centre falls inside this crop). Its class may be None ("neither"): then no head box.
+        if human and map_box_to_crop(human[1], W, H, x0, y0, side):
+            hc, plan["head_source"] = human[0], "human" if face else "human_box"
+        if hc:
+            # Box scope: the BlazeFace face box, like every other head box in the dataset; only
+            # the no-face fallback uses the (larger) human head box.
+            head_box = map_box_to_crop((
+                (fbox[0] + fbox[2] / 2) / W, (fbox[1] + fbox[3] / 2) / H, fbox[2] / W, fbox[3] / H),
+                W, H, x0, y0, side)
+            if head_box:
+                mapped.append((hc, head_box))
+                plan["head_class"] = hc
     elif parts and all(max(b[2], b[3]) >= config.DET_CLOSEUP_MIN_BOX for _, b in parts):
         side = max(W, H)
         x0, y0 = (W - side) / 2, (H - side) / 2
@@ -322,9 +381,12 @@ def plan_roboflow_image(img_path: Path, entry: dict, mp_row: dict | None, W: int
     n_eye = sum(c in ("open_eye", "closed_eye") for c, _ in mapped)
     n_yawn = sum(c == "yawn" for c, _ in mapped)
     plan.update(n_eye_boxes=n_eye, n_yawn_boxes=n_yawn)
-    if not any(c in ("open_eye", "closed_eye", "yawn") for c, _ in mapped):
+    # Head-pose-only sources are here for their head boxes: one can carry the image on its own.
+    head_carries = (headpose_only and bool(plan["head_class"])
+                    and config.DET_HEADPOSE_ALLOW_INCOMPLETE_EYES)
+    if not any(c in ("open_eye", "closed_eye", "yawn") for c, _ in mapped) and not head_carries:
         plan["reason"] = "no_part_boxes"
-    elif plan["kind"] == "face" and config.DET_REQUIRE_BOTH_EYES and n_eye < 2:
+    elif plan["kind"] == "face" and config.DET_REQUIRE_BOTH_EYES and n_eye < 2 and not head_carries:
         plan["reason"] = "eyes_incomplete"
     else:
         plan["status"] = "ok"
@@ -370,6 +432,7 @@ def _mrl_sample(manifest: dict, seed: int = 0) -> list[dict]:
 def build(mp_cache: dict, progress=lambda it, **k: it) -> dict:
     import cv2
     manifest = external.load_manifest()
+    check_head_maps(manifest)
     base = paths.processed_dir() / "parts_det"
     mrl = manifest["sources"].get("mrl_eye")
     ref_cdf = (np.load(paths.ir_reference_hist()) if paths.ir_reference_hist().exists() else
@@ -434,6 +497,7 @@ def build(mp_cache: dict, progress=lambda it, **k: it) -> dict:
                "licence": e.get("licence", ""), "group_id": g, "split": split,
                "src_image": _rel(p), "pitch": mp_row.get("pitch", ""), "yaw": mp_row.get("yaw", ""),
                "roll": mp_row.get("roll", ""), "head_class": plan["head_class"],
+               "head_source": plan["head_source"], "lm_head_class": plan["lm_head_class"],
                "n_eye_boxes": plan.get("n_eye_boxes", ""), "n_yawn_boxes": plan.get("n_yawn_boxes", ""),
                "pseudo_eyes": plan.get("pseudo_eyes", 0),
                "raw_labels": plan["raw_labels"]}
@@ -485,6 +549,13 @@ def summarize(rows: list[dict]) -> dict:
         "images_per_kind": dict(Counter(f"{r['source']}/{r['kind']}" for r in ok)),
         "rejected": dict(Counter(r["reason"] for r in rows if r["status"] != "ok")),
         "boxes_per_split": {s: dict(c) for s, c in sorted(boxes.items())},
+        "head_boxes_by_source": dict(Counter(r.get("head_source") or "none"
+                                             for r in ok if r.get("head_class"))),
+        # Human head label vs. what the pitch thresholds say, where both exist: the calibration
+        # check for HEAD_*_DEG ("none" = no head box / ambiguous band).
+        "head_human_vs_landmarks": dict(Counter(
+            f"human:{r['head_class'] or 'none'} lm:{r['lm_head_class'] or 'none'}"
+            for r in ok if r.get("head_source") == "human")),
         "groups_crossing_splits": sum(
             1 for n in Counter(g for g, _ in {(r["group_id"], r["split"]) for r in ok}).values() if n > 1),
     }
@@ -498,9 +569,10 @@ leaves the frame, resized to {size}px), plus "closeup" images (MRL eye photos, R
 close-ups) whose single box is the whole image.
 
 Classes: {classes}
-  head_straight / head_down are auto-labelled from FaceLandmarker pitch (|pitch| <= {straight} deg
-  and |yaw| <= {yaw} deg -> straight; pitch >= {down} deg in the head-down direction -> down;
-  otherwise no head box).
+  head_straight / head_down come from a human head-pose label where the source has one
+  (index.csv head_source = human / human_box), otherwise they are auto-labelled from
+  FaceLandmarker pitch (head_source = landmarks: |pitch| <= {straight} deg and |yaw| <= {yaw} deg
+  -> straight; pitch >= {down} deg in the head-down direction -> down; otherwise no head box).
 
 gray/  plain luminance grayscale.   ir/  IR-simulated (Pi NoIR camera): red-dominant mix +
 histogram match toward MRL real-IR. MRL is real IR, so it is identical in both. Labels identical.
@@ -540,6 +612,47 @@ def export_zip(dest: Path | None = None) -> Path:
                              compress_type=zipfile.ZIP_DEFLATED if f.suffix == ".txt" else zipfile.ZIP_STORED)
     tmp.replace(dest)
     return dest
+
+
+def label_sheet(project: str, per_class: int = 8, seed: int = 0, out: Path | None = None) -> Path:
+    """One row per RAW source label of a pulled Roboflow project: ``per_class`` random images
+    with that label's box drawn and the label written on top. Reads the raw export only (no
+    MediaPipe, no build), so it's the thing to look at before writing a class map."""
+    import cv2
+    manifest = external.load_manifest()
+    e = manifest["sources"].get(f"roboflow/{project}")
+    if not e:
+        raise SystemExit(f"{project} isn't in the manifest; fetch it first (fetch_roboflow_parts.py)")
+    names, root = e["class_names"], paths.dataset_root() / e["location"]
+    by = defaultdict(list)
+    for p in sorted(root.glob("*/images/*")):
+        lbl = p.parent.parent / "labels" / (p.stem + ".txt")
+        if p.suffix.lower() in external.IMAGE_EXTS and lbl.exists():
+            for c, *b in parts_dataset._read_yolo_labels(lbl)[0]:
+                if c < len(names):
+                    by[names[c]].append((p, b))
+    rng, T, rows = random.Random(seed), 160, []
+    for name in names:
+        tiles = []
+        for p, (xc, yc, w, h) in rng.sample(by[name], min(per_class, len(by[name]))):
+            im = cv2.imread(str(p))
+            H, W = im.shape[:2]
+            cv2.rectangle(im, (int((xc - w / 2) * W), int((yc - h / 2) * H)),
+                          (int((xc + w / 2) * W), int((yc + h / 2) * H)), (0, 255, 0), max(1, W // 160))
+            s = T / max(H, W)
+            im = cv2.resize(im, (max(1, int(W * s)), max(1, int(H * s))))
+            tile = np.zeros((T, T, 3), np.uint8)
+            tile[:im.shape[0], :im.shape[1]] = im
+            tiles.append(tile)
+        tiles += [np.zeros((T, T, 3), np.uint8)] * (per_class - len(tiles))
+        row = np.hstack(tiles)
+        cv2.putText(row, f"{name}  ({len(by[name])} boxes)", (4, 16), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, (0, 255, 255), 1)
+        rows.append(row)
+    out = out or paths.processed_dir() / f"label_sheet_{project}.jpg"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(out), np.vstack(rows))
+    return out
 
 
 def contact_sheet(n: int = 48, seed: int = 0, out: Path | None = None) -> Path:

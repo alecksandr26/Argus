@@ -156,3 +156,70 @@ def test_build_and_zip(env):
     assert {"README.txt", "index.csv", "data_gray.yaml", "data_ir.yaml"} <= names
     assert "names: ['open_eye', 'closed_eye', 'yawn', 'head_straight', 'head_down']" in z.read("data_ir.yaml").decode()
     assert len(pd.read_csv(io.BytesIO(z.read("index.csv")))) == 18
+
+
+# --- head-pose-only source (human head labels) ---------------------------------------------
+
+HP = "headpose-w4zuc"
+
+
+def _headpose(env, monkeypatch, images):
+    paths, external, dd = env
+    root, e = _export(paths, external, HP, images)
+    e["class_names"] = ["Down", "Forward", "Left"]
+    external.upsert_source(f"roboflow/{HP}", e)
+    monkeypatch.setitem(dd.config.ROBOFLOW_HEAD_CLASS_MAP, HP,
+                        {"Down": "head_down", "Forward": "head_straight", "Left": None})
+    return root, e
+
+
+def test_human_head_label_beats_pitch(env, monkeypatch):
+    dd = env[2]
+    root, e = _headpose(env, monkeypatch, [("train", "d_jpg.rf.1", "0 0.5 0.5 0.7 0.7\n")])
+    p = dd.plan_roboflow_image(root / "train/images/d_jpg.rf.1.jpg", e, _mp(pitch="0"), 100, 100)
+    assert p["status"] == "ok" and p["head_class"] == "head_down" and p["head_source"] == "human"
+    assert p["lm_head_class"] == "head_straight"                       # what pitch alone said
+    assert p["pseudo_eyes"] == 2                                       # eyes come from landmarks
+    heads = [b for c, b in p["boxes"] if c == "head_down"]
+    assert len(heads) == 1 and heads[0][2] == pytest.approx(60 / 90)   # face-box scope, not head box
+
+
+def test_headpose_fallback_without_face(env, monkeypatch):
+    dd = env[2]
+    root, e = _headpose(env, monkeypatch, [("train", "n_jpg.rf.1", "0 0.5 0.5 0.4 0.4\n"),
+                                           ("train", "l_jpg.rf.2", "2 0.5 0.5 0.4 0.4\n")])
+    nf = root / "train/images/n_jpg.rf.1.jpg"
+    p = dd.plan_roboflow_image(nf, e, _mp(face=False), 100, 100)
+    assert p["status"] == "ok" and p["kind"] == "face" and p["head_source"] == "human_box"
+    assert p["crop"][2] == pytest.approx(40 * 1.2) and p["n_eye_boxes"] == 0
+    monkeypatch.setattr(dd.config, "DET_HEADPOSE_ALLOW_INCOMPLETE_EYES", False)
+    assert dd.plan_roboflow_image(nf, e, _mp(face=False), 100, 100)["reason"] == "no_part_boxes"
+    # "neither" pose (None): no head box; with landmarks the eyes still carry the image
+    q = dd.plan_roboflow_image(root / "train/images/l_jpg.rf.2.jpg", e, _mp(), 100, 100)
+    assert q["status"] == "ok" and q["head_class"] == "" and q["head_source"] == "human"
+
+
+def test_check_head_maps(env, monkeypatch):
+    dd = env[2]
+    _headpose(env, monkeypatch, [("train", "x_jpg.rf.1", "0 0.5 0.5 0.4 0.4\n")])
+    dd.check_head_maps(env[1].load_manifest())                          # fully mapped: fine
+    monkeypatch.setitem(dd.config.ROBOFLOW_HEAD_CLASS_MAP, HP, {"Down": "head_down"})
+    with pytest.raises(SystemExit, match="'Forward': 'head_straight'"):
+        dd.check_head_maps(env[1].load_manifest())
+    assert dd.suggest_head_map(["Looking Down", "Front", "Right"]) == {
+        "Looking Down": "head_down", "Front": "head_straight", "Right": None}
+
+
+def test_label_sheet(env, monkeypatch):
+    dd = env[2]
+    _headpose(env, monkeypatch, [("train", f"s{i}_jpg.rf.1", f"{i % 3} 0.5 0.5 0.4 0.4\n")
+                                 for i in range(6)])
+    sheet = cv2.imread(str(dd.label_sheet(HP, per_class=4)))
+    assert sheet.shape[:2] == (3 * 160, 4 * 160)
+
+
+def test_parts_dataset_skips_headpose_projects(env, monkeypatch):
+    from collections import Counter
+    _headpose(env, monkeypatch, [("train", "x_jpg.rf.1", "0 0.5 0.5 0.4 0.4\n")])
+    from argus_dataset import parts_dataset
+    assert parts_dataset.roboflow_rows(env[1].load_manifest(), None, Counter(), Counter()) == []
