@@ -38,6 +38,19 @@ cd src/tests/edge_chain && pytest
   the alert was lost for good. Fixed in both `fusion_contract.py` and the firmware's
   `fusion.cpp`: an alert is now re-raised every tick until `record_alert_posted()` confirms it.
 
+- `test_edge_chain_scenarios.py` and `test_edge_chain_edge_cases.py` drive cv-argus's real
+  `Orchestrator` (no hand-built readings) through the chain: incidents, recovery, `No Face`,
+  backlogs, route changes, two cameras, an ESP32 reset mid-session. Known bugs are
+  `xfail(strict=True)` with their scenario ID from `docs/designs/edge-cloud-scenarios.md`; the
+  newer ones also pin `raises=AssertionError`, so a crash in the harness can't pass as the bug.
+- `test_firmware_vectors.py` replays the shared fusion vectors (X-15) that the C++ host test
+  replays against `fusion.cpp`.
+
+`esp32_sim.py` mirrors today's firmware, bugs included: a `No Face` row (probabilities `null`)
+reads as p(Drowsy)=0, a missing `class_name` is posted as `"null"`, and a line ArduinoJson can't
+parse (a bare `NaN`, an unknown `kind`) is never ACKed. When a firmware fix lands, mirror it here
+so the matching xfail starts passing.
+
 ## What it doesn't cover
 
 The real radio (`BluetoothSppTransport`, the ESP32's `BluetoothSerial`), the firmware's actual
