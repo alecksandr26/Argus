@@ -289,3 +289,25 @@ def test_readers_and_writer_threads_stay_consistent(tmp_path):
         buf.mark_sent([r.id for r in rows])
     assert buf.unsent_count() == 0
     buf.close()
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="BUF-06: cap_unsent only drops keepalives, so transitions/heartbeats grow forever")
+def test_unsent_backlog_stays_bounded_without_keepalives(tmp_path):
+    """A permanent outage (a rotated device key the ESP32 never got, a dead ESP32) means nothing
+    is ever ACKed. Keepalives are dropped first, but once only transitions and heartbeats are
+    left the unsent backlog still has to stay under the cap on the Pi's SD card, keeping the
+    newest rows (they describe the present)."""
+    buf = open_buffer(tmp_path / "b.sqlite3")
+    rows = []
+    for i in range(15):
+        rows.append(_reading("Drowsy" if i % 2 else "Not Drowsy", transition=True))
+        rows.append(route_status("cam0"))
+    for row in rows:
+        buf.enqueue(row)
+
+    buf.cap_unsent(max_rows=10)
+    kept = [a.id for a in buf.fetch_unsent(limit=100)]
+    assert buf.unsent_count() <= 10, f"{buf.unsent_count()} unsent rows kept, cap is 10"
+    assert kept[-1] == rows[-1].id
+    buf.close()

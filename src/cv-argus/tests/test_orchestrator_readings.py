@@ -216,3 +216,53 @@ def test_heartbeat_still_every_60s_alongside_readings(clock):
         orch._tick("cam0")
     heartbeats = [a for a in buf.enqueued if a.kind == AlertKind.ROUTE_STATUS]
     assert len(heartbeats) == 1
+
+
+# --- Edge cases from the chain audit (docs/designs/edge-cloud-scenarios.md) -----------------
+
+import math  # noqa: E402
+
+STALE_FRAME_SECONDS = 5.0  # how old the last real frame may be before a reading must say so
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="CV-15: keepalives from _tick repeat the last class with no frame age")
+def test_stalled_pipeline_keepalives_stop_or_carry_their_age(clock):
+    """A pipeline that hangs without exiting (no frames, process alive) must not look like a live
+    driver: keepalives from `_tick` keep repeating the last class and its old probabilities, so
+    the ESP32 can't tell a frozen camera from an alert driver. Past STALE_FRAME_SECONDS a reading
+    must either not be emitted or carry `frame_age_s` (seconds since the last real frame)."""
+    orch, buf = _orch()
+    _feed(orch, clock, [ND()] * 3)
+    last_frame_at = clock.now - 0.2
+    before = len(buf.readings())
+    for _ in range(15):  # frames stop; only poll timeouts wake the loop
+        clock.now += 1.0
+        orch._tick("cam0")
+    late = [r for r in buf.readings()[before:]
+            if r.mono_ms / 1000.0 - last_frame_at >= STALE_FRAME_SECONDS]
+    assert all(r.payload.get("frame_age_s", -1) >= STALE_FRAME_SECONDS for r in late), (
+        f"{len(late)} reading(s) after the camera froze look fresh: {[r.payload for r in late][:2]}"
+    )
+
+
+def test_keepalive_while_frames_flow_is_not_marked_stale(clock):
+    """The other half of CV-15: while frames keep arriving, no reading claims a stale camera."""
+    orch, buf = _orch()
+    _feed(orch, clock, [ND()] * 40)  # 8 s of steady frames: several keepalives
+    assert len(buf.readings()) >= 3
+    assert all(r.payload.get("frame_age_s", 0.0) < STALE_FRAME_SECONDS for r in buf.readings())
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="REC-19: NaN probabilities are queued as-is (and written as a NaN token)")
+def test_nan_detection_is_never_reported_with_nan_probabilities(clock):
+    """A NaN from the model (e.g. a zero eye width in the EAR ratio) must not reach the buffer:
+    json.dumps writes it as a bare NaN token, which the ESP32's ArduinoJson rejects, so the row
+    is never ACKed and blocks the queue. Skip the frame or report it as No Face instead."""
+    orch, buf = _orch()
+    nan = float("nan")
+    _feed(orch, clock, [_Det(2, [nan, nan])] * 6)
+    for reading in buf.readings():
+        probabilities = reading.payload["probabilities"]
+        assert probabilities is None or all(math.isfinite(p) for p in probabilities), probabilities

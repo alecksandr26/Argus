@@ -173,12 +173,21 @@ async def test_backlog_after_30s_offline_relays_with_correct_times(
     assert abs(occurred - expected) <= 2.5
 
 
-@pytest.mark.xfail(strict=True, reason="Top #3/EBT-04: an unrelayable record blocks the queue")
+@pytest.mark.xfail(strict=True, reason="Top #3/REC-19: an unparseable record blocks the queue")
 async def test_poison_record_does_not_block_records_behind_it(scenario, backend, truck_route):
     route_id, _ = truck_route
+    # A row the firmware can't parse at all: a NaN from the model is written as a bare NaN
+    # token, which ArduinoJson rejects, so it is never ACKed. (A row with *missing*
+    # probabilities isn't a poison: the firmware parses it and misreads it as Not Drowsy,
+    # EBT-04, see test_no_face_mid_incident_does_not_recover.)
     scenario.buffer.enqueue(
-        Alert.new(AlertKind.DROWSINESS, level=2, source_id="cam-0", payload={"class_name": "Drowsy"})
-    )  # a Pi bug: no probabilities
+        Alert.new(
+            AlertKind.DROWSINESS,
+            level=2,
+            source_id="cam-0",
+            payload={"class_name": "Drowsy", "probabilities": [float("nan"), float("nan")]},
+        )
+    )
     scenario.buffer.enqueue(route_status("cam-0"))
     await scenario.drain()
     assert (await backend.get(f"/api/routes/{route_id}/status")).status_code == 200

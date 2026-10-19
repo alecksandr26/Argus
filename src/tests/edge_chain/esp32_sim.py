@@ -70,6 +70,24 @@ async def resolve_active_route(http: AsyncClient, device_key: str) -> str | None
     return resp.json()["id_route"] if resp.status_code == 200 else None
 
 
+def _reject_constant(token: str):
+    raise ValueError(f"ArduinoJson rejects the token {token}")
+
+
+def parse_record_line(text: str) -> dict | None:
+    """bluetooth_client.cpp's parseRecordLine(): None for what the firmware can't parse, which it
+    then never ACKs. ArduinoJson 7 (no ARDUINOJSON_ENABLE_NAN) fails the whole line with
+    InvalidInput on a bare NaN/Infinity token, which Python's json.dumps writes by default
+    (REC-19). An unknown `kind` is rejected too (EBT-03)."""
+    try:
+        record = json.loads(text, parse_constant=_reject_constant)
+    except ValueError:
+        return None
+    if not isinstance(record, dict) or record.get("kind") not in ("drowsiness", "route_status"):
+        return None
+    return record
+
+
 @dataclass
 class PollResult:
     pulled: int
@@ -90,9 +108,24 @@ class SimulatedEsp32:
     # fusion.cpp's confirmedSeverity(); the Python contract has no accessor, and every
     # FusionDecision.severity *is* the confirmed severity as of that tick.
     confirmed_severity: Severity = Severity.LOW
+    wifi: bool = True  # wifiIsConnected()
+    # Faults a test injects. drop_next_ack: the link drops after the batch is relayed, before
+    # the ACK is sent. status_failures: that many route-status POSTs fail the way a 5xx would.
+    drop_next_ack: bool = False
+    status_failures: int = 0
+    # What reached the backend, stamped with this device's clock (for timing assertions).
+    alert_posts: list[tuple[float, dict]] = field(default_factory=list)
+    status_posts: list[tuple[float, dict]] = field(default_factory=list)
+
+    def tick(self) -> None:
+        """loop()'s work between Bluetooth polls. The firmware has no local grip tick yet: fusion
+        only runs when a Pi record arrives (FUS-01), so there is nothing to do here."""
 
     # --- bluetooth_client.cpp: bluetoothPullAlerts() -----------------------------------
-    async def poll(self) -> PollResult:
+    async def poll(self, *, half_open_before_ack: bool = False) -> PollResult:
+        """One bluetoothPullAlerts(). `half_open_before_ack` models an ESP32 reset right after
+        END: the batch was relayed, no ACK is sent and the link is never closed, so the Pi only
+        notices when its own ACK wait runs out."""
         client, server_side = FakeTransport.pair()
         self.listener.offer(server_side)  # SerialBT.connect(piMac)
 
@@ -109,10 +142,16 @@ class SimulatedEsp32:
             if text == END_LINE:
                 break
             pulled += 1
-            record = json.loads(text)
-            if await self.handle_pi_record(record):
+            record = parse_record_line(text)
+            if record is not None and await self.handle_pi_record(record):
                 ack_ids.append(record["id"])
 
+        if half_open_before_ack:
+            return PollResult(pulled=pulled, acked=[], protocol_ok=False)
+        if self.drop_next_ack and ack_ids:
+            self.drop_next_ack = False
+            client.close()
+            return PollResult(pulled=pulled, acked=[], protocol_ok=False)
         if protocol_ok and ack_ids:
             client.write((format_ack(ack_ids) + "\n").encode())
             acked = client.readline(timeout=PI_BT_LINE_TIMEOUT_S)
@@ -126,13 +165,23 @@ class SimulatedEsp32:
         """True iff the record was relayed onward, which is what gates its ACK."""
         if self.gps is None:
             return False  # no GPS fix: don't ACK, the Pi re-serves it later
+        if not self.wifi:
+            return False  # "WiFi down -- not relaying"
         lat, lon, speed = self.gps
 
         if record["kind"] == "route_status":
             return await self._post_route_status(lat, lon, speed)
 
-        probabilities = record["payload"]["probabilities"]
-        p_not_drowsy, p_drowsy = probabilities[0], probabilities[1]
+        payload = record.get("payload") or {}
+        # parseRecordLine(): both stay 0.0f unless the array has exactly two entries, so a
+        # No Face row (probabilities: null) reads as p(Drowsy) = 0, i.e. Not Drowsy (CV-04).
+        probabilities = payload.get("probabilities")
+        p_not_drowsy, p_drowsy = 0.0, 0.0
+        if isinstance(probabilities, list) and len(probabilities) == 2:
+            p_not_drowsy, p_drowsy = probabilities[0], probabilities[1]
+        # ArduinoJson's as<String>() of a missing or null field is the text "null" (EBT-08).
+        class_name = payload.get("class_name")
+        class_name = "null" if class_name is None else str(class_name)
         drowsy = (
             DrowsyState.DROWSY
             if p_drowsy >= DROWSY_PROBABILITY_THRESHOLD
@@ -145,7 +194,7 @@ class SimulatedEsp32:
         if decision.alert is not None:
             body = {
                 "id_route": self.route_id,
-                "alert_type": record["payload"]["class_name"],
+                "alert_type": class_name,
                 "severity_level": decision.alert.severity_level.value,
                 "source": "fusion",
                 "ai_metadata": {"scores": {"not_drowsy": p_not_drowsy, "drowsy": p_drowsy}},
@@ -158,6 +207,7 @@ class SimulatedEsp32:
             resp = await self.http.post("/api/alerts", json=body, headers=self._headers())
             ok = resp.status_code == 201
             if ok:
+                self.alert_posts.append((self.clock(), body))
                 self.fusion.record_alert_posted(resp.json()["id_alert"])
 
         if decision.resolved_incident_id is not None:
@@ -171,16 +221,20 @@ class SimulatedEsp32:
         return ok
 
     async def _post_route_status(self, lat: float, lon: float, speed: float) -> bool:
+        if self.status_failures > 0:
+            self.status_failures -= 1
+            return False  # as if the backend answered 5xx
+        body = {
+            "current_coordinates": {"lat": lat, "lon": lon},
+            "current_speed": speed,
+            "odometer": 0.0,  # no odometer sensor on the device, see config.h
+            "vigilance": self.confirmed_severity.value,
+        }
         resp = await self.http.post(
-            f"/api/routes/{self.route_id}/status",
-            json={
-                "current_coordinates": {"lat": lat, "lon": lon},
-                "current_speed": speed,
-                "odometer": 0.0,  # no odometer sensor on the device, see config.h
-                "vigilance": self.confirmed_severity.value,
-            },
-            headers=self._headers(),
+            f"/api/routes/{self.route_id}/status", json=body, headers=self._headers()
         )
+        if resp.status_code == 201:
+            self.status_posts.append((self.clock(), body))
         return resp.status_code == 201
 
     def _headers(self) -> dict[str, str]:
