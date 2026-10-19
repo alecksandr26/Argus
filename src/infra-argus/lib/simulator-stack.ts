@@ -13,6 +13,10 @@ import { Platform } from 'aws-cdk-lib/aws-ecr-assets'
 import { Construct } from 'constructs'
 import { INFRA_DIR, SIMULATOR_STARTED_BY, SRC_DIR, SSM, type ArgusConfig } from './config'
 
+const OSRM_GRAPH = '/data/mexico-latest.osrm'
+/** Written by the osrm container when it runs without a graph, so its health check passes. */
+const OSRM_OFF_MARKER = '/tmp/osrm-off'
+
 export interface SimulatorStackProps extends cdk.StackProps {
   vpc: ec2.IVpc
   config: ArgusConfig
@@ -95,9 +99,18 @@ export class SimulatorStack extends cdk.Stack {
       // (src/simulator-argus/scripts/setup_osrm.sh) — OSRM's file format is version-specific.
       image: ecs.ContainerImage.fromRegistry('osrm/osrm-backend'),
       essential: true,
-      command: ['osrm-routed', '--algorithm', 'mld', '--mmap', '/data/mexico-latest.osrm'],
+      // Missing graph (osrm:upload not run) or an osrm-routed crash must not kill the task: stay up
+      // and report healthy, so the simulator still starts and falls back to straight-line routes.
+      entryPoint: ['sh', '-c'],
+      command: [
+        `f=${OSRM_GRAPH}; ` +
+          `if [ -f "$f.fileIndex" ]; then osrm-routed --algorithm mld --mmap "$f"; ` +
+          `echo "osrm-routed exited ($?); simulator falls back to straight-line routes"; ` +
+          `else echo "No OSRM data in S3 (npm run osrm:upload); simulator uses straight-line routes"; fi; ` +
+          `touch ${OSRM_OFF_MARKER}; exec sleep infinity`,
+      ],
       healthCheck: {
-        command: ['CMD-SHELL', "bash -c '</dev/tcp/127.0.0.1/5000' || exit 1"],
+        command: ['CMD-SHELL', `[ -f ${OSRM_OFF_MARKER} ] || bash -c '</dev/tcp/127.0.0.1/5000' || exit 1`],
         interval: cdk.Duration.seconds(10),
         timeout: cdk.Duration.seconds(5),
         retries: 3,
@@ -106,7 +119,8 @@ export class SimulatorStack extends cdk.Stack {
       logging: ecs.LogDrivers.awsLogs({ streamPrefix: 'osrm', logGroup }),
     })
     osrm.addMountPoints({ containerPath: '/data', sourceVolume: 'osrm-data', readOnly: true })
-    osrm.addContainerDependencies({ container: osrmData, condition: ecs.ContainerDependencyCondition.SUCCESS })
+    // COMPLETE, not SUCCESS: a failed sync just means no graph, which the osrm command handles.
+    osrm.addContainerDependencies({ container: osrmData, condition: ecs.ContainerDependencyCondition.COMPLETE })
 
     const adminPassword = ssm.StringParameter.fromSecureStringParameterAttributes(this, 'AdminPassword', {
       parameterName: SSM.rootAdminPassword,

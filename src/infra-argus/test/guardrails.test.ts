@@ -76,6 +76,21 @@ describe('R1/R4: fixed 10-minute sessions on Fargate Spot', () => {
     })
   })
 
+  it('a missing OSRM graph falls back to straight lines instead of killing the task', () => {
+    t.simulator.hasResourceProperties('AWS::ECS::TaskDefinition', {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: 'osrm',
+          Command: [Match.stringLikeRegexp('touch /tmp/osrm-off; exec sleep infinity')],
+          HealthCheck: Match.objectLike({
+            Command: ['CMD-SHELL', Match.stringLikeRegexp('^\\[ -f /tmp/osrm-off \\] \\|\\|')],
+          }),
+          DependsOn: [{ ContainerName: 'osrm-data', Condition: 'COMPLETE' }],
+        }),
+      ]),
+    })
+  })
+
   it('backend is told the session length and quota', () => {
     t.app.hasResourceProperties('AWS::Lambda::Function', {
       Environment: {
