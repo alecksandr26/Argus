@@ -101,6 +101,44 @@ including model-artifact overrides not covered here).
 | `BUFFER_DIR` / `BUFFER_DB_FILENAME` | `/app/data` / `buffer.sqlite3` | Where `buffer/`'s SQLite alert queue lives — matches the `buffer-data` volume. |
 | `SENDER_TRANSPORT` | `none` (this file) / `bluetooth` (main.py's own default) | `bluetooth` (real `BluetoothSppListener` — needs a real adapter + device passthrough, see "Prerequisites") or `none` (no `SenderServer`; alerts just accumulate unsent in `buffer/`). |
 | `BLUETOOTH_CHANNEL` | `4` | Only read when `SENDER_TRANSPORT=bluetooth`: the RFCOMM channel `BluetoothSppListener` binds. |
+| `BLUETOOTH_SECURITY` | `medium` | RFCOMM security the ESP32's link must meet: `medium` = paired + encrypted (required: `CONFIG` sends the device key), `high` = also MITM-protected pairing (an ESP32 without display/keypad can't do it), `low` = anything in range, bench only. |
+| `ESP32_BT_MAC` | unset | Optional comma-separated MAC allowlist (this truck's ESP32). Unset = any paired device. |
+| `ARGUS_TRUCK_ID` / `ARGUS_DEVICE_API_KEY` / `ARGUS_BACKEND_URL` | unset | This truck's backend credentials, from `argus-device.env` — see "Provisioning a truck" below. All three or none; a partial set stops startup. |
+
+## Provisioning a truck
+
+The Pi holds the truck's backend credentials; the ESP32 fetches them from it over Bluetooth and
+is the one that actually calls the backend (one firmware image fits every truck).
+
+1. **Dashboard**: Fleet → pick the truck → **Generate device credentials** (root_admin/admin).
+   Check the "Backend URL the truck uses" field (the AWS `https://…cloudfront.net` URL, or a
+   LAN IP for a bench backend — never `localhost`), then **Download argus-device.env**. The key
+   is shown once; lost it → **Rotate key** and download again (the old one stops working).
+2. **Pi**: copy that file next to this `docker-compose.yml` as `argus-device.env` (it's
+   gitignored and dockerignored: loaded at runtime only, never baked into the image), then
+   `docker compose up -d`. The log shows `Device credentials loaded for truck <id>` (never the
+   key).
+3. **Pair the ESP32 once** on the Pi host, since the link must be encrypted
+   (`BLUETOOTH_SECURITY=medium`):
+   ```sh
+   bluetoothctl
+   > power on
+   > agent NoInputNoOutput
+   > default-agent
+   > pairable on
+   # power the ESP32; it pairs itself (SSP "Just Works") on its first connect
+   > trust AA:BB:CC:DD:EE:FF      # the ESP32's MAC; optionally also set ESP32_BT_MAC to it
+   ```
+   Not yet run on the real Pi + ESP32 pair: if `bluetoothctl` asks to confirm a passkey or
+   authorize a service, answer `yes`. `BLUETOOTH_SECURITY=low` skips this for a quick bench
+   test, but sends the key unencrypted.
+4. The ESP32 asks for `CONFIG` at boot and after any `401`, caches it, and finds its route with
+   `GET /api/devices/me/active-route`. The Fleet screen's Devices column shows "Key · seen …"
+   once it's reporting.
+
+Real Bluetooth passthrough into the container is still the open item from "Prerequisites" —
+until it's wired, `SENDER_TRANSPORT=none` keeps the container starting, and the credentials are
+loaded but nothing can fetch them.
 
 There's one detection pipeline — the frozen-CNN-embedding + geometric-feature + LSTM classifier
 — see `CLAUDE.md`'s "Current status" for its measured accuracy and caveats. Downstream of a

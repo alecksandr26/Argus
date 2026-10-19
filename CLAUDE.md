@@ -85,7 +85,9 @@ session that's touched this repo.
   initiates periodic pulls of unsent records — the Pi doesn't push), and is the device that talks
   to the backend over **HTTP** — authenticated with a per-truck device API key rather than a user
   login, now that `src/backend-argus` exists (see that module's `CLAUDE.md`, "Device (ESP32)
-  auth"). The grip sensor does **not** feed the Pi's AI-orchestrator decision node — it, the panic
+  auth"). That key is issued from the dashboard (Fleet → "Generate device credentials"), held by
+  the Pi (`argus-device.env`), and fetched by the ESP32 over Bluetooth (`CONFIG`), so no
+  per-truck value is flashed into the firmware — see `src/esp32-argus/README.md` section 1b. The grip sensor does **not** feed the Pi's AI-orchestrator decision node — it, the panic
   button, and geolocation all wire directly to the ESP32 (see
   `docs/designs/semantic-design-overview.md`), independent of the camera pipeline. This makes the
   ESP32 the actual fusion point for drowsiness + grip: it **fuses** the Pi's relayed drowsiness

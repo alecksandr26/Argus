@@ -213,9 +213,19 @@ no secure token storage story on bare-metal, no session to refresh.
 
 Instead, `Truck.device_api_key_hash` holds a bcrypt-hashed, per-truck static key:
 
-- Generated once via `POST /api/trucks/{id}/rotate-key` (root_admin only), returned in plaintext
-  **exactly once**, then provisioned into the ESP32's firmware config out of band —
-  GitHub-personal-access-token style, not stored anywhere retrievable afterward.
+- Generated via `POST /api/trucks/{id}/rotate-key` (root_admin **or admin** — admin owns the
+  truck roster), returned in plaintext **exactly once** — GitHub-personal-access-token style,
+  not stored anywhere retrievable afterward. `ui-argus`'s Fleet screen ("Generate device
+  credentials") turns it into an `argus-device.env` for the truck's Pi; `cv-argus` serves it to
+  the ESP32 over Bluetooth (`CONFIG`), so nothing per-truck is flashed into firmware. See
+  `src/esp32-argus/README.md` section 1b for the full chain.
+- `DELETE /api/trucks/{id}/device-key` (root_admin/admin) revokes it. `TruckOut` never carries
+  the key or hash, only `has_device_key`, `device_key_issued_at`, and `device_last_seen_at`.
+  A successful key match refreshes `device_last_seen_at` at most once a minute
+  (`DEVICE_LAST_SEEN_RESOLUTION`, a targeted `$set`, not `truck.save()`); rotating or
+  revoking resets it.
+- `GET /api/devices/me/active-route` resolves the truck from the key alone (indexed
+  `device_api_key_fingerprint`, then bcrypt), so the ESP32 needs no route id either.
 - Ingestion requests carry it as `X-Device-Api-Key`. `authorize_device_or_user()`
   (`app/auth/dependencies.py`) checks it specifically against the truck that owns the target
   route (resolved server-side from the route/alert body, not trusted from the header) — so a

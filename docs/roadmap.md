@@ -110,9 +110,16 @@ implemented vs. still genuinely missing, item by item:**
   internal pull-up on that pin group).
 - **CAN bus / AEB actuator and the alarm speaker have no code at all** — genuinely out of scope
   for this pass, not even stubbed.
-- **`id_route` is still the same open question** `src/esp32-argus/README.md` section 2 always
-  flagged — `config.h`'s `ROUTE_ID` is a hardcoded-per-deployment stopgap, not the real "query
-  this truck's current in-progress route" answer, which isn't built anywhere.
+- **`id_route` and per-truck credentials: now solved in code, not yet on hardware.** A truck is
+  provisioned from the dashboard (Fleet → "Generate device credentials" → `argus-device.env` on
+  the Pi); the ESP32 fetches the key + backend URL from the Pi over Bluetooth (`CONFIG`), caches
+  them in NVS, and resolves its route with `GET /api/devices/me/active-route`. `config.h` no
+  longer has `ROUTE_ID`/`DEVICE_API_KEY`/`BACKEND_BASE_URL`, and `https://` backends (AWS
+  CloudFront) use a pinned Amazon Root CA 1. Verified: backend/UI/cv-argus/edge-chain tests and
+  an `arduino-cli` compile (56% flash). **Not yet verified**: a flash + HIL run of the new
+  firmware, the paired/encrypted RFCOMM link (`BLUETOOTH_SECURITY=medium`) between a real Pi and
+  ESP32, and ESP32 heap headroom with classic BT + WiFi + TLS in one session (TLS needs ~40 KB;
+  BT pull and HTTPS relay are sequential, which should keep it in budget).
 - **`current_speed` is GPS-derived** (`TinyGPSPlus`'s `speed()`), not a CAN-bus/OBD reading as
   originally anticipated — a defensible real data source, but a different one; **`odometer` has
   no sensor on this device at all** and is sent as a hardcoded `0.0`, not fabricated from

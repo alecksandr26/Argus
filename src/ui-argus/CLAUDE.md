@@ -354,6 +354,18 @@ not a user choice. It polls `GET /api/simulator` every 10 s only while a session
 `tsc -b && vite build`. This ran natively on Node 24 from a native Linux copy of the module,
 since Docker/Node weren't usable in that WSL session; same `/mnt/c` caveat as above.
 
+**`components/DeviceCredentials.tsx`** (+ `utils/deviceEnv.ts`, tests in
+`utils/deviceEnv.test.ts` and `pages/Fleet.test.tsx`'s "Fleet device credentials"): the block in
+Fleet's edit panel that provisions a truck's edge device. It shows the key status
+(`has_device_key`, issued/last-seen times), and gives root_admin/admin **Generate** /
+**Rotate key** (confirm first, since rotation locks the installed device out) and **Revoke**.
+A fresh key is shown once, rendered as `argus-device.env` (`ARGUS_TRUCK_ID`,
+`ARGUS_DEVICE_API_KEY`, `ARGUS_BACKEND_URL`) with Download/Copy. The backend URL defaults to
+`API_BASE_URL` (`VITE_API_BASE_URL`, the CloudFront URL on AWS) and is editable, with a warning
+for `localhost`, which the truck can't reach. guardian sees the status only. Verified: lint,
+82/82 Vitest tests across 15 files, `tsc -b && vite build`, run from a native Linux copy (the
+`/mnt/c` caveat above). Not clicked through in a real browser yet.
+
 ## Next steps (not started)
 
 - Fix the `html-encoding-sniffer`/`@exodus/bytes` toolchain bug for real (pin a working

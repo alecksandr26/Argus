@@ -46,8 +46,11 @@ indoors. Set it back to `0` for a real truck.
    are most of that size.
 6. Open `esp32_argus.ino`. Every `.h`/`.cpp` in this folder opens as a tab and compiles with it.
    (`../Codigo_SMS_GPS/` is a separate SIM800L/GPS bring-up sketch, not part of this build.)
-7. Fill in every placeholder in `config.h` (WiFi creds, backend URL, device API key, route id,
-   the Pi's Bluetooth MAC, GPIO pins) before flashing. Compiling doesn't need real values.
+7. Fill in the per-site placeholders in `config.h` (WiFi creds, the Pi's Bluetooth MAC, GPIO
+   pins) before flashing. There's no backend URL, device key, or route id to set: those come
+   from the Pi over Bluetooth (`CONFIG`) and from the backend (see `../../README.md` section
+   1b). Compiling doesn't need real values. Last compile with these changes (2026-10-19,
+   `arduino-cli`, core 3.3.12, Huge APP): 56% flash, 19% RAM. Not flashed or HIL-run yet.
 
 ## Errors already hit, and what they mean
 
