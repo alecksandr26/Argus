@@ -10,8 +10,8 @@ setup(
     name="cv_argus",
     version="0.1.0",
     description=(
-        "Argus edge computer-vision/AI module: face-landmark feature extraction, LSTM "
-        "drowsiness inference, and alert orchestration for the Raspberry Pi 5 in-cabin unit."
+        "Argus edge computer-vision/AI module: tiny YOLO eye/mouth/head detection, rule-based "
+        "drowsiness severity, and alert orchestration for the Raspberry Pi 5 in-cabin unit."
     ),
     python_requires=">=3.11",
     package_dir={"cv_argus": "src"},

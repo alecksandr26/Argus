@@ -23,11 +23,10 @@ pytestmark = pytest.mark.docker
 MODULE_ROOT = Path(__file__).resolve().parents[1]
 IMAGE_TAG = "cv-argus:pytest"
 
-# The four artifacts the Dockerfile bakes in at build time (see constants.py).
+# The three artifacts the Dockerfile bakes in at build time (see constants.py).
 EXPECTED_ARTIFACTS = [
-    "cnn_face_crop_model.keras",
-    "best_cnn_lstm_frozen_embedding.keras",
-    "face_landmarker.task",
+    "parts_tiny_yolo_w1_int8.tflite",
+    "parts_tiny_yolo_w1.keras",
     "blaze_face_short_range.tflite",
 ]
 

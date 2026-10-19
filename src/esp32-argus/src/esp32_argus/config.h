@@ -48,8 +48,9 @@
 #define PI_BT_LINE_TIMEOUT_MS 3000UL
 
 // =====================================================
-// Drowsiness decision threshold -- MUST match cv-argus's own FUSED_MODEL_THRESHOLD
-// (src/cv-argus/src/constants.py). Hand-synced, no automated check -- the same
+// Drowsiness decision threshold. cv-argus's RULE_P_DROWSY (src/cv-argus/src/constants.py)
+// is built around it: LOW sends p(Drowsy)=0.30 (below), MEDIUM/CRITICAL 0.75/0.95 (at or
+// above); tests/test_constants.py guards that side. Hand-synced, no automated check -- the same
 // verbatim-duplication pattern this project already uses for Severity (see root CLAUDE.md
 // and fusion_contract.py's own Severity docstring).
 // =====================================================

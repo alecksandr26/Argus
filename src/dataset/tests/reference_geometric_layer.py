@@ -1,4 +1,7 @@
-"""`GeometricRatioFeatureLayer`, ported verbatim from the notebook.
+"""`GeometricRatioFeatureLayer`, ported verbatim from the notebook -- kept here as the reference
+fixture for `test_geometry_equiv.py` (it moved from `src/cv-argus/src/model/layers.py` when
+cv-argus dropped the CNN+LSTM pipeline; that history is on branch `archive/cnn-lstm-fused`).
+
 
 Source of truth: `notebook/01_dataset_creation.ipynb`, cell defining `class
 GeometricRatioFeatureLayer` (search for that string — cell numbers aren't stable), plus the

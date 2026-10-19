@@ -48,7 +48,7 @@ POSE_VALIDITY_THRESHOLD_DEG: float = 20.0
 
 # EAR / MAR landmark index sets (MediaPipe FaceMesh 478-point topology).
 # src/notebook/01 cell 80 / 02 cell 68, and the tf.keras layer in
-# src/cv-argus/src/model/layers.py.
+# src/dataset/tests/reference_geometric_layer.py.
 LEFT_EYE_EAR_IDX: tuple[int, ...] = (33, 160, 158, 133, 153, 144)
 RIGHT_EYE_EAR_IDX: tuple[int, ...] = (362, 385, 387, 263, 373, 380)
 MOUTH_MAR_IDX: tuple[int, ...] = (61, 291, 13, 14)
@@ -62,7 +62,7 @@ GEOMETRIC_FEATURE_NAMES: list[str] = [
 # notebooks actually use (MediaPipe's category list omits "_neutral"), so num_features = 7 + 51
 # = 58 — NOT the 59 / "52 blendshapes" some stale notebook markdown claims.
 # Byte-identical to blendshape_names in src/notebook/01 cell 89, 02 cell 77, 09 cell 9, and
-# src/cv-argus/src/model/layers.py.
+# src/dataset/tests/reference_geometric_layer.py.
 BLENDSHAPE_NAMES: list[str] = [
     "browDownLeft", "browDownRight", "browInnerUp", "browOuterUpLeft", "browOuterUpRight",
     "cheekPuff", "cheekSquintLeft", "cheekSquintRight",

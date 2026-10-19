@@ -36,9 +36,11 @@ the report, not just "we used Bluetooth."
 
 ## 1. `cv-argus` (Raspberry Pi edge)
 
-**Done, in `main`:** `model/` (fused CNN-embedding + geometric-feature + LSTM classifier, 84.24%
-measured accuracy / 0.8375 macro-F1, one held-out split — see its own `CLAUDE.md` for the full
-caveats), `pipeline/` (threaded Stage/Pipeline abstraction, MediaPipe stages, camera sources),
+**Done, in `main`:** `model/` (since 2026-10-18 the tiny YOLO "parts" detector, int8/float, plus
+an IoU tracker; `orchestrator/parts_rules.py` turns its detections into a timed severity — see
+its own `CLAUDE.md`. The previous fused CNN+LSTM classifier, 84.24% / 0.8375 macro-F1 on one
+held-out split, is on branch `archive/cnn-lstm-fused`), `pipeline/` (threaded Stage/Pipeline
+abstraction, the BlazeFace stage, camera sources, logging/metrics/MJPEG sinks),
 and the alert pipeline — `alerts/` (Alert/AlertKind data model + serialization), `buffer/`
 (WAL-mode SQLite queue, concurrency-tested), `orchestrator/` (debounce/cooldown decision loop +
 heartbeat), `sender/` (a custom Bluetooth SPP protocol — see section 2 below — fully implemented
@@ -336,8 +338,7 @@ claim exactly. The 2 skips are the geometry-equivalence and analysis checks that
   coverage; the capture loop itself is untested beyond code review.
 - This closes an ML-pipeline *tooling* gap only (faster, resumable dataset creation) — it doesn't
   move any of the cv-argus/ESP32/backend/frontend gaps above, and doesn't change what's actually
-  deployed in `src/cv-argus` (still `11_cnn_lstm_training_drive_pull.ipynb`'s model, per the root
-  `CLAUDE.md`'s "Current deployment status").
+  deployed in `src/cv-argus` (see the root `CLAUDE.md`'s "Current deployment status").
 
 ## 7. Testing / E2E / integration strategy — the real open question
 

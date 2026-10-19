@@ -97,6 +97,20 @@ def _classes(buf):
     return [r.payload["class_name"] for r in buf.readings()]
 
 
+def test_detector_extras_reach_the_payload_without_clobbering_contract_keys(clock):
+    """The parts pipeline's severity/reason/timers ride in the payload; class_name,
+    probabilities and transition (what the ESP32 and cap_unsent() read) always win."""
+    orch, buf = _orch()
+    d = D(0.95)
+    d.extras = {"severity": "critical", "reason": "eyes_closed", "class_name": "BOGUS", "transition": "x"}
+    _feed(orch, clock, [ND()] * 6 + [d] * 4)
+    last = buf.readings()[-1].payload
+    assert last["severity"] == "critical" and last["reason"] == "eyes_closed"
+    assert last["class_name"] == "Drowsy" and last["transition"] is True
+    assert last["probabilities"] == [0.05, 0.95]
+    assert "severity" not in buf.readings()[0].payload    # a detector without extras adds nothing
+
+
 def test_steady_not_drowsy_emits_initial_reading_then_keepalives(clock):
     orch, buf = _orch()
     _feed(orch, clock, [ND()] * 3)

@@ -8,88 +8,147 @@ session. When a task touches this directory, treat the details below as binding,
 
 ## What this module is
 
-The computer-vision / AI module of Argus: the code that will run on the Raspberry Pi 5 in
-the truck cabin, turning camera frames into a drowsiness class and handing that
-prediction off to whatever decides what to do about it. **The project's class scheme is
-binary — `Not Drowsy` vs. `Drowsy`**, and this module now labels binary too:
-`detector.py`'s `_CLASS_NAMES` and `mjpeg_output_stage.py`'s status-colour map are both
-`{Not Drowsy, Drowsy}`.
+The computer-vision / AI module of Argus: the code that will run on the Raspberry Pi 5 in the
+truck cabin, turning camera frames into a drowsiness verdict and handing it to whatever decides
+what to do about it. **It runs one pipeline: the tiny YOLO "parts" detector + tracker +
+deterministic rules** (user decision, 2026-10-18: a simpler, explainable system). A per-frame
+detector reports what is *visible*: eyes open or closed, a yawn, the head straight or down.
+Hand-written rules with timers then decide a severity (none / low / medium / critical) and a
+reason. The binary contract the ESP32 reads (`Not Drowsy` / `Drowsy`) is derived from that
+severity.
 
-**This module deploys exactly one pipeline: the binary frozen-CNN-embedding +
-geometric-feature-fusion + LSTM classifier** (`notebook/11_cnn_lstm_training_drive_pull.ipynb`'s
-frozen-embedding variant). End to end: a MediaPipe BlazeFace face crop → a frozen
-**convolutional** network's 64-dim penultimate embedding, fused per frame with a 10-feature
-MediaPipe FaceLandmarker geometric subset (EAR/MAR ratios + selected blendshapes) → an **LSTM**
-over a rolling window of up to 100 frames, output **`Not Drowsy` vs. `Drowsy`**. See "Current
-status" below for its measured accuracy and open caveats. Two earlier pipelines — a single-frame
-CNN (`notebook/07_cnn_training.ipynb`, deployed by itself for a while) and a
-windowed-geometric-only LSTM (`notebook/01_dataset_creation_lstm.ipynb` →
-`03_model_training_lstm.ipynb` → `08_deployment_export_lstm.ipynb`) — were removed once this
-result made both obsolete (see the root `CLAUDE.md`): the single-frame CNN's own macro-F1
-(0.5273) was roughly half this model's (0.8375) on the same held-out subjects, and the
-geometric-only LSTM was never deployed to begin with. The CNN checkpoint from the first of those
-two is still downloaded and loaded, though — not for its own classification, but as the frozen
-convolutional embedding backbone this model's LSTM was trained on top of (see `cnn_detector.py`).
-`notebook/ArgusMLModel.ipynb` is the retired monolith the whole pipeline was originally split
-from — don't reference it in new work. See `notebook/CLAUDE.md` for the full pipeline this
-module now draws on (the CNN and CNN+LSTM model families it deploys, and the
-RandomForest/Dense NN/windowed-LSTM baselines it doesn't).
+**The CNN+LSTM ("fused") pipeline is gone from this module, not merely off by default.** It
+lives on branch **`archive/cnn-lstm-fused`**, the last `main` that deployed it: the frozen-CNN
+embedding + FaceLandmarker geometric features + LSTM classifier from
+`notebook/11_cnn_lstm_training_drive_pull.ipynb`, with 84.24% accuracy / 0.8375 macro-F1 on one
+subject-grouped fold. It stays the thesis's comparison point (see `notebook/CLAUDE.md`), and its
+model files are no longer downloaded or baked into the image. `GeometricRatioFeatureLayer`
+moved to `src/dataset/tests/reference_geometric_layer.py`, where it still guards the dataset
+builder's NumPy port.
 
 ## Current status
 
-Project setup is done: the container substrate (Dockerfile, docker-compose.yml,
-requirements.txt, entrypoint script), the Python packaging (`setup.py`, `src/__init__.py`),
-and a real entry point (`src/main.py` plus `src/__main__.py`, so it's runnable as
-`python -m cv_argus` — the Dockerfile's `CMD` — as well as `python -m cv_argus.main`, or
-installed as the `cv-argus-run` console script via `setup.py`'s `entry_points`) all exist.
+Done and running: the container (Dockerfile, compose files, entrypoint), the packaging
+(`setup.py`, `src/__init__.py`) and a real entry point (`src/main.py` + `src/__main__.py`,
+runnable as `python -m cv_argus`, the Dockerfile's `CMD`).
 
-**This module deploys one pipeline: the binary frozen-CNN-embedding +
-geometric-feature-fusion + LSTM classifier, `notebook/11_cnn_lstm_training_drive_pull.ipynb`'s
-frozen-embedding variant.** Measured **84.24% test accuracy / 0.8375 macro-F1** (binary
-`Not Drowsy` / `Drowsy`) on held-out subjects — by far the best result in the project, roughly
-double the single-frame CNN's own macro-F1 (0.5273) on the same subjects, which is why that
-earlier pipeline (and the never-deployed windowed-geometric-only LSTM before it) was removed
-rather than kept as an alternative — see "What this module is" above and the root `CLAUDE.md`.
-**Not yet cross-validated**: one subject-grouped train/val/test split, no k-fold, no variance
-estimate.
+```
+camera (SAMPLE_FPS=5) → BlazeFace (FaceDetectorCropStage, sets face_bbox_raw)
+  → PartsInferenceStage:
+      model/parts_geometry   square ×1.5 black-padded crop → gray → 160×160     [= training]
+      model/parts_detector   notebook 12 tiny_yolo_w1 (46k params), int8 .tflite | float .keras
+                             → 20×20 grid decode + NMS (verbatim from notebook 12)
+                             → pair decision thresholds (closed eye / head down)
+      model/parts_geometry   remap crop-normalised boxes → frame pixels
+      model/parts_tracker    IoU tracker: stable IDs, survives 3 misses, 3-frame vote
+      orchestrator/parts_rules   timers → severity + reason → DetectionResult (+ extras)
+  → outputs: logging (one line per frame), metrics (JSONL per frame), mjpeg (overlay)
+  → orchestrator bridge → readings into buffer/ → sender/ (ESP32 Bluetooth PULL/ACK)
+```
 
-`model/fused_detector.py`'s `FusedDrowsinessDetector` and `model/fused_features.py` (the
-10-feature geometric subset this model fuses with the CNN embedding) load two artifacts: the
-fused `.keras` model itself (`FUSED_MODEL_DRIVE_FILE_ID`, checked into `constants.py`) and the
-CNN checkpoint from `notebook/07_cnn_training.ipynb` (`CNN_MODEL_DRIVE_FILE_ID`, also checked
-in) — reused purely as a frozen feature extractor via `CnnDrowsinessDetector
-.embedding_submodel()`, which exposes the CNN's penultimate `Dense(64, relu)` layer instead of
-its final softmax; the CNN is never run for its own classification in this module anymore. **A
-real, still-open risk, not yet resolved**: `notebook/11` trained against
-`best_cnn_scratch_face_crops.keras`, a specific checkpoint that hasn't been hash-verified as
-identical to what `CNN_MODEL_DRIVE_FILE_ID` actually points at — if they're different training
-runs, the fused pipeline's live embeddings won't match what the LSTM learned on, a silent
-accuracy bug, not a crash. See `src/dataset/tests/test_fused_features_equiv.py` for the
-feature-math equivalence test (verified passing against real crop files + a real FaceLandmarker
-in this session) — that test does *not* cover this CNN-checkpoint-parity risk, only the
-geometric-feature computation. The window buffer lives on `FusedDrowsinessDetector` itself as a
-plain `numpy` array — see that class's module docstring for the full statefulness design, and
-`FaceLandmarkerCropStage`'s module docstring for why it runs FaceLandmarker in `IMAGE` mode on
-the *crop* (not `VIDEO` mode on the full frame), which is a training-fidelity requirement, not a
-style choice.
+**Training fidelity (binding):**
+- `square_face_box` / `crop_square` are verbatim copies of `src/dataset/argus_dataset/
+  detection_dataset.py`, the code that built `parts_det.zip`.
+  `src/dataset/tests/test_parts_crop_equiv.py` checks the two are pixel-identical. Change both or
+  neither.
+- Inference only converts frames to gray. IR simulation is a training-time augmentation and is
+  never applied here.
+- `decode_grid` / `nms_per_class` are verbatim from notebook 12. The one deliberate addition is
+  the **pair decision thresholds** (next paragraph); at 0.5 they equal the notebook's argmax.
+- `PARTS_*` constants mirror the dataset's `DET_*` constants.
 
-`pipeline/` is implemented as a threaded, queue-connected `Stage`/`Pipeline` abstraction
-(`stage.py`) with `FaceDetectorCropStage` (BlazeFace) → `FaceLandmarkerCropStage` (geometric
-features, on the crop) → `FusedInferenceStage` (wraps `FusedDrowsinessDetector`) for MediaPipe
-and inference, `VideoCaptureSource`/`PiCameraSource` for frame sources, and
-`LoggingOutputStage`/`MjpegStreamOutputStage` (a demo-only, browser-viewable annotated stream —
-see "`pipeline/` — done" below for the security caveat) as sinks. `src/main.py` is fully wired
-to it: `SOURCE` (`video_capture` default / `picamera`) picks where frames come from, `OUTPUTS`
-(comma-separated, `logging` default) picks one or more sinks — fanned out from the same
-inference stage via `Stage.connect()`, not a new mechanism. See "`pipeline/` — done" below and
-"Running it" below for the demo procedure. **`orchestrator/`, `buffer/`, `sender/`, and
-`alerts/` are now done too** — a thin, always-on bridge stage hands each frame's
-`DetectionResult` to `orchestrator/`'s own decision-loop thread, which debounces/cools down
-before raising an `Alert` (or a periodic `RouteStatus("OK")` heartbeat) into `buffer/`'s
-WAL-mode SQLite queue; `sender/` answers the ESP32's Bluetooth PULL/ACK poll against that same
-queue. See "`orchestrator/`, `buffer/`, `sender/`, `alerts/` — done" below for the full design,
-and "Module status at a glance" for what's still genuinely untested (no ESP32 hardware/firmware
-exists in this repo, and neither compose file wires real Bluetooth device passthrough yet).
+**Decision thresholds (tunable, `constants.py` + env vars of the same name):**
+- `PARTS_CONF_THRESHOLD = 0.25`: is a part detected at all (score = σ(obj)·max σ(class)).
+- `PARTS_CLOSED_EYE_THRESHOLD = 0.40`: an eye is `closed_eye` when
+  p_closed / (p_open + p_closed) ≥ this.
+- `PARTS_HEAD_DOWN_THRESHOLD = 0.30`: a head is `head_down` when p_down / (p_straight + p_down) ≥
+  this.
+- 0.5 is the plain argmax; lower is more sensitive. `scripts/demo.sh --eye-threshold/
+  --head-threshold` set them for a run, and the overlay footer shows the active values.
+
+Measured on the parts val+test sets with the int8 model, matching each labelled box to its best
+prediction:
+
+| | per-frame recall | precision | moving the threshold |
+|---|---|---|---|
+| closed eye | ~93% | ~86% | bimodal: 0.5 → 0.4 gives +0.6 pt recall for −0.5 pt precision |
+| head down | 52–69% | 85–94% | 0.5 → 0.3 gives up to +7 pt recall, no precision cost |
+
+There are only ~30 head-down faces per split, so the head numbers are noisy. The head problem
+isn't the threshold, it's per-frame recall, so the tracker and rules lean sensitive:
+- a head track is down once **1 of its last 3** frames was (`PARTS_HEAD_DOWN_VOTES`), instead
+  of by majority;
+- the head timer's grace is `RULE_HEAD_GRACE_S = 1.0` s, not 0.4 s, so missed frames between
+  detections don't reset it.
+
+This is cheap because a straight head is almost never read as down: more than 99.5% of straight
+heads are classified correctly. On the real demo clip, the new settings produced no false
+head-downs (all 129 head frames stayed straight). The real fix for head pose is more head-down
+training data.
+
+**Box remapping:** a crop-normalised `(u, v)` maps to frame pixel `(x0 + u·side, y0 + v·side)`.
+The overlay draws on the same `frame_bgr` that inference used, at native resolution;
+`DEMO_STREAM_WIDTH` resizes the *finished* image. So the boxes can't drift from the eyes. This is
+tested by a round trip including faces cut off at the frame edge, and seen on real frames.
+
+**Severity rules** (`orchestrator/parts_rules.py`; thresholds are `RULE_*` in `constants.py`, each
+overridable by env var):
+- **Eyes closed:** LOW 1 s / MEDIUM 2 s / **CRITICAL 3 s**. With the mouth open now or a yawn
+  < 10 s ago, this becomes 0.7 / 1.3 / **2.0 s**.
+- **Head down + eyes closed or hidden:** CRITICAL at 3 s (2 s after a yawn).
+- **Head down with eyes open:** MEDIUM at 3 s.
+- **Yawning alone** (3 yawns ≥ 1.5 s within 5 min): never above LOW.
+- **No face for 3 s:** LOW.
+
+Escalation is immediate; recovery takes 2 s clear. A gap of no more than 0.4 s (1.0 s for the
+head timer) doesn't reset a timer. This needs an epsilon: a one-frame gap at 5 fps is
+`0.4000000000000004` in float, and without it a single flicker reset the timer (found by the
+tests). Only the **two best eye tracks** are judged, visible first and then by confidence. A live
+run showed a ghost "closed eye" by the ear, and with ghosts counted, int8 and float agreed on only
+89% of frames instead of 98%. `trigger_s` keeps the closure length visible while the alarm is
+held.
+
+**Contract (downstream unchanged):** the ESP32 reads only `class_name` and `probabilities`.
+- MEDIUM and CRITICAL → `Drowsy` (`p_drowsy` 0.75 / 0.95, at or above its 0.57 threshold).
+- none and LOW → `Not Drowsy`.
+- `severity`, `reason`, `trigger_s`, `timers`, `yawn_events` and `model` travel in
+  `DetectionResult.extras`, which the orchestrator merges into the payload. Today's firmware
+  ignores them.
+- `ctx.detection` is `None` only when there's no face *and* no active rule, which keeps "No
+  Face" semantics while a held alarm survives the face dropping out of view.
+- **Known latency:** the ESP32 still applies its own 5 s debounce plus grip fusion, so a Pi
+  CRITICAL reaches the backend about 5 s later. The follow-up is to let the firmware use
+  `payload.severity` / `reason` (e.g. `alert_type = reason`).
+
+**Logs and measurements (for the report):**
+- `OUTPUTS=logging` prints **one line per frame**: severity + reason + trigger time, the binary
+  class, eye/mouth/head states, the eye and head timers, BlazeFace / model / stage ms and
+  end-to-end ms.
+- `OUTPUTS=metrics` (`MetricsLogOutputStage`) appends the same facts as one JSON object per frame
+  to `METRICS_LOG_PATH`. That defaults to `$BUFFER_DIR/metrics.jsonl`, on the `buffer-data`
+  volume. Each record also has every track (id, label, score) and `timing_ms` with `face`,
+  `crop`, `infer`, `decode`, `track`, `rules` and `parts_stage`.
+- `scripts/summarize_metrics.py metrics.jsonl [--csv out]` turns the log into:
+  - latency mean / p50 / p95 / p99 / max per phase;
+  - state shares: face found, eyes open / closed, mouth, head, severity, reason;
+  - alert-episode counts.
+- `scripts/demo.sh` turns on all three outputs. The per-stage `StageStats` interval lines
+  (`LATENCY_LOG_INTERVAL`) still exist and carry the same phases.
+
+**Measured** on a desktop CPU with the real models on a 128-frame face clip:
+- int8: **0.6 ms** model, 1.5 ms whole stage. Float: 5.5 ms.
+- BlazeFace: about 2 ms.
+- int8 vs float: same severity on 98.4% of frames.
+
+Not measured: a Pi 5, real cabin NoIR footage, and accuracy on unseen drivers (the clip came
+from the detector's training data). `head_down` is the detector's weakest class (AP about 0.25,
+few examples), and head pose comes **only** from it (a user decision; no FaceLandmarker here).
+
+`orchestrator/`, `buffer/`, `sender/` and `alerts/` are done too (see "`orchestrator/`,
+`buffer/`, `sender/`, `alerts/` — done" below). A thin, always-on bridge stage hands each frame's
+`DetectionResult` to the orchestrator's decision loop, which writes debounced readings (plus
+heartbeats) into `buffer/`'s WAL-mode SQLite queue; `sender/` answers the ESP32's Bluetooth
+PULL/ACK poll against that queue.
 
 ## Python packaging: `src/` on disk, `cv_argus` at import time
 
@@ -119,12 +178,12 @@ global/system Python with mediapipe/tensorflow to iterate locally.
   laptop) and `linux/arm64` (the Pi 5) without changes — `docker compose build` targets
   whatever architecture it's run on; cross-building an arm64 image from an amd64 machine
   needs `docker buildx build --platform linux/arm64` instead.
-- **Model artifacts (the fused CNN+LSTM model, the CNN checkpoint it depends on, the two
-  MediaPipe bundles) are baked into the image at *build* time**, not fetched at container start —
-  the Dockerfile runs `python -m cv_argus.model.downloader && python -m
-  cv_argus.pipeline.downloader` as a build step, with `CNN_MODEL_DRIVE_FILE_ID`/
-  `FUSED_MODEL_DRIVE_FILE_ID` passed in as build `ARG`s (see `docker-compose.yml`'s
-  `build.args`) — both have checked-in defaults, so no `.env` file is required. This device has
+- **Model artifacts (the tiny YOLO parts detector at int8 and float, and the BlazeFace bundle)
+  are baked into the image at *build* time**, not fetched at container start — the Dockerfile
+  runs `python -m cv_argus.model.downloader && python -m cv_argus.pipeline.downloader` as a build
+  step, with `PARTS_INT8_DRIVE_FILE_ID`/`PARTS_FLOAT_DRIVE_FILE_ID` passed in as build `ARG`s
+  (see `docker-compose.yml`'s `build.args`) — both have checked-in defaults, so no `.env` file
+  is required. This device has
   to be able to boot and start monitoring the driver in a moving truck that may have no signal
   right then — a runtime download dependency is a liability a build-time one isn't. Accepted
   trade-offs: a new trained model needs an image rebuild + redeploy, not just a container
@@ -215,61 +274,45 @@ deployment.
   **`docker-compose.pi.yml`'s device passthrough is a best effort, not verified against real Pi
   5 hardware in this repo** (see "Open decisions" below) — test this path well before an actual
   presentation, not for the first time live; treat the laptop/webcam (or video file) path above
-  as the reliable fallback. Pi 5 CPU performance for BlazeFace+CNN at a usable fps is also
+  as the reliable fallback. Pi 5 CPU performance for BlazeFace + the parts detector is also
   unmeasured — no hardware has been available to benchmark it from this codebase's sessions.
 
 ## Model download strategy
 
 Artifacts get baked into the image at `docker build` time, each fetched by the subpackage that
-actually depends on it. Drive file IDs and bundle URLs live in `constants.py` (see its own
-docstring) rather than as scattered inline defaults — every env var below falls back to a
-constant there if unset (an empty-string env var, e.g. from an unset Docker build `ARG`, is
-treated the same as an absent one, not as an explicit override).
+depends on it. Drive file IDs and bundle URLs live in `constants.py`; every env var below falls
+back to a constant there if unset (an empty-string env var, e.g. from an unset Docker build
+`ARG`, counts as absent).
 
-- `model/downloader.py`'s `download_cnn_model()` — the trained `cnn_face_crop_model.keras`
-  (from `07_cnn_training.ipynb`). Not run for its own classification anymore (see "Current
-  status" above) — required because `download_fused_model()`'s model depends on it as a frozen
-  embedding backbone. Fetched via `gdown` using a Drive file ID (`CNN_MODEL_DRIVE_FILE_ID` env
-  var, defaulting to `constants.py`'s checked-in id — the file is shared "Anyone with the link",
-  not a secret, so it's fine to default from source rather than require a build `ARG`/`.env`
-  entry). Same gdown-over-service-account trade-off as before: zero credential management at the
-  cost of the file being link-accessible to anyone with the ID. Revisit this (service account +
-  Drive API v3) if that stops being acceptable.
-- `pipeline/downloader.py`'s `download_face_landmarker_bundle()` — the pretrained MediaPipe
-  Face Landmarker `.task` bundle `FaceLandmarkerCropStage` needs. Public, unauthenticated
-  download from Google's model URL, same one `01_dataset_creation_lstm.ipynb` downloads via
-  plain `urllib.request`; no build arg needed.
-- `pipeline/downloader.py`'s `download_face_detector_bundle()` — the pretrained MediaPipe Face
-  Detector (BlazeFace, short_range/float16) `.tflite` bundle `FaceDetectorCropStage` needs — a
-  different, lighter bundle from the Landmarker one above (bounding-box-only, no landmarks),
-  matching `06_dataset_creation_face_crops.ipynb`'s "MediaPipe Face Detector Setup" cell. Same
-  public/unauthenticated shape; unlike the CNN *model* artifact above, there's no "is this a
-  trustworthy artifact" question gating it.
-- `model/downloader.py`'s `download_fused_model()` — the trained
-  `best_cnn_lstm_frozen_embedding.keras` (from `11_cnn_lstm_training_drive_pull.ipynb`'s
-  frozen-embedding variant), **the model this container deploys** (see "Current status" above).
-  Fetched via `gdown` the same way as the CNN model, with its own checked-in default Drive id
-  (`FUSED_MODEL_DRIVE_FILE_ID`). Required, same as the CNN download — a failure in either fails
-  the whole build (see `model/downloader.py`'s `__main__` block), since a container that can't
-  load this model can't do anything useful.
+- `model/downloader.py`'s `download_parts_int8_model()` / `download_parts_float_model()`: notebook
+  12's `tiny_yolo_w1` as int8 `.tflite` (the default `PARTS_PRECISION`) and float `.keras`.
+  - They're fetched via `gdown` from checked-in Drive ids (`PARTS_INT8_DRIVE_FILE_ID` /
+    `PARTS_FLOAT_DRIVE_FILE_ID`, each overridable by the env var of the same name).
+  - The files are shared "Anyone with the link". That's zero credential management, at the cost
+    of the files being link-accessible to anyone with the ID. If that stops being acceptable,
+    move to a service account and the Drive API v3.
+  - Both precisions are baked in, so switching `PARTS_PRECISION` never needs a network at
+    container start.
+  - If a file is missing at runtime (e.g. a stale `model-cache` volume, below),
+    `PartsDetector.from_env()` downloads it.
+- `pipeline/downloader.py`'s `download_face_detector_bundle()`: the MediaPipe Face Detector
+  (BlazeFace, short_range/float16) `.tflite`, a public, unauthenticated download.
 
 The Dockerfile runs `python -m cv_argus.model.downloader && python -m
-cv_argus.pipeline.downloader` as a single `RUN` step. **Why build time, not container start:**
-this device needs to boot and start monitoring the driver even if the truck has no signal at
-that exact moment — a runtime download dependency is a liability a build-time one isn't.
-Accepted trade-off: a new trained model needs an image rebuild + redeploy, not just a restart.
-`docker build` succeeds with **no `.env` file at all** — both the CNN and fused models' default
-Drive ids are checked into `constants.py`.
+cv_argus.pipeline.downloader` as one `RUN` step. That's about 1 MB of models in total; the old
+CNN, fused `.keras` and FaceLandmarker bundle are no longer fetched.
 
-**Gotcha this creates:** `/app/models` is still declared as a volume (`model-cache` in
-`docker-compose.yml`), kept as a manual escape hatch for dropping a newer model into a running
-container without a rebuild. Docker only seeds a named volume from the image's contents the
-*first* time it's created empty — so if you already have a `model-cache` volume from before
-(e.g. from testing the previous run-time-download design), rebuilding the image with a new
-`FUSED_MODEL_DRIVE_FILE_ID`/`CNN_MODEL_DRIVE_FILE_ID` will **not** overwrite what's already in
-that volume; the stale file wins. Run `docker compose down -v` (or `docker volume rm
-<project>_model-cache`) to clear it before rebuilding if you need the new build's files to
-actually take effect.
+**Why build time, not container start:** this device needs to boot and start monitoring the
+driver even if the truck has no signal at that exact moment. Accepted trade-off: a new trained
+model needs an image rebuild and redeploy. `docker build` succeeds with **no `.env` file at
+all**.
+
+**Gotcha:** `/app/models` is still a volume (`model-cache`), kept as an escape hatch for
+dropping a newer model into a running container. Docker only seeds a named volume from the image
+the *first* time it's created empty. So an existing `model-cache` volume keeps its old files
+across rebuilds, including the old CNN+LSTM files, which are now just unused bytes. Run
+`docker compose down -v` (or `docker volume rm <project>_model-cache`) when a rebuild's new model
+must take effect.
 
 ## `buffer/`'s SQLite file needs a volume, not a container
 
@@ -298,21 +341,19 @@ that on top of it — see "`orchestrator/`, `buffer/`, `sender/`, `alerts/` — 
 ```
 src/
 ├── __init__.py
-├── model/          # DONE — GeometricRatioFeatureLayer (EAR/MAR/pose math), the gdown downloader
-│                   # (the CNN checkpoint + the deployed fused model), CnnDrowsinessDetector
-│                   # (frozen embedding backbone loader) and FusedDrowsinessDetector (the
-│                   # deployed model's predict wrapper)
+├── model/          # DONE — the tiny YOLO parts detector (int8/float), crop geometry, the
+│                   # IoU tracker, DetectionResult, and the gdown downloader
 ├── pipeline/       # DONE — threaded Stage/Pipeline abstraction (stage.py), sources
-│                   # (camera/video file/Pi CSI), the two MediaPipe stages, the inference
-│                   # stage, and both bundle downloads; wired into src/main.py
+│                   # (camera/video file/Pi CSI), the BlazeFace stage, PartsInferenceStage,
+│                   # the logging/metrics/MJPEG sinks, the bundle download; wired into main.py
 ├── alerts/         # DONE — Alert data model (models.py: AlertKind discriminator + one
 │                   # envelope dataclass, route_status() factory) + serialization
 │                   # (serialization.py: to/from dict/json) only — no logic, no persistence;
 │                   # orchestrator/, buffer/, and sender/ all depend on this, not vice versa
 ├── orchestrator/   # DONE — OrchestratorBridgeOutputStage (bridge.py, a thin always-on
 │                   # pipeline sink) + Orchestrator (orchestrator.py, its own decision-loop
-│                   # thread): debounce/cooldown before raising an Alert, a periodic
-│                   # RouteStatus("OK") heartbeat otherwise — the "Alert/RouteStatus
+│                   # thread): debounced class *readings* on every change plus
+│                   # keepalives, and a periodic RouteStatus("OK") heartbeat — the "Alert/RouteStatus
 │                   # Orchestration (Decision Making)" box in the design diagram. Builds
 │                   # records via alerts/ and calls buffer/.enqueue(). Also holds
 │                   # fusion_contract.py — the typed contract + reference decision logic for
@@ -336,88 +377,31 @@ src/
 See "`orchestrator/`, `buffer/`, `sender/`, `alerts/` — done" below for the full design of the
 four newer packages.
 
-### `model/` — done: a shared geometric-feature layer plus the fused detector's two backbones
+### `model/` — done: the parts detector, its geometry and the tracker
 
-`GeometricRatioFeatureLayer` (`layers.py`) computes EAR/MAR/pose ratios from raw MediaPipe
-landmarks — ported verbatim from `01_dataset_creation_lstm.ipynb` (the source of truth; also
-redefined byte-identical in `02_dataset_creation_flat.ipynb` and `08_deployment_export_lstm
-.ipynb`, notebooks this module no longer deploys against but that still exist as training
-reference — per the root `CLAUDE.md`). `fused_features.py` calls this layer directly (never
-deserializes it as part of a saved model) to compute the 10-feature geometric subset the fused
-model fuses with the CNN embedding — see `model/`'s fused detector section below for the full
-shape.
+- `parts_detector.py`: `PartsDetector`, with `decode_grid` and `nms_per_class` verbatim from
+  notebook 12, plus `apply_pair_thresholds`. The int8 TFLite backend uses
+  `tf.lite.Interpreter(num_threads=1)`; one thread was measured fastest (1.35 ms vs 1.69 ms on
+  4). The float backend is a fixed-signature `tf.function`, traced once at startup, to avoid
+  eager-dispatch overhead. TensorFlow is imported lazily, so the pure decode maths is testable
+  without it.
+- `parts_geometry.py`: the square training crop and the crop → frame box remap (both pure numpy
+  and cv2).
+- `parts_tracker.py`: `PartsTracker`, a greedy per-kind IoU tracker with stable `E1`/`M1`/`H1`
+  IDs. Tracks survive `PARTS_TRACK_MAX_MISSES` frames, and each track's state is a 3-frame vote
+  (with the head-down exception above).
+- `detector.py`: `DetectionResult` (level, probabilities, `extras`).
+- `downloader.py`: the gdown fetches above.
 
-Implemented as `layers.py` (`GeometricRatioFeatureLayer`), `downloader.py`
-(`download_cnn_model()`/`download_fused_model()` — both required at build time, see "Model
-download strategy" above), `cnn_detector.py` (`CnnDrowsinessDetector` — loads the CNN checkpoint
-and exposes its frozen embedding sub-model, see below), and `fused_detector.py`
-(`FusedDrowsinessDetector` — the actual deployed predict wrapper, see below).
-
-### `model/`'s fused detector — done
-
-`FusedDrowsinessDetector` (`fused_detector.py`) loads `best_cnn_lstm_frozen_embedding.keras`
-(`notebook/11_cnn_lstm_training_drive_pull.ipynb`'s frozen-embedding variant — see "Current
-status" above for the measured accuracy and its caveats). The loaded `.keras` graph has **no
-internal state at all** — confirmed against the notebook: it's built from stock
-`Input`/`Normalization`/`LSTM`/`Dropout`/`Dense` layers only (no custom `Layer`/`Model`
-subclass, no `custom_objects` needed to load it), taking a pre-assembled `(max_timesteps=100,
-fused_dim=74)` array and a `(100,)` boolean mask as two *external* inputs. So the sliding window
-has to live on the Python wrapper instead, as a plain `numpy` array (`self._buffer`/
-`self._mask`) — one `FusedDrowsinessDetector` instance per camera stream; `predict_frame()` must
-be called once per incoming frame, in order, since that buffer is this class's only memory.
-
-Key behavior:
-
-- **Two artifacts load into one detector**: the fused `.keras` model itself, and `07`'s CNN
-  checkpoint (loaded via `CnnDrowsinessDetector.embedding_submodel()` — see `cnn_detector.py`),
-  used purely as a frozen 64-dim feature extractor, never for its own classification. **These
-  two artifacts must come from matched training runs** — see "Current status" above for why a
-  mismatch would be a silent accuracy bug.
-- **The buffer holds numbers, not images.** Each frame's face crop is embedded once (64 floats),
-  fused with a 10-float geometric-feature vector (`fused_features.py`) into one 74-float row,
-  and only that row is kept — the crop's pixels are never stored. A 100-row buffer is ~30KB.
-- **Padding convention: zero-*pre*-padded**, zeros first, real frames last — the opposite of a
-  naive "append at the front" ring buffer. Each `predict_frame()` call does `np.roll(buffer,
-  -1)` then overwrites the *last* slot with the new frame, matching exactly how
-  `notebook/11`'s `build_fused_arrays` constructs training windows
-  (`X[i, pad_amount:] = fused`). Getting this backwards doesn't raise an exception — it silently
-  feeds the model right-padded sequences it was never trained on.
-- **`use_cudnn=False` is forced on the loaded LSTM layer post-load** (`fused_detector.py`'s
-  `_force_no_cudnn()`) — required because of the pre-pad convention above (Keras' cuDNN fast
-  path assumes right-padding), mirroring `notebook/11`'s own `evaluate_variant`/`_load_for_eval`.
-  Irrelevant for raw speed on a Pi (no cuDNN there anyway) but required for correctness. This
-  is **not** the speed lever — see the next point.
-- **Both model calls run through a fixed-signature `tf.function`, not eager** (`_graph_call()`).
-  The LSTM was trained with `recurrent_dropout=0.3`, which permanently disables Keras' fused
-  RNN kernel even at inference, so the layer uses the generic step-by-step loop. Called
-  *eagerly*, that loop dispatches ~`max_timesteps` × a few tiny ops per frame through the
-  Python/TF eager runtime and dispatch overhead dominates: **~600 ms/frame** measured for the
-  deployed 36k-param model (it was the pipeline's bottleneck by ~10×, `e2e` ~7 s). Wrapped in a
-  `tf.function` with a fully-static `input_signature` (batch of 1, known dims), the loop traces
-  to one graph **once** — the mask changes value each frame but never shape/dtype, so no
-  retracing — and every later call runs the compiled graph: **~8–11 ms/frame**, output identical
-  to eager to float32 rounding (verified). `__init__` fires the one-time trace during startup
-  (next to model loading) so it doesn't land on the first live frame; that also cuts the
-  100-frame buffer warm-up from ~75 s to ~0.8 s. `tests/test_model_fused_detector.py`'s
-  `test_traced_output_matches_eager` / `test_models_are_traced_once_and_never_again` guard both
-  properties. The stub-based tests exercise the un-traced path (a non-`tf.keras.Model` stub is
-  handed back unwrapped by `_graph_call`).
-- **Input**: `predict_frame(face_crop_rgb, geo_features)` — an already-cropped RGB image plus an
-  already-computed 10-dim geometric-feature vector (`fused_features.compute_fused_geo_features()`,
-  or `zero_fused_geo_features()` on a landmarker miss) — never a MediaPipe result object; that
-  translation is `pipeline/`'s job (see `model/`-has-no-`mediapipe`-import in `fused_detector
-  .py`'s module docstring).
-- **Output/level**: a *threshold* on `p(Drowsy)` (`constants.FUSED_MODEL_THRESHOLD`, checked in
-  from `notebook/11`'s operating-point cell — see "Model download strategy" above for why it's
-  checked in rather than fetched from Drive), **not `argmax`**. `level=2`/`"Drowsy"` and
-  `level=1`/`"Not Drowsy"` render via `detector.py`'s module-level `_CLASS_NAMES` dict.
+There's no `mediapipe` import anywhere under `model/`. That boundary is deliberate:
+`pipeline/` turns MediaPipe output into plain numbers (`face_bbox_raw`).
 
 ### `pipeline/` — done, a threaded `Stage`/`Pipeline` abstraction
 
 Built as a small pipe-and-filter framework rather than one monolithic camera loop, specifically
 so a future model family could share the same plumbing instead of reimplementing
-threading/queueing/shutdown from scratch — this is also what let the earlier CNN and LSTM
-pipelines share it before they were removed in favor of the fused one:
+threading/queueing/shutdown from scratch — the CNN, LSTM and fused pipelines all shared it
+before each was replaced, and the parts pipeline reuses it unchanged:
 
 - **`stage.py`** — `Stage` (abstract base: owns a thread, an input queue, one or more output
   queues; subclasses implement `process_item()`), `SourceStage` (no input queue; implements
@@ -440,11 +424,10 @@ pipelines share it before they were removed in favor of the fused one:
   multiple `Pipeline` instances, each with its own `Source`, not one `Source` merging feeds —
   see `sources.py`'s module docstring for why.
   **Frame-rate cap (`target_fps` / `frame_rate`, default `constants.DEFAULT_SAMPLE_FPS` = 5).**
-  The deployed model was trained on frames sampled at 5 fps (`src/dataset`'s `SAMPLING_FPS`;
-  `FUSED_MODEL_MAX_TIMESTEPS = 100 = 20 s × 5 fps`), so the live pipeline samples at 5 fps too
-  — this is a **training-fidelity requirement**, not just a perf knob: a denser rate shrinks
-  how much real time the LSTM's 100-frame window covers. Decimation happens **at the source**,
-  before any MediaPipe/CNN/LSTM work: a live camera `grab()`s every frame (cheap, no decode)
+  The rule engine's timers are timestamp-based, but the tracker's miss/vote windows
+  (`PARTS_TRACK_MAX_MISSES`, `PARTS_TRACK_VOTE_FRAMES`) and `RULE_GRACE_S` are tuned in frames
+  at 5 fps, so the live pipeline samples at 5 fps. Decimation happens **at the source**, before
+  any MediaPipe/detector work: a live camera `grab()`s every frame (cheap, no decode)
   and only `retrieve()`s + emits one per `1/target_fps`; a video file strides by
   `_frame_stride(src_fps, target_fps)` and emits a virtual frame-clock `timestamp_ms`
   (deterministic, strictly increasing — the old wall-clock stamp for a file was
@@ -452,34 +435,22 @@ pipelines share it before they were removed in favor of the fused one:
   never processes the skipped frames. `SAMPLE_FPS=0` disables the cap. `_frame_stride` is a
   pure helper (`tests/test_pipeline_sources.py`); the camera grab-skip loop is cv2-gated in
   the same file (synthetic clip, no MediaPipe).
-- **`face_detector_stage.py`** (`FaceDetectorCropStage`) / **`face_landmarker_crop_stage.py`**
-  (`FaceLandmarkerCropStage`, `IMAGE` mode on the crop `FaceDetectorCropStage` produced — see its
-  module docstring for why this must run on the crop and in `IMAGE` mode specifically, a
-  training-fidelity requirement, not a style choice) — the two MediaPipe stages, chained one
-  after the other. `FaceDetectorCropStage` uses `VIDEO` running mode and `detect_for_video
-  (mp_image, timestamp_ms)` with a monotonically increasing wall-clock timestamp, matching the
-  notebooks' live-simulation pattern — not MediaPipe's `LIVE_STREAM` callback API, a different
-  shape never validated in any notebook. It ports `06_dataset_creation_face_crops.ipynb`'s crop
-  logic verbatim (`bbox_margin_frac=0.25`, `min_detection_confidence=0.5`, highest-confidence
-  detection when more than one face is found — both constants live in `constants.py`) and
-  explicitly converts the crop from BGR to RGB before handing it downstream — the frozen CNN
-  embedder was trained on RGB pixels (via `06`'s `cv2.imwrite`(BGR) -> `07`'s
-  `tf.io.decode_jpeg`(RGB) round trip), and there's no JPEG file here to do that conversion
-  implicitly. Get this backwards and nothing raises an exception; accuracy just silently
-  degrades. Two MediaPipe calls per sampled frame, not one, matching `06`→`09`'s two-stage
-  extraction exactly rather than deriving a crop from FaceLandmarker's own landmark-extent bbox
-  (which would be a different, unvalidated feature-extraction path).
-- **`inference_stages.py`** — `FusedInferenceStage`, a thin wrapper around `model/`'s
-  `FusedDrowsinessDetector`. Pulling MediaPipe output into the plain `numpy` arguments the
-  detector expects happens in the MediaPipe stages above, not here — see
-  `model/fused_detector.py` for why that boundary is deliberate. `FusedInferenceStage` no-ops
-  (doesn't advance the window buffer) on a frame with no face crop at all — the project's chosen
-  behavior for a totally-missed BlazeFace detection, see that stage's docstring.
-- **`output_stages.py`** — `LoggingOutputStage`, the placeholder sink until `orchestrator/`
-  exists (reuses the "logging/no-op... fine to start" plan from the section below).
+- **`face_detector_stage.py`** (`FaceDetectorCropStage`, BlazeFace) — `VIDEO` running mode and
+  `detect_for_video(mp_image, timestamp_ms)` with a monotonically increasing timestamp, matching
+  the notebooks' live-simulation pattern (not MediaPipe's `LIVE_STREAM` callback API, a
+  different shape never validated in any notebook). Highest-confidence face when more than one
+  is found. It publishes `face_bbox_raw` (the raw box `PartsInferenceStage` builds the square
+  training crop from), `face_bbox` (margin-expanded, for the overlay) and `timing_ms["face"]`.
+- **`parts_stages.py`** — `PartsInferenceStage`: crop → detect → remap → track → rules in one
+  stage, writing `ctx.detection`, `ctx.features["parts"]` and `ctx.features["timing_ms"]`.
+  Frames without a face still tick the rules ("no face for 3 s" is a rule).
+- **`output_stages.py`** — `LoggingOutputStage` (one readable line per frame: severity, reason,
+  eye/mouth/head states, timers, timings) and `MetricsLogOutputStage` (`OUTPUTS=metrics`, one
+  JSON line per frame to `METRICS_LOG_PATH`). Both are built on `parts_frame_record(ctx)`.
 - **`mjpeg_output_stage.py`** — `MjpegStreamOutputStage`, a demo-only sink: draws
-  `draw_detection_overlay()` (face box from `ctx.features["face_bbox"]`, color-coded status,
-  fps) onto each frame and serves it as an MJPEG-over-HTTP stream (stdlib `http.server` only,
+  `pipeline/parts_overlay.py`'s `draw_parts_overlay()` (part boxes with track IDs, the severity
+  banner, timer bars, the thresholds/precision/ms footer), falling back to
+  `draw_detection_overlay()` if a frame has no parts features, onto each frame and serves it as an MJPEG-over-HTTP stream (stdlib `http.server` only,
   no new pip dependency) — viewable from any device's browser on the network, with no display
   attached to whatever machine runs the pipeline and no need for non-headless OpenCV/X11 in the
   container. **No authentication** — see "Demo" above for why this defaults off (`OUTPUTS`) and
@@ -489,17 +460,15 @@ pipelines share it before they were removed in favor of the fused one:
   stage" extension point mentioned in earlier notes here; it's now built, not just planned.
   `FaceDetectorCropStage` populates `ctx.features["face_bbox"]` so this stage's box-drawing has
   something to work with.
-- **`downloader.py`** — `download_face_landmarker_bundle()` and `download_face_detector_bundle()`,
-  both called from `src/main.py`'s pipeline builder as well as at Docker build time — see "Model
-  download strategy" above.
+- **`downloader.py`** — `download_face_detector_bundle()`, called from `src/main.py`'s pipeline
+  builder as well as at Docker build time — see "Model download strategy" above.
 - **`latency.py`** — `StageStats`, the per-stage diagnostics every `Stage` owns
   (`self.stats`). Each stage's own thread feeds it, per frame: `proc` (`process_item()` time —
   on a source, the `cap.read()`/`capture_array()` grab, timed inside `sources.py`); `wait`
   (queue time before the stage, from `FrameContext.enqueued_at` stamped by `Stage._emit`);
   `inq` (input-queue depth, `qsize()` sampled once per consumer loop); drop-oldest drop
-  counts; optional named **phases** (`record_phase()` — `FusedInferenceStage` records `embed`
-  vs `lstm` from `FusedDrowsinessDetector.last_phase_seconds`, splitting the CNN embed from
-  the sequence model). Sinks also feed `e2e` (`time.monotonic() - FrameContext.created_at`,
+  counts; optional named **phases** (`record_phase()` — `PartsInferenceStage` records `crop`,
+  `infer`, `decode` and `rules`, so the model's own time is separate from the work around it). Sinks also feed `e2e` (`time.monotonic() - FrameContext.created_at`,
   the whole capture-to-output trip). Every `LATENCY_LOG_INTERVAL` seconds (env, default 10;
   `0` disables — `main.py` reads it, `Pipeline.__init__(..., stats_interval=)` distributes it
   to every stage before threads start) it logs one
@@ -509,9 +478,7 @@ pipelines share it before they were removed in favor of the fused one:
   the README's "Finding the bottleneck". Stdlib only, so it stays on the
   no-`cv2`/`mediapipe`/`tf` import path. Not thread-safe by design — one instance per stage,
   one writer thread. This is instrumentation only: it does **not** cap the frame rate or drop
-  frames itself (a `FrameSamplerStage` for that is a planned follow-up — the deployed model was
-  trained at 5 fps sampling, `src/dataset`'s `SAMPLING_FPS`, and the live pipeline currently
-  runs every frame).
+  frames itself (the 5 fps cap lives in `sources.py`, above).
 
 `pipeline/__init__.py` re-exports all of the above, but lazily for anything needing `cv2`/
 `mediapipe`/`tensorflow` (everything except `stage.py`, `latency.py`, `downloader.py`, and
@@ -519,12 +486,12 @@ pipelines share it before they were removed in favor of the fused one:
 `FrameContext` importable and testable without the full stack installed.
 
 `src/main.py` wires all of this together: `SOURCE` picks where frames come from
-(`video_capture` default / `picamera`), and `OUTPUTS` picks one or more sinks (comma-separated,
-`logging` default) — connected to the same inference stage via repeated `Stage.connect()` calls
-(fan-out), not a new mechanism. There's one pipeline shape now, built by `_build_pipeline()` —
-no `PIPELINE` env var to pick between model families anymore (see "Current status" above for
-why the earlier `cnn`/`lstm` options were removed). Runs until a signal arrives or the source
-(e.g. a video file) ends on its own — see `Pipeline.is_alive()` in `stage.py`.
+(`video_capture` default / `picamera`), and `OUTPUTS` picks one or more sinks (comma-separated
+`logging` / `metrics` / `mjpeg`, `logging` default) — connected to the same inference stage via
+repeated `Stage.connect()` calls (fan-out), not a new mechanism. The chain is always source →
+BlazeFace → `PartsInferenceStage` → outputs + bridge; there is no `PIPELINE` switch any more.
+Runs until a signal arrives or the source (e.g. a video file) ends on its own — see
+`Pipeline.is_alive()` in `stage.py`.
 
 ### `orchestrator/`, `buffer/`, `sender/`, `alerts/` — done
 
@@ -533,7 +500,7 @@ coupled only through `buffer/`'s SQLite file — not as more pipeline stages, an
 component owning the others' lifecycles. `main.py`'s `main()` builds and starts/stops all
 three; see its module docstring for the full picture and the shutdown-order rationale.
 
-Data flow: the pipeline's `FusedInferenceStage` → `OrchestratorBridgeOutputStage` (a thin,
+Data flow: the pipeline's `PartsInferenceStage` → `OrchestratorBridgeOutputStage` (a thin,
 always-on sink — *not* one of `OUTPUTS=`'s demo/observability toggles) → `Orchestrator`'s own
 decision-loop thread → `alerts/`'s `Alert.new()`/`route_status()` → `buffer/`'s `Buffer.enqueue()`
 → (later, asynchronously) `sender/`'s `SenderServer` answers an ESP32 Bluetooth poll by calling
@@ -579,15 +546,22 @@ detection)` onto a plain `queue.Queue` that `Orchestrator` owns, via `put_nowait
 (a dropped detection just costs one fewer sample toward the debounce counter, never blocks the
 pipeline). `orchestrator.py`'s `Orchestrator` runs a single `while` loop on its own thread,
 gated by `queue.get(timeout=ORCHESTRATOR_LOOP_POLL_SECONDS)`: every wake — a real detection or a
-timeout — checks both "should I alert" and "is a heartbeat due", matching the draw.io diagram's
-one Orchestration box producing both message kinds. Debounce
-(`ORCHESTRATOR_DEBOUNCE_FRAMES = 3`, ~0.6s of sustained `Drowsy` at 5fps) is **rising-edge
-only** — there's no symmetric hysteresis counter to "clear" the streak, a deliberate
-simplification since the cooldown (`ORCHESTRATOR_ALERT_COOLDOWN_SECONDS = 30.0`) already stops a
-continuing episode from re-alerting every debounce window. `ORCHESTRATOR_HEARTBEAT_INTERVAL_
-SECONDS = 60.0` paces the `RouteStatus("OK")` heartbeat when no alert is due; an alert also
-resets the heartbeat clock (no immediate double-fire). All four constants live in
-`constants.py` with their reasoning. `start()`/`stop()`/`join()`/`is_alive` mirror
+timeout — checks both "is a reading due" and "is a heartbeat due", matching the draw.io
+diagram's one Orchestration box producing both message kinds.
+
+It reports **readings, not sparse alerts**: one `drowsiness` record whenever the debounced class
+changes, plus a keepalive every `ORCHESTRATOR_KEEPALIVE_SECONDS` while it stays the same. That way
+the ESP32's fusion can see an incident end, not only start.
+- **Debounce** (`ORCHESTRATOR_DEBOUNCE_FRAMES = 3`, about 0.6 s at 5 fps) applies in **both**
+  directions.
+- The first `ORCHESTRATOR_WARMUP_FRAMES` are ignored.
+- `ORCHESTRATOR_HEARTBEAT_INTERVAL_SECONDS = 60.0` paces the `RouteStatus("OK")` heartbeat.
+- `DetectionResult.extras` (the parts pipeline's severity, reason and timers) is merged into the
+  payload *before* the three contract keys (`class_name`, `probabilities`, `transition`), so it can
+  never overwrite them.
+
+The constants live in `constants.py` with their reasoning. The 30 s alert cooldown older docs
+mention was removed when readings replaced alerts. `start()`/`stop()`/`join()`/`is_alive` mirror
 `Pipeline`'s own method names (not by inheritance — `Orchestrator` isn't a `Stage`/`Pipeline`
 subclass) so `main.py` can treat all three top-level components uniformly.
 
@@ -608,8 +582,7 @@ pair (`transport.py`). **Critical invariant**: `buffer.mark_sent()` is called *o
 by construction: a duplicate delivery is possible (the ESP32 could receive the same alert
 twice), a *lost* one is not. Backend-side dedup by `Alert.id`, and what happens if the ESP32
 pulls successfully but then fails its own HTTP relay to the backend, are both explicitly out of
-scope for this repo — flagged, not solved, the same way the CNN-checkpoint-provenance risk above
-is flagged rather than assumed away. `bluetooth_transport.py`'s `BluetoothSppTransport`/
+scope for this repo — flagged, not solved. `bluetooth_transport.py`'s `BluetoothSppTransport`/
 `BluetoothSppListener` use stdlib `socket.AF_BLUETOOTH`/`BTPROTO_RFCOMM` (no PyBluez dependency)
 — `socket.AF_BLUETOOTH` is referenced only inside method bodies, never at class/module level, so
 *importing* this module never requires Bluetooth support; only *constructing* a
@@ -708,16 +681,14 @@ number**, not filename, when deciding whether to apply the original 1-6→3-clas
 
 ## Module status at a glance
 
-All six pieces are done now:
-
 | Module | Responsibility |
 |---|---|
-| `model/` | **done** — fused CNN-embedding/geometric-feature/LSTM inference (the model this container deploys — best measured accuracy in the project, not yet cross-validated) plus the CNN checkpoint loader it depends on as a frozen embedding backbone, gdown download for both |
-| `pipeline/` | **done** — threaded Stage/Pipeline abstraction, two MediaPipe stages, one inference-stage wrapper, both bundle downloads; wired into `src/main.py` |
-| `alerts/` | **done** — `Alert`/`AlertKind` data model + `route_status()` factory + serialization, no logic/I/O — see "done" section above |
-| `orchestrator/` | **done** — bridge stage + its own decision-loop thread (debounce/cooldown, periodic heartbeat); not yet run against a real multi-hour drive to validate the debounce/cooldown defaults in practice |
+| `model/` | **done** — tiny YOLO parts detector (int8/float), crop geometry, IoU tracker, gdown download |
+| `pipeline/` | **done** — threaded Stage/Pipeline abstraction, BlazeFace stage, `PartsInferenceStage`, logging/metrics/MJPEG sinks; wired into `src/main.py` |
+| `alerts/` | **done** — `Alert`/`AlertKind` data model + `route_status()` factory + serialization, no logic/I/O |
+| `orchestrator/` | **done** — bridge stage + decision-loop thread (debounced readings + keepalives, heartbeat), plus `parts_rules.py` (the severity rule engine); not yet run against a real multi-hour drive |
 | `buffer/` | **done** — WAL-mode SQLite queue, enqueue/fetch_unsent/mark_sent, `tmp_path`-tested including a real two-thread concurrency smoke test |
-| `sender/` | **done** as a Pi-side implementation — custom Bluetooth SPP PULL/ACK protocol, unit-tested against `FakeTransport`; **not** run against real ESP32 hardware/firmware (none exists in this repo) |
+| `sender/` | **done** as a Pi-side implementation — custom Bluetooth SPP PULL/ACK protocol, unit-tested against `FakeTransport`; **not** run against real ESP32 hardware |
 
 What's otherwise in place: the container (Dockerfile, docker-compose.yml, two volumes for the
 model cache and the SQLite buffer — both artifacts baked in at build time, see "Model download
@@ -730,13 +701,13 @@ limitations, not glossed over**: no ESP32 firmware/hardware exists anywhere in t
 the Bluetooth link has never been exercised end to end against a real device; neither compose
 file wires actual Bluetooth device passthrough yet (`docker-compose.yml` defaults
 `SENDER_TRANSPORT=none` for exactly this reason — see "Open decisions"); and the
-debounce/cooldown/heartbeat constants in `constants.py` are reasoned-through defaults, not
+debounce/keepalive/heartbeat constants in `constants.py` are reasoned-through defaults, not
 tuned against a real recorded drive.
 
 ## Tests
 
 `tests/` is a `pytest` suite mirroring `src/` (`test_model_*`, `test_pipeline_*`,
-`test_main.py`, `test_constants.py`) — 223 tests as of this writing. Run it with `pytest` from
+`test_main.py`, `test_constants.py`) — 313 tests as of this writing. Run it with `pytest` from
 `src/cv-argus/` after `pip install -e .`. Config lives in `pyproject.toml`'s
 `[tool.pytest.ini_options]`. **`pytest` itself is deliberately not in `requirements.txt`** —
 that file is the exact, pinned dependency list this image ships to the Pi, and a test runner has
@@ -751,7 +722,7 @@ no business being part of it; install it separately (`pip install pytest`) for l
   --from=test /app/src ./src` — content-wise a no-op (identical to what `base` already has;
   `test` only additionally copied `tests/` alongside it), but it forces Docker to build and pass
   `test` before `runtime` can be built at all, without `tests/` itself ever reaching the
-  deployed image. Verified both directions for real: a clean build runs all 223 tests then
+  deployed image. Verified both directions for real: a clean build runs the whole suite then
   continues into the real model download and produces a working image; a deliberately-broken
   test failed `docker build` outright, before the Drive download ever started. Also verified the
   **full** build (real Drive downloads) still succeeds end to end after this restructuring, not
@@ -769,19 +740,22 @@ no business being part of it; install it separately (`pip install pytest`) for l
   `pipeline/downloader.py` test either exercises the skip-if-cached branch or monkeypatches
   `gdown` / `urllib.request.urlretrieve`. Keep it that way — a test that would fetch something
   belongs behind the `docker` marker (or nowhere).
-- **`FusedDrowsinessDetector` is tested with stub callables** for the fused `.keras` model and
-  the CNN embedder (`test_model_fused_detector.py`) — the real `.keras` files are never loaded
-  in the unit suite. The stubs pin the wrapper's own logic (the zero-pre-pad ring buffer, the
-  crop resize, the `p(Drowsy) >= threshold` decision). `GeometricRatioFeatureLayer` and
-  `compute_fused_geo_features` *do* run real TensorFlow (they're cheap and the maths is the
-  point).
+- **The parts detector is tested with stub backends and ideal grids** (`test_model_parts_
+  detector.py`). That covers decode/NMS against the notebook's perfect-network check, the pair
+  decision thresholds and the env overrides. The only real model is a tiny Keras net exported
+  to TFLite in-test; the real Drive files are never loaded in the unit suite.
+  `test_model_parts_tracker.py`, `test_orchestrator_parts_rules.py` (a fake 5 fps clock),
+  `test_pipeline_parts_stages.py` (crop → rules → overlay on a synthetic frame) and
+  `test_pipeline_parts_logging.py` (timings, log line, JSONL sink, the summarizer) cover the
+  rest.
 - `test_pipeline_latency.py` covers `StageStats` — the aggregates/percentiles, the
   interval-gated `maybe_report`, the disabled-interval no-op, `wait`/`e2e`/phase/drop
   recording — with no native deps (it's stdlib-only, like `latency.py` itself).
-- The MediaPipe stages (`FaceDetectorCropStage` / `FaceLandmarkerCropStage`) need real
-  `.task`/`.tflite` bundles to construct, so only their pure helpers (`_expand_and_clip_bbox`)
-  are unit-tested; end-to-end MediaPipe coverage is the opt-in Docker tier plus
-  `src/dataset/tests/test_fused_features_equiv.py`.
+- `FaceDetectorCropStage` needs the real BlazeFace bundle to construct, so only its pure helper
+  (`_expand_and_clip_bbox`) is unit-tested. End-to-end MediaPipe coverage is the opt-in Docker
+  tier plus a real-clip run (`scripts/demo.sh --camera src/demo_clips/<clip>.mp4`, then
+  `scripts/summarize_metrics.py`). The crop's pixel identity with training is
+  `src/dataset/tests/test_parts_crop_equiv.py`.
 - **`test_docker_build.py` is opt-in** (`@pytest.mark.docker`): deselected from a plain
   `pytest` (`addopts = -m 'not docker'`), and skipped unless `docker` is on `PATH`,
   `CV_ARGUS_DOCKER_TESTS=1` is set, and the daemon is reachable. It builds the image and checks
@@ -815,14 +789,14 @@ no business being part of it; install it separately (`pip install pytest`) for l
   build-time `python -m cv_argus.model.downloader` bypasses `main.py` and so skips bootstrap;
   that's fine (it only downloads).
 
-- Before touching `model/`, re-read "`model/` — done" above. `GeometricRatioFeatureLayer` must
-  stay a byte-identical port of the notebook's class (source of truth: `01_dataset_creation_lstm
-  .ipynb`) — don't refactor its internals for style or add convenience arguments without
-  re-verifying against the notebook cells first, since a mismatch silently changes the
-  geometric-feature math `fused_features.py` depends on.
+- Before touching `model/`, re-read "`model/` — done" and the training-fidelity list in "Current
+  status". `decode_grid`/`nms_per_class` must stay notebook 12's code, and the crop must stay
+  `detection_dataset.py`'s. Put new behaviour after them (like `apply_pair_thresholds`), not
+  inside them.
 - Don't add a `mediapipe` import to anything under `model/`. That boundary is deliberate (see
-  the `model/` section) — `pipeline/` owns translating MediaPipe results into the plain `numpy`
-  arguments `FusedDrowsinessDetector.predict_frame()` takes.
+  the `model/` section) — `pipeline/` owns translating MediaPipe results into plain numbers.
+- Don't bring the CNN+LSTM pipeline back piecemeal. It lives whole on `archive/cnn-lstm-fused`;
+  if it's ever needed again, restore it from there as a unit.
 - Don't move CAN-bus/alarm/panic-button/geolocation logic into this module — that's the ESP32's
   job per the root `CLAUDE.md`. This module only decides and queues; `sender/` (once built) is
   the boundary, not a place to reach across it.
@@ -851,21 +825,17 @@ no business being part of it; install it separately (`pip install pytest`) for l
   that would make `docker compose up --build` crash at startup on any machine without a
   Bluetooth adapter, which is the regression this default is specifically avoiding.
 - If asked to run `docker compose up --build` or similar: the build now succeeds with no `.env`
-  at all (both Drive ids have checked-in defaults in `constants.py`). Rebuilding does **not**
+  at all (both Drive ids have checked-in defaults in `constants.py`). On WSL or any machine with
+  no `/dev/video0`, the compose `devices:` entry fails the run; drop it (or use a `devices:
+  !reset []` override) when testing against a video file. Rebuilding does **not**
   refresh an existing `model-cache` volume's contents (see "Model download strategy" → "Gotcha
   this creates") — flag that rather than assuming a rebuild alone picks up a newly trained model.
-- The fused pipeline's mechanics are exercised (synthetic-model smoke tests confirmed the window
-  buffer fills/caps/resets correctly, `FaceLandmarkerCropStage` extracts real geometric features
-  from a real crop via a real cached `face_landmarker.task`, and `src/dataset/tests
-  /test_fused_features_equiv.py` passes against real crop files) — but it has **not** been run
-  end to end against the real trained `best_cnn_lstm_frozen_embedding.keras` and the real
-  deployed CNN checkpoint together, and the CNN-checkpoint-provenance risk in "Current status"
-  above is still open. Don't describe this pipeline as validated or ready to deploy without that
-  real run.
-- The deployed model's real measured number is 84.24% test accuracy / 0.8375 macro-F1, one
-  subject-grouped fold, not yet cross-validated (see "Current status" and `notebook/CLAUDE.md`)
-  — a real result, not a validated production one. Don't describe it as production-validated in
-  code comments, docs, or the titulación report; state it with the same caveat this file does.
+- The parts pipeline has run end to end in the container on a real face clip (the logs, the
+  metrics file and the overlay all checked). It has **not** run on a Pi 5, on real cabin NoIR
+  footage, or on drivers the detector never saw; that clip is from its training sources. Don't
+  describe its accuracy as validated in code comments, docs, or the titulación report: the
+  detector's own test-set numbers (eye-state 0.95, mAP@0.5 0.63, head_down AP about 0.25) are
+  per-frame and from one split.
 - Don't suggest enabling `OUTPUTS=...,mjpeg` (or otherwise wiring `MjpegStreamOutputStage` in)
   for anything other than a demo. It has no authentication, and this project's own stated
   cargo-theft/security risk model (root `CLAUDE.md`) makes an open, unauthenticated camera

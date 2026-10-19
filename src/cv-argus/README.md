@@ -1,7 +1,7 @@
 # cv-argus
 
-The Raspberry Pi 5 edge module: camera → MediaPipe → drowsiness-classification model → an
-alert-decision loop that queues Alerts/RouteStatus heartbeats locally (SQLite) for a Bluetooth
+The Raspberry Pi 5 edge module: camera → MediaPipe BlazeFace → our tiny YOLO eye/mouth/head
+detector → a tracker and timed rules that decide a severity → an alert-decision loop that queues Alerts/RouteStatus heartbeats locally (SQLite) for a Bluetooth
 hand-off to the ESP32 — running live in a Docker container. This is the practical "how do I run
 it" guide — for the architecture, why things are built the way they are, and the deep
 notebook-fidelity contract, see [`CLAUDE.md`](CLAUDE.md) instead.
@@ -14,19 +14,21 @@ docker compose up --build
 ```
 
 That's it — **no `.env` file, no configuration, needed to get it building and running.** This
-builds and runs the fused CNN-embedding + geometric-feature + LSTM pipeline (the only pipeline
-this module runs — see `CLAUDE.md`'s "Current status") against whatever's at `/dev/video0`, and
-logs each frame's drowsiness classification to the console. Both trained models' Google Drive
-file IDs have checked-in defaults, so the build doesn't need one supplied.
+builds and runs the parts pipeline (tiny YOLO + tracker + rules, the only pipeline this module
+runs) against whatever's at `/dev/video0`, and logs one line per frame: the severity, the eye /
+mouth / head states and the inference time. The model's Google Drive file IDs have checked-in
+defaults, so the build doesn't need one supplied. (The older CNN+LSTM pipeline is on branch
+`archive/cnn-lstm-fused`.)
 
-To actually **watch** it work instead of reading log lines, see "Demo" below.
+To actually **watch** it work instead of reading log lines, run `scripts/demo.sh` (see "Demo"
+below).
 
 ### Building vs. running — you don't need `--build` every time
 
 `--build` does two things: builds the image (or rebuilds it, if anything relevant changed) and
 then starts the container from it. **You only need it the first time, or after a change that
 needs a rebuild** (edits to `Dockerfile`, `requirements.txt`/`setup.py`, or a
-`CNN_MODEL_DRIVE_FILE_ID`/`FUSED_MODEL_DRIVE_FILE_ID` build arg — see `docker-compose.yml`'s
+`PARTS_INT8_DRIVE_FILE_ID`/`PARTS_FLOAT_DRIVE_FILE_ID` build arg — see `docker-compose.yml`'s
 comment at the top). Once `argus/cv-argus:dev` already exists (`docker images` will show it),
 just run:
 
@@ -61,25 +63,14 @@ container (`down -v` also wipes the named volumes — see "Model download strate
 
 ## What you'll see
 
-With the demo output enabled (`OUTPUTS=logging,mjpeg`, see below), opening the stream URL in a
-browser shows the live camera feed with the current classification drawn on it:
+With the demo output enabled (`scripts/demo.sh`, or `OUTPUTS=logging,mjpeg`), opening the
+stream URL in a browser shows the live camera feed with:
+- each detected part boxed and labelled `ID class confidence` (E = eye, M = mouth, H = head);
+- a severity banner (`CRITICAL  eyes closed 3.2 s`);
+- timer bars for eyes closed, head down and mouth open;
+- a footer with precision, thresholds, model ms and fps.
 
-```
-┌──────────────────────────┐
-│  [ camera feed frame ]   │
-│   ┌──────┐               │
-│   │ face │  ← box around │
-│   └──────┘    the detected face
-│                          │
-│  STATUS: Not Drowsy (green) │
-│  fps: 11.2               │
-└──────────────────────────┘
-```
-
-`STATUS` is color-coded — green for `Not Drowsy`, red for `Drowsy` — and comes straight from the
-model, so it'll be as reliable (or not) as the model currently is; see `CLAUDE.md`'s "Current
-status" for the honest caveat on that (real accuracy, but a single fold, not yet
-cross-validated).
+See "Demo: the parts pipeline" below for the details and the severity table.
 
 ## Configuration
 
@@ -89,23 +80,27 @@ including model-artifact overrides not covered here).
 
 | Variable | Default | What it does |
 |---|---|---|
+| `PARTS_PRECISION` | `int8` | `int8` (`.tflite`, ~0.7 ms/face) or `float` (`.keras`, ~5.5 ms/face): the same detector at two precisions. |
+| `PARTS_CLOSED_EYE_THRESHOLD` | `0.40` | An eye counts as closed when p_closed / (p_open + p_closed) ≥ this. 0.5 = plain argmax; lower = more sensitive. |
+| `PARTS_HEAD_DOWN_THRESHOLD` | `0.30` | Same for head down vs. straight. Lower than the eye one because `head_down` is the detector's weakest class. |
+| `RULE_*` | see `src/constants.py` | Rule timers in seconds, e.g. `RULE_EYES_CRITICAL_S=3.0`, `RULE_YAWN_RECENT_S=10`, `RULE_HEAD_GRACE_S=1.0`. |
+| `METRICS_LOG_PATH` | `$BUFFER_DIR/metrics.jsonl` | Where `OUTPUTS=metrics` writes one JSON line per frame (see "Measuring it for the report"). |
+| `DEMO_STREAM_WIDTH` | unset | Downscale the MJPEG stream to this width (boxes are drawn first, so they stay aligned). |
 | `CAMERA_SOURCE` | `0` | Passed to `cv2.VideoCapture`: an integer camera index, a `/dev/videoN` path, or a video file path (for testing/demoing with no camera attached). |
 | `SOURCE` | `video_capture` | Where frames come from: `video_capture` (`cv2.VideoCapture`, driven by `CAMERA_SOURCE`) or `picamera` (the Pi 5's CSI camera — see "On the Pi 5" below). |
-| `OUTPUTS` | `logging` | Comma-separated sink(s): `logging` (text only) and/or `mjpeg` (the browser-viewable demo stream — e.g. `OUTPUTS=logging,mjpeg`). |
-| `SAMPLE_FPS` | `5` | Frames/sec sampled from the camera, decimated at the source (skipped frames aren't decoded). `5` matches the model's training rate; `0` = every frame. See "Simulating the Raspberry Pi 5" below. |
+| `OUTPUTS` | `logging` | Comma-separated sink(s): `logging` (one text line per frame), `metrics` (one JSON line per frame with every timing) and/or `mjpeg` (the browser-viewable demo stream — e.g. `OUTPUTS=logging,metrics,mjpeg`). |
+| `SAMPLE_FPS` | `5` | Frames/sec sampled from the camera, decimated at the source (skipped frames aren't decoded). `5` is the rate the tracker and rule timers are tuned for; `0` = every frame. See "Simulating the Raspberry Pi 5" below. |
 | `DEMO_STREAM_PORT` | `8080` | Only read when `OUTPUTS` includes `mjpeg`. Change if `8080` is already taken on your machine. |
 | `LATENCY_LOG_INTERVAL` | `10` | Seconds between per-stage latency / queue-depth / dropped-frame report lines (see "Finding the bottleneck" below). `0` disables them. |
-| `LOG_LEVEL` | `INFO` | Root log level. `DEBUG` also prints a line per processed frame and the drop-oldest debug logs. |
+| `LOG_LEVEL` | `INFO` | Root log level. `DEBUG` also prints the drop-oldest debug logs. |
 | `CV_ARGUS_NUM_THREADS` | `4` (in Docker) | Pins BLAS/OpenMP/TensorFlow/OpenCV thread pools. Unset outside Docker (full speed). See "Simulating the Raspberry Pi 5". |
 | `CV_ARGUS_CPUSET` / `CV_ARGUS_CPUS` / `CV_ARGUS_MEM` | `0-3` / `4` / `8g` | Container cgroup limits — the 4-core / 8 GB Pi 5 ceiling. Docker-only. |
 | `BUFFER_DIR` / `BUFFER_DB_FILENAME` | `/app/data` / `buffer.sqlite3` | Where `buffer/`'s SQLite alert queue lives — matches the `buffer-data` volume. |
 | `SENDER_TRANSPORT` | `none` (this file) / `bluetooth` (main.py's own default) | `bluetooth` (real `BluetoothSppListener` — needs a real adapter + device passthrough, see "Prerequisites") or `none` (no `SenderServer`; alerts just accumulate unsent in `buffer/`). |
 | `BLUETOOTH_CHANNEL` | `4` | Only read when `SENDER_TRANSPORT=bluetooth`: the RFCOMM channel `BluetoothSppListener` binds. |
 
-There's one detection pipeline — the frozen-CNN-embedding + geometric-feature + LSTM classifier
-— see `CLAUDE.md`'s "Current status" for its measured accuracy and caveats. Downstream of a
-detection, `orchestrator/` decides whether to raise an Alert (debounce + cooldown) or emit a
-periodic RouteStatus("OK") heartbeat, `buffer/` persists both to SQLite, and `sender/` answers
+Downstream of a detection, `orchestrator/` reports the debounced class as a *reading* on every
+change, plus a keepalive, and emits a periodic RouteStatus("OK") heartbeat, `buffer/` persists both to SQLite, and `sender/` answers
 the ESP32's Bluetooth poll for unsent records — see `CLAUDE.md`'s "`orchestrator/`, `buffer/`,
 `sender/`, `alerts/` — done" for the full design.
 
@@ -150,7 +145,7 @@ dev box actually mean something:
 - **`mem_limit: 8g`** — the 8 GB board (actual use is ~400 MB, so this only catches leaks).
 - **`CV_ARGUS_NUM_THREADS=4`** — pins the BLAS / OpenMP / TensorFlow / OpenCV pools so they
   don't oversubscribe within that ceiling (`src/bootstrap.py`).
-- **`SAMPLE_FPS=5`** — the model's training rate; also the single biggest lever for staying
+- **`SAMPLE_FPS=5`** — the rate the tracker and rule timers are tuned for; also the single biggest lever for staying
   within a Pi's budget.
 
 For an **unthrottled local run**, widen them in `.env` or inline:
@@ -180,6 +175,108 @@ doesn't restart forever while you're iterating.
 down` / `docker stop`), at which point it shuts every pipeline stage down in order and exits
 cleanly. A **video-file** `CAMERA_SOURCE` also makes it exit on its own when the file ends;
 a live camera runs until stopped.
+
+## Demo: the parts pipeline (tiny YOLO + rules)
+
+The pipeline is simple and explainable:
+
+1. BlazeFace finds the face, which is cropped square and converted to gray, exactly as in
+   training.
+2. Our own **46k-parameter detector** (notebook 12, `tiny_yolo_w1`) finds open/closed eyes, a
+   yawning mouth, and head straight or down.
+3. A tracker gives each part a stable ID.
+4. **Deterministic rules with timers** decide the severity.
+
+```sh
+scripts/demo.sh                                   # int8, webcam 0 -> http://localhost:8080/stream
+scripts/demo.sh --precision float                 # same detector as float .keras (does int8 lose accuracy?)
+scripts/demo.sh --camera 1                        # another webcam (or --camera /dev/video2)
+scripts/demo.sh --camera src/demo_clips/x.mp4     # a recorded clip (keep clips under src/demo_clips/, gitignored)
+scripts/demo.sh --camera picam                    # Pi 5 CSI camera (adds docker-compose.pi.yml)
+scripts/demo.sh --eye-threshold 0.35 --head-threshold 0.25   # more sensitive closed / down
+```
+
+`demo.sh` turns on all three outputs: the console line per frame, the metrics file and the
+stream.
+
+What the stream shows:
+- The face box, the dashed square the model saw, and each tracked part as `ID class confidence`
+  (E = eye, M = mouth, H = head). Boxes are remapped from the 160 px crop onto the frame.
+- A **severity banner** with the reason.
+- **Timer bars** for *eyes closed*, *head down* and *mouth open*, with ticks at the
+  LOW / MEDIUM / CRITICAL thresholds.
+- A footer with precision, the closed-eye / head-down thresholds, model ms and fps.
+
+**Two kinds of threshold.** `PARTS_CONF_THRESHOLD` (0.25) decides whether a part is detected at
+all. The decision thresholds decide *which* state it's in:
+- **Closed eye (0.40):** an eye counts as closed when p_closed / (p_open + p_closed) ≥ 0.40.
+- **Head down (0.30):** the same test, for head down vs. straight.
+
+0.5 is the model's plain argmax, and lower is more sensitive. On the labelled validation and test
+faces, closed-eye recall is about 93% and barely moves with the threshold: the model is usually
+sure either way. Head-down recall is only 52–69% per frame. To compensate:
+- a head counts as down if **1 of its last 3 frames** was;
+- the head timer tolerates 1 s gaps;
+- straight heads are almost never misread as down.
+
+More head-down training data is the real fix.
+
+**Severity rules** (seconds; each is a `RULE_*` env var, overridable in `.env`):
+
+| Situation | LOW | MEDIUM | CRITICAL |
+|---|---|---|---|
+| Eyes closed | 1.0 | 2.0 | **3.0** |
+| Eyes closed, mouth open now or a yawn in the last 10 s | 0.7 | 1.3 | **2.0** |
+| Head down + eyes closed or hidden | | | **3.0** (2.0 after a yawn) |
+| Head down, eyes open (looking down) | | 3.0 | |
+| Yawning alone: ≥ 3 yawns (≥ 1.5 s each) in 5 min | yes | never | never |
+| No face for 3 s after one was seen | yes | | |
+
+Closed eyes and head down are the risks; yawning only makes those fire sooner. Severity rises
+immediately and drops only after 2 s clear. A one-frame flicker (≤ 0.4 s; 1 s for the head)
+doesn't reset a timer.
+
+### Measuring it for the report
+
+`OUTPUTS=metrics` (on in `demo.sh`) writes one JSON line per frame. Each line has:
+- the severity, reason and trigger time;
+- the eye / mouth / head states and every tracked part with its confidence;
+- the timers;
+- the time of every step, in ms: BlazeFace, crop, model inference, decode, tracker, rules, the
+  whole stage, and end to end.
+
+```sh
+docker compose cp cv-argus:/app/data/metrics.jsonl .
+python3 scripts/summarize_metrics.py metrics.jsonl            # tables
+python3 scripts/summarize_metrics.py metrics.jsonl --csv run  # + run_latency.csv, run_states.csv
+```
+
+The summary has mean / p50 / p95 / p99 / max per step, the share of frames in each state and
+severity, and how many MEDIUM/CRITICAL episodes fired. Example, int8 in Docker under the
+4-core Pi limit on a desktop CPU, 127 frames of a face clip:
+
+| step | mean | p95 |
+|---|---|---|
+| BlazeFace | 2.20 ms | 3.19 ms |
+| model inference (int8) | 0.73 ms | 0.96 ms |
+| whole parts stage | 1.85 ms | 2.45 ms |
+| end to end | 14.8 ms | 17.2 ms |
+
+**Measured on a desktop CPU** (real models, a 128-frame face clip):
+
+| | int8 | float |
+|---|---|---|
+| Model per face | **0.6 ms** | 5.5 ms |
+| Whole parts stage | 1.5 ms | |
+| BlazeFace | about 2 ms | |
+| Agreement with the other precision | same severity on 98.4% of frames | |
+
+int8 is the default. The Pi 5 is slower and **unmeasured**.
+
+The ESP32 and backend are unchanged:
+- MEDIUM and CRITICAL go out as `Drowsy` (`p_drowsy` 0.75 / 0.95); none and LOW go out as
+  `Not Drowsy`.
+- `severity`, `reason`, `trigger_s` and `timers` ride along in the buffered reading's payload.
 
 ## Demo: watching it work
 
@@ -230,11 +327,10 @@ Every stage logs a timing summary every `LATENCY_LOG_INTERVAL` seconds (default 
 them with `docker compose logs -f` (or straight to the console with `docker compose up`):
 
 ```
-stats video_capture.produce: n=300 proc(mean=3.2ms p50=3 p95=6 max=12) drop=250 life(n=1500 max=33ms)
-stats face_detector_crop.process: n=48 wait(mean=33ms p95=40 max=41) proc(mean=61.3ms p50=58 p95=98 max=140) inq(avg=3.8 max=4) drop=0 life(...)
-stats face_landmarker_crop.process: n=48 wait(mean=0.2ms ...) proc(mean=22.1ms p50=21 p95=30 max=44) inq(avg=0.2 max=2) drop=0 life(...)
-stats fused_inference.process: n=48 wait(mean=0.1ms ...) proc(mean=41.0ms p50=39 p95=63 max=90) embed(mean=27.0ms ...) lstm(mean=13.5ms ...) inq(avg=1.1 max=4) drop=0 life(...)
-stats logging_output.process: n=48 wait(mean=0.1ms ...) proc(mean=0.1ms ...) e2e(mean=520ms p95=690) drop=0 life(...)
+stats video_capture.produce: n=50 proc(mean=3.2ms p50=3 p95=6 max=12) drop=0 life(n=250 max=33ms)
+stats face_detector_crop.process: n=50 wait(mean=0.3ms ...) proc(mean=2.4ms p50=2.2 p95=3.4 max=4.1) inq(avg=0.0 max=1) drop=0 life(...)
+stats parts_inference.process: n=50 wait(mean=0.2ms ...) proc(mean=1.9ms ...) crop(mean=0.7ms ...) infer(mean=0.7ms ...) decode(mean=0.3ms ...) rules(mean=0.0ms ...) inq(avg=0.0 max=1) drop=0 life(...)
+stats logging_output.process: n=50 wait(mean=0.1ms ...) proc(mean=0.1ms ...) e2e(mean=15ms p95=17) drop=0 life(...)
 ```
 
 A frame's whole trip, and which number is which:
@@ -242,24 +338,21 @@ A frame's whole trip, and which number is which:
 ```
 video_capture.produce  proc = grabbing one frame (cap.read)
    │  queue
-face_detector_crop      wait = time queued   proc = MediaPipe BlazeFace + crop
+face_detector_crop      wait = time queued   proc = MediaPipe BlazeFace
    │  queue
-face_landmarker_crop    wait = time queued   proc = MediaPipe FaceLandmarker + geo features
-   │  queue
-fused_inference         wait = time queued   proc = model  → embed = frozen CNN, lstm = sequence model
+parts_inference         wait = time queued   proc = crop + model + decode + tracker + rules
    │  queue
 logging_output          wait = time queued   proc ≈ 0       e2e = grab-to-here (the whole trip)
 ```
 
 - **`proc(mean=...)`** — work done *inside* the stage. The **largest one is the compute
-  bottleneck** (here `face_detector_crop` at ~61 ms → the pipeline can't exceed ~16 fps).
+  bottleneck** (here `face_detector_crop`, BlazeFace, at ~2.4 ms).
 - **`wait(mean=...)`** — how long the frame sat in that stage's input queue first. The stage
   with the **biggest `wait`** is where frames pile up (it's right in front of the bottleneck).
   All the `wait`s + all the `proc`s ≈ the sink's `e2e`; the rest is scheduling.
-- **`embed` / `lstm`** on `fused_inference` — that stage's `proc` split into the frozen CNN
-  embed vs. the LSTM predict, so you can tell which half of the model to worry about. Both run
-  through a traced `tf.function` (see `CLAUDE.md`'s fused-detector section), so expect a few ms
-  each; `lstm` in the hundreds of ms means the graph is re-tracing every frame — a regression.
+- **`crop` / `infer` / `decode` / `rules`** on `parts_inference` — that stage's `proc` split
+  into its steps. `infer` is the model itself (~0.7 ms int8, ~5.5 ms float); float in the
+  hundreds of ms would mean its `tf.function` is re-tracing every frame — a regression.
 - **`inq(avg=.. max=N)`** — input-queue depth (capacity 4). A stage **pinned at `max=4`** is
   the bottleneck or right behind it.
 - **`drop=`** — frames decoded and emitted but that a full downstream queue forced the source
@@ -271,7 +364,8 @@ logging_output          wait = time queued   proc ≈ 0       e2e = grab-to-here
 - source `.produce` line: `n / LATENCY_LOG_INTERVAL` ≈ the **sampled** fps (should track
   `SAMPLE_FPS`); its `proc` is the per-kept-frame decode cost, not the full camera rate.
 
-`LATENCY_LOG_INTERVAL=0` turns all of this off.
+`LATENCY_LOG_INTERVAL=0` turns all of this off. For per-frame numbers rather than interval
+summaries, use the metrics log ("Measuring it for the report", above).
 
 ## Troubleshooting
 
@@ -347,8 +441,8 @@ verified both to pass and to actually block a broken build. Nothing extra to run
 it's just what `docker compose up --build` already does.
 `tests/` mirrors `src/`: `test_model_*`, `test_pipeline_*` (including `test_pipeline_latency.py`
 for the `StageStats` instrumentation), `test_alerts_*`, `test_buffer_*`, `test_orchestrator_*`,
-`test_sender_*`, and `test_main.py`. `FusedDrowsinessDetector` is tested with **stub** model
-callables — the real `.keras` files are never loaded in the unit suite. The alert-pipeline
+`test_sender_*`, and `test_main.py`. The parts detector is tested with **stub** backends and
+ideal output grids — the real model files are never loaded in the unit suite. The alert-pipeline
 tests are just as hermetic in kind: `test_buffer_store.py`/`test_sender_server.py` use a real
 SQLite file under `tmp_path` (never a fixed path), `test_sender_*` uses an in-memory
 `FakeTransport`/`FakeListener` pair instead of a real Bluetooth socket, and
@@ -363,13 +457,13 @@ CV_ARGUS_DOCKER_TESTS=1 pytest -m docker
 It is deselected from a plain `pytest` and additionally skips itself unless `docker` is on
 `PATH` and `CV_ARGUS_DOCKER_TESTS=1` — the build pulls ~1GB of TensorFlow plus the model
 artifacts and takes minutes. It checks the image builds, `import cv_argus` works inside it,
-the four model artifacts are baked into `/app/models`, re-running the downloaders is a cached
+the three model artifacts are baked into `/app/models`, re-running the downloaders is a cached
 no-op, and the `SOURCE`/`OUTPUTS` guards reject bad values.
 
 ## Where to go next
 
 - [`CLAUDE.md`](CLAUDE.md) — the real architecture: the `Stage`/`Pipeline` threading design, the
-  fused pipeline's measured accuracy and open caveats, the `orchestrator/`/`buffer/`/`sender/`/
+  parts pipeline's training-fidelity rules, thresholds and measurements, the `orchestrator/`/`buffer/`/`sender/`/
   `alerts/` design (decision loop, SQLite schema, the Bluetooth PULL/ACK protocol), exact model
   input/output shapes, and every convention worth knowing before changing code here.
 - [`tests/`](tests/) — the `pytest` suite (mirrors `src/`: `test_model_*`, `test_pipeline_*`,
@@ -383,5 +477,5 @@ no-op, and the `SOURCE`/`OUTPUTS` guards reject bad values.
   isn't wired into either compose file yet (`SENDER_TRANSPORT=none` is this file's safe
   default — see "Prerequisites" and `CLAUDE.md`'s "Open decisions"); no ESP32 firmware/hardware
   exists in this repo, so `BluetoothSppTransport` itself is untested against a real device; and
-  whether the CNN checkpoint the fused model depends on is provenance-matched to what it was
-  trained against is still unverified (see `CLAUDE.md`'s "Current status").
+  the detector hasn't been measured on a Pi 5, real cabin NoIR footage, or unseen drivers (see
+  `CLAUDE.md`'s "Current status").

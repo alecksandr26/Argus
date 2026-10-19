@@ -58,6 +58,8 @@ class _SourceState:
     last_reading_at: float | None = None  # monotonic
     # Latest probabilities per class, so a keepalive carries a fresh value of the class it reports.
     probabilities: dict[str, list[float]] = field(default_factory=dict)
+    # Latest detector extras (DetectionResult.extras), merged into every reading's payload.
+    extras: dict = field(default_factory=dict)
 
 
 def _classify(detection: "DetectionResult | None") -> str:
@@ -137,6 +139,7 @@ class Orchestrator:
         cls = _classify(detection)
         if detection is not None:
             state.probabilities[cls] = detection.probabilities.tolist()
+        state.extras = dict(getattr(detection, "extras", None) or {})
 
         if cls == state.reported:
             state.candidate, state.candidate_frames = None, 0
@@ -171,7 +174,10 @@ class Orchestrator:
             AlertKind.DROWSINESS,
             level=_LEVELS[cls],
             source_id=source_id,
+            # Detector extras (the parts pipeline's severity/reason/timers) go in first, so they
+            # can never overwrite the three keys the ESP32 and cap_unsent() depend on.
             payload={
+                **state.extras,
                 "class_name": cls,
                 "probabilities": None if cls == NO_FACE else state.probabilities.get(cls),
                 "transition": transition,

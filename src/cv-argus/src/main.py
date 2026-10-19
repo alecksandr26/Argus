@@ -3,32 +3,39 @@
 Builds and starts **three independent peer components**, coupled only through `buffer/`'s
 SQLite file (see the approved alert-pipeline plan's "three independent peers" decision):
 
-1. **Pipeline** (`cv_argus.pipeline.stage`) — a `Source` stage reads frames, two MediaPipe
-   stages produce a face crop and a geometric-feature vector from it, an inference stage turns
-   both into a `DetectionResult`, and one or more output stages do something with it. There is
-   one pipeline shape: `FaceDetectorCropStage` -> `FaceLandmarkerCropStage` ->
-   `FusedInferenceStage` (the frozen-CNN-embedding + geometric-feature + LSTM classifier — see
-   `src/cv-argus/CLAUDE.md`'s "Current status" for its measured accuracy and caveats). Earlier
-   versions of this module supported a `PIPELINE` env var switching between this, a
-   single-frame CNN, and a windowed-geometric-only LSTM — both were removed once this fused
-   pipeline's result made them obsolete; see the root `CLAUDE.md` for why.
+1. **Pipeline** (`cv_argus.pipeline.stage`) — a `Source` stage reads frames, BlazeFace
+   (`FaceDetectorCropStage`) finds the face, `PartsInferenceStage` turns it into a
+   `DetectionResult`, and one or more output stages do something with it. `PartsInferenceStage`
+   runs notebook 12's tiny YOLO-style detector (eyes open/closed, yawn, head straight/down) on a
+   square gray face crop, then an IoU tracker, then deterministic rules with timers and
+   severities (`orchestrator/parts_rules.py`). (The earlier CNN+LSTM pipeline is preserved on
+   branch `archive/cnn-lstm-fused`.)
 2. **Orchestrator** (`cv_argus.orchestrator`) — owns its own decision-loop thread, fed by a
    thin, always-on `OrchestratorBridgeOutputStage` sink wired into the pipeline above
-   (structural, unlike the `OUTPUTS=` demo/observability toggles below). Decides whether a
-   `DetectionResult` is worth raising an Alert over (debounce + cooldown) and emits a periodic
-   RouteStatus("OK") heartbeat otherwise, enqueuing both into `buffer/`.
+   (structural, unlike the `OUTPUTS=` demo/observability toggles below). Turns `DetectionResult`s
+   into debounced class *readings* (one per change plus keepalives) and a periodic
+   RouteStatus("OK") heartbeat, enqueuing both into `buffer/`.
 3. **Sender** (`cv_argus.sender`) — owns its own Bluetooth-accept-loop thread, answering the
    ESP32's PULL/ACK protocol against the same `buffer/` (see `sender/server.py`'s module
    docstring for the ack-only-marks-sent invariant).
 
 Env vars:
 
+- `PARTS_PRECISION` (default `"int8"`) — `"int8"` (TFLite) or `"float"` (`.keras`), the same
+  detector at two precisions. `PARTS_CLOSED_EYE_THRESHOLD` / `PARTS_HEAD_DOWN_THRESHOLD` tune
+  the detector's open/closed and straight/down decisions; rule thresholds are `RULE_*` env vars.
+  See `model/parts_detector.py`, `orchestrator/parts_rules.py` and `constants.py`.
+- `DEMO_STREAM_WIDTH` (unset) — downscale the MJPEG demo stream to this width. Boxes are drawn
+  first at native resolution, so they stay aligned.
 - `SOURCE` (default `"video_capture"`) — where frames come from: `"video_capture"`
   (`cv2.VideoCapture`, driven by `CAMERA_SOURCE` — a camera index, a `/dev/videoN` path, or a
   video file) or `"picamera"` (the Pi 5's CSI camera via `picamera2`).
 - `OUTPUTS` (default `"logging"`) — comma-separated list of sinks to attach, fanned out from the
   same inference stage via `Stage.connect()` (see `pipeline/stage.py`) — no new plumbing needed
-  to run more than one at once. `"logging"` (`LoggingOutputStage`, text) and/or `"mjpeg"`
+  to run more than one at once. `"logging"` (`LoggingOutputStage`, one text line per frame),
+  `"metrics"` (`MetricsLogOutputStage`, one JSON line per frame with every timing to
+  `METRICS_LOG_PATH`, default `$BUFFER_DIR/metrics.jsonl`, for `scripts/summarize_metrics.py`)
+  and/or `"mjpeg"`
   (`MjpegStreamOutputStage`, a browser-viewable annotated video stream — demo-only, see that
   module's docstring for why it isn't on by default: no authentication, and this project's own
   stated cargo-theft/security risk model makes an open camera stream a real exposure to leave
@@ -63,21 +70,20 @@ import threading
 
 from cv_argus import constants
 from cv_argus.buffer import open_buffer
-from cv_argus.model import FusedDrowsinessDetector
+from cv_argus.model.parts_detector import PartsDetector
 from cv_argus.orchestrator import Orchestrator, OrchestratorBridgeOutputStage
 from cv_argus.pipeline import (
     FaceDetectorCropStage,
-    FaceLandmarkerCropStage,
-    FusedInferenceStage,
     LoggingOutputStage,
+    MetricsLogOutputStage,
     MjpegStreamOutputStage,
     OutputStage,
+    PartsInferenceStage,
     PiCameraSource,
     Pipeline,
     SourceStage,
     VideoCaptureSource,
     download_face_detector_bundle,
-    download_face_landmarker_bundle,
 )
 from cv_argus.sender import BluetoothSppListener, SenderServer
 from cv_argus.supervisor import exit_code, first_dead
@@ -119,11 +125,25 @@ def _build_source() -> SourceStage:
     raise SystemExit(f"Unknown SOURCE={kind!r} -- expected 'video_capture' or 'picamera'")
 
 
+def _stream_width() -> int | None:
+    raw = os.environ.get("DEMO_STREAM_WIDTH", "").strip()
+    return int(raw) if raw.isdigit() and int(raw) > 0 else None
+
+
+def _camera_label() -> str:
+    if os.environ.get("SOURCE", "video_capture").strip().lower() == "picamera":
+        return "picam"
+    return os.path.basename(str(_camera_source()))
+
+
 _OUTPUT_BUILDERS = {
     "logging": lambda: LoggingOutputStage(),
+    "metrics": lambda: MetricsLogOutputStage(),
     "mjpeg": lambda: MjpegStreamOutputStage(
         host=os.environ.get("DEMO_STREAM_HOST", "0.0.0.0"),
         port=int(os.environ.get("DEMO_STREAM_PORT", "8080")),
+        width=_stream_width(),
+        camera_label=_camera_label(),
     ),
 }
 
@@ -173,24 +193,25 @@ def _build_sender_listener():
 def _build_pipeline(orchestrator: Orchestrator) -> Pipeline:
     """`orchestrator` supplies the queue `OrchestratorBridgeOutputStage` feeds — see the module
     docstring's "three independent peers" summary. The bridge is connected unconditionally,
-    alongside (not through) the `OUTPUTS=`-driven sinks: it's structural, not a demo toggle."""
+    alongside (not through) the `OUTPUTS=`-driven sinks: it's structural, not a demo toggle.
+
+    BlazeFace -> square gray crop -> tiny YOLO (int8|float) -> tracker -> rule engine."""
     face_detector_bundle = download_face_detector_bundle()
-    face_landmarker_bundle = download_face_landmarker_bundle()
-    detector = FusedDrowsinessDetector.from_env()
+    model_stages = [PartsInferenceStage(PartsDetector.from_env())]
 
     source = _build_source()
     crop_stage = FaceDetectorCropStage(face_detector_bundle)
-    landmarker_crop_stage = FaceLandmarkerCropStage(face_landmarker_bundle)
-    inference_stage = FusedInferenceStage(detector)
     outputs = _build_outputs()
     bridge = OrchestratorBridgeOutputStage(orchestrator.input_queue)
 
-    source.connect(crop_stage).connect(landmarker_crop_stage).connect(inference_stage)
+    last = source.connect(crop_stage)
+    for stage in model_stages:
+        last = last.connect(stage)
     for output in outputs:
-        inference_stage.connect(output)
-    inference_stage.connect(bridge)
+        last.connect(output)
+    last.connect(bridge)
     return Pipeline(
-        [source, crop_stage, landmarker_crop_stage, inference_stage, *outputs, bridge],
+        [source, crop_stage, *model_stages, *outputs, bridge],
         stats_interval=_latency_log_interval(),
     )
 
@@ -203,8 +224,9 @@ def main() -> None:
     )
 
     logger.info(
-        "cv-argus starting (SOURCE=%s, OUTPUTS=%s, SAMPLE_FPS=%s, SENDER_TRANSPORT=%s, "
+        "cv-argus starting (PARTS_PRECISION=%s, SOURCE=%s, OUTPUTS=%s, SAMPLE_FPS=%s, SENDER_TRANSPORT=%s, "
         "LATENCY_LOG_INTERVAL=%s, CV_ARGUS_NUM_THREADS=%s)",
+        os.environ.get("PARTS_PRECISION", constants.PARTS_DEFAULT_PRECISION),
         os.environ.get("SOURCE", "video_capture"),
         os.environ.get("OUTPUTS", "logging"),
         os.environ.get("SAMPLE_FPS", str(constants.DEFAULT_SAMPLE_FPS)),

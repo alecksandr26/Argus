@@ -9,74 +9,79 @@ matching environment variable (see each downloader module for which env var read
 constant) for anyone who wants to point at a different file without a code change.
 """
 
-# --- CNN face-crop checkpoint (model/cnn_detector.py) ---
-# Trained in notebook/07_cnn_training.ipynb: input is a single (96, 96, 3) RGB face crop. No
-# longer run for its own classification in this module (that pipeline was removed — see the root
-# CLAUDE.md) — kept and downloaded because FusedDrowsinessDetector reuses this exact checkpoint's
-# penultimate Dense(64) layer as a frozen embedding backbone (see cnn_detector.py's
-# embedding_submodel()), regardless of how many classes its own final layer was trained against.
-# A real, still-open risk, unverified as of this writing: this file id must point at the same
-# weights notebook/11_cnn_lstm_training_drive_pull.ipynb trained its LSTM's embeddings against
-# (best_cnn_scratch_face_crops.keras, from 07's binary rerun) — if this is actually an older,
-# pre-binary-migration checkpoint instead, the fused model's live embeddings won't match what its
-# LSTM learned on, a silent accuracy bug, not a crash. See src/cv-argus/CLAUDE.md's "Current
-# status" for the unresolved provenance check.
-CNN_MODEL_DRIVE_FILE_ID = "1lxwHXWSgvJ1rQfFMjhKt4oM1a2OFJLGk"
-CNN_MODEL_FILENAME = "cnn_face_crop_model.keras"
-CNN_IMG_SIZE = 96  # must match notebook/07_cnn_training.ipynb's IMG_SIZE
-
-# --- MediaPipe Face Landmarker bundle (pipeline/downloader.py, pipeline/face_landmarker_crop_stage.py) ---
-# Needed by the fused pipeline's FaceLandmarkerCropStage (478 landmarks + blendshapes + head
-# pose, run in IMAGE mode on the face crop FaceDetectorCropStage produces).
-FACE_LANDMARKER_BUNDLE_URL = (
-    "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/"
-    "float16/latest/face_landmarker.task"
-)
-FACE_LANDMARKER_BUNDLE_FILENAME = "face_landmarker.task"
-
-# Detection/presence/tracking confidence thresholds -- matches
-# 01_dataset_creation_lstm.ipynb's FaceLandmarkerOptions exactly.
-FACE_LANDMARKER_MIN_CONFIDENCE = 0.5
-
 # --- MediaPipe Face Detector bundle (pipeline/downloader.py) ---
-# Needed by FaceDetectorCropStage — bounding-box-only face detection, no landmarks/blendshapes,
-# a different and lighter bundle from the Face Landmarker above. Same one
-# notebook/06_dataset_creation_face_crops.ipynb downloads in its "MediaPipe Face Detector Setup"
-# cell: BlazeFace, short_range variant, float16 precision. Public/unauthenticated like the
-# Landmarker bundle, so — unlike the CNN model above — there's no "trustworthy artifact" question
-# gating it.
+# Needed by FaceDetectorCropStage — bounding-box-only face detection, no landmarks/blendshapes.
+# Same one the parts dataset builder (src/dataset) and notebook/06 use: BlazeFace, short_range
+# variant, float16 precision. Public and unauthenticated.
 FACE_DETECTOR_BUNDLE_URL = (
     "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/"
     "float16/latest/blaze_face_short_range.tflite"
 )
 FACE_DETECTOR_BUNDLE_FILENAME = "blaze_face_short_range.tflite"
 
-# Must match notebook 06's "Pipeline Configuration Constants" cell exactly — these sized the
-# crops the CNN above was actually trained on, not just reasonable-looking defaults.
+# Must match notebook 06's "Pipeline Configuration Constants" cell (the parts crop's own
+# margin is PARTS_FACE_MARGIN_FRAC below; this one only sizes the overlay's face box).
 FACE_DETECTOR_MIN_DETECTION_CONFIDENCE = 0.5
 FACE_DETECTOR_BBOX_MARGIN_FRAC = 0.25
 
-# --- Fused CNN-embedding + geometric-feature + LSTM classifier (model/fused_detector.py) ---
-# The model this container deploys: notebook/11_cnn_lstm_training_drive_pull.ipynb's frozen-CNN-
-# embedding variant — 84.24% test accuracy / 0.8375 macro-F1 (binary Not Drowsy/Drowsy), the
-# best measured result in the project — see src/cv-argus/CLAUDE.md's "Current status" for the
-# full accuracy caveats (single fold, no cross-validation yet) and the outstanding blocker list.
-FUSED_MODEL_DRIVE_FILE_ID = "1t_d7NDITB4Erq0rT7iYuiPCc1mPc_6Yc"
-# Filename kept literal (not renamed the way cnn_face_crop_model.keras/
-# lstm_geometric_feature_model.keras are) so the "<filename>.threshold.json" convention the
-# notebook's operating-point cell uses keeps lining up without extra bookkeeping.
-FUSED_MODEL_FILENAME = "best_cnn_lstm_frozen_embedding.keras"
-FUSED_MODEL_MAX_TIMESTEPS = 100  # must match notebook 11's MAX_TIMESTEPS_IMG (20s * 5fps)
-FUSED_MODEL_EMBED_DIM = 64       # the frozen CNN's penultimate Dense(64, relu) layer's width
-FUSED_MODEL_NUM_GEO_FEATURES = 10  # len(model.fused_features.FUSED_GEO_FEATURE_NAMES)
-FUSED_MODEL_DROWSY_INDEX = 1     # index of "Drowsy" in the model's 2-class softmax output
-# The decision threshold notebook 11's operating-point cell chose on validation data and wrote
-# to best_cnn_lstm_frozen_embedding.keras.threshold.json (t* = 0.57 at time of writing) — checked
-# in here rather than fetched as a third Drive artifact, since it's tiny metadata about one
-# specific checkpoint. Update this alongside FUSED_MODEL_DRIVE_FILE_ID whenever the checkpoint
-# is retrained/re-thresholded — a stale threshold paired with a new checkpoint is a silent
-# accuracy bug, not a crash.
-FUSED_MODEL_THRESHOLD = 0.57
+# --- The "parts" pipeline: tiny YOLO-style detector + rule engine ---
+# notebook/12_tiny_grid_detector.ipynb's step-2 model "tiny_yolo_w1" (46k params). On the test
+# face crops it scored eye-state accuracy 0.95, mAP@0.5 0.63, and int8 was as accurate as float.
+# Both files are shared "Anyone with the link"; the env vars of the same name override the ids.
+PARTS_INT8_DRIVE_FILE_ID = "1r5E0CqKLd6zktj-ZqhYCo2pFtf-Abniz"    # tiny_yolo_w1_20261018_2048_int8.tflite
+PARTS_INT8_FILENAME = "parts_tiny_yolo_w1_int8.tflite"
+PARTS_FLOAT_DRIVE_FILE_ID = "1_CIhATJl1osw_q7G-qyrxMoKMd5ojl-M"   # tiny_yolo_w1_20261018_2048.keras
+PARTS_FLOAT_FILENAME = "parts_tiny_yolo_w1.keras"
+PARTS_DEFAULT_PRECISION = "int8"    # PARTS_PRECISION=int8|float
+# Must match the training data (src/dataset/argus_dataset/config.py DET_*) and notebook 12's IMG.
+PARTS_CLASSES = ("open_eye", "closed_eye", "yawn", "head_straight", "head_down")
+PARTS_IMG_SIZE = 160                # model input side
+PARTS_STORED_CROP_SIZE = 192        # DET_IMG_SIZE: the crop is made at this size, then resized
+PARTS_FACE_MARGIN_FRAC = 0.25       # DET_FACE_MARGIN_FRAC: square side = max(w,h) * 1.5
+PARTS_CONF_THRESHOLD = 0.25         # detection score kept for tracking (= notebook CONF_THR)
+# Decision thresholds inside a class pair: a detected eye is `closed_eye` when
+# p_closed / (p_open + p_closed) >= PARTS_CLOSED_EYE_THRESHOLD, a head is `head_down` when
+# p_down / (p_straight + p_down) >= PARTS_HEAD_DOWN_THRESHOLD. 0.5 = plain argmax; lower = more
+# sensitive. Each is overridable by an env var of the same name. Swept on the parts val+test
+# sets (int8): eyes are bimodal (0.5 -> 0.4: recall +0.6 pt, precision -0.5 pt); head_down is
+# the weak class (per-frame recall 52-69%) and 0.5 -> 0.3 gains up to +7 pt at no precision cost.
+PARTS_CLOSED_EYE_THRESHOLD = 0.40
+PARTS_HEAD_DOWN_THRESHOLD = 0.30
+PARTS_NMS_IOU = 0.5
+PARTS_TFLITE_THREADS = 1            # measured fastest: 1.35 ms vs 1.69 ms at 4 threads
+
+# Tracker (model/parts_tracker.py). At SAMPLE_FPS=5 a frame is 0.2 s.
+PARTS_TRACK_IOU = 0.3               # match a detection to a track at IoU >= this
+PARTS_TRACK_MAX_MISSES = 3          # a track survives 3 unmatched frames (0.6 s)
+PARTS_TRACK_VOTE_FRAMES = 3         # state = majority over the last 3 frames (smooths flicker)
+# head_down is caught on only ~half the frames, so a majority vote would rarely hold it; but a
+# straight head is almost never misread as down (>99.5%), so a head track is `head_down` when at
+# least this many of its last PARTS_TRACK_VOTE_FRAMES frames were.
+PARTS_HEAD_DOWN_VOTES = 1
+
+# Rule engine (orchestrator/parts_rules.py). Seconds; every one overridable by its env var.
+# Eyes-closed ladder: closed >= LOW -> low, >= MEDIUM -> medium, >= CRITICAL -> critical.
+RULE_EYES_LOW_S = 1.0
+RULE_EYES_MEDIUM_S = 2.0
+RULE_EYES_CRITICAL_S = 3.0
+# After a yawn within RULE_YAWN_RECENT_S, the same ladder fires earlier (fatigue context).
+RULE_YAWN_RECENT_S = 10.0
+RULE_EYES_LOW_YAWN_S = 0.7
+RULE_EYES_MEDIUM_YAWN_S = 1.3
+RULE_EYES_CRITICAL_YAWN_S = 2.0
+# Head down: with eyes closed/not visible -> critical; with eyes open (looking down) -> medium.
+RULE_HEAD_DOWN_S = 3.0
+RULE_HEAD_DOWN_YAWN_S = 2.0         # head down + eyes closed/not visible after a recent yawn
+# A yawn *event* = mouth open this long; 3 events in the window -> low "fatigue".
+RULE_YAWN_EVENT_S = 1.5
+RULE_YAWN_COUNT = 3
+RULE_YAWN_WINDOW_S = 300.0
+RULE_NO_FACE_S = 3.0                # face lost this long (after having one) -> low "not visible"
+RULE_GRACE_S = 0.4                  # a gap this short doesn't reset a running timer (2 frames)
+RULE_HEAD_GRACE_S = 1.0             # longer for the head timer: head_down misses frames often
+RULE_RECOVERY_S = 2.0               # severity only drops after all signals are clear this long
+# Severity -> the existing reading contract (ESP32: p_drowsy >= 0.57 means drowsy).
+RULE_P_DROWSY = {"none": 0.05, "low": 0.30, "medium": 0.75, "critical": 0.95}
 
 # --- Capture / runtime ---
 # Frames per second the pipeline samples from the camera (see pipeline/sources.py +

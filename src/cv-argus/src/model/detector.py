@@ -1,16 +1,12 @@
-"""Shared `DetectionResult` — the one prediction type every detector in `model/` returns.
+"""Shared `DetectionResult`: the per-frame verdict the orchestrator consumes.
 
-Historical note: this module used to also hold `DrowsinessDetector`, the windowed-geometric-only
-LSTM detector (`GeometricRatioFeatureLayer` + `LstmGeometricFeatureModel`, trained in
-`notebook/03_model_training_lstm.ipynb`), and `_CLASS_NAMES` was the shared 3-class
-Alert/Low Vigilant/Drowsy map every detector rendered through. Both were removed once
-`PIPELINE=fused` (see `fused_detector.py`) was made this module's sole deployed pipeline — see
-the root `CLAUDE.md` and `src/cv-argus/CLAUDE.md`'s "Current status" for why. `layers.py`
-(`GeometricRatioFeatureLayer`) is still around and still used, just not through that removed
-class — `fused_features.py` calls it directly for its EAR/MAR math.
+The parts pipeline's rule engine (`orchestrator/parts_rules.to_detection`) builds it: `level` and
+`probabilities` keep the binary `Not Drowsy` / `Drowsy` contract the ESP32 reads, and `extras`
+carries the severity, reason and timers. (Earlier detectors, the windowed LSTM and the CNN+LSTM,
+returned the same type; they're on branch `archive/cnn-lstm-fused`.)
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -26,6 +22,10 @@ class DetectionResult:
 
     level: int
     probabilities: np.ndarray  # shape (2,), softmax over [Not Drowsy, Drowsy] in order
+    # Optional detector-specific context merged into the buffered reading's payload by the
+    # orchestrator (the parts pipeline's {severity, reason, timers, ...}). Readers that don't
+    # know these keys ignore them, so this is backward compatible.
+    extras: dict = field(default_factory=dict)
 
     @property
     def class_name(self) -> str:

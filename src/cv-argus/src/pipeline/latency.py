@@ -3,7 +3,7 @@
 Every `Stage` (see `stage.py`) owns one `StageStats`. It's fed, from the stage's own thread:
 how long each `process_item()` took, how long the frame waited in the input queue first, how
 full that queue was, how many frames the drop-oldest backpressure path shed, and (for stages
-that break their work into sub-steps, e.g. `FusedInferenceStage`'s CNN-embed vs. LSTM-predict)
+that break their work into sub-steps, e.g. `PartsInferenceStage`'s crop / infer / decode / rules)
 per-phase timings. Every `interval` seconds it emits one summary line so you can see, from real
 numbers, which stage is the bottleneck and where the backlog builds up.
 
@@ -19,18 +19,18 @@ numbers, which stage is the bottleneck and where the backlog builds up.
 - **`wait`** — how long the frame sat in this stage's input queue before the stage picked it
   up. Add every stage's `wait` + `proc` and you get roughly the sink's `e2e`; the difference
   is queueing.
-- **phase clauses** (e.g. `embed(...) lstm(...)` on `fused_inference`) — a `proc` broken into
-  named sub-steps by the stage. `fused_inference` splits into `embed` (the frozen CNN) and
-  `lstm` (the sequence model) so you can tell which half of the model is slow.
+- **phase clauses** (e.g. `crop(...) infer(...) decode(...) rules(...)` on `parts_inference`) —
+  a `proc` broken into named sub-steps by the stage, so you can tell whether the model itself
+  (`infer`) or the work around it is slow.
 - **`inq(avg/max)`** — input-queue *depth* (capacity is 4). A stage pinned at `max=4` is the
   bottleneck, or is right behind it.
 - **`drop=`** — frames shed by `Stage._emit`'s drop-oldest path (only live sources drop).
 - **`e2e(mean=...)`** — sink stages only — capture-timestamp to here: the end-to-end latency,
   i.e. how stale the frame being acted on is. The "feels laggy" number.
 
-Per-stage: `face_detector_crop.process` is MediaPipe BlazeFace + the crop; `face_landmarker_
-crop.process` is MediaPipe FaceLandmarker + the geometric-feature math; `fused_inference.process`
-is the CNN embed + LSTM predict (see its `embed`/`lstm` phase clauses); the sink is the output.
+Per-stage: `face_detector_crop.process` is MediaPipe BlazeFace; `parts_inference.process` is the
+square crop + tiny YOLO + decode + tracker + rules (see its phase clauses); the sink is the
+output. For per-frame numbers (not interval summaries) use `OUTPUTS=metrics`.
 
 The stage with the highest `proc` is the compute bottleneck; the stage with the highest
 `wait` is where frames are stacking up.

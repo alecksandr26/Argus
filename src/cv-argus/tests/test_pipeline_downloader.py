@@ -1,5 +1,5 @@
-"""`pipeline/downloader.py` — the public, unauthenticated HTTP fetch for the two MediaPipe
-bundles. Hermetic: `urllib.request.urlretrieve` is monkeypatched everywhere.
+"""`pipeline/downloader.py` — the public, unauthenticated HTTP fetch for the MediaPipe
+BlazeFace bundle. Hermetic: `urllib.request.urlretrieve` is monkeypatched everywhere.
 """
 
 import urllib.request
@@ -12,7 +12,6 @@ from cv_argus.pipeline.downloader import (
     BundleDownloadError,
     _download_bundle,
     download_face_detector_bundle,
-    download_face_landmarker_bundle,
 )
 
 
@@ -31,21 +30,13 @@ def fake_urlretrieve(monkeypatch):
 
 
 def test_cache_hit_skips_download(tmp_path, fake_urlretrieve):
-    cached = tmp_path / constants.FACE_LANDMARKER_BUNDLE_FILENAME
+    cached = tmp_path / constants.FACE_DETECTOR_BUNDLE_FILENAME
     cached.write_bytes(b"already here")
 
-    result = download_face_landmarker_bundle(model_dir=tmp_path)
+    result = download_face_detector_bundle(model_dir=tmp_path)
 
     assert result == cached
     assert fake_urlretrieve == []
-
-
-def test_downloads_landmarker_bundle_when_absent(tmp_path, fake_urlretrieve):
-    result = download_face_landmarker_bundle(model_dir=tmp_path)
-
-    assert result == tmp_path / constants.FACE_LANDMARKER_BUNDLE_FILENAME
-    assert result.exists()
-    assert fake_urlretrieve[0]["url"] == constants.FACE_LANDMARKER_BUNDLE_URL
 
 
 def test_downloads_detector_bundle_when_absent(tmp_path, fake_urlretrieve):
@@ -71,9 +62,9 @@ def test_url_env_var_overrides_constant(tmp_path, fake_urlretrieve, monkeypatch)
 
 
 def test_empty_env_var_is_treated_as_absent(tmp_path, fake_urlretrieve, monkeypatch):
-    monkeypatch.setenv("FACE_LANDMARKER_BUNDLE_URL", "")
-    download_face_landmarker_bundle(model_dir=tmp_path)
-    assert fake_urlretrieve[0]["url"] == constants.FACE_LANDMARKER_BUNDLE_URL
+    monkeypatch.setenv("FACE_DETECTOR_BUNDLE_URL", "")
+    download_face_detector_bundle(model_dir=tmp_path)
+    assert fake_urlretrieve[0]["url"] == constants.FACE_DETECTOR_BUNDLE_URL
 
 
 def test_model_dir_env_var_is_honoured(tmp_path, fake_urlretrieve, monkeypatch):

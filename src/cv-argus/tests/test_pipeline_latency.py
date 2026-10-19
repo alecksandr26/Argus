@@ -101,14 +101,14 @@ class TestEnabledReporting:
         assert "life(n=3" in caplog.records[-1].message
 
     def test_phase_clauses_appear_on_the_line(self, caplog):
-        stats = StageStats("fused_inference", 10.0)
+        stats = StageStats("parts_inference", 10.0)
         stats.record_process(0.05)
-        stats.record_phase("embed", 0.03)
-        stats.record_phase("lstm", 0.02)
+        stats.record_phase("infer", 0.03)
+        stats.record_phase("rules", 0.02)
         with caplog.at_level(logging.INFO, logger=STATS_LOGGER):
             stats.maybe_report(force=True)
         line = caplog.records[0].message
-        assert "embed(" in line and "lstm(" in line
+        assert "infer(" in line and "rules(" in line
 
     def test_set_interval_arms_a_stage_built_without_one(self):
         stats = StageStats("s")  # interval defaults to 0.0

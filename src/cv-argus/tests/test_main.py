@@ -132,8 +132,9 @@ class TestBuildOutputs:
         built = {}
 
         class _FakeMjpeg:
-            def __init__(self, host, port):
+            def __init__(self, host, port, **kwargs):
                 built["host"], built["port"] = host, port
+                built.update(kwargs)
 
         monkeypatch.setattr(main, "MjpegStreamOutputStage", _FakeMjpeg)
         monkeypatch.setenv("OUTPUTS", "mjpeg")
@@ -142,7 +143,25 @@ class TestBuildOutputs:
 
         outputs = main._build_outputs()
         assert isinstance(outputs[0], _FakeMjpeg)
-        assert built == {"host": "127.0.0.1", "port": 9111}
+        assert built == {"host": "127.0.0.1", "port": 9111, "width": None, "camera_label": "0"}
+
+    def test_mjpeg_stream_width_and_camera_label(self, monkeypatch):
+        built = {}
+
+        class _FakeMjpeg:
+            def __init__(self, **kwargs):
+                built.update(kwargs)
+
+        monkeypatch.setattr(main, "MjpegStreamOutputStage", _FakeMjpeg)
+        monkeypatch.setenv("OUTPUTS", "mjpeg")
+        monkeypatch.setenv("DEMO_STREAM_WIDTH", "960")
+        monkeypatch.setenv("CAMERA_SOURCE", "/videos/clip.mp4")
+        main._build_outputs()
+        assert built["width"] == 960 and built["camera_label"] == "clip.mp4"
+        monkeypatch.setenv("DEMO_STREAM_WIDTH", "nope")
+        monkeypatch.setenv("SOURCE", "picamera")
+        main._build_outputs()
+        assert built["width"] is None and built["camera_label"] == "picam"
 
 
 class TestBuildSenderListener:
@@ -193,34 +212,27 @@ class TestBuildPipeline:
     whether the orchestrator bridge stage actually gets wired in, not about the real pipeline.
     """
 
-    def test_wires_the_orchestrator_bridge_stage(self, monkeypatch):
+    def test_wires_parts_stage_then_outputs_and_bridge(self, monkeypatch):
         import queue
 
         from cv_argus.orchestrator import OrchestratorBridgeOutputStage
         from cv_argus.pipeline.stage import Stage
 
+        def factory(label):
+            class _FakeStage(Stage):
+                def __init__(self, *args, **kwargs):
+                    super().__init__(label)
+
+                def process_item(self, item):
+                    return item
+            return _FakeStage
+
         monkeypatch.delenv("SOURCE", raising=False)
         monkeypatch.setenv("OUTPUTS", "logging")
         monkeypatch.setattr(main, "download_face_detector_bundle", lambda: "fake_bundle")
-        monkeypatch.setattr(main, "download_face_landmarker_bundle", lambda: "fake_bundle")
-
-        class _FakeFusedDrowsinessDetector:
-            @staticmethod
-            def from_env():
-                return object()
-
-        monkeypatch.setattr(main, "FusedDrowsinessDetector", _FakeFusedDrowsinessDetector)
-
-        class _FakeStage(Stage):
-            def __init__(self, *args, **kwargs):
-                super().__init__("fake_stage")
-
-            def process_item(self, item):
-                return item
-
-        monkeypatch.setattr(main, "FaceDetectorCropStage", _FakeStage)
-        monkeypatch.setattr(main, "FaceLandmarkerCropStage", _FakeStage)
-        monkeypatch.setattr(main, "FusedInferenceStage", _FakeStage)
+        monkeypatch.setattr(main, "FaceDetectorCropStage", factory("blazeface"))
+        monkeypatch.setattr(main, "PartsInferenceStage", factory("parts"))
+        monkeypatch.setattr(main.PartsDetector, "from_env", staticmethod(lambda: object()))
 
         class _FakeOrchestrator:
             def __init__(self):
@@ -229,13 +241,14 @@ class TestBuildPipeline:
         orchestrator = _FakeOrchestrator()
         pipeline = main._build_pipeline(orchestrator)
 
+        names = [s.name for s in pipeline.stages]
+        assert names[1:3] == ["blazeface", "parts"]
         bridges = [s for s in pipeline.stages if isinstance(s, OrchestratorBridgeOutputStage)]
         assert len(bridges) == 1
         assert bridges[0]._out_queue is orchestrator.input_queue
-        # bridge is connected from the inference stage (stages[3]: source, crop, landmarker,
-        # inference, *outputs, bridge), same fan-out mechanism OUTPUTS=logging,mjpeg already uses.
-        inference_stage = pipeline.stages[3]
-        assert bridges[0].input_queue in inference_stage.output_queues
+        # bridge is connected from the inference stage (stages[2]: source, blazeface, parts,
+        # *outputs, bridge), same fan-out mechanism OUTPUTS=logging,mjpeg already uses.
+        assert bridges[0].input_queue in pipeline.stages[2].output_queues
         assert pipeline.stages[-1] is bridges[0]
 
 

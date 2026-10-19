@@ -35,8 +35,9 @@ equality. The training notebooks retrain from scratch and tolerate this.
 ### 1. No TensorFlow — `geometry.py` is a NumPy port of `GeometricRatioFeatureLayer`
 
 The notebooks compute the 7 geometric features (EAR×2, MAR, head-pose pitch/yaw/roll, a
-pose-validity flag) with a `tf.keras.layers.Layer` (`src/cv-argus/src/model/layers.py`, copied
-verbatim into notebooks 01/02/09). That layer is *only arithmetic* on values MediaPipe already
+pose-validity flag) with a `tf.keras.layers.Layer` (copied verbatim into notebooks 01/02/08/09;
+the reference copy is `tests/reference_geometric_layer.py`, moved from cv-argus when cv-argus
+dropped the CNN+LSTM pipeline on 2026-10-18). That layer is *only arithmetic* on values MediaPipe already
 returns (landmark coords + the facial transformation matrix), and dataset creation only ever
 **calls** it — never serialises/deserialises it. So `argus_dataset/geometry.py` reimplements
 the same math in NumPy. This keeps ~0.5 GB of TensorFlow out of every spawned worker (real on
@@ -46,9 +47,9 @@ a RAM-constrained box) and lets the whole module depend on just
 **Fidelity guard:** `tests/test_geometry_equiv.py` runs random landmarks / rotation matrices
 through both `geometry.py` and the real `tf.keras` layer and asserts agreement to `atol=1e-4`
 over 200 cases. It's the only place TensorFlow is imported (dev-only, `pip install -e .[dev]`,
-skipped otherwise). If you touch `geometry.py`, this test is the contract — and note that
-`layers.py` itself is loaded back out of trained `.keras` files by `cv_argus`'s `detector.py`,
-so **don't "reconcile" the two by editing `layers.py`** — that's a deploy-side change.
+skipped otherwise). If you touch `geometry.py`, this test is the contract — and **don't
+"reconcile" the two by editing the reference layer**: it must stay the notebooks' class, which
+trained `.keras` models (the archived CNN+LSTM, branch `archive/cnn-lstm-fused`) deserialize.
 
 This is *not* a 6th verbatim copy of the layer (the root `CLAUDE.md` tracks five); it's a
 separate implementation kept honest by the equivalence test.

@@ -46,8 +46,14 @@ session that's touched this repo.
   random-guess floor to 50%. All ten notebooks are migrated in code, and `src/cv-argus` now
   deploys binary labels too (`Not Drowsy`/`Drowsy`) — see the "Working in this repo" section and
   `notebook/CLAUDE.md`'s "Binary migration" for the per-notebook rerun status.
-  **That sequence-model pipeline is the long-term intended architecture; what's currently
-  deployed is a related but distinct shape**: `src/cv-argus` deploys a **binary
+  **Update (2026-10-18): `src/cv-argus` no longer deploys any classifier described in this
+  bullet.** It now runs notebook 12's tiny YOLO "parts" detector (eyes open/closed, yawn, head
+  straight/down) plus an IoU tracker and deterministic timed rules that output a severity (see
+  "Current deployment status" below and `src/cv-argus/CLAUDE.md`). The CNN+LSTM described next
+  is preserved on branch `archive/cnn-lstm-fused` and stays the thesis's comparison point; read
+  the rest of this bullet as that history.
+  **That sequence-model pipeline is the long-term intended architecture; what was deployed
+  until 2026-10-18 is a related but distinct shape**: `src/cv-argus` deployed a **binary
   frozen-CNN-embedding + geometric-feature-fusion + LSTM classifier** — a MediaPipe Face
   Detector/BlazeFace crop → a frozen **convolutional** network's 64-dim embedding, fused
   per-timestep with a FaceLandmarker geometric-feature subset (EAR/MAR ratios + selected
@@ -182,20 +188,22 @@ is missing or done.
   Drive via `scripts/publish_to_drive.py` for the Colab training notebooks.
 - `src/cv-argus/` — the Raspberry Pi 5 edge module: loads a trained model from the notebook and
   runs live inference against camera frames, end to end (camera/video-file source → MediaPipe →
-  model inference → an output sink), not just the model-loading piece. **Deploys one pipeline: a
-  binary frozen-CNN-embedding + geometric-feature-fusion + LSTM classifier** (MediaPipe Face
-  Detector/BlazeFace crop → a frozen convolutional network's 64-dim embedding, fused per-timestep
-  with a FaceLandmarker geometric-feature subset → an LSTM over a rolling window, output
-  `Not Drowsy` vs. `Drowsy`) — the project's best measured result (see "Current deployment
-  status" below). Two earlier pipelines (a single-frame CNN, and a
-  windowed-geometric-only LSTM matching the original design above) were removed once this
-  result made both obsolete; see `src/cv-argus/CLAUDE.md`'s "Current status" for the full
-  history and this module's own `CLAUDE.md`'s "What this module is" for why. Built as a
+  model inference → an output sink), not just the model-loading piece. **Deploys one pipeline:
+  the tiny YOLO "parts" detector + tracker + rules** (BlazeFace face box → square gray crop →
+  notebook 12's 46k-parameter `tiny_yolo_w1`, int8 TFLite by default or float `.keras` → IoU
+  tracker → timed rules giving a none/low/medium/critical severity with a reason, mapped onto
+  the binary `Not Drowsy`/`Drowsy` contract the ESP32 reads). This replaced the CNN+LSTM
+  ("fused") pipeline on 2026-10-18, by the user's decision for a simpler, explainable system;
+  that pipeline lives whole on branch `archive/cnn-lstm-fused`, and its model files are no
+  longer downloaded. It logs one line per frame (severity, eye/mouth/head states, inference
+  time) and can write a per-frame JSONL metrics log (`OUTPUTS=metrics`,
+  `scripts/summarize_metrics.py`) for the report. Built as a
+  threaded, queue-connectedBuilt as a
   threaded, queue-connected `Stage`/`Pipeline` abstraction (see its `CLAUDE.md`'s "`pipeline/` —
   done") so a future model family could share the same camera-loop/threading/shutdown plumbing
   without reimplementing it; also has a demo mode (a browser-viewable live video stream with
   the drowsiness classification overlaid, see that file's "Demo" section) for actually watching
-  it work on a laptop or the Pi. Docker-first (own `Dockerfile`/`docker-compose.yml`, plus a
+  it work on a laptop or the Pi (`scripts/demo.sh`). Docker-first (own `Dockerfile`/`docker-compose.yml`, plus a
   `docker-compose.pi.yml` overlay for the Pi's CSI camera). Has both a `README.md` (practical
   "how do I run this" — quick start, the demo, a config-variable table, troubleshooting) and a
   `CLAUDE.md` (architecture, why things are built the way they are, notebook-fidelity
@@ -289,7 +297,8 @@ is missing or done.
   the planned end-to-end architecture summarized above (`semantic-design` is the raw XML,
   `semantic-design.drawio.png` a rendered export — re-render after editing the XML).
 - `docs/designs/cnn-lstm-mediapipe-pipeline.svg` — model-level diagram of what `src/cv-argus`
-  actually deploys today, scoped to the model itself rather than the full edge/cloud system:
+  deployed until 2026-10-18 (now on branch `archive/cnn-lstm-fused`; the current parts pipeline
+  has no diagram yet), scoped to the model itself rather than the full edge/cloud system:
   both MediaPipe stages (Face Detector crop, then FaceLandmarker run on that crop) feeding a
   frozen-CNN-embedding + `GeometricRatioFeatureLayer` fusion into the LSTM classifier's
   zero-pre-padded 100-frame window, thresholded at `p(Drowsy) >= t*` (`t* = 0.57`) rather than
@@ -305,11 +314,23 @@ is missing or done.
   inform feature and model choices.
 
 **Current deployment status, stated plainly since it's easy to lose track of amid the history
-below: `src/cv-argus` deploys one pipeline — the binary frozen-CNN-embedding +
+below: `src/cv-argus` deploys one pipeline — the tiny YOLO "parts" detector + tracker +
+deterministic rules** (notebook 12's `tiny_yolo_w1`, int8 by default; see `src/cv-argus/
+CLAUDE.md`'s "Current status").
+- On its own test faces, the detector scores eye-state accuracy 0.95 and mAP@0.5 0.63.
+  `head_down` is its weakest class (AP about 0.25).
+- Measured in the container on a desktop CPU under the 4-core Pi limit: 0.7 ms per face at int8
+  and about 15 ms end to end.
+- Not yet run on a Pi 5, on real cabin footage, or on unseen drivers.
+
+It replaced the CNN+LSTM below on 2026-10-18, by the user's decision for a simpler, explainable
+system. That pipeline is preserved on branch `archive/cnn-lstm-fused`.
+
+**Before that, `src/cv-argus` deployed the binary frozen-CNN-embedding +
 geometric-feature-fusion + LSTM classifier from `11_cnn_lstm_training_drive_pull.ipynb`** (a
 frozen convolutional embedding + a FaceLandmarker geometric-feature subset, fused per frame and
-classified over a rolling window as `Not Drowsy` vs. `Drowsy`). This wasn't the first thing
-deployed; the record of what was tried and rejected along the way is worth keeping, because each
+classified over a rolling window as `Not Drowsy` vs. `Drowsy`). That wasn't the first thing
+deployed either; the record of what was tried and rejected along the way is worth keeping, because each
 step is a real, measured reason the next one won:
 
 - **First deployed: the single-frame CNN** (`07_cnn_training.ipynb`'s model, `36.67%` accuracy /
@@ -335,7 +356,7 @@ step is a real, measured reason the next one won:
   number this project has produced. This is what made deploying a CNN+LSTM shape worth it: not
   the architecture in the abstract, but this specific, much stronger measured result.
 
-**That architecture is now what `src/cv-argus` deploys**, replacing both the single-frame CNN
+**That architecture was what `src/cv-argus` deployed until 2026-10-18**, replacing both the single-frame CNN
 and the never-deployed windowed-geometric-only LSTM (removed, not merely deprioritized — see
 `src/cv-argus/CLAUDE.md`'s "Current status"). `src/cv-argus/CLAUDE.md`'s "fused detector"
 section has the deployment-side mechanics; `notebook/CLAUDE.md`'s "`11_
@@ -377,8 +398,8 @@ result rather than the best real result the project has produced so far.
   dataset-creation ones read a new `dataset/raw_videos_binary/` tree. `01`–`08` still haven't
   been rerun under this scheme (they still load their old 3-class Drive artifacts, so results and
   framing for those in `notebook/CLAUDE.md` are the pre-migration record), but the `06`→`09`→`10`/
-  `11` chain feeding `src/cv-argus`'s deployed model has, and `src/cv-argus` now deploys binary
-  class names (`Not Drowsy`/`Drowsy`) to match — see "Current deployment status" above. See
+  `11` chain feeding `src/cv-argus`'s previously deployed model has, and `src/cv-argus` still
+  emits binary class names (`Not Drowsy`/`Drowsy`) to match — see "Current deployment status" above. See
   `notebook/CLAUDE.md`'s "Binary migration" for the authoritative per-notebook status.
 - For **training** logic (`03`/`04`/`05`/`07`/`08`/`10`) the notebooks are the source of truth;
   edit the corresponding cell(s). For **dataset creation** (`01`/`02`/`06`/`09`) the source of
@@ -403,7 +424,8 @@ result rather than the best real result the project has produced so far.
   dir) with `raw/`, `processed/`, `models/` beneath it, all gitignored. No dataset is checked in.
 - `GeometricRatioFeatureLayer` is intentionally redefined verbatim in five places
   (`01_dataset_creation_lstm.ipynb`, `02_dataset_creation_flat.ipynb`,
-  `08_deployment_export_lstm.ipynb`, `src/cv-argus/src/model/layers.py`, and now
+  `08_deployment_export_lstm.ipynb`, `src/dataset/tests/reference_geometric_layer.py` (moved
+  from `src/cv-argus/src/model/layers.py` when cv-argus dropped the CNN+LSTM), and now
   `09_dataset_creation_cnn_lstm.ipynb`, which uses it to compute a 10-feature EAR/MAR/blendshape
   fusion input for the CNN+LSTM model — see that notebook's "Geometric Features for Fusion"
   section) because Keras requires the exact same class to be importable to deserialize a saved
@@ -415,7 +437,7 @@ result rather than the best real result the project has produced so far.
   `src/dataset/` pipeline does **not** add a sixth copy: `argus_dataset/geometry.py` is a NumPy
   reimplementation of the same maths (the layer is only *called*, never deserialized, during
   dataset creation), kept honest by `src/dataset/tests/test_geometry_equiv.py` which diffs it
-  against `layers.py`'s real layer to `atol=1e-4`.
+  against the reference layer (`reference_geometric_layer.py`) to `atol=1e-4`.
 - `MAX_TIMESTEPS` (the LSTM's fixed padded-window length, currently 30 — it was 60 until
   `01`/`02`'s `sampling_fps` dropped from 10 to 5, making a 6s window 30 frames) is an LSTM-only concept.
   It has no bearing on RandomForest, the Dense NN, or the CNN — those three consume single-frame
