@@ -197,8 +197,8 @@ is missing or done.
   that pipeline lives whole on branch `archive/cnn-lstm-fused`, and its model files are no
   longer downloaded. It logs one line per frame (severity, eye/mouth/head states, inference
   time) and can write a per-frame JSONL metrics log (`OUTPUTS=metrics`,
-  `scripts/summarize_metrics.py`) for the report. Built as a
-  threaded, queue-connectedBuilt as a
+  `scripts/summarize_metrics.py`) for the report. If the int8 model can't load or run on the
+  device (seen on a Pi 5), it falls back to the float `.keras` automatically. Built as a
   threaded, queue-connected `Stage`/`Pipeline` abstraction (see its `CLAUDE.md`'s "`pipeline/` —
   done") so a future model family could share the same camera-loop/threading/shutdown plumbing
   without reimplementing it; also has a demo mode (a browser-viewable live video stream with

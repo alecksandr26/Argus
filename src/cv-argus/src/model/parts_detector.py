@@ -30,6 +30,18 @@ is detected at all.
 On 40 real test face crops the two agreed on 97% of grid-cell classes. Both expose
 `predict(x) -> raw grid`, so everything downstream is identical.
 
+**int8 → float fallback** (`PARTS_INT8_FALLBACK`, on by default). The int8 model has failed on
+a Raspberry Pi 5 while float works, so int8 is never trusted blindly:
+- **At startup**, `from_env()` probes the int8 file in a child process (`parts_probe.py`), so a
+  native crash can't take down the pipeline. If the probe fails, the detector loads the float
+  `.keras` instead and logs why.
+- **At runtime**, if the int8 backend raises mid-run, `detect()` switches to float once and
+  retries the frame.
+
+Either way, `precision` then reads `float` (so the overlay, logs and metrics show what is really
+running), and `fallback_reason` says why. `PARTS_INT8_FALLBACK=0` restores the old fail-hard
+behaviour.
+
 No `mediapipe` import here (the `model/` boundary), and `tensorflow` is imported lazily, so the
 pure decode/NMS maths is testable without it.
 """
@@ -166,9 +178,13 @@ class PartsDetector:
 
     def __init__(self, backend, precision: str, conf_threshold: float = constants.PARTS_CONF_THRESHOLD,
                  closed_eye_threshold: float = constants.PARTS_CLOSED_EYE_THRESHOLD,
-                 head_down_threshold: float = constants.PARTS_HEAD_DOWN_THRESHOLD):
+                 head_down_threshold: float = constants.PARTS_HEAD_DOWN_THRESHOLD,
+                 fallback=None, fallback_reason: str | None = None):
         self._backend = backend
+        # A zero-arg callable building the float backend, used once if `backend` raises.
+        self._fallback = fallback
         self.precision = precision
+        self.fallback_reason = fallback_reason
         self._conf = conf_threshold
         self.closed_eye_threshold = closed_eye_threshold
         self.head_down_threshold = head_down_threshold
@@ -177,21 +193,48 @@ class PartsDetector:
     @classmethod
     def from_env(cls) -> "PartsDetector":
         from .downloader import download_parts_float_model, download_parts_int8_model
+        from .parts_probe import probe
         precision = (os.environ.get("PARTS_PRECISION") or constants.PARTS_DEFAULT_PRECISION).strip().lower()
-        if precision == "int8":
-            backend = _TFLiteBackend(download_parts_int8_model(), constants.PARTS_TFLITE_THREADS)
-        elif precision == "float":
-            backend = _KerasBackend(download_parts_float_model())
-        else:
+        if precision not in ("int8", "float"):
             raise SystemExit(f"Unknown PARTS_PRECISION={precision!r} -- expected 'int8' or 'float'")
+        allow_fallback = os.environ.get("PARTS_INT8_FALLBACK", "1").strip() not in ("0", "false", "no")
+        float_backend = lambda: _KerasBackend(download_parts_float_model())  # noqa: E731
+        backend, fallback, reason = None, None, None
+        if precision == "int8":
+            path = download_parts_int8_model()
+            if allow_fallback:
+                ok, detail = probe("int8", path)
+                if ok:
+                    backend, fallback = _TFLiteBackend(path, constants.PARTS_TFLITE_THREADS), float_backend
+                else:
+                    reason = f"int8 probe failed: {detail}"
+                    logger.warning("parts detector: %s -- falling back to the float .keras model", reason)
+                    precision = "float"
+            else:
+                backend = _TFLiteBackend(path, constants.PARTS_TFLITE_THREADS)
+        if backend is None:
+            backend = float_backend()
         eye_thr, head_thr = env_float("PARTS_CLOSED_EYE_THRESHOLD"), env_float("PARTS_HEAD_DOWN_THRESHOLD")
         logger.info("parts detector loaded (%s, closed_eye >= %.2f, head_down >= %.2f)",
                     precision, eye_thr, head_thr)
-        return cls(backend, precision, closed_eye_threshold=eye_thr, head_down_threshold=head_thr)
+        return cls(backend, precision, closed_eye_threshold=eye_thr, head_down_threshold=head_thr,
+                   fallback=fallback, fallback_reason=reason)
+
+    def _switch_to_fallback(self, exc: Exception) -> None:
+        self.fallback_reason = f"{self.precision} failed at runtime: {type(exc).__name__}: {exc}"
+        logger.error("parts detector: %s -- switching to the float .keras model", self.fallback_reason)
+        self._backend, self._fallback, self.precision = self._fallback(), None, "float"
 
     def detect(self, x: np.ndarray) -> PartDetections:
         t0 = time.perf_counter()
-        raw = self._backend(x)
+        try:
+            raw = self._backend(x)
+        except Exception as exc:
+            if self._fallback is None:
+                raise
+            self._switch_to_fallback(exc)
+            t0 = time.perf_counter()
+            raw = self._backend(x)
         t1 = time.perf_counter()
         dets = decode_grid(raw, self._conf, closed_eye_thr=self.closed_eye_threshold,
                            head_down_thr=self.head_down_threshold)

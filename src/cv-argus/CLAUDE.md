@@ -299,7 +299,12 @@ back to a constant there if unset (an empty-string env var, e.g. from an unset D
   (BlazeFace, short_range/float16) `.tflite`, a public, unauthenticated download.
 
 The Dockerfile runs `python -m cv_argus.model.downloader && python -m
-cv_argus.pipeline.downloader` as one `RUN` step. That's about 1 MB of models in total; the old
+cv_argus.pipeline.downloader` as one `RUN` step, then **`python -m cv_argus.model.parts_probe`**.
+That loads and runs both parts models on the build machine's own architecture (arm64 when built
+on the Pi) and prints `OK`/`FAILED` for each, plus how closely int8 and float agree. The build
+fails only if float is broken, because then there's nothing to fall back to. A broken int8 is a
+warning, and the container will run float. On a desktop amd64 build both are OK, agreeing on
+97% of grid-cell classes. That's about 1 MB of models in total; the old
 CNN, fused `.keras` and FaceLandmarker bundle are no longer fetched.
 
 **Why build time, not container start:** this device needs to boot and start monitoring the
@@ -385,6 +390,19 @@ four newer packages.
   4). The float backend is a fixed-signature `tf.function`, traced once at startup, to avoid
   eager-dispatch overhead. TensorFlow is imported lazily, so the pure decode maths is testable
   without it.
+- `parts_probe.py`: loads and runs a model file **in a child process** (`python -c`, numpy +
+  tensorflow only), checking the `(20, 20, 10)` output shape and that the output is finite.
+  The int8 `.tflite` has failed on a Raspberry Pi 5 while float worked, and a TFLite native
+  crash (SIGILL/SIGSEGV) can't be caught by `try/except` in-process, hence the child. It's
+  used in two places:
+  - **Startup:** `PartsDetector.from_env()` probes int8 and loads the float `.keras` instead
+    if the probe fails.
+  - **Runtime:** if the int8 backend raises mid-run, `detect()` swaps to float once and retries
+    the frame.
+
+  After a fallback, `precision` reads `float` everywhere (overlay, logs, metrics) and
+  `fallback_reason` says why. `PARTS_INT8_FALLBACK=0` makes int8 failures fatal again. The
+  probe costs one TensorFlow import in a child at startup (a few seconds).
 - `parts_geometry.py`: the square training crop and the crop → frame box remap (both pure numpy
   and cv2).
 - `parts_tracker.py`: `PartsTracker`, a greedy per-kind IoU tracker with stable `E1`/`M1`/`H1`
@@ -707,7 +725,7 @@ tuned against a real recorded drive.
 ## Tests
 
 `tests/` is a `pytest` suite mirroring `src/` (`test_model_*`, `test_pipeline_*`,
-`test_main.py`, `test_constants.py`) — 313 tests as of this writing. Run it with `pytest` from
+`test_main.py`, `test_constants.py`) — 324 tests as of this writing. Run it with `pytest` from
 `src/cv-argus/` after `pip install -e .`. Config lives in `pyproject.toml`'s
 `[tool.pytest.ini_options]`. **`pytest` itself is deliberately not in `requirements.txt`** —
 that file is the exact, pinned dependency list this image ships to the Pi, and a test runner has
@@ -747,7 +765,9 @@ no business being part of it; install it separately (`pip install pytest`) for l
   `test_model_parts_tracker.py`, `test_orchestrator_parts_rules.py` (a fake 5 fps clock),
   `test_pipeline_parts_stages.py` (crop → rules → overlay on a synthetic frame) and
   `test_pipeline_parts_logging.py` (timings, log line, JSONL sink, the summarizer) cover the
-  rest.
+  rest. `test_model_parts_fallback.py` runs the probe in **real child processes** against tiny
+  in-test models. That covers a working model, a corrupt file, the wrong output shape, a native
+  crash (`os.abort()`) and a hang, plus both fallback paths.
 - `test_pipeline_latency.py` covers `StageStats` — the aggregates/percentiles, the
   interval-gated `maybe_report`, the disabled-interval no-op, `wait`/`e2e`/phase/drop
   recording — with no native deps (it's stdlib-only, like `latency.py` itself).

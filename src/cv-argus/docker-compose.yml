@@ -41,6 +41,9 @@ services:
       # its precision; the two decision thresholds tune open/closed and straight/down (blank =
       # the src/constants.py default); RULE_* thresholds pass through from .env.
       - PARTS_PRECISION=${PARTS_PRECISION:-int8}
+      # int8 is probed at startup and replaced by the float .keras if it can't load/run (it has
+      # failed on a Pi 5). 0 = fail hard instead.
+      - PARTS_INT8_FALLBACK=${PARTS_INT8_FALLBACK:-1}
       - PARTS_CLOSED_EYE_THRESHOLD=${PARTS_CLOSED_EYE_THRESHOLD:-}
       - PARTS_HEAD_DOWN_THRESHOLD=${PARTS_HEAD_DOWN_THRESHOLD:-}
       # OUTPUTS=...,metrics writes one JSON line per frame here (on the buffer-data volume).
