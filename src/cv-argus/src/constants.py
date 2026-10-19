@@ -93,6 +93,14 @@ PARTS_IMG_SIZE = 160                # model input side
 PARTS_STORED_CROP_SIZE = 192        # DET_IMG_SIZE: the crop is made at this size, then resized
 PARTS_FACE_MARGIN_FRAC = 0.25       # DET_FACE_MARGIN_FRAC: square side = max(w,h) * 1.5
 PARTS_CONF_THRESHOLD = 0.25         # detection score kept for tracking (= notebook CONF_THR)
+# Decision thresholds inside a class pair: a detected eye is `closed_eye` when
+# p_closed / (p_open + p_closed) >= PARTS_CLOSED_EYE_THRESHOLD, a head is `head_down` when
+# p_down / (p_straight + p_down) >= PARTS_HEAD_DOWN_THRESHOLD. 0.5 = plain argmax; lower = more
+# sensitive. Each is overridable by an env var of the same name. Swept on the parts val+test
+# sets (int8): eyes are bimodal (0.5 -> 0.4: recall +0.6 pt, precision -0.5 pt); head_down is
+# the weak class (per-frame recall 52-69%) and 0.5 -> 0.3 gains up to +7 pt at no precision cost.
+PARTS_CLOSED_EYE_THRESHOLD = 0.40
+PARTS_HEAD_DOWN_THRESHOLD = 0.30
 PARTS_NMS_IOU = 0.5
 PARTS_TFLITE_THREADS = 1            # measured fastest: 1.35 ms vs 1.69 ms at 4 threads
 
@@ -100,6 +108,10 @@ PARTS_TFLITE_THREADS = 1            # measured fastest: 1.35 ms vs 1.69 ms at 4 
 PARTS_TRACK_IOU = 0.3               # match a detection to a track at IoU >= this
 PARTS_TRACK_MAX_MISSES = 3          # a track survives 3 unmatched frames (0.6 s)
 PARTS_TRACK_VOTE_FRAMES = 3         # state = majority over the last 3 frames (smooths flicker)
+# head_down is caught on only ~half the frames, so a majority vote would rarely hold it; but a
+# straight head is almost never misread as down (>99.5%), so a head track is `head_down` when at
+# least this many of its last PARTS_TRACK_VOTE_FRAMES frames were.
+PARTS_HEAD_DOWN_VOTES = 1
 
 # Rule engine (orchestrator/parts_rules.py). Seconds; every one overridable by its env var.
 # Eyes-closed ladder: closed >= LOW -> low, >= MEDIUM -> medium, >= CRITICAL -> critical.
@@ -120,6 +132,7 @@ RULE_YAWN_COUNT = 3
 RULE_YAWN_WINDOW_S = 300.0
 RULE_NO_FACE_S = 3.0                # face lost this long (after having one) -> low "not visible"
 RULE_GRACE_S = 0.4                  # a gap this short doesn't reset a running timer (2 frames)
+RULE_HEAD_GRACE_S = 1.0             # longer for the head timer: head_down misses frames often
 RULE_RECOVERY_S = 2.0               # severity only drops after all signals are clear this long
 # Severity -> the existing reading contract (ESP32: p_drowsy >= 0.57 means drowsy).
 RULE_P_DROWSY = {"none": 0.05, "low": 0.30, "medium": 0.75, "critical": 0.95}

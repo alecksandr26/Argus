@@ -48,3 +48,25 @@ def test_eye_and_head_never_share_a_track():
     tr = PartsTracker()
     t = step(tr, [([90, 60, 200, 220], HEAD_DOWN), ([95, 65, 205, 225], OPEN_EYE)])
     assert sorted(x.kind for x in t) == ["eye", "head"]
+
+
+HEAD = [80, 60, 220, 240]
+
+
+def test_head_is_down_once_one_recent_frame_says_so():
+    tr = PartsTracker(head_down_votes=1)
+    from cv_argus.model.parts_detector import HEAD_STRAIGHT
+    for c in (HEAD_STRAIGHT, HEAD_DOWN, HEAD_STRAIGHT):
+        t = step(tr, [(HEAD, c)])
+    assert t[0].label == "head_down"
+    for _ in range(2):
+        t = step(tr, [(HEAD, HEAD_STRAIGHT)])
+    assert t[0].label == "head_straight"        # the down frame has left the 3-frame window
+
+
+def test_head_down_votes_two_needs_a_majority():
+    tr = PartsTracker(head_down_votes=2)
+    from cv_argus.model.parts_detector import HEAD_STRAIGHT
+    for c in (HEAD_STRAIGHT, HEAD_DOWN, HEAD_STRAIGHT):
+        t = step(tr, [(HEAD, c)])
+    assert t[0].label == "head_straight"

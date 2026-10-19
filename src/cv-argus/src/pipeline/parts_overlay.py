@@ -23,7 +23,8 @@ What it draws:
   bar is scaled to its critical threshold and shows tick marks at the low / medium / critical
   thresholds currently in force. They move earlier after a yawn, which the panel says. It also
   shows the yawn-event count.
-- **Footer:** precision (int8/float), model ms, stream fps.
+- **Footer:** precision (int8/float), the closed-eye / head-down decision thresholds, model ms,
+  stream fps.
 """
 
 from __future__ import annotations
@@ -115,7 +116,11 @@ def draw_parts_overlay(frame_bgr: np.ndarray, ctx, fps: float, camera_label: str
         _bar(frame_bgr, px, py + 48, bw, bh, "MOUTH OPEN ", mouth, [], max(mouth, 1.5), CLASS_COLORS["yawn"])
 
     # Footer.
-    footer = f"{parts.get('precision', '?')} | model {parts.get('infer_ms', 0.0):.1f} ms | {fps:.1f} fps"
+    footer = f"{parts.get('precision', '?')}"
+    eye_thr, head_thr = parts.get("thresholds", (None, None))
+    if eye_thr is not None and head_thr is not None:
+        footer += f" | closed>={eye_thr:.2f} down>={head_thr:.2f}"
+    footer += f" | model {parts.get('infer_ms', 0.0):.1f} ms | {fps:.1f} fps"
     if camera_label:
         footer += f" | cam {camera_label}"
     cv2.putText(frame_bgr, footer, (10, h - 10), _FONT, 0.45, (200, 200, 200), 1)

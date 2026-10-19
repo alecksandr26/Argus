@@ -164,3 +164,15 @@ def test_one_missed_frame_at_5fps_float_timestamps():
         tm.update(ms / 1000, True)
     tm.update(1600 / 1000, False)
     assert tm.update(1800 / 1000, True) == pytest.approx(0.8)
+
+
+def test_head_timer_survives_alternating_misses():
+    """head_down is caught on ~half the frames: two missed frames in a row (0.6 s) must not reset
+    the head timer the way they would the eye timer."""
+    e = PartsRuleEngine(RuleConfig())
+    down = FrameSignals(face=True, eyes_visible=True, head_down=True)
+    t, st = 0.0, None
+    for k in range(20):                                # 4 s: down, miss, miss, down, ...
+        st = e.update(t, down if k % 3 == 0 else OPEN)
+        t += DT
+    assert st.timers["head_down"] >= 3.0 and st.severity == "medium" and st.reason == "head_down"

@@ -15,7 +15,8 @@ overridable by an env var of the same name.
 
 **Timers** measure *continuous* duration from frame timestamps. A gap of no more than
 `RULE_GRACE_S` (2 frames at 5 fps) doesn't reset a running timer; the duration just stops
-growing during the gap. So one flickered frame never restarts the count.
+growing during the gap. So one flickered frame never restarts the count. The head timer uses the
+longer `RULE_HEAD_GRACE_S` (1 s), because `head_down` is missed on many frames.
 
 **Severity rules.** The current severity is the most severe rule that fires:
 
@@ -85,6 +86,7 @@ class RuleConfig:
     yawn_window: float = field(default_factory=lambda: _cfg("RULE_YAWN_WINDOW_S"))
     no_face: float = field(default_factory=lambda: _cfg("RULE_NO_FACE_S"))
     grace: float = field(default_factory=lambda: _cfg("RULE_GRACE_S"))
+    head_grace: float = field(default_factory=lambda: _cfg("RULE_HEAD_GRACE_S"))
     recovery: float = field(default_factory=lambda: _cfg("RULE_RECOVERY_S"))
 
     def eye_ladder(self, after_yawn: bool) -> tuple[float, float, float]:
@@ -169,7 +171,7 @@ class PartsRuleEngine:
         self.cfg = config or RuleConfig()
         g = self.cfg.grace
         self._eyes = ContinuousTimer(g)
-        self._head = ContinuousTimer(g)
+        self._head = ContinuousTimer(self.cfg.head_grace)
         self._mouth = ContinuousTimer(g)
         self._noface = ContinuousTimer(g)
         self._yawn_counted = False

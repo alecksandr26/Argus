@@ -78,6 +78,7 @@ from cv_argus.pipeline import (
     FaceLandmarkerCropStage,
     FusedInferenceStage,
     LoggingOutputStage,
+    MetricsLogOutputStage,
     MjpegStreamOutputStage,
     OutputStage,
     PartsInferenceStage,
@@ -141,6 +142,7 @@ def _camera_label() -> str:
 
 _OUTPUT_BUILDERS = {
     "logging": lambda: LoggingOutputStage(),
+    "metrics": lambda: MetricsLogOutputStage(),
     "mjpeg": lambda: MjpegStreamOutputStage(
         host=os.environ.get("DEMO_STREAM_HOST", "0.0.0.0"),
         port=int(os.environ.get("DEMO_STREAM_PORT", "8080")),

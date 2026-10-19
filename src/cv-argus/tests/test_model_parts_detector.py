@@ -77,3 +77,36 @@ def test_tflite_backend_matches_its_model(tmp_path):
     path.write_bytes(tf.lite.TFLiteConverter.from_saved_model(str(tmp_path / "sm")).convert())
     out = pd_._TFLiteBackend(path, threads=1)(np.zeros((1, 160, 160, 1), np.float32))
     assert out.shape == (20, 20, 10)
+
+
+def _pair_cell(cls_a, cls_b, p_a, p_b):
+    raw = ideal_grid([[0.3, 0.3, 0.4, 0.4]], [cls_a])
+    raw[7, 7, 5 + cls_a], raw[7, 7, 5 + cls_b] = _logit(p_a), _logit(p_b)
+    return raw
+
+
+@pytest.mark.parametrize("thr,expected", [(0.5, pd_.OPEN_EYE), (0.40, pd_.CLOSED_EYE)])
+def test_closed_eye_threshold_moves_the_open_closed_decision(thr, expected):
+    raw = _pair_cell(pd_.OPEN_EYE, pd_.CLOSED_EYE, 0.55, 0.45)   # ratio 0.45: argmax says open
+    assert pd_.decode_grid(raw, closed_eye_thr=thr).classes.tolist() == [expected]
+
+
+@pytest.mark.parametrize("thr,expected", [(0.5, pd_.HEAD_STRAIGHT), (0.30, pd_.HEAD_DOWN)])
+def test_head_down_threshold_moves_the_straight_down_decision(thr, expected):
+    raw = _pair_cell(pd_.HEAD_STRAIGHT, pd_.HEAD_DOWN, 0.65, 0.35)
+    assert pd_.decode_grid(raw, head_down_thr=thr).classes.tolist() == [expected]
+
+
+def test_pair_thresholds_leave_other_classes_alone():
+    raw = ideal_grid([[0.4, 0.6, 0.6, 0.8]], [pd_.YAWN])
+    assert pd_.decode_grid(raw, closed_eye_thr=0.0, head_down_thr=0.0).classes.tolist() == [pd_.YAWN]
+
+
+def test_detector_thresholds_default_from_constants_and_env(monkeypatch):
+    det = pd_.PartsDetector(lambda x: None, precision="int8")
+    assert det.closed_eye_threshold == pd_.constants.PARTS_CLOSED_EYE_THRESHOLD
+    assert det.head_down_threshold == pd_.constants.PARTS_HEAD_DOWN_THRESHOLD
+    monkeypatch.setenv("PARTS_HEAD_DOWN_THRESHOLD", "0.2")
+    monkeypatch.setenv("PARTS_CLOSED_EYE_THRESHOLD", "")
+    assert pd_.env_float("PARTS_HEAD_DOWN_THRESHOLD") == 0.2
+    assert pd_.env_float("PARTS_CLOSED_EYE_THRESHOLD") == pd_.constants.PARTS_CLOSED_EYE_THRESHOLD

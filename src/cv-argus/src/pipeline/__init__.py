@@ -40,7 +40,7 @@ only actually touching a stage class that needs one of those libraries pulls it 
 import importlib
 
 from .downloader import download_face_detector_bundle, download_face_landmarker_bundle
-from .output_stages import LoggingOutputStage
+from .output_stages import LoggingOutputStage, MetricsLogOutputStage
 from .stage import FrameContext, OutputStage, Pipeline, SourceStage, Stage
 
 __all__ = [
@@ -56,6 +56,7 @@ __all__ = [
     "FusedInferenceStage",
     "PartsInferenceStage",
     "LoggingOutputStage",
+    "MetricsLogOutputStage",
     "MjpegStreamOutputStage",
     "download_face_landmarker_bundle",
     "download_face_detector_bundle",

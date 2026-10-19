@@ -9,6 +9,8 @@ silent train/inference skew, not something that would show up as an exception.
 
 import logging
 
+import time
+
 import cv2
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
@@ -60,6 +62,13 @@ class FaceDetectorCropStage(Stage):
         self._bbox_margin_frac = bbox_margin_frac
 
     def process_item(self, ctx: FrameContext) -> FrameContext:
+        t0 = time.perf_counter()
+        ctx = self._detect(ctx)
+        # Per-frame timings for the metrics log (`MetricsLogOutputStage`), in milliseconds.
+        ctx.features.setdefault("timing_ms", {})["face"] = 1000.0 * (time.perf_counter() - t0)
+        return ctx
+
+    def _detect(self, ctx: FrameContext) -> FrameContext:
         frame_bgr = ctx.frame_bgr
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)

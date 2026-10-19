@@ -12,6 +12,14 @@ numbers per cell: `[objectness, tx, ty, tw, th, 5 class logits]`, decoded YOLOv5
 head cells (`grid_postprocess` / `nms_per_class`). Changing them here without changing the
 notebook makes the deployed model behave differently from how it was scored.
 
+**Pair decision thresholds** are the one deliberate addition. The notebook takes the plain argmax
+class. Here, a cell whose argmax is an eye class is called `closed_eye` when
+p_closed / (p_open + p_closed) ≥ `PARTS_CLOSED_EYE_THRESHOLD`, and a head cell is called
+`head_down` when p_down / (p_straight + p_down) ≥ `PARTS_HEAD_DOWN_THRESHOLD`. At 0.5 both equal
+the argmax (the `decode_grid` defaults). Lower values are more sensitive. Only the class within a
+pair changes; the score and the box don't, so `PARTS_CONF_THRESHOLD` still decides whether a part
+is detected at all.
+
 **Two interchangeable backends** (`PARTS_PRECISION`), since int8 may cost some accuracy:
 - `int8` (default): the full-integer `.tflite`, through `tf.lite.Interpreter` with **1 thread**.
   That was measured fastest: a model this small doesn't split across cores (1.35 ms on 1 thread
@@ -82,12 +90,31 @@ def nms_per_class(boxes, scores, classes, iou_thr=0.5, max_det=30):
     return boxes[keep], scores[keep], classes[keep]
 
 
+def env_float(name: str) -> float:
+    raw = os.environ.get(name)
+    try:
+        return float(raw) if raw not in (None, "") else float(getattr(constants, name))
+    except ValueError:
+        return float(getattr(constants, name))
+
+
 def _sig(x):
     return 1.0 / (1.0 + np.exp(-x))
 
 
+def apply_pair_thresholds(cls: np.ndarray, cls_p: np.ndarray, closed_eye_thr: float,
+                          head_down_thr: float) -> np.ndarray:
+    """Re-decide open/closed and straight/down by a threshold on the pair's probability ratio
+    (0.5 = argmax). Cells whose argmax is outside a pair are left alone."""
+    for a, b, thr in ((OPEN_EYE, CLOSED_EYE, closed_eye_thr), (HEAD_STRAIGHT, HEAD_DOWN, head_down_thr)):
+        ratio = cls_p[..., b] / (cls_p[..., a] + cls_p[..., b] + 1e-9)
+        cls = np.where((cls == a) | (cls == b), np.where(ratio >= thr, b, a), cls)
+    return cls
+
+
 def decode_grid(raw: np.ndarray, conf_floor: float = constants.PARTS_CONF_THRESHOLD,
-                iou_thr: float = constants.PARTS_NMS_IOU, pre_nms: int = 200) -> PartDetections:
+                iou_thr: float = constants.PARTS_NMS_IOU, pre_nms: int = 200,
+                closed_eye_thr: float = 0.5, head_down_thr: float = 0.5) -> PartDetections:
     """One image's raw grid (G, G, 5 + C) → detections after NMS (crop-normalised xyxy)."""
     g = raw.shape[0]
     j, i = np.meshgrid(np.arange(g), np.arange(g))
@@ -95,7 +122,7 @@ def decode_grid(raw: np.ndarray, conf_floor: float = constants.PARTS_CONF_THRESH
     cy = (i + 2 * _sig(raw[..., 2]) - 0.5) / g
     w, h = _sig(raw[..., 3]), _sig(raw[..., 4])
     cls_p = _sig(raw[..., 5:])
-    cls = cls_p.argmax(-1)
+    cls = apply_pair_thresholds(cls_p.argmax(-1), cls_p, closed_eye_thr, head_down_thr)
     score = _sig(raw[..., 0]) * cls_p.max(-1)
     m = score > conf_floor
     order = np.argsort(-score[m])[:pre_nms]
@@ -137,10 +164,14 @@ class PartsDetector:
     """`detect(x) -> PartDetections` on a model-ready crop. `backend` is any callable mapping
     (1, 160, 160, 1) float32 → (20, 20, 10); tests inject a stub."""
 
-    def __init__(self, backend, precision: str, conf_threshold: float = constants.PARTS_CONF_THRESHOLD):
+    def __init__(self, backend, precision: str, conf_threshold: float = constants.PARTS_CONF_THRESHOLD,
+                 closed_eye_threshold: float = constants.PARTS_CLOSED_EYE_THRESHOLD,
+                 head_down_threshold: float = constants.PARTS_HEAD_DOWN_THRESHOLD):
         self._backend = backend
         self.precision = precision
         self._conf = conf_threshold
+        self.closed_eye_threshold = closed_eye_threshold
+        self.head_down_threshold = head_down_threshold
         self.last_phase_seconds: dict[str, float] = {}
 
     @classmethod
@@ -153,13 +184,16 @@ class PartsDetector:
             backend = _KerasBackend(download_parts_float_model())
         else:
             raise SystemExit(f"Unknown PARTS_PRECISION={precision!r} -- expected 'int8' or 'float'")
-        logger.info("parts detector loaded (%s)", precision)
-        return cls(backend, precision)
+        eye_thr, head_thr = env_float("PARTS_CLOSED_EYE_THRESHOLD"), env_float("PARTS_HEAD_DOWN_THRESHOLD")
+        logger.info("parts detector loaded (%s, closed_eye >= %.2f, head_down >= %.2f)",
+                    precision, eye_thr, head_thr)
+        return cls(backend, precision, closed_eye_threshold=eye_thr, head_down_threshold=head_thr)
 
     def detect(self, x: np.ndarray) -> PartDetections:
         t0 = time.perf_counter()
         raw = self._backend(x)
         t1 = time.perf_counter()
-        dets = decode_grid(raw, self._conf)
+        dets = decode_grid(raw, self._conf, closed_eye_thr=self.closed_eye_threshold,
+                           head_down_thr=self.head_down_threshold)
         self.last_phase_seconds = {"infer": t1 - t0, "decode": time.perf_counter() - t1}
         return dets

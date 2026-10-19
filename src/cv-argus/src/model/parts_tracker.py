@@ -12,6 +12,10 @@ that:
 - **Smoothed state.** A track's state is the majority over its last `PARTS_TRACK_VOTE_FRAMES`
   observed classes (ties go to the most recent one), so one `open` frame inside a closure
   doesn't count.
+- **Head down leans sensitive.** `head_down` is the detector's weakest class (caught on only
+  about half the frames), but a straight head is almost never misread as down. So a head track
+  is `head_down` once `PARTS_HEAD_DOWN_VOTES` of its recent frames were (default 1), not by
+  majority.
 
 Part kinds: eye (`open_eye` / `closed_eye`), mouth (`yawn`), head (`head_straight` /
 `head_down`). Only the detector's classes exist, so a mouth track only appears while yawning.
@@ -27,7 +31,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .. import constants
-from .parts_detector import CLASSES, CLOSED_EYE, HEAD_DOWN, HEAD_STRAIGHT, OPEN_EYE, YAWN, iou_xyxy
+from .parts_detector import (CLASSES, CLOSED_EYE, HEAD_DOWN, HEAD_STRAIGHT, OPEN_EYE, YAWN, env_float,
+                             iou_xyxy)
 
 KIND_OF = {OPEN_EYE: "eye", CLOSED_EYE: "eye", YAWN: "mouth", HEAD_STRAIGHT: "head", HEAD_DOWN: "head"}
 _PREFIX = {"eye": "E", "mouth": "M", "head": "H"}
@@ -41,11 +46,15 @@ class Track:
     score: float
     history: deque = field(default_factory=lambda: deque(maxlen=constants.PARTS_TRACK_VOTE_FRAMES))
     misses: int = 0
+    head_down_votes: int = constants.PARTS_HEAD_DOWN_VOTES
 
     @property
     def state(self) -> int:
-        """Smoothed class id: majority of the recent history, ties broken by recency."""
+        """Smoothed class id: majority of the recent history, ties broken by recency (a head is
+        down once `head_down_votes` recent frames were)."""
         counts = Counter(self.history)
+        if self.kind == "head" and counts[HEAD_DOWN] >= self.head_down_votes:
+            return HEAD_DOWN
         best = max(counts.values())
         for cls in reversed(self.history):
             if counts[cls] == best:
@@ -63,9 +72,12 @@ class Track:
 
 class PartsTracker:
     def __init__(self, iou_threshold: float = constants.PARTS_TRACK_IOU,
-                 max_misses: int = constants.PARTS_TRACK_MAX_MISSES):
+                 max_misses: int = constants.PARTS_TRACK_MAX_MISSES,
+                 head_down_votes: int | None = None):
         self._iou = iou_threshold
         self._max_misses = max_misses
+        self._head_down_votes = int(env_float("PARTS_HEAD_DOWN_VOTES") if head_down_votes is None
+                                    else head_down_votes)
         self._tracks: list[Track] = []
         self._next = Counter()
 
@@ -101,7 +113,8 @@ class PartsTracker:
         for k in sorted(unmatched, key=lambda k: -float(scores[k])):
             kind = KIND_OF[int(classes[k])]
             self._next[kind] += 1
-            t = Track(f"{_PREFIX[kind]}{self._next[kind]}", kind, boxes[k], float(scores[k]))
+            t = Track(f"{_PREFIX[kind]}{self._next[kind]}", kind, boxes[k], float(scores[k]),
+                      head_down_votes=self._head_down_votes)
             t.history.append(int(classes[k]))
             self._tracks.append(t)
         self._tracks = [t for t in self._tracks if t.misses <= self._max_misses]
