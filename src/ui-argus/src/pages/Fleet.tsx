@@ -4,6 +4,7 @@ import SearchBox from '../components/SearchBox'
 import RecordTable, { type Column } from '../components/RecordTable'
 import StatusPill from '../components/StatusPill'
 import Icon from '../components/Icon'
+import DeviceCredentials from '../components/DeviceCredentials'
 import { useAuth } from '../context/AuthContext'
 import { createTruck, listTrucks, updateTruck } from '../api/trucks'
 import { ApiError } from '../api/client'
@@ -15,7 +16,8 @@ import type { Truck, TruckStatus } from '../types'
  * "Administration — Fleet". CRUD over the `Truck` entity against the real
  * `GET/POST/PUT /api/trucks`. Write access (add/edit) is `root_admin`/`admin` only — a
  * `guardian` still sees this screen (INTEGRATION.md), just in a read-only view: the panel
- * opens for browsing but its inputs are disabled and there's no Save button.
+ * opens for browsing but its inputs are disabled and there's no Save button. An existing truck's
+ * panel also carries `DeviceCredentials` — issuing the edge-device key its Raspberry Pi needs.
  */
 
 const STATUS_OPTIONS: TruckStatus[] = [
@@ -114,6 +116,10 @@ export default function Fleet() {
     setMode('create')
   }
 
+  function replaceTruck(updated: Truck) {
+    setList((prev) => prev.map((t) => (t.id_truck === updated.id_truck ? updated : t)))
+  }
+
   function closePanel() {
     setDraft(null)
     setMode(null)
@@ -164,19 +170,34 @@ export default function Fleet() {
     },
     {
       header: 'Devices',
-      cell: (t) =>
-        t.raspberry_pi_mac ? (
+      cell: (t) => (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {t.raspberry_pi_mac ? (
+            <span
+              className="mono"
+              style={{ fontSize: 11, color: 'var(--text-soft)' }}
+            >
+              RPi {t.raspberry_pi_mac.slice(0, 8)} · {t.esp32_id}
+            </span>
+          ) : (
+            <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>
+              Not linked
+            </span>
+          )}
           <span
-            className="mono"
-            style={{ fontSize: 11, color: 'var(--text-soft)' }}
+            style={{
+              fontSize: 10.5,
+              color: t.has_device_key ? 'var(--text-soft)' : 'var(--text-faint)',
+            }}
           >
-            RPi {t.raspberry_pi_mac.slice(0, 8)} · {t.esp32_id}
+            {!t.has_device_key
+              ? 'No key'
+              : t.device_last_seen_at
+                ? `Key · seen ${relativeTime(t.device_last_seen_at)}`
+                : 'Key · not seen yet'}
           </span>
-        ) : (
-          <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>
-            Not linked
-          </span>
-        ),
+        </div>
+      ),
     },
     {
       header: 'Status',
@@ -252,6 +273,9 @@ export default function Fleet() {
           draft={draft}
           mode={mode}
           readOnly={!canWrite}
+          truck={list.find((t) => t.id_truck === draft.id_truck) ?? null}
+          token={token}
+          onTruckChange={replaceTruck}
           saving={saving}
           onChange={setDraft}
           onCancel={closePanel}
@@ -266,6 +290,9 @@ function EditPanel({
   draft,
   mode,
   readOnly,
+  truck,
+  token,
+  onTruckChange,
   saving,
   onChange,
   onCancel,
@@ -274,6 +301,10 @@ function EditPanel({
   draft: Draft
   mode: 'edit' | 'create' | null
   readOnly: boolean
+  /** The saved truck behind this panel — null while creating one. */
+  truck: Truck | null
+  token: string
+  onTruckChange: (t: Truck) => void
   saving: boolean
   onChange: (d: Draft) => void
   onCancel: () => void
@@ -400,6 +431,16 @@ function EditPanel({
           onChange={(e) => set({ esp32_id: e.target.value })}
         />
       </label>
+
+      {mode === 'edit' && truck && (
+        <DeviceCredentials
+          key={truck.id_truck}
+          truck={truck}
+          token={token}
+          canWrite={!readOnly}
+          onTruckChange={onTruckChange}
+        />
+      )}
 
       <label className="field">
         <span className="field__label">Operative status</span>

@@ -67,6 +67,11 @@ export interface Truck {
   raspberry_pi_mac: string | null
   esp32_id: string | null
   operative_status: TruckStatus
+  /** Whether an edge-device key is currently issued (the key itself is never returned). */
+  has_device_key: boolean
+  device_key_issued_at: string | null
+  /** Last time a request authenticated with this truck's device key (throttled to ~1 min). */
+  device_last_seen_at: string | null
   created_at: string
   updated_at: string
 }
