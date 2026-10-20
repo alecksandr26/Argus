@@ -44,8 +44,8 @@ def test_map_box_to_crop(env):
 
 
 @pytest.mark.parametrize("pitch,yaw,expected", [
-    (0, 0, "head_straight"), (9, 20, "head_straight"), (25, 0, "head_down"),
-    (15, 0, None), (0, 40, None), (-25, 0, None),
+    (0, 0, "head_straight"), (9, 20, "head_straight"), (15, 0, "head_straight"), (25, 0, "head_down"),
+    (19, 0, None), (0, 24, None), (0, 40, None), (-25, 0, None),
 ])
 def test_head_class(env, pitch, yaw, expected):
     assert env[2].head_class(pitch, yaw) == expected
@@ -55,9 +55,33 @@ def _mp(face=True, pose=True, ear_a=0.35, ear_b=0.35, **kw):
     row = {"face_found": "1" if face else "0", "landmarks_found": "1" if pose else "0",
            "fx": "20", "fy": "20", "fw": "60", "fh": "60", "pitch": "0", "yaw": "0", "roll": "0",
            "a_x0": "0.30", "a_y0": "0.38", "a_x1": "0.42", "a_y1": "0.42", "a_ear": str(ear_a),
-           "b_x0": "0.58", "b_y0": "0.38", "b_x1": "0.70", "b_y1": "0.42", "b_ear": str(ear_b)}
+           "b_x0": "0.58", "b_y0": "0.38", "b_x1": "0.70", "b_y1": "0.42", "b_ear": str(ear_b),
+           "m_x0": "0.40", "m_y0": "0.62", "m_x1": "0.60", "m_y1": "0.72", "jaw_open": "0.05"}
     row.update(kw)
     return row
+
+
+def test_to_std_crop(env):
+    dd = env[2]
+    std, wide = dd.square_face_box(20, 20, 60, 60), dd.square_face_box(20, 20, 60, 60, margin=0.75)
+    pts = np.array([[0.5, 0.5], [0.0, 0.0]])
+    out = dd.to_std_crop(pts, wide, std)
+    assert out[0] == pytest.approx([0.5, 0.5])                          # face centre stays put
+    assert out[1] == pytest.approx([(wide[0] - std[0]) / std[2]] * 2)   # wide corner lands outside
+
+
+def test_pseudo_yawn_box(env, monkeypatch):
+    dd = env[2]
+    monkeypatch.setattr(dd.config, "DET_PSEUDO_YAWN_JAW_CLOSED", 0.2)
+    monkeypatch.setattr(dd.config, "DET_PSEUDO_YAWN_JAW_OPEN", 0.5)
+    assert dd.pseudo_yawn_box(_mp(jaw_open="0.1"), [], strict=True) == (None, False)   # closed mouth
+    assert dd.pseudo_yawn_box(_mp(jaw_open="0.3"), [], strict=True) == (None, True)    # unclear: reject
+    assert dd.pseudo_yawn_box(_mp(jaw_open="0.3"), [], strict=False) == (None, False)  # source labels yawns
+    for strict in (True, False):
+        box, amb = dd.pseudo_yawn_box(_mp(jaw_open="0.8"), [], strict=strict)
+        assert not amb and box[:2] == pytest.approx((0.5, 0.67))
+    assert dd.pseudo_yawn_box(_mp(jaw_open="0.8"), [("yawn", (0.5, 0.7, 0.2, 0.2))], strict=True) == (None, False)
+    assert dd.pseudo_yawn_box(_mp(jaw_open=""), [], strict=True) == (None, False)     # old cache row
 
 
 def test_pseudo_eye_boxes(env):
@@ -136,7 +160,11 @@ def test_build_and_zip(env):
     external.upsert_source("mrl_eye", {"kind": "mrl_eye", "location": "raw/mrl_eye/mrlEyes_2018_01",
                                        "licence": "unverified", "classes": {"closed": 3, "open": 3}})
     cache = {str(p): {**_mp(), "src_image": str(p)} for p in sorted(root.glob("*/images/*"))}
+    stale = paths.processed_dir() / "parts_det/gray/test/images/gone.jpg"   # from an "earlier build"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"x")
     summary = dd.build(cache)
+    assert not stale.exists()
     assert summary["images_ok"] == 12 + 6 and summary["groups_crossing_splits"] == 0
 
     import pandas as pd
@@ -197,6 +225,77 @@ def test_headpose_fallback_without_face(env, monkeypatch):
     # "neither" pose (None): no head box; with landmarks the eyes still carry the image
     q = dd.plan_roboflow_image(root / "train/images/l_jpg.rf.2.jpg", e, _mp(), 100, 100)
     assert q["status"] == "ok" and q["head_class"] == "" and q["head_source"] == "human"
+
+
+def test_headpose_mouths_from_jaw_open(env, monkeypatch):
+    dd = env[2]
+    root, e = _headpose(env, monkeypatch, [("train", "y_jpg.rf.1", "1 0.5 0.5 0.7 0.7\n")])
+    img = root / "train/images/y_jpg.rf.1.jpg"
+    p = dd.plan_roboflow_image(img, e, _mp(jaw_open="0.9"), 100, 100)
+    assert p["status"] == "ok" and p["pseudo_yawn"] == 1 and p["n_yawn_boxes"] == 1
+    mid = (dd.config.DET_PSEUDO_YAWN_JAW_CLOSED + dd.config.DET_PSEUDO_YAWN_JAW_OPEN) / 2
+    assert dd.plan_roboflow_image(img, e, _mp(jaw_open=str(mid)), 100, 100)["reason"] == "ambiguous_unlabelled_mouth"
+    # a source that labels its own yawns: clear unboxed yawns are still added, unclear ones kept
+    monkeypatch.setitem(dd.config.ROBOFLOW_CLASS_MAP, HP, {"Left": "yawn"})
+    assert dd.plan_roboflow_image(img, e, _mp(jaw_open="0.9"), 100, 100)["pseudo_yawn"] == 1
+    q = dd.plan_roboflow_image(img, e, _mp(jaw_open=str(mid)), 100, 100)
+    assert q["status"] == "ok" and q["pseudo_yawn"] == 0
+
+
+def test_human_mouth_labels_beat_jaw_open(env, monkeypatch):
+    dd = env[2]
+    root, e = _headpose(env, monkeypatch, [("train", "m_jpg.rf.1", "1 0.5 0.5 0.7 0.7\n2 0.5 0.7 0.1 0.1\n")])
+    img = root / "train/images/m_jpg.rf.1.jpg"     # labels: Forward (head) + Left (as the mouth label)
+    monkeypatch.setitem(dd.config.ROBOFLOW_MOUTH_LABELS, HP, {"Left": "closed"})
+    assert dd.plan_roboflow_image(img, e, _mp(jaw_open="0.95"), 100, 100)["pseudo_yawn"] == 0
+    monkeypatch.setitem(dd.config.ROBOFLOW_MOUTH_LABELS, HP, {"Left": "yawn"})
+    p = dd.plan_roboflow_image(img, e, _mp(jaw_open="0.0"), 100, 100)   # mesh closed a wide yawn
+    assert p["status"] == "ok" and p["pseudo_yawn"] == 1
+    assert dd.plan_roboflow_image(img, e, _mp(face=False), 100, 100)["reason"] == "ambiguous_unlabelled_mouth"
+    monkeypatch.setitem(dd.config.ROBOFLOW_MOUTH_LABELS, HP, {"Left": "open"})
+    assert dd.plan_roboflow_image(img, e, _mp(jaw_open="0.6"), 100, 100)["reason"] == "ambiguous_unlabelled_mouth"
+    monkeypatch.setitem(dd.config.ROBOFLOW_MOUTH_LABELS, HP, {"Down": "yawn", "": "closed"})
+    assert dd.plan_roboflow_image(img, e, _mp(jaw_open="0.95"), 100, 100)["pseudo_yawn"] == 0   # default
+
+
+def test_no_pseudo_eyes_on_turned_faces(env, monkeypatch):
+    dd = env[2]
+    root, e = _headpose(env, monkeypatch, [("train", "t_jpg.rf.1", "2 0.5 0.5 0.7 0.7\n")])
+    p = dd.plan_roboflow_image(root / "train/images/t_jpg.rf.1.jpg", e, _mp(yaw="55"), 100, 100)
+    assert p["pseudo_eyes"] == 0 and p["reason"] == "no_part_boxes"     # turned, no head box, no eyes
+
+
+def test_unclear_eye_kept_only_on_head_down(env, monkeypatch):
+    dd = env[2]
+    root, e = _headpose(env, monkeypatch, [("train", "d_jpg.rf.1", "0 0.5 0.5 0.7 0.7\n"),
+                                           ("train", "f_jpg.rf.2", "1 0.5 0.5 0.7 0.7\n")])
+    unclear = _mp(ear_a="0.2")                      # between DET_PSEUDO_EAR_CLOSED and _OPEN
+    p = dd.plan_roboflow_image(root / "train/images/d_jpg.rf.1.jpg", e, unclear, 100, 100)
+    assert p["status"] == "ok" and p["head_class"] == "head_down" and p["n_eye_boxes"] == 1
+    q = dd.plan_roboflow_image(root / "train/images/f_jpg.rf.2.jpg", e, unclear, 100, 100)
+    assert q["reason"] == "ambiguous_unlabelled_eye"                    # straight head: rejected
+
+
+def test_tiny_human_head_label_is_ignored(env, monkeypatch):
+    dd = env[2]
+    root, e = _headpose(env, monkeypatch, [("train", "t_jpg.rf.1", "0 0.38 0.40 0.06 0.04\n")])
+    p = dd.plan_roboflow_image(root / "train/images/t_jpg.rf.1.jpg", e, _mp(), 100, 100)
+    assert p["head_class"] == "head_straight" and p["head_source"] == "landmarks"   # not "Down"
+
+
+def test_landmark_only_source(env, monkeypatch):
+    paths, external, dd = env
+    root, e = _export(paths, external, "some-faces", [("train", "f_jpg.rf.1", "3 0.5 0.5 0.9 0.9\n")])
+    monkeypatch.setattr(dd.config, "ROBOFLOW_LANDMARK_ONLY_PROJECTS", ("some-faces",))
+    img = root / "train/images/f_jpg.rf.1.jpg"
+    p = dd.plan_roboflow_image(img, e, _mp(pitch="30", ear_a="0.1", ear_b="0.1", jaw_open="0.9"), 100, 100)
+    assert p["status"] == "ok" and p["head_class"] == "head_down" and p["head_source"] == "landmarks"
+    assert sorted(c for c, _ in p["boxes"]) == ["closed_eye", "closed_eye", "head_down", "yawn"]
+    assert p["raw_labels"] == "yawn"                                  # recorded, never used
+    assert dd.plan_roboflow_image(img, e, _mp(pose=False), 100, 100)["reason"] == "no_landmarks"
+    from collections import Counter
+    from argus_dataset import parts_dataset
+    assert parts_dataset.roboflow_rows(external.load_manifest(), None, Counter(), Counter()) == []
 
 
 def test_check_head_maps(env, monkeypatch):

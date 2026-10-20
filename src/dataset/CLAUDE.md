@@ -216,40 +216,98 @@ The rules below each came from looking at real data:
   not squared, so a future edge pipeline for these detectors must reproduce `square_face_box` +
   `crop_square`.
 - **Pitch sign: positive means head down.** This was checked on contact sheets: yawning heads
-  thrown back read about −30°. `head_down` is genuinely rare in this data (about 190 boxes); it's
-  a data limit, not a bug. Head pose for the pipeline should still come from landmarks.
-- **Human head-pose labels beat pitch** (added 2026-10-19 for `vidyashree/headpose-w4zuc`, to
-  get more and better `head_down`). `ROBOFLOW_HEAD_CLASS_MAP` maps a source's head labels to
-  `head_straight` / `head_down` / `None` ("neither": no head box). Every class must be mapped:
+  thrown back read about −30°. `head_down` was genuinely rare in the original sources (about 190
+  boxes); the head-pose sources below are what lifted it. Head pose for the pipeline should still
+  come from landmarks.
+- **Head thresholds (v4, 2026-10-19):** straight = |pitch| ≤ 18° and |yaw| ≤ 22°, down = pitch ≥
+  20°, otherwise no head box. Calibrated against headpose-w4zuc's human labels (pitch/yaw from
+  these same landmarks):
+
+  | label | pitch median | pitch 5–95% | |yaw| median |
+  |---|---|---|---|
+  | `Head_forward` | 7.6° | −6.9° … 19.6° | 5.9° |
+  | `Head_down` | 34.9° | 25.2° … 42.0° | 17.2° |
+  | `Head_left` / `Head_right` | — | — | 31–32° |
+
+  A 20° down cut keeps 0.99 of down and 0.96 of forward. The old straight limit of 10° left 35% of
+  human-forward heads (2,140 faces in the 10–20° band) with no head box. |yaw| 22° keeps 0.997 of
+  forward heads and excludes 0.82 of turned ones (25° only excluded 0.73).
+- **Human head-pose labels beat pitch** (added 2026-10-19). `ROBOFLOW_HEAD_CLASS_MAP` maps a
+  source's head labels to `head_straight` / `head_down` / `None` ("neither": no head box). Every
+  class of a head-pose project must be mapped, as a head label (`ROBOFLOW_HEAD_CLASS_MAP`) or a
+  part (`ROBOFLOW_CLASS_MAP`, `None` = ignore it, so the landmarks decide that image's head):
   `check_head_maps` hard-errors with a name-based suggestion, and `--label-sheet` draws the raw
   labels so they can be checked first. The head box stays the **BlazeFace face box** (the same
   scope as every pitch-labelled head); only when BlazeFace misses (`head_source = human_box`) is
-  the human head box used, with the crop built around it. `ROBOFLOW_HEADPOSE_PROJECTS` are
-  head-only. `parts_dataset` skips them, their eyes are pseudo-labelled, and
-  `DET_HEADPOSE_ALLOW_INCOMPLETE_EYES` keeps head-only images. The trade-off: rejecting them
-  would drop exactly the hard head-down cases, and keeping them means a visible but unlabelled
-  eye or yawn is learned as background. `lm_head_class` records what pitch said, so
+  the human head box used, with the crop built around it (margin `DET_HEAD_BOX_MARGIN_FRAC`, or
+  per project `DET_HEAD_BOX_MARGIN_BY_PROJECT`: xsriz's boxes are face-sized). A human head box
+  smaller than half the face (`DET_HUMAN_HEAD_MIN_REL`) is ignored: facial-movements has some
+  `head_down` boxes drawn on an eye. `ROBOFLOW_HEADPOSE_PROJECTS`: `parts_dataset` skips them,
+  their unlabelled eyes and mouths are pseudo-labelled, and `DET_HEADPOSE_ALLOW_INCOMPLETE_EYES`
+  keeps head-only images; on a `head_down` head it also keeps an image whose unlabelled eye is
+  unclear (downcast lids read between open and closed), leaving that eye unboxed. The trade-off:
+  rejecting them would drop exactly the hard head-down cases, and keeping them means a visible but
+  unlabelled eye is learned as background. `lm_head_class` records what pitch said, so
   `summarize()`'s `head_human_vs_landmarks` is the calibration check on `HEAD_*_DEG`.
-  - **First build with it (v3, 2026-10-19):**
-    - 4,065 of its 5,031 images were accepted. 838 were rejected as
-      `ambiguous_unlabelled_eye`: the source often labels one eye only.
-    - `head_down` grew from 189 to 644 boxes; 445 of the 522 `Head_down` images were kept.
-    - Every box in this export is a 4-corner polygon. `_read_yolo_labels` reads 4-corner
-      polygons as their bounding box. Longer polygons (jhmld's real segmentations) are still
-      skipped, so the older sources' output is unchanged.
-    - Its eye labels map through `ROBOFLOW_CLASS_MAP`: `Eye_forward`/`left`/`right` (gaze
-      direction) become `open_eye`, and `Eye_close` becomes `closed_eye`. Many `Eye_close`
-      boxes are downcast lids on lowered heads rather than fully shut eyes, which is a judgement
-      call.
-  - **Pitch vs. human, measured.** Where both exist, the pitch rule agreed on 412 of 445 human
-    `head_down` images. Against human labels, it called 444 turned/up heads (human: none)
-    `head_straight` and 75 `head_down`. So pitch-labelled `head_straight` in the older sources
-    likely includes turned heads; `HEAD_STRAIGHT_YAW_DEG` is the knob to tighten.
+  - **Sources:**
+    - `vidyashree/headpose-w4zuc` (v3): head boxes in 5 positions + per-eye boxes, every box a
+      4-corner polygon (`_read_yolo_labels` reads 4-corner polygons as their bounding box; longer
+      polygons, jhmld's segmentations, are still skipped). `Eye_forward`/`left`/`right` (gaze)
+      map to `open_eye`, `Eye_close` to `closed_eye`; many `Eye_close` boxes are downcast lids on
+      lowered heads, a judgement call.
+    - `karthik-madhvan/drowsiness-detection-xsriz` (v1, Public Domain): a truck cabin seen from a
+      low dashboard camera, the closest match to the Pi's view. One face box per image carrying a
+      driver state (`head_down`, `focused`, `head_up`, `seeing_left/right`, `eyes_closed`,
+      `eyes_closed_head_left/right`, `yarning`). No eye boxes: eyes come from landmarks; mouths
+      from its `yarning` state (`ROBOFLOW_MOUTH_LABELS`).
+    - `mdulo-v/facial-movements-detection` (v1, CC BY 4.0): office/car webcams; whole-head boxes
+      (`head_front/down/left/right/up`), per-eye boxes, `open_mouth`/`closed_mouth` (mouth state
+      via `ROBOFLOW_MOUTH_LABELS`), pupil and seatbelt boxes (ignored).
+  - **`ROBOFLOW_LANDMARK_ONLY_PROJECTS`** (empty so far): sources whose labels are ignored
+    entirely. Head from pitch/yaw, eyes and yawn from landmarks; no landmarks → `no_landmarks`.
+    For face photos that add head poses but carry no usable part labels.
+  - **v4 build (2026-10-19), against v3 (the zip notebook 12's first run trained on):**
+
+    | | v3 | v4 |
+    |---|---|---|
+    | `head_down` boxes (train / valid / test) | 644 (455 / 92 / 97) | 2,069 (1,437 / 333 / 299) |
+    | distinct `head_down` groups (train / valid / test) | 231 / 44 / 54 | 693 / 153 / 150 |
+    | `head_straight` boxes | 5,268 | 9,160 |
+    | face crops with no head box | 54% | 43% |
+    | accepted images | 34,488 | 41,421 |
+
+    `head_down` by source: xsriz 917, headpose-w4zuc 532, facial-movements 438, the older sources
+    182. Its test AP now carries about ±0.06 instead of ±0.10. Human vs. landmark labels where
+    both exist: human `head_down` was pitch-`head_down` 918 times, pitch-none 360, pitch-straight
+    92 (xsriz's low camera makes a lowered head look more frontal). Remaining gaps are mostly real
+    "neither" poses (turned, looking up), which correctly have no head box.
+- **FaceLandmarker retries** (`DET_LM_RETRIES`, v4). On 1,945 real-face crops of v3 the standard
+  crop gave no landmarks, mostly wide-open yawns and turned heads. Retrying wider crops (margin
+  0.25 / 0.75 / 1.25, 192–320 px) at confidence 0.2 recovers about 40% of those (1,122 accepted
+  crops in v4); `lm_attempt` records which crop worked and `to_std_crop` maps the landmarks back
+  into the standard crop. Skipped when BlazeFace's box is ≥ 60% of the image side: that is almost
+  always an eye close-up BlazeFace misread. The recovered heads are mostly straight/turned/up,
+  not down. The MediaPipe cache is versioned (`DET_MP_CACHE_VERSION`, `.cache/det_mp_v<N>/`);
+  bump it whenever `mp_one`'s output changes. The full pass takes about 2 minutes on 12 workers.
+- **Stale files.** The build reuses images across runs, and splits are cut by rank over all
+  groups, so adding a source moves some groups to another split. Until v4 nothing deleted the
+  old copies: v3 had 54 images left in their old split folder (harmless for notebooks 12/14, which
+  read `index.csv`, but Ultralytics in 13 reads folders). `build` now deletes every image and
+  label it didn't write.
 - **Unlabelled-object guard.** Detectors learn unlabelled objects as background, so:
   - images carrying ambiguous labels are rejected;
   - face images need ≥ 2 eye boxes;
-  - eyes the annotators skipped are pseudo-labelled from landmarks
-    (`DET_PSEUDO_*`, calibrated on 4,071 human eyes).
+  - eyes the annotators skipped are pseudo-labelled from landmarks (`DET_PSEUDO_*`, calibrated on
+    4,071 human eyes), except on faces turned more than 40° (`DET_PSEUDO_EYE_MAX_YAW_DEG`), where
+    the far eye is hidden and the mesh puts it on the nose or cheek;
+  - yawns nobody boxed are pseudo-labelled from the `jawOpen` blendshape (v4, every source):
+    above 0.7 a yawn box of 1.3 × 1.4 the outer-lip box. Sources without yawn labels also reject
+    0.5–0.7 as unclear. Calibrated on 7,123 face crops with 2,355 human yawn boxes plus contact
+    sheets: unboxed faces above 0.7 are real yawns the annotators skipped (mostly jhmld); 0.6–0.7
+    is talking or surprise; below 0.5 is not a yawn. Some very wide yawns read ≈ 0 because the mesh
+    closes the mouth, so a low `jawOpen` never removes a human yawn box. Human mouth labels
+    (`ROBOFLOW_MOUTH_LABELS`) beat `jawOpen`: on facial-movements, 833 `jawOpen` "yawns" were on
+    human `closed_mouth` images.
 
   An eye counts as already labelled if its landmark centre lies inside a human box; this catches
   wide both-eyes or glasses boxes.

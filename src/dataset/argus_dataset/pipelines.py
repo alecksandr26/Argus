@@ -27,7 +27,7 @@ from . import config, geometry
 
 # --- MediaPipe option/handle factories (lazy) ----------------------------------------------
 
-def _make_landmarker(model_path: str, running_mode: str):
+def _make_landmarker(model_path: str, running_mode: str, min_confidence: float = 0.5):
     import mediapipe as mp  # noqa: F401  (kept for symmetry / future use)
     from mediapipe.tasks import python as mp_python
     from mediapipe.tasks.python import vision
@@ -37,8 +37,8 @@ def _make_landmarker(model_path: str, running_mode: str):
         base_options=mp_python.BaseOptions(model_asset_path=os.path.abspath(model_path)),
         running_mode=modes[running_mode],
         num_faces=1,
-        min_face_detection_confidence=0.5,
-        min_face_presence_confidence=0.5,
+        min_face_detection_confidence=min_confidence,
+        min_face_presence_confidence=min_confidence,
         min_tracking_confidence=0.5,
         output_face_blendshapes=True,
         output_facial_transformation_matrixes=True,

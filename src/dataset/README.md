@@ -277,34 +277,50 @@ The output lands in `processed/parts_det/`:
 
 The build does the following:
 
-- **Head boxes** come from FaceLandmarker pitch. The sign was checked on real faces: positive
+- **Head boxes** come from FaceLandmarker pitch/yaw (straight: |pitch| ≤ 18° and |yaw| ≤ 22°;
+  down: pitch ≥ 20°; otherwise no head box). The sign was checked on real faces: positive
   means looking down. Where a source has **human head-pose labels**
   (`config.ROBOFLOW_HEAD_CLASS_MAP`, e.g. `headpose-w4zuc`), the human label wins over the pitch
   guess; `index.csv`'s `head_source` (`human` / `human_box` / `landmarks`) and `lm_head_class`
   record which one was used and what the pitch rule said, and the build summary prints the
   human-vs-pitch agreement.
 
-**Adding the head-pose source (`vidyashree/headpose-w4zuc`).** Its class names aren't visible
-without a key, so its map in `config.ROBOFLOW_HEAD_CLASS_MAP` ships empty and the build stops
-until it's filled in:
+**Head-pose sources** (`config.ROBOFLOW_HEADPOSE_PROJECTS`: `vidyashree/headpose-w4zuc`,
+`karthik-madhvan/drowsiness-detection-xsriz`, `mdulo-v/facial-movements-detection`) are there for
+their head labels. To add another one:
 
 ```bash
-ROBOFLOW_API_KEY=... python scripts/fetch_roboflow_parts.py --projects headpose-w4zuc
-python scripts/build_detection_dataset.py --label-sheet headpose-w4zuc   # -> processed/label_sheet_headpose-w4zuc.jpg
-# look at the sheet, then map each label to head_straight / head_down / None in config.py
-# (the build's error prints a suggested map from the names; check it against the sheet)
+ROBOFLOW_API_KEY=... python scripts/fetch_roboflow_parts.py --projects <project>
+python scripts/build_detection_dataset.py --label-sheet <project>   # -> processed/label_sheet_<project>.jpg
+# look at the sheet, then map each label in config.py:
+#   ROBOFLOW_HEAD_CLASS_MAP  head labels -> head_straight / head_down / None (turned, up)
+#   ROBOFLOW_CLASS_MAP       eye/mouth boxes -> open_eye / closed_eye / yawn, anything else -> None
+#   ROBOFLOW_MOUTH_LABELS    optional: labels that say the mouth is closed / open / a yawn
+# (the build's error prints a suggested head map from the names; check it against the sheet)
 python scripts/build_detection_dataset.py --mediapipe-only && python scripts/build_detection_dataset.py --sheet --zip
 ```
 
-Its images have only head boxes. Eyes are pseudo-labelled from landmarks. When BlazeFace misses
-a strongly turned or lowered head, the crop is made around the human head box instead
-(`head_source = human_box`, margin `DET_HEAD_BOX_MARGIN_FRAC`), and the image is kept even
-without eye boxes (`DET_HEADPOSE_ALLOW_INCOMPLETE_EYES`). Mouths in these images are unlabelled,
-so a yawn there is learned as background.
+When BlazeFace misses a strongly turned or lowered head, the crop is made around the human head
+box instead (`head_source = human_box`, margin `DET_HEAD_BOX_MARGIN_FRAC` or the per-project
+`DET_HEAD_BOX_MARGIN_BY_PROJECT`), and the image is kept even without eye boxes
+(`DET_HEADPOSE_ALLOW_INCOMPLETE_EYES`). A human head label only counts if its box is at least half
+the face's size (`DET_HUMAN_HEAD_MIN_REL`). For a dataset whose labels are no use at all (just
+faces), list it in `ROBOFLOW_LANDMARK_ONLY_PROJECTS`: every box then comes from the landmarks.
 - **Unlabelled eyes are pseudo-labelled** from landmarks (EAR < 0.15 closed, > 0.25 open,
-  otherwise the image is rejected). Without this, eyes the annotators skipped (e.g. on yawn-only
-  images) would be learned as background. Thresholds were calibrated on 4,071 human-labelled eyes.
-  These images are flagged in `index.csv` (`pseudo_eyes`).
+  otherwise the image is rejected; a head-pose source's `head_down` image is kept with that eye
+  unlabelled, since downcast lids are exactly what reads as unclear). Without this, eyes the
+  annotators skipped (e.g. on yawn-only images) would be learned as background. Thresholds were
+  calibrated on 4,071 human-labelled eyes. No pseudo eyes on faces turned more than 40°
+  (`DET_PSEUDO_EYE_MAX_YAW_DEG`): the far eye is hidden. Flagged in `index.csv` (`pseudo_eyes`).
+- **Unboxed yawns are pseudo-labelled** from the FaceLandmarker `jawOpen` blendshape (> 0.7 → a
+  yawn box 1.3 × 1.4 the lip box; calibrated on 2,355 human yawn boxes). Sources with no yawn
+  labels also reject `jawOpen` 0.5–0.7 as unclear. Human mouth labels (`ROBOFLOW_MOUTH_LABELS`)
+  beat `jawOpen`. Flagged in `index.csv` (`pseudo_yawn`).
+- **Landmark retries.** When the standard crop gives no landmarks on a real face (wide yawns,
+  turned heads), wider crops are tried at a lower confidence (`DET_LM_RETRIES`); `lm_attempt` in
+  `index.csv` says which one worked.
+- **Stale files are removed.** Each build deletes images and labels it didn't write, so an image
+  whose group moved split (ranks shift when sources are added) can't linger in its old folder.
 - **Ambiguous source labels** reject the whole image (`config.ROBOFLOW_REJECT_IMAGE_LABELS`).
 - **Splits** are by group and stratified on yawn. See `detection_dataset.py` for the grouping
   rules, which were fixed after a filename-collision chain once merged 46% of the images into
