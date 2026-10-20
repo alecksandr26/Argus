@@ -164,8 +164,32 @@ three read one dataset, `Argus/dataset/parts_det.zip`, built locally by
     - `recalibrate_bn()` after training, before evaluation and export.
 
     Don't revert either.
-- **Not done yet:** a real GPU training run (no numbers exist), Pi timing of the `.tflite`
-  files, and the temporal stage.
+- **12's first run on the head-pose dataset (Colab GPU, `tiny_yolo_w1_20261019_1806`):**
+  - Training early-stopped at 131 of 150 epochs, about 80 s per epoch. The best `ValMAP`
+    (1,500 validation images, before `recalibrate_bn`) was 0.854 at epoch 101.
+  - Test results:
+
+    | | mAP@0.5 | mAP@0.5:0.95 | eye-state acc | head acc | AP50 open / closed / yawn / straight / down |
+    |---|---|---|---|---|---|
+    | float | 0.752 | 0.514 | 0.929 | 0.978 | 0.760 / 0.734 / 0.710 / 0.858 / 0.700 |
+    | int8 | 0.746 | 0.498 | 0.925 | 0.982 | 0.756 / 0.730 / 0.712 / 0.855 / 0.674 |
+
+  - The int8 file is 99.1 KB. Colab CPU latency is 1.19 ms on one thread.
+  - The previous deployed model scored mAP 0.63 and `head_down` AP 0.25, but on an older,
+    different test set, so the gain isn't like-for-like.
+  - At conf 0.25, int8 recall is: `open_eye` 0.75 (its PR curve tops out near 0.81), `closed_eye`
+    0.84, `yawn` 0.81, `head_straight` 0.85, `head_down` 0.71. `head_down` precision is 0.52.
+  - **Open issues:**
+    - **Validation gap.** The full validation report (after `recalibrate_bn`) says 0.755, not
+      the 0.854 `ValMAP` saw. Test it next run: score `ValMAP`'s same 1,500-image subset with the
+      final model. If it's ≈ 0.85, the subset is just easier; if it's ≈ 0.75, the
+      recalibration costs about 10 points.
+    - **Missing head labels.** 54% of face crops have no head box, so many head "false
+      alarms" are on unlabelled faces. See `src/dataset/CLAUDE.md` ("Head-label gaps").
+    - **Full-image `open_eye` boxes on face crops.** These are close-up behaviour leaking into
+      face crops.
+- **Not done yet:** Pi timing of the `.tflite` files, deploying `tiny_yolo_w1_20261019_1806` to
+  cv-argus, and the temporal stage.
 
 ## What we found
 
