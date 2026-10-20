@@ -50,6 +50,11 @@
 // The Pi's Bluetooth MAC address, e.g. {0x08, 0x3A, 0xF2, 0x4B, 0x9C, 0x01}. Find it on
 // the Pi with `hciconfig` or `bluetoothctl` ("show" on the default controller).
 #define PI_BT_MAC_ADDRESS { 0xB0, 0xDC, 0xEF, 0x34, 0x4C, 0x83 } // bench: this PC's Bluetooth
+// The RFCOMM channel the Pi's sender listens on (cv-argus BLUETOOTH_CHANNEL, default 4).
+// Connecting to it directly skips the SDP service lookup, which finds nothing on the Pi: its
+// listener is a plain RFCOMM socket and registers no SDP record. 0 = look the channel up via SDP
+// instead (a Windows incoming COM port does register one).
+#define PI_BT_RFCOMM_CHANNEL 4
 #define PI_BT_POLL_INTERVAL_MS 5000UL
 #define PI_BT_PULL_COUNT 50 // matches sender/protocol.py's DEFAULT_PULL_LIMIT
 #define PI_BT_LINE_TIMEOUT_MS 3000UL
@@ -98,6 +103,16 @@
 #define BENCH_GPS_LAT 20.6597
 #define BENCH_GPS_LON -103.3496
 #define GPS_LOG_INTERVAL_MS 10000UL // gpsLogStatus() cadence on Serial
+
+// Bench/demo only: test the Pi <-> ESP32 Bluetooth link with no backend, WiFi, SIM or GPS. 1 makes
+// this device pull from the Pi without backend credentials, print every record it gets (class,
+// severity, reason) with a banner when a CRITICAL arrives, run the grip fusion and print what it
+// decides, and ACK each record so the Pi's queue drains. Nothing is sent to the backend. The
+// Bluetooth link status is printed every BT_LINK_LOG_INTERVAL_MS. See src/esp32-argus/README.md
+// "Bluetooth link test". NEVER flash a truck with this set to 1: no alert would reach the backend.
+#define BT_LINK_TEST_MODE 0
+#define BT_LINK_TEST_POLL_INTERVAL_MS 1000UL // replaces PI_BT_POLL_INTERVAL_MS in that mode
+#define BT_LINK_LOG_INTERVAL_MS 10000UL
 
 // Panic button + grip sensor -- GPIO mapping not finalized against real hardware yet
 // (src/esp32-argus/README.md section 4 says so explicitly: "none of them have a defined

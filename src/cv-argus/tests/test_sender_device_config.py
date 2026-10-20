@@ -199,6 +199,11 @@ class TestListenerSecurity:
             (bluetooth_transport.SOL_BLUETOOTH, bluetooth_transport.BT_SECURITY, b"\x02\x00")
         ]
 
+    def test_binds_any_adapter_as_a_real_address(self, monkeypatch):
+        # CPython rejects "" for RFCOMM ("bad bluetooth address"); it must be six hex pairs.
+        sock = self._listener(monkeypatch)
+        assert sock.bound == ("00:00:00:00:00:00", 4)
+
     def test_level_is_configurable(self, monkeypatch):
         sock = self._listener(monkeypatch, security="LOW")
         assert sock.options[0][2] == b"\x01\x00"

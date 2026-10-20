@@ -341,3 +341,67 @@ def test_bluetooth_transport_splits_lines_and_handles_disconnect():
     theirs.close()
     assert transport.readline(timeout=1.0) is None
     transport.close()
+
+
+# --- Link visibility logging ---------------------------------------------------------------------
+
+
+def _reading(severity, reason):
+    return Alert.new(
+        AlertKind.DROWSINESS,
+        level=2,
+        source_id="cam0",
+        payload={"severity": severity, "reason": reason, "class_name": "Drowsy",
+                 "probabilities": [0.05, 0.95]},
+    )
+
+
+def _wait_for(predicate, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.01)
+
+
+def test_logs_connected_once_then_link_down_after_quiet(tmp_path, caplog):
+    caplog.set_level("INFO", logger="cv_argus.sender.server")
+    buf = open_buffer(tmp_path / "b.sqlite3")
+    r = _Running(buf, link_quiet_seconds=0.2)
+    try:
+        for _ in range(2):
+            client = r.connect()
+            _pull_and_collect(client, 1)
+            client.close()
+        _wait_for(lambda: "link down?" in caplog.text)
+    finally:
+        r.stop()
+        buf.close()
+    assert caplog.text.count("connected over Bluetooth") == 1
+
+
+def test_logs_each_delivered_severity_change_once(running, caplog):
+    caplog.set_level("INFO", logger="cv_argus.sender.server")
+    for alert in (_reading("medium", "eyes closed 1.6 s"),
+                  _reading("critical", "eyes closed 3.2 s"),
+                  _reading("critical", "eyes closed 3.4 s")):
+        running.buf.enqueue(alert)
+    client = running.connect()
+    ids = [json.loads(line)["id"] for line in _pull_and_collect(client, 50)]
+    _send(client, protocol.format_ack(ids))
+    assert client.readline(timeout=2.0) == protocol.format_acked(3).encode()
+
+    _wait_for(lambda: "severity=critical" in caplog.text)
+    assert caplog.text.count("severity=medium (eyes closed 1.6 s)") == 1
+    assert caplog.text.count("severity=critical") == 1
+    critical = [rec for rec in caplog.records if "severity=critical" in rec.getMessage()]
+    assert critical[0].levelname == "WARNING"
+
+
+def test_unacked_records_are_not_logged_as_delivered(running, caplog):
+    caplog.set_level("INFO", logger="cv_argus.sender.server")
+    running.buf.enqueue(_reading("critical", "eyes closed 3.2 s"))
+    client = running.connect()
+    _pull_and_collect(client, 50)
+    client.close()  # no ACK
+    time.sleep(0.2)
+    assert "severity=critical" not in caplog.text

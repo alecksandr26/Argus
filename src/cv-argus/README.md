@@ -55,11 +55,12 @@ container (`down -v` also wipes the named volumes — see "Model download strate
 - Network access at build time, to download the pretrained MediaPipe bundles and the trained
   model weights (all baked into the image at `docker build`, not fetched later at container
   start — see `CLAUDE.md`'s "Why a Docker-first workflow" for why).
-- **A Bluetooth adapter, only if you want `sender/`'s real transport running.** Neither compose
-  file passes through real Bluetooth access yet (see `CLAUDE.md`'s "Open decisions"), so
-  `docker-compose.yml` defaults `SENDER_TRANSPORT=none` — alerts and RouteStatus heartbeats
-  still get decided and queued in `buffer/`'s SQLite file, there's just nothing yet dequeuing
-  them. Nothing extra is needed to run the quick start below as-is.
+- **A Bluetooth adapter, only if you want the ESP32 link running.** The container can't open
+  Bluetooth sockets (rootless Docker), so `docker-compose.yml` defaults `SENDER_TRANSPORT=none`:
+  alerts and RouteStatus heartbeats still get decided and queued in `buffer/`'s SQLite file.
+  The server the ESP32 polls runs on the Pi host instead (`scripts/pi_bt_server.py`, or
+  `scripts/demo.sh --bluetooth`) — see "Bluetooth link test". Nothing extra is needed to run
+  the quick start below as-is.
 
 ## What you'll see
 
@@ -143,9 +144,10 @@ is the one that actually calls the backend (one firmware image fits every truck)
    `GET /api/devices/me/active-route`. The Fleet screen's Devices column shows "Key · seen …"
    once it's reporting.
 
-Real Bluetooth passthrough into the container is still the open item from "Prerequisites" —
-until it's wired, `SENDER_TRANSPORT=none` keeps the container starting, and the credentials are
-loaded but nothing can fetch them.
+The container itself can't serve Bluetooth (see "Prerequisites"), so `SENDER_TRANSPORT=none`
+keeps it starting. The ESP32 fetches these credentials from `scripts/pi_bt_server.py` on the Pi
+host instead, which reads `argus-device.env` and `.env` the same way — see "Bluetooth link
+test" below.
 
 Downstream of a detection, `orchestrator/` reports the debounced class as a *reading* on every
 change, plus a keepalive, and emits a periodic RouteStatus("OK") heartbeat, `buffer/` persists both to SQLite, and `sender/` answers
@@ -338,6 +340,89 @@ The ESP32 and backend are unchanged:
 - MEDIUM and CRITICAL go out as `Drowsy` (`p_drowsy` 0.75 / 0.95); none and LOW go out as
   `Not Drowsy`.
 - `severity`, `reason`, `trigger_s` and `timers` ride along in the buffered reading's payload.
+
+## Bluetooth link test: the Pi (server) ↔ the ESP32 (client)
+
+Goal: watch a CRITICAL from the camera arrive on the ESP32's Serial Monitor. No backend, WiFi,
+SIM or GPS involved.
+
+The Pi is the **server** and the ESP32 the **client**. Every poll, the ESP32 opens a Bluetooth
+connection to the Pi (classic SPP, RFCOMM channel 4), sends `PULL`, gets the queued readings,
+and `ACK`s them. The Pi never pushes.
+
+The Bluetooth server runs **on the Pi host**, not in the container: `scripts/pi_bt_server.py`,
+plain `python3`, nothing to install. Linux only creates Bluetooth sockets in the host's own
+network namespace, and a rootless-Docker container can't reach it. The container keeps the camera
+pipeline and shares the alert queue with the host through `./data` (`docker-compose.bt.yml`).
+
+**1. ESP32: flash the link-test build.** In `src/esp32-argus/src/esp32_argus/config.h` set:
+- `PI_BT_MAC_ADDRESS` to the Pi's MAC (step 2 prints it in exactly this form);
+- `BT_LINK_TEST_MODE 1`;
+- `PI_BT_RFCOMM_CHANNEL 4` (the default).
+
+Then flash it and open the Serial Monitor at 115200 baud. It prints its own Bluetooth MAC at
+boot (`[bt] This ESP32's Bluetooth MAC: ...`).
+
+**2. Pi: pair once, then start the server.** The ESP32 always asks for an encrypted, paired
+link, so pair it first. Keep this `bluetoothctl` window open during the first connection:
+```sh
+bluetoothctl
+> power on
+> agent NoInputNoOutput
+> default-agent
+> pairable on
+# reset the ESP32: it pairs itself (SSP "Just Works") on its first connect.
+# If bluetoothctl asks to confirm a passkey or authorize a service, answer yes.
+> trust AA:BB:CC:DD:EE:FF      # the ESP32's MAC from its Serial Monitor
+> devices Paired               # should list ESP32-Argus
+```
+In a second terminal, from `src/cv-argus/`:
+```sh
+python3 scripts/pi_bt_server.py
+```
+It prints the Pi's adapter MAC as a `config.h` line, the paired devices, and then
+`Listening on RFCOMM channel 4 ... Waiting for the ESP32...`.
+
+**3. Prove the link with a fake critical**, before involving the camera. In a third terminal:
+```sh
+python3 scripts/pi_bt_server.py --inject critical
+```
+What you should see:
+- **Pi:**
+  - `sender: ESP32 AA:BB:... connected over Bluetooth`;
+  - then `sender: ESP32 AA:BB:... received severity=critical (test injected by pi_bt_server.py)`.
+- **ESP32 Serial Monitor:**
+  ```
+  [bt] CONNECTED to the Pi (D8:3A:DD:..:..:.. channel 4)
+  [pi] Drowsy  severity=critical  "test injected by pi_bt_server.py"  p(Drowsy)=0.95
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  !!! CRITICAL alert received from the Pi: test injected by pi_bt_server.py
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  [fusion] would raise a ... alert (grip ...) -- not sent, link test mode
+  ```
+  Every 10 s it also prints `[bt] Pi link UP (...): N session(s), M record(s) since boot, last
+  answer 0.4 s ago`.
+
+**4. End to end with the camera.** Stop the step-2 server (Ctrl+C); `demo.sh` starts its own:
+```sh
+scripts/demo.sh --camera picam --bluetooth
+```
+Close your eyes for 3 s. The stream shows CRITICAL, the Pi logs `received severity=critical (eyes
+closed 3.0 s)`, and the ESP32 prints the banner. That's about 1–3 s after the screen, because the
+Pi re-sends the current reading every 2 s and the ESP32 polls every second in this mode. The
+metrics log is now `data/metrics.jsonl` on the Pi.
+
+**If it doesn't connect:**
+
+| What you see | Likely cause |
+|---|---|
+| ESP32 prints `Can't reach the Pi`, Pi logs nothing | Wrong `PI_BT_MAC_ADDRESS`, Pi server not running, Pi adapter off (`bluetoothctl power on`), or a channel mismatch |
+| Same, after pairing worked once | The Pi forgot the pairing, or the ESP32 was reflashed with a new bond: `remove <ESP32 MAC>` in `bluetoothctl` and pair again |
+| `Can't listen on RFCOMM channel 4` | Something else already holds channel 4, e.g. another `pi_bt_server.py` still running |
+| `Can't open data/buffer.sqlite3` | Rootful Docker created `data/` as root: `sudo chown -R $USER data` |
+| Hundreds of old readings scroll past first | The queue kept readings from an earlier run. Stop everything, then `rm -f data/buffer.sqlite3*` |
+
+`BT_LINK_TEST_MODE 1` sends nothing to the backend, so set it back to `0` for a real truck.
 
 ## Demo: watching it work
 

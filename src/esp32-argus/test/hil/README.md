@@ -60,6 +60,9 @@ Python venv. On a Linux machine with BlueZ (e.g. the real Pi), use `--rfcomm` in
    - Set `PI_BT_MAC_ADDRESS` to the **PC's** Bluetooth MAC, because the PC is the Pi here.
      `ipconfig /all` shows it as "Physical Address" under "Bluetooth Network Connection".
      `B0-DC-EF-34-4C-83` becomes `{ 0xB0, 0xDC, 0xEF, 0x34, 0x4C, 0x83 }`.
+   - Set `PI_BT_RFCOMM_CHANNEL` to `0`. Windows assigns the incoming COM port's channel itself
+     and advertises it over SDP, so the ESP32 has to look it up. The default `4` is for the real
+     Pi, whose listener is on fixed channel 4 and advertises nothing.
    - `BENCH_FAKE_GPS`: `1` to test Bluetooth/HTTP indoors without a GPS fix (nothing gets
      relayed without one), `0` to test the real NEO-6M (see "Testing the real GPS").
      **It must be `0` on a real truck.**

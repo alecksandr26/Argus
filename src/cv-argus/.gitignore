@@ -6,3 +6,6 @@ src/demo_clips/
 
 # Written by scripts/demo.sh --camera picam (host-specific device list).
 docker-compose.pi-devices.yml
+
+# The alert queue + metrics shared with scripts/pi_bt_server.py (docker-compose.bt.yml).
+data/

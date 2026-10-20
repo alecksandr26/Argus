@@ -51,6 +51,8 @@ indoors. Set it back to `0` for a real truck.
    come from the Pi over Bluetooth (`CONFIG`) and from the backend (see `../../README.md`
    section 1b). Compiling doesn't need real values. Last compile with these changes (2026-10-19,
    `arduino-cli`, core 3.3.12, Huge APP): 56% flash, 19% RAM. Not flashed or HIL-run yet.
+   The Bluetooth link test changes (`PI_BT_RFCOMM_CHANNEL`, `BT_LINK_TEST_MODE`) compile with the
+   mode both off and on (2026-10-19, same toolchain): 56% flash, 20% RAM. Not flashed yet.
 
 ## Errors already hit, and what they mean
 

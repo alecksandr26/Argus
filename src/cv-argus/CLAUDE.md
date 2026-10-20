@@ -624,9 +624,11 @@ scope for this repo — flagged, not solved. `bluetooth_transport.py`'s `Bluetoo
 `BluetoothSppListener` use stdlib `socket.AF_BLUETOOTH`/`BTPROTO_RFCOMM` (no PyBluez dependency)
 — `socket.AF_BLUETOOTH` is referenced only inside method bodies, never at class/module level, so
 *importing* this module never requires Bluetooth support; only *constructing* a
-`BluetoothSppListener` can fail, with a clear `OSError`, on a platform/build without it (verified
-directly: it raises immediately on a machine with no Bluetooth adapter, rather than hanging or
-silently no-opping). `sender/__init__.py` re-exports both lazily (mirrors `pipeline/__init__.py`'s
+`BluetoothSppListener` can fail, with a clear `OSError`, on a platform/build without it. It binds
+`BDADDR_ANY` (`"00:00:00:00:00:00"`), not `""`: CPython parses an RFCOMM address strictly, so
+`""` raised `bad bluetooth address` on *every* machine, Pi included. The earlier "raises
+immediately without an adapter" observation was this bug, not the missing adapter (fixed
+2026-10-19; with `BDADDR_ANY`, WSL's kernel even binds with no radio at all). `sender/__init__.py` re-exports both lazily (mirrors `pipeline/__init__.py`'s
 `_LAZY` `__getattr__` pattern) for the same reason. `transport.py`'s `FakeTransport`/
 `FakeListener` (an in-memory, queue-backed duplex pair) are what every `sender/` test actually
 runs against — no real socket anywhere in the unit suite.
@@ -661,19 +663,21 @@ actually asking for.
   polling side** — `sender/`'s `SenderServer` (see "`orchestrator/`, `buffer/`, `sender/`,
   `alerts/` — done" above) is the server; the ESP32 periodically connects and pulls unsent
   records, never the reverse. What's still genuinely open, not just undocumented:
-  - **No ESP32 firmware or hardware exists in this repo/session**, so `BluetoothSppTransport`
-    has never run against a real device — only against `FakeTransport` in the unit suite. Don't
-    describe the Bluetooth path as validated end-to-end; it's a protocol design and a Pi-side
-    implementation, not a tested link.
-  - **Neither compose file passes through real Bluetooth device access yet** — no
-    `/dev/rfcommN` device, no host BlueZ/D-Bus socket wired into `devices:`/`volumes:` in
-    `docker-compose.yml` or `docker-compose.pi.yml`. This is why `docker-compose.yml` defaults
-    `SENDER_TRANSPORT=none` even though `main.py`'s own code-level default is `bluetooth` —
-    setting `SENDER_TRANSPORT=bluetooth` without adding real passthrough first will crash
-    `main()` at startup (`BluetoothSppListener`'s `socket.bind()` fails immediately without a
-    real adapter — confirmed directly in this repo's own sessions). Don't fabricate a specific
-    device path without real Pi 5 hardware to verify it against, same convention as the
-    camera-passthrough device list in `docker-compose.pi.yml`.
+  - **The firmware exists (`src/esp32-argus`) and passed its HIL bench with a Windows PC
+    playing the Pi, but `BluetoothSppTransport` itself has never run against the real ESP32** —
+    only against `FakeTransport` in the unit suite. Don't describe the Pi-side Bluetooth path as
+    validated end to end until it has.
+  - **The container doesn't serve Bluetooth; the Pi host does.** Linux creates `AF_BLUETOOTH`
+    sockets only in the initial network namespace, and this Pi runs rootless Docker, whose
+    `network_mode: host` is RootlessKit's own namespace, so no `devices:`/`volumes:` passthrough
+    fixes it. The chosen route (2026-10-19): `scripts/pi_bt_server.py` runs this module's own
+    `SenderServer` + `BluetoothSppListener` with the host's `python3` (stdlib-only imports from
+    `src/`, no pip), against the same SQLite queue the container writes, shared through `./data`
+    by `docker-compose.bt.yml` (WAL makes the two processes safe). `scripts/demo.sh --bluetooth`
+    starts both. `docker-compose.yml` therefore keeps `SENDER_TRANSPORT=none`, and the overlay
+    pins it, so the container never also tries to bind. Not run on the real Pi + ESP32 yet; the
+    README's "Bluetooth link test" is the procedure. The ESP32 connects to RFCOMM channel 4
+    directly (`PI_BT_RFCOMM_CHANNEL`), because this listener registers no SDP record.
 - Real camera on the Pi: settled as `picamera2` (see "Python packaging" above) for the CSI
   module. **Verified at the camera level on a real Pi 5** (Raspberry Pi OS / Debian 13, IMX219,
   rootless Docker): picamera2 inside this image lists the sensor and captures frames. The full

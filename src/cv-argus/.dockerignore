@@ -18,3 +18,5 @@ models/
 scripts/output/
 # Truck credentials: runtime env only (docker-compose env_file), never in the image.
 argus-device.env
+# The host-shared alert queue (docker-compose.bt.yml) -- runtime data, never in the image.
+data/

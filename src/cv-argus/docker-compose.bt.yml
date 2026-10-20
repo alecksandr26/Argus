@@ -1,0 +1,19 @@
+# Pi <-> ESP32 Bluetooth overlay -- merge on top of the base file (scripts/demo.sh --bluetooth
+# does this for you):
+#
+#   docker compose -f docker-compose.yml [-f docker-compose.pi.yml] -f docker-compose.bt.yml up
+#
+# The camera pipeline stays in this container, but the Bluetooth server the ESP32 polls runs on
+# the Pi *host* (scripts/pi_bt_server.py): Linux only creates Bluetooth sockets in the host's own
+# network namespace, which a rootless-Docker container can't reach. The two share the SQLite
+# alert queue through ./data instead of the `buffer-data` named volume (same /app/data target, so
+# this replaces it). WAL mode makes the container writing and the host reading the same file
+# safe. With rootless Docker the files belong to the Pi user; with rootful Docker they're root's,
+# and pi_bt_server.py then needs sudo.
+services:
+  cv-argus:
+    environment:
+      # The host process is the only Bluetooth server.
+      - SENDER_TRANSPORT=none
+    volumes:
+      - ./data:/app/data

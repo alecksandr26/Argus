@@ -9,6 +9,45 @@ namespace {
 BluetoothSerial SerialBT;
 uint8_t piMac[6] = PI_BT_MAC_ADDRESS;
 
+// Link bookkeeping, for the Serial log only.
+bool linkUp = false;
+bool linkEverTried = false;
+unsigned long lastAnsweredAt = 0;
+unsigned long sessions = 0;
+unsigned long recordsPulled = 0;
+
+void printPiAddress() {
+  for (int i = 0; i < 6; i++) {
+    if (piMac[i] < 0x10) Serial.print('0');
+    Serial.print(piMac[i], HEX);
+    if (i < 5) Serial.print(':');
+  }
+  Serial.print(" channel ");
+  Serial.print(PI_BT_RFCOMM_CHANNEL);
+}
+
+// One connection attempt per poll. Logs only the up/down transitions, so a steady link stays
+// quiet and a lost one says so once.
+bool connectToPi() {
+  bool ok = SerialBT.connect(piMac, PI_BT_RFCOMM_CHANNEL);
+  if (ok && !linkUp) {
+    Serial.print("[bt] CONNECTED to the Pi (");
+    printPiAddress();
+    Serial.println(")");
+  } else if (!ok && (linkUp || !linkEverTried)) {
+    Serial.print("[bt] Can't reach the Pi (");
+    printPiAddress();
+    Serial.println(") -- is its Bluetooth sender running, and are the two paired?");
+  }
+  linkUp = ok;
+  linkEverTried = true;
+  if (ok) {
+    lastAnsweredAt = millis();
+    sessions++;
+  }
+  return ok;
+}
+
 // Reads one newline-delimited line, with an *idle* timeout (resets every time a byte
 // arrives) rather than a flat deadline -- a slow-but-still-streaming response shouldn't
 // time out mid-line. Returns false (line left however-far it got) if nothing arrives for
@@ -46,6 +85,8 @@ bool parseRecordLine(const String& line, PiRecord& record) {
     record.kind = PiRecordKind::DROWSINESS;
     JsonObject payload = doc["payload"];
     record.className = payload["class_name"].as<String>();
+    record.severity = payload["severity"] | "";
+    record.reason = payload["reason"] | "";
     JsonArray probabilities = payload["probabilities"];
     if (probabilities.size() == 2) {
       record.pNotDrowsy = probabilities[0].as<float>();
@@ -64,14 +105,16 @@ bool parseRecordLine(const String& line, PiRecord& record) {
 
 void bluetoothClientBegin() {
   SerialBT.begin("ESP32-Argus", /*isMaster=*/true);
+  // The MAC to `trust` (and optionally allowlist as ESP32_BT_MAC) on the Pi.
+  Serial.print("[bt] This ESP32's Bluetooth MAC: ");
+  Serial.println(SerialBT.getBtAddressString());
 }
 
 ConfigLineResult bluetoothFetchConfig(DeviceCredentials& out) {
   // The Pi only accepts a paired, encrypted link (cv-argus BLUETOOTH_SECURITY=medium), since
   // this reply carries the device key. Pairing is SSP "Just Works": automatic on this side,
   // pre-approved on the Pi with bluetoothctl (see src/cv-argus/README.md).
-  if (!SerialBT.connect(piMac)) {
-    Serial.println("[bt] CONFIG: could not connect to the Pi's Bluetooth SPP server");
+  if (!connectToPi()) {
     return ConfigLineResult::Malformed;
   }
   SerialBT.print("CONFIG\n");
@@ -90,8 +133,7 @@ ConfigLineResult bluetoothFetchConfig(DeviceCredentials& out) {
 }
 
 int bluetoothPullAlerts(bool (*onRecord)(const PiRecord& record)) {
-  if (!SerialBT.connect(piMac)) {
-    Serial.println("[bt] Could not connect to the Pi's Bluetooth SPP server");
+  if (!connectToPi()) {
     return -1;
   }
 
@@ -113,6 +155,7 @@ int bluetoothPullAlerts(bool (*onRecord)(const PiRecord& record)) {
     if (line == "END") break;
 
     pulled++;
+    recordsPulled++;
     PiRecord record;
     if (parseRecordLine(line, record) && onRecord(record)) {
       if (ackIds.length() > 0) ackIds += ",";
@@ -136,4 +179,24 @@ int bluetoothPullAlerts(bool (*onRecord)(const PiRecord& record)) {
 
   SerialBT.disconnect();
   return protocolOk ? pulled : -1;
+}
+
+bool bluetoothLinkUp() { return linkUp; }
+
+void bluetoothLogStatus() {
+  Serial.print("[bt] Pi link ");
+  Serial.print(linkUp ? "UP" : "DOWN");
+  Serial.print(" (");
+  printPiAddress();
+  Serial.print("): ");
+  Serial.print(sessions);
+  Serial.print(" session(s), ");
+  Serial.print(recordsPulled);
+  Serial.print(" record(s) since boot");
+  if (sessions > 0) {
+    Serial.print(", last answer ");
+    Serial.print((millis() - lastAnsweredAt) / 1000.0, 1);
+    Serial.print(" s ago");
+  }
+  Serial.println();
 }

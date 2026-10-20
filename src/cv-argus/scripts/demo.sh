@@ -9,8 +9,11 @@
 #   scripts/demo.sh --camera picam           # the Pi 5 CSI camera (pi.yml + this host's camera nodes)
 #   scripts/demo.sh --eye-threshold 0.35 --head-threshold 0.25   # more sensitive closed/down
 #   scripts/demo.sh --port 8081 --width 960  # stream port / downscaled stream width
+#   scripts/demo.sh --camera picam --bluetooth   # + the Pi's Bluetooth server for the ESP32
 #
 # Then open http://localhost:<port>/stream (or http://<pi-ip>:<port>/stream on the Pi).
+# --bluetooth also runs scripts/pi_bt_server.py on this host (the ESP32 polls it over Bluetooth;
+# README "Bluetooth link test") and shares the alert queue through ./data (docker-compose.bt.yml).
 # Thresholds: 0.5 = argmax, lower = more sensitive (defaults 0.40 closed eye, 0.30 head down).
 # Measurements for the report: the metrics log is /app/data/metrics.jsonl in the container:
 #   docker compose cp cv-argus:/app/data/metrics.jsonl . && python3 scripts/summarize_metrics.py metrics.jsonl
@@ -19,7 +22,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-precision=int8 camera=0 port=8080 width="" eye_thr="" head_thr=""
+precision=int8 camera=0 port=8080 width="" eye_thr="" head_thr="" bluetooth=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --precision)      precision="$2"; shift 2 ;;
@@ -28,7 +31,8 @@ while [[ $# -gt 0 ]]; do
     --width)          width="$2"; shift 2 ;;
     --eye-threshold)  eye_thr="$2"; shift 2 ;;
     --head-threshold) head_thr="$2"; shift 2 ;;
-    -h|--help)        sed -n '2,19p' "$0"; exit 0 ;;
+    --bluetooth)      bluetooth=1; shift ;;
+    -h|--help)        sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -72,5 +76,21 @@ fi
 
 echo "cv-argus demo: PARTS_PRECISION=$PARTS_PRECISION SOURCE=$SOURCE CAMERA_SOURCE=${CAMERA_SOURCE:-picam}" \
      "closed_eye>=${eye_thr:-default} head_down>=${head_thr:-default}"
-echo "stream: http://localhost:${port}/stream   metrics: /app/data/metrics.jsonl (in the container)"
-exec "${compose[@]}" up --build
+if [[ "$bluetooth" == 0 ]]; then
+  echo "stream: http://localhost:${port}/stream   metrics: /app/data/metrics.jsonl (in the container)"
+  exec "${compose[@]}" up --build
+fi
+
+# --bluetooth: the queue lives in ./data, and the Bluetooth server runs here on the host.
+compose+=(-f docker-compose.bt.yml)
+mkdir -p data
+echo "stream: http://localhost:${port}/stream   metrics: data/metrics.jsonl   Bluetooth: bt-server lines"
+python3 -u scripts/pi_bt_server.py &
+bt_pid=$!
+trap 'kill "$bt_pid" 2>/dev/null; wait "$bt_pid" 2>/dev/null' EXIT
+sleep 1
+if ! kill -0 "$bt_pid" 2>/dev/null; then
+  echo "the Bluetooth server didn't start (see its error above)" >&2
+  exit 1
+fi
+"${compose[@]}" up --build

@@ -20,10 +20,17 @@ A session can also be a `CONFIG` request (see `protocol.py`): this answers with 
 `allowed_peers` (the `ESP32_BT_MAC` env var) optionally restricts every session to this truck's
 own ESP32. A MAC can be spoofed, so this is a second layer on top of the encrypted, paired link
 `BluetoothSppListener` requires, not a replacement for it.
+
+**Link visibility.** The ESP32 opens a fresh connection on every poll, so there's no long-lived
+link to watch. The log says when sessions start (`ESP32 <mac> connected`) and when they stop for
+`link_quiet_seconds` (`link down?`) -- transitions only, so a steady link stays quiet. Each change
+in the rule severity the ESP32 acked (e.g. into `critical`) is logged once, which is the Pi-side
+proof an alert was actually delivered.
 """
 
 import logging
 import threading
+import time
 from collections.abc import Iterable
 
 from ..alerts import serialization as alerts_serialization
@@ -36,6 +43,8 @@ logger = logging.getLogger(__name__)
 
 _MIN_ACCEPT_BACKOFF_S = 0.1
 _MAX_ACCEPT_BACKOFF_S = 5.0
+# No session for this long and the ESP32 counts as gone. It polls every 1-5 s.
+DEFAULT_LINK_QUIET_SECONDS = 15.0
 
 
 class SenderServer:
@@ -54,6 +63,7 @@ class SenderServer:
         ack_timeout: float = 10.0,
         device_config: DeviceConfig | None = None,
         allowed_peers: Iterable[str] | None = None,
+        link_quiet_seconds: float = DEFAULT_LINK_QUIET_SECONDS,
     ) -> None:
         self._buffer = buffer
         self._listener = listener
@@ -65,6 +75,10 @@ class SenderServer:
         ) or None
         self._accept_timeout = accept_timeout
         self._ack_timeout = ack_timeout
+        self._link_quiet_seconds = link_quiet_seconds
+        self._link_peer: str | None = None  # None = no live link
+        self._last_session_at = 0.0
+        self._last_delivered_severity: str | None = None
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -99,6 +113,7 @@ class SenderServer:
                 continue
             backoff = _MIN_ACCEPT_BACKOFF_S
             if transport is None:
+                self._check_link_quiet()
                 continue
             try:
                 self._handle_session(transport)
@@ -117,6 +132,7 @@ class SenderServer:
         ):
             logger.warning("sender: rejecting session from unlisted peer %s", transport.peer)
             return
+        self._note_session(transport.peer)
         line = transport.readline(timeout=5.0)
         if line is None:
             return
@@ -154,6 +170,38 @@ class SenderServer:
 
         updated = self._buffer.mark_sent(ids)
         transport.write((protocol.format_acked(updated) + "\n").encode())
+        acked = set(ids)
+        self._log_delivery(transport.peer, [a for a in alerts if a.id in acked])
+
+    def _note_session(self, peer: str | None) -> None:
+        peer = peer or "?"
+        if self._link_peer != peer:
+            logger.info("sender: ESP32 %s connected over Bluetooth", peer)
+        self._link_peer = peer
+        self._last_session_at = time.monotonic()
+
+    def _check_link_quiet(self) -> None:
+        if self._link_peer is None:
+            return
+        quiet = time.monotonic() - self._last_session_at
+        if quiet >= self._link_quiet_seconds:
+            logger.warning(
+                "sender: no session from ESP32 %s for %.0f s -- Bluetooth link down?",
+                self._link_peer,
+                quiet,
+            )
+            self._link_peer = None
+
+    def _log_delivery(self, peer: str | None, delivered: list) -> None:
+        """Logs each change in the rule severity the ESP32 has acked -- once, not per keepalive."""
+        for alert in delivered:
+            severity = alert.payload.get("severity")
+            if severity is None or severity == self._last_delivered_severity:
+                continue
+            self._last_delivered_severity = severity
+            reason = alert.payload.get("reason") or alert.payload.get("class_name", "")
+            log = logger.warning if severity == "critical" else logger.info
+            log("sender: ESP32 %s received severity=%s (%s)", peer or "?", severity, reason)
 
     def _answer_config(self, transport: Transport) -> None:
         if self._device_config is None:
