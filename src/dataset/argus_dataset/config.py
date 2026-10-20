@@ -235,6 +235,13 @@ ROBOFLOW_PROJECTS: tuple[dict, ...] = (
     # Every box is exported as a 4-corner polygon; parts_dataset._read_yolo_labels converts them.
     {"workspace": "vidyashree", "project": "headpose-w4zuc", "version": 3,
      "listed_images": 5031, "note": "Head_down/forward/left/right/up + Eye_close/forward/left/right"},
+    # More head-down sources (added 2026-10-19). xsriz: one state label per image (head_down 371,
+    # head_up, seeing_left/right, focused, eyes_closed, yarning, ...). facial-movements: head
+    # positions + eye/mouth/pupil/seatbelt boxes (head_down 318). Both in ROBOFLOW_HEADPOSE_PROJECTS.
+    {"workspace": "karthik-madhvan", "project": "drowsiness-detection-xsriz", "version": 1,
+     "listed_images": 6391, "note": "per-image driver states incl. head_down/head_up (Public Domain)"},
+    {"workspace": "mdulo-v", "project": "facial-movements-detection", "version": 1,
+     "listed_images": 4734, "note": "head_front/down/left/right/up + eyes, mouth, pupil, seatbelt"},
 )
 
 # Merged parts dataset (scripts/build_parts_dataset.py → processed/parts_dataset/). Every source
@@ -275,6 +282,15 @@ ROBOFLOW_CLASS_MAP: dict[str, dict[str, str | None]] = {
         "Eye_forward": "open_eye", "Eye_left": "open_eye", "Eye_right": "open_eye",  # = gaze
         "Eye_close": "closed_eye",    # many are downcast lids on lowered heads, not fully shut
     },
+    # One whole-face box per image carrying a driver state (label_sheet, 2026-10-19). The head-
+    # pose states are in ROBOFLOW_HEAD_CLASS_MAP; these say nothing about the head, so mapping
+    # them to None here leaves the head to the landmarks. Eyes and yawns are all landmark labels.
+    "drowsiness-detection-xsriz": {"eyes_closed": None, "yarning": None},
+    "facial-movements-detection": {
+        "open_eye": "open_eye", "closed_eye": "closed_eye",   # per-eye boxes
+        "open_mouth": None,       # talking as often as yawning: jawOpen decides (pseudo yawn)
+        "closed_mouth": None, "pupil": None, "wear_seatbelt": None, "no_seatbelt": None,
+    },
 }
 PARTS_CROP_PAD_FRAC: float = 0.15       # grow each box 15% per side, then square it about its centre
 PARTS_MIN_CROP_PX: int = 12             # drop crops whose short side is smaller than this
@@ -310,6 +326,9 @@ DET_PSEUDO_EAR_CLOSED: float = 0.15     # EAR below → closed_eye
 DET_PSEUDO_EAR_OPEN: float = 0.25       # EAR above → open_eye; in between → reject image
 DET_PSEUDO_MATCH_DIST: float = 0.5      # an eye counts as labelled if a box centre is within
                                         # 0.5 eye-widths of the landmark eye centre
+# No pseudo eyes beyond this |yaw|: the far eye is hidden and the mesh puts it on the nose/cheek
+# (seen on contact sheets, 2026-10-19). Such a face then needs human eye boxes, as before.
+DET_PSEUDO_EYE_MAX_YAW_DEG: float = 40.0
 DET_MRL_MAX_PER_SUBJECT_CLASS: int = 300  # cap MRL so it doesn't swamp the ~10k Roboflow faces
 DET_JPEG_QUALITY: int = 95
 DET_SAME_ORIGINAL_CORR: float = 0.75    # stem-mates join one group only if their 16x16 thumbnails
@@ -324,8 +343,22 @@ DET_MP_CHUNK: int = 250                 # images per cached MediaPipe chunk (res
 # of "looking down" was checked on a contact sheet of real faces — see HEAD_DOWN_PITCH_SIGN.
 HEAD_DOWN_PITCH_SIGN: int = 1           # +1: positive pitch = head down; -1: negative = down
 HEAD_DOWN_PITCH_DEG: float = 20.0       # |pitch| beyond this, in the down direction → head_down
-HEAD_STRAIGHT_PITCH_DEG: float = 10.0   # |pitch| ≤ this and |yaw| ≤ HEAD_STRAIGHT_YAW_DEG → straight
-HEAD_STRAIGHT_YAW_DEG: float = 25.0     # in between: no head box (ambiguous band)
+HEAD_STRAIGHT_PITCH_DEG: float = 18.0   # |pitch| ≤ this and |yaw| ≤ HEAD_STRAIGHT_YAW_DEG → straight
+HEAD_STRAIGHT_YAW_DEG: float = 22.0     # in between: no head box (ambiguous band)
+# Calibrated 2026-10-19 against headpose-w4zuc's human labels (pitch from these landmarks):
+# Head_forward pitch p95 = 19.6°, Head_down p5 = 25.2°, so a 20° down cut keeps 0.99 of down and
+# 0.96 of forward. The old 10° straight limit left 35% of human-forward heads with no head box.
+# |yaw| 22° keeps 0.997 of human-forward heads and excludes 0.82 of human left/right ones.
+
+# FaceLandmarker retries for the detection dataset, when the standard face crop gives no
+# landmarks (mostly wide-open yawns and turned heads, measured 2026-10-19): wider crops at a
+# lower confidence, as (margin per side, crop px). Only for real faces: when BlazeFace's box is
+# ≥ DET_LM_RETRY_MAX_FACE_FRAC of the image side it's almost always an eye close-up it misread.
+DET_LM_RETRY_CONFIDENCE: float = 0.2
+DET_LM_RETRIES: tuple[tuple[float, int], ...] = ((DET_FACE_MARGIN_FRAC, DET_IMG_SIZE), (0.75, 256), (1.25, 320))
+DET_LM_RETRY_MAX_FACE_FRAC: float = 0.6
+# Bump when mp_one's output changes: the MediaPipe cache lives in .cache/det_mp_v<N>/.
+DET_MP_CACHE_VERSION: int = 2
 # Human head-pose labels (source label -> "head_straight" / "head_down" / None). Where an image
 # has one, it REPLACES the pitch auto-label above for that image: a human looked at it, and the
 # pitch thresholds were only ever a proxy. None = a pose that is neither class (turned, up,
@@ -340,16 +373,66 @@ ROBOFLOW_HEAD_CLASS_MAP: dict[str, dict[str, str | None]] = {
         "Head_down": "head_down", "Head_forward": "head_straight",
         "Head_left": None, "Head_right": None, "Head_up": None,   # turned / tilted back
     },
+    # Dashboard-camera truck cabin; boxes are face-sized (2026-10-19 label sheet).
+    "drowsiness-detection-xsriz": {
+        "head_down": "head_down", "focused": "head_straight",
+        "head_up": None, "seeing_left": None, "seeing_right": None,
+        "eyes_closed_head_left": None, "eyes_closed_head_right": None,
+    },
+    # Whole-head boxes incl. hair. A few head_down boxes are tiny boxes on an eye of a straight
+    # face: DET_HUMAN_HEAD_MIN_REL drops those.
+    "facial-movements-detection": {
+        "head_down": "head_down", "head_front": "head_straight",
+        "head_left": None, "head_right": None, "head_up": None,
+    },
 }
+# A human head label counts only if its box side is at least this fraction of BlazeFace's face
+# box side (catches head labels drawn on an eye).
+DET_HUMAN_HEAD_MIN_REL: float = 0.5
+# Crop margin around a human head box when BlazeFace misses, per project (default
+# DET_HEAD_BOX_MARGIN_FRAC). xsriz boxes are face-sized like BlazeFace's, so they get the face margin.
+DET_HEAD_BOX_MARGIN_BY_PROJECT: dict[str, float] = {"drowsiness-detection-xsriz": DET_FACE_MARGIN_FRAC}
 # Head-pose sources: parts_dataset.py skips them (their point is the head boxes, and they have
 # no yawn labels); the detection dataset pseudo-labels any eyes they left unlabelled and, if
 # BlazeFace misses the face (strong pose is the point of this data), crops around the human head
 # box instead. Their eye boxes, if any, go through ROBOFLOW_CLASS_MAP as usual.
-ROBOFLOW_HEADPOSE_PROJECTS: tuple[str, ...] = ("headpose-w4zuc",)
+ROBOFLOW_HEADPOSE_PROJECTS: tuple[str, ...] = (
+    "headpose-w4zuc", "drowsiness-detection-xsriz", "facial-movements-detection")
 # Head-pose images whose eyes can't be (fully) labelled — no landmarks on a turned/lowered head —
 # are kept with just their head box. Trade-off: a visible-but-unlabelled eye is learned as
 # background, but rejecting them would throw away exactly the hard head_down examples.
 DET_HEADPOSE_ALLOW_INCOMPLETE_EYES: bool = True
+# Landmark-only sources: images whose own labels are ignored entirely. Every box comes from
+# FaceLandmarker on the BlazeFace crop: the head class from pitch/yaw (HEAD_*_DEG), eyes from
+# DET_PSEUDO_EYE_*, a yawn from DET_PSEUDO_YAWN_*. For face/driver photos that add head poses
+# (above all head_down) without usable part labels. An image without landmarks is rejected.
+ROBOFLOW_LANDMARK_ONLY_PROJECTS: tuple[str, ...] = ()
+# Pseudo-label yawns from the FaceLandmarker jawOpen blendshape, so an open mouth nobody boxed
+# isn't learned as background. A human yawn box always wins. jawOpen > OPEN with no yawn box → a
+# yawn box (the outer-lip box scaled by W/H_SCALE). Sources that label no yawns (head-pose without
+# a yawn class, landmark-only) also reject jawOpen in CLOSED..OPEN as unclear; sources with human
+# yawn labels never reject on it. Calibrated 2026-10-19 on 7,123 face crops with 2,355 human yawn
+# boxes (aunvg, axuoa, jhmld, luvay) and contact sheets:
+#   > 0.7 unlabelled: clear yawns the annotators skipped (mostly jhmld);
+#   0.6-0.7: talking / surprise, some yawns;  0.5-0.6: mostly closed or beard-hidden mouths;
+#   < 0.5: not yawns. But some very wide yawns read ≈ 0 (the mesh closes the mouth), so a low
+#   jawOpen never removes a human yawn box.
+# Human yawn box / lip box: width × 1.29, height × 1.37 (medians).
+# Where a source has human mouth-state labels, they decide instead of jawOpen (on
+# facial-movements, 833 jawOpen "yawns" were on human closed_mouth images):
+#   "closed": no yawn;  "yawn": a yawn, boxed from the lips (no landmarks → reject);
+#   "open": a yawn only if jawOpen > OPEN, unclear (reject) in CLOSED..OPEN.
+# Key "" = an image carrying none of the listed labels (xsriz labels one state per image, so
+# "not yarning" means not yawning).
+ROBOFLOW_MOUTH_LABELS: dict[str, dict[str, str]] = {
+    "drowsiness-detection-xsriz": {"yarning": "yawn", "": "closed"},
+    "facial-movements-detection": {"closed_mouth": "closed", "open_mouth": "open"},
+}
+DET_PSEUDO_YAWNS: bool = True
+DET_PSEUDO_YAWN_JAW_CLOSED: float = 0.5
+DET_PSEUDO_YAWN_JAW_OPEN: float = 0.7
+DET_PSEUDO_YAWN_W_SCALE: float = 1.3
+DET_PSEUDO_YAWN_H_SCALE: float = 1.4
 # Crop margin around a human head box (no-face fallback). Smaller than DET_FACE_MARGIN_FRAC
 # because a head box already includes hair/chin, so the crop ends up about the same scale.
 DET_HEAD_BOX_MARGIN_FRAC: float = 0.10

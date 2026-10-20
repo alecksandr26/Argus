@@ -184,8 +184,10 @@ three read one dataset, `Argus/dataset/parts_det.zip`, built locally by
       the 0.854 `ValMAP` saw. Test it next run: score `ValMAP`'s same 1,500-image subset with the
       final model. If it's ≈ 0.85, the subset is just easier; if it's ≈ 0.75, the
       recalibration costs about 10 points.
-    - **Missing head labels.** 54% of face crops have no head box, so many head "false
-      alarms" are on unlabelled faces. See `src/dataset/CLAUDE.md` ("Head-label gaps").
+    - **Missing head labels.** 54% of face crops had no head box, so many head "false
+      alarms" were on unlabelled faces. Addressed in dataset v4: recalibrated head thresholds,
+      two more head-pose sources and landmark retries. `head_down` grew from 644 to 2,069 boxes,
+      and faces without a head box fell to 43%. See `src/dataset/CLAUDE.md`. Not trained on yet.
     - **Full-image `open_eye` boxes on face crops.** These are close-up behaviour leaking into
       face crops.
 - **Not done yet:** Pi timing of the `.tflite` files, deploying `tiny_yolo_w1_20261019_1806` to

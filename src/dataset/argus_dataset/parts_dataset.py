@@ -160,9 +160,11 @@ def roboflow_rows(manifest: dict, ref_cdf: np.ndarray | None, stats: Counter,
     import cv2
     out_root = paths.parts_dataset_dir()
     rows, uf, hash_owner = [], _UnionFind(), {}
-    # Head-pose-only projects have no eye/mouth boxes to crop; they feed detection_dataset only.
+    # Head-pose and landmark-only projects feed detection_dataset only (their eye/mouth boxes are
+    # partial or ignored).
     sources = [(k, e) for k, e in sorted(manifest["sources"].items()) if e.get("kind") == "roboflow"
-               and e["project"] not in config.ROBOFLOW_HEADPOSE_PROJECTS]
+               and e["project"] not in config.ROBOFLOW_HEADPOSE_PROJECTS
+               and e["project"] not in config.ROBOFLOW_LANDMARK_ONLY_PROJECTS]
     for key, e in sources:
         project, cmap = e["project"], config.ROBOFLOW_CLASS_MAP.get(e["project"])
         if cmap is None:

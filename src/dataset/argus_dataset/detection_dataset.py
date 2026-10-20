@@ -43,19 +43,27 @@ from . import config, external, ir, parts_dataset, paths
 INDEX_COLUMNS = [
     "image_id", "status", "reason", "kind", "source", "project", "licence", "group_id", "split",
     "src_image", "face_x0", "face_y0", "face_side", "pitch", "yaw", "roll", "head_class",
-    "head_source", "lm_head_class", "n_eye_boxes", "n_yawn_boxes", "pseudo_eyes", "raw_labels", "gray_path", "ir_path", "label_path",
+    "head_source", "lm_head_class", "lm_attempt", "jaw_open", "n_eye_boxes", "n_yawn_boxes", "pseudo_eyes",
+    "pseudo_yawn", "raw_labels", "gray_path", "ir_path", "label_path",
 ]
 MP_COLUMNS = ["src_image", "face_found", "fx", "fy", "fw", "fh", "face_score",
               "landmarks_found", "pitch", "yaw", "roll",
               # per eye (image-left "a" = landmark 33 side, image-right "b" = 263 side): contour
               # box in normalised face-crop coords + EAR, for pseudo-labelling unlabelled eyes.
-              "a_x0", "a_y0", "a_x1", "a_y1", "a_ear", "b_x0", "b_y0", "b_x1", "b_y1", "b_ear"]
+              "a_x0", "a_y0", "a_x1", "a_y1", "a_ear", "b_x0", "b_y0", "b_x1", "b_y1", "b_ear",
+              # which crop gave landmarks: 0 = the standard one, k = config.DET_LM_RETRIES[k - 1]
+              "lm_attempt",
+              # outer-lip contour box (same coords as the eyes), MAR and the jawOpen blendshape,
+              # for pseudo-labelling yawns in sources that label none.
+              "m_x0", "m_y0", "m_x1", "m_y1", "mar", "jaw_open"]
 # MediaPipe FaceMesh eye contours (16 points each).
 _EYE_CONTOUR = {
     "a": (33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246),
     "b": (362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398),
 }
 _EYE_EAR_IDX = {"a": config.LEFT_EYE_EAR_IDX, "b": config.RIGHT_EYE_EAR_IDX}
+# MediaPipe FaceMesh outer-lip contour (20 points).
+_LIP_CONTOUR = (61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185)
 
 
 # --- pure geometry -------------------------------------------------------------------------
@@ -107,6 +115,37 @@ def head_class(pitch: float, yaw: float) -> str | None:
     if abs(pitch) <= config.HEAD_STRAIGHT_PITCH_DEG and abs(yaw) <= config.HEAD_STRAIGHT_YAW_DEG:
         return "head_straight"
     return None
+
+
+def to_std_crop(pts: np.ndarray, box, std) -> np.ndarray:
+    """Points normalised to crop ``box`` (x0, y0, side) → normalised to crop ``std``. Both crops
+    are squares, so ratios like EAR / MAR are unchanged."""
+    (x0, y0, s), (sx0, sy0, ss) = box, std
+    return np.c_[(x0 + pts[:, 0] * s - sx0) / ss, (y0 + pts[:, 1] * s - sy0) / ss]
+
+
+def pseudo_yawn_box(mp_row: dict, mapped: list, strict: bool,
+                    known_yawn: bool = False) -> tuple[tuple | None, bool]:
+    """Landmark yawn box for a mouth nobody boxed. Returns (box or None, ambiguous). ``strict``
+    (a source that labels no yawns): a jawOpen between the closed/open thresholds, or an open
+    mouth outside the crop, is ambiguous. Otherwise only clear yawns are added, never rejected.
+    ``known_yawn`` (a human says the image is a yawn): box the lips whatever jawOpen says."""
+    if any(c == "yawn" for c, _ in mapped):
+        return None, False
+    if not known_yawn:
+        jaw = _f(mp_row.get("jaw_open"))
+        if jaw is None or jaw < config.DET_PSEUDO_YAWN_JAW_CLOSED:
+            return None, False
+        if jaw <= config.DET_PSEUDO_YAWN_JAW_OPEN:
+            return None, strict
+    if _f(mp_row.get("m_x0")) is None:
+        return None, strict or known_yawn
+    x0, y0, x1, y1 = (float(mp_row[f"m_{c}"]) for c in ("x0", "y0", "x1", "y1"))
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    if not (0 <= cx <= 1 and 0 <= cy <= 1):
+        return None, strict or known_yawn
+    w, h = (x1 - x0) * config.DET_PSEUDO_YAWN_W_SCALE, (y1 - y0) * config.DET_PSEUDO_YAWN_H_SCALE
+    return (cx, cy, min(w, 1.0), min(h, 1.0)), False
 
 
 def pseudo_eye_boxes(mp_row: dict, mapped: list) -> tuple[list, bool]:
@@ -164,6 +203,7 @@ def _mp_init(face_model: str, lm_model: str) -> None:
     cv2.setNumThreads(0)
     _W["det"] = pipelines._make_detector(face_model, "IMAGE", config.CROP_MIN_DETECTION_CONFIDENCE)
     _W["lm"] = pipelines._make_landmarker(lm_model, "IMAGE")
+    _W["lm_retry"] = pipelines._make_landmarker(lm_model, "IMAGE", config.DET_LM_RETRY_CONFIDENCE)
 
 
 def _mp_image(bgr):
@@ -174,7 +214,9 @@ def _mp_image(bgr):
 
 
 def mp_one(img_path: str) -> dict:
-    """BlazeFace on the full image, then FaceLandmarker on the square face crop → pose."""
+    """BlazeFace on the full image, then FaceLandmarker on the square face crop → pose, eyes and
+    mouth. If that crop gives no landmarks on a real face, retry ``DET_LM_RETRIES`` (wider crops,
+    lower confidence); landmarks from a retry are mapped back into the standard crop."""
     import cv2
     from . import geometry, pipelines
     row = dict.fromkeys(MP_COLUMNS, "")
@@ -189,20 +231,32 @@ def mp_one(img_path: str) -> dict:
     b = d.bounding_box
     row.update(face_found=1, fx=b.origin_x, fy=b.origin_y, fw=b.width, fh=b.height,
                face_score=round(d.categories[0].score, 4))
-    x0, y0, side = square_face_box(b.origin_x, b.origin_y, b.width, b.height)
-    crop = crop_square(img, x0, y0, side, config.DET_IMG_SIZE)
-    out = pipelines._landmarks_and_matrix(_W["lm"].detect(_mp_image(crop)))
-    if out is not None:
-        lms, R = out
-        pitch, yaw, roll = (float(v) for v in geometry._rotation_matrix_to_euler(R))
-        row.update(landmarks_found=1, pitch=round(pitch, 3), yaw=round(yaw, 3), roll=round(roll, 3))
-        for eye, contour in _EYE_CONTOUR.items():
-            pts = lms[list(contour)]
-            (x0, y0), (x1, y1) = pts.min(axis=0), pts.max(axis=0)
-            ear = float(geometry._ear(lms, np.asarray(_EYE_EAR_IDX[eye])))
-            row.update({f"{eye}_x0": round(float(x0), 5), f"{eye}_y0": round(float(y0), 5),
-                        f"{eye}_x1": round(float(x1), 5), f"{eye}_y1": round(float(y1), 5),
-                        f"{eye}_ear": round(ear, 4)})
+    std = square_face_box(b.origin_x, b.origin_y, b.width, b.height)
+    attempts = [(std, config.DET_IMG_SIZE, _W["lm"])]
+    if max(b.width, b.height) < config.DET_LM_RETRY_MAX_FACE_FRAC * max(img.shape[:2]):
+        attempts += [(square_face_box(b.origin_x, b.origin_y, b.width, b.height, margin=m), size, _W["lm_retry"])
+                     for m, size in config.DET_LM_RETRIES]
+    for k, (box, size, lm) in enumerate(attempts):
+        res = lm.detect(_mp_image(crop_square(img, *box, size)))
+        out = pipelines._landmarks_and_matrix(res)
+        if out is not None:
+            break
+    else:
+        return row
+    lms, R = out
+    lms = to_std_crop(lms, box, std)
+    pitch, yaw, roll = (float(v) for v in geometry._rotation_matrix_to_euler(R))
+    row.update(landmarks_found=1, lm_attempt=k, pitch=round(pitch, 3), yaw=round(yaw, 3), roll=round(roll, 3))
+    for part, contour in (*_EYE_CONTOUR.items(), ("m", _LIP_CONTOUR)):
+        pts = lms[list(contour)]
+        (x0, y0), (x1, y1) = pts.min(axis=0), pts.max(axis=0)
+        row.update({f"{part}_x0": round(float(x0), 5), f"{part}_y0": round(float(y0), 5),
+                    f"{part}_x1": round(float(x1), 5), f"{part}_y1": round(float(y1), 5)})
+    for eye in _EYE_CONTOUR:
+        row[f"{eye}_ear"] = round(float(geometry._ear(lms, np.asarray(_EYE_EAR_IDX[eye]))), 4)
+    row["mar"] = round(float(geometry._mar(lms, np.asarray(config.MOUTH_MAR_IDX))), 4)
+    jaw = pipelines._blendshape_dict(res).get("jawOpen")
+    row["jaw_open"] = "" if jaw is None else round(float(jaw), 4)
     return row
 
 
@@ -218,7 +272,7 @@ def _mp_chunk(chunk_paths: list[str], dest: str) -> int:
 
 
 def mp_cache_dir() -> Path:
-    return paths.cache_dir() / "det_mp"
+    return paths.cache_dir() / f"det_mp_v{config.DET_MP_CACHE_VERSION}"
 
 
 def roboflow_images(manifest: dict) -> list[Path]:
@@ -308,6 +362,19 @@ def check_head_maps(manifest: dict) -> None:
                 f"    {project!r}: {suggest_head_map(e['class_names'])!r},")
 
 
+def _mouth_state(project: str, raw: list[str]) -> str | None:
+    """The human mouth state of an image from ``ROBOFLOW_MOUTH_LABELS``: "yawn" / "open" /
+    "closed", or None (no mouth labels: jawOpen decides)."""
+    mmap = config.ROBOFLOW_MOUTH_LABELS.get(project)
+    if not mmap:
+        return None
+    states = {mmap[n] for n in raw if n in mmap and n}
+    for s in ("yawn", "open", "closed"):   # a yawn anywhere in the image wins
+        if s in states:
+            return s
+    return mmap.get("")
+
+
 def _human_head(boxes, raw, hmap):
     """The largest human head-pose box as (class or None, box), or None if the image has none."""
     heads = [(hmap[n], tuple(b)) for (_, *b), n in zip(boxes, raw) if n in hmap]
@@ -321,13 +388,16 @@ def plan_roboflow_image(img_path: Path, entry: dict, mp_row: dict | None, W: int
     cmap = config.ROBOFLOW_CLASS_MAP.get(project, {})
     hmap = config.ROBOFLOW_HEAD_CLASS_MAP.get(project, {})
     headpose_only = project in config.ROBOFLOW_HEADPOSE_PROJECTS
+    landmark_only = project in config.ROBOFLOW_LANDMARK_ONLY_PROJECTS
+    # Head-pose / landmark-only sources that map nothing to "yawn" get their mouths from jawOpen.
+    labels_no_yawns = landmark_only or (headpose_only and "yawn" not in cmap.values())
     reject_labels = set(config.ROBOFLOW_REJECT_IMAGE_LABELS.get(project, ()))
     lbl = img_path.parent.parent / "labels" / (img_path.stem + ".txt")
     boxes, _ = parts_dataset._read_yolo_labels(lbl) if lbl.exists() else ([], 0)
     raw = [names[c] if c < len(names) else f"id_{c}" for c, *_ in boxes]
     plan = {"raw_labels": "|".join(sorted(set(raw))), "status": "rejected", "reason": "",
             "kind": "", "boxes": [], "head_class": "", "head_source": "", "lm_head_class": "",
-            "crop": None}
+            "crop": None, "pseudo_eyes": 0, "pseudo_yawn": 0}
     if reject_labels & set(raw):
         plan["reason"] = "ambiguous_label:" + ",".join(sorted(reject_labels & set(raw)))
         return plan
@@ -335,6 +405,11 @@ def plan_roboflow_image(img_path: Path, entry: dict, mp_row: dict | None, W: int
     human = _human_head(boxes, raw, hmap)
     face = bool(mp_row) and str(mp_row.get("face_found")) == "1"
     pose = face and str(mp_row.get("landmarks_found")) == "1"
+    if landmark_only:   # every box comes from the landmarks; the source's own labels are ignored
+        parts, human = [], None
+        if not pose:
+            plan["reason"] = "no_landmarks"
+            return plan
     if face or (headpose_only and human):
         if face:
             fbox = tuple(float(mp_row[k]) for k in ("fx", "fy", "fw", "fh"))
@@ -342,22 +417,39 @@ def plan_roboflow_image(img_path: Path, entry: dict, mp_row: dict | None, W: int
         else:   # BlazeFace missed a turned/lowered head: crop around the human head box instead
             xc, yc, w, h = human[1]
             fbox = ((xc - w / 2) * W, (yc - h / 2) * H, w * W, h * H)
-            x0, y0, side = square_face_box(*fbox, margin=config.DET_HEAD_BOX_MARGIN_FRAC)
+            x0, y0, side = square_face_box(*fbox, margin=config.DET_HEAD_BOX_MARGIN_BY_PROJECT.get(
+                project, config.DET_HEAD_BOX_MARGIN_FRAC))
         mapped = [(cls, m) for cls, b in parts if (m := map_box_to_crop(b, W, H, x0, y0, side))]
         plan.update(kind="face", crop=(x0, y0, side))
-        if pose and config.DET_PSEUDO_EYES:
-            pseudo, ambiguous = pseudo_eye_boxes(mp_row, mapped)
-            if ambiguous:
-                plan["reason"] = "ambiguous_unlabelled_eye"
-                return plan
+        eye_ambiguous = False
+        if (pose and config.DET_PSEUDO_EYES
+                and abs(float(mp_row["yaw"])) <= config.DET_PSEUDO_EYE_MAX_YAW_DEG):
+            pseudo, eye_ambiguous = pseudo_eye_boxes(mp_row, mapped)   # decided once the head is known
             mapped += pseudo
             plan["pseudo_eyes"] = len(pseudo)
+        mouth = _mouth_state(project, raw)
+        if mouth == "yawn" and not pose and not any(c == "yawn" for c, _ in mapped):
+            plan["reason"] = "ambiguous_unlabelled_mouth"   # a yawn we can't box
+            return plan
+        if pose and config.DET_PSEUDO_YAWNS and mouth != "closed":
+            ybox, ambiguous = pseudo_yawn_box(mp_row, mapped, strict=labels_no_yawns or mouth == "open",
+                                              known_yawn=mouth == "yawn")
+            if ambiguous:
+                plan["reason"] = "ambiguous_unlabelled_mouth"
+                return plan
+            if ybox:
+                mapped.append(("yawn", ybox))
+                plan["pseudo_yawn"] = 1
         hc = None
         if pose:
             plan["lm_head_class"] = head_class(float(mp_row["pitch"]), float(mp_row["yaw"])) or ""
             hc, plan["head_source"] = plan["lm_head_class"] or None, "landmarks"
         # A human head-pose label wins over the pitch guess, but only if it is the same head (its
         # centre falls inside this crop). Its class may be None ("neither"): then no head box.
+        # On a found face, it must also be head-sized (not a head label drawn on an eye).
+        if human and face and (max(human[1][2] * W, human[1][3] * H)
+                               < config.DET_HUMAN_HEAD_MIN_REL * max(fbox[2], fbox[3])):
+            human = None
         if human and map_box_to_crop(human[1], W, H, x0, y0, side):
             hc, plan["head_source"] = human[0], "human" if face else "human_box"
         if hc:
@@ -369,6 +461,13 @@ def plan_roboflow_image(img_path: Path, entry: dict, mp_row: dict | None, W: int
             if head_box:
                 mapped.append((hc, head_box))
                 plan["head_class"] = hc
+        # An unclear unlabelled eye rejects the image, except on a head-pose source's lowered head:
+        # downcast lids are exactly what reads as unclear there, and those heads are the point of
+        # the source (the DET_HEADPOSE_ALLOW_INCOMPLETE_EYES trade-off: that eye goes unlabelled).
+        if eye_ambiguous and not (headpose_only and plan["head_class"] == "head_down"
+                                  and config.DET_HEADPOSE_ALLOW_INCOMPLETE_EYES):
+            plan["reason"] = "ambiguous_unlabelled_eye"
+            return plan
     elif parts and all(max(b[2], b[3]) >= config.DET_CLOSEUP_MIN_BOX for _, b in parts):
         side = max(W, H)
         x0, y0 = (W - side) / 2, (H - side) / 2
@@ -381,8 +480,8 @@ def plan_roboflow_image(img_path: Path, entry: dict, mp_row: dict | None, W: int
     n_eye = sum(c in ("open_eye", "closed_eye") for c, _ in mapped)
     n_yawn = sum(c == "yawn" for c, _ in mapped)
     plan.update(n_eye_boxes=n_eye, n_yawn_boxes=n_yawn)
-    # Head-pose-only sources are here for their head boxes: one can carry the image on its own.
-    head_carries = (headpose_only and bool(plan["head_class"])
+    # Head-pose and landmark-only sources are here for their head boxes: one can carry the image.
+    head_carries = ((headpose_only or landmark_only) and bool(plan["head_class"])
                     and config.DET_HEADPOSE_ALLOW_INCOMPLETE_EYES)
     if not any(c in ("open_eye", "closed_eye", "yawn") for c, _ in mapped) and not head_carries:
         plan["reason"] = "no_part_boxes"
@@ -499,7 +598,8 @@ def build(mp_cache: dict, progress=lambda it, **k: it) -> dict:
                "roll": mp_row.get("roll", ""), "head_class": plan["head_class"],
                "head_source": plan["head_source"], "lm_head_class": plan["lm_head_class"],
                "n_eye_boxes": plan.get("n_eye_boxes", ""), "n_yawn_boxes": plan.get("n_yawn_boxes", ""),
-               "pseudo_eyes": plan.get("pseudo_eyes", 0),
+               "pseudo_eyes": plan.get("pseudo_eyes", 0), "pseudo_yawn": plan.get("pseudo_yawn", 0),
+               "lm_attempt": mp_row.get("lm_attempt", ""), "jaw_open": mp_row.get("jaw_open", ""),
                "raw_labels": plan["raw_labels"]}
         if plan["crop"]:
             row.update(face_x0=round(plan["crop"][0], 1), face_y0=round(plan["crop"][1], 1),
@@ -527,6 +627,19 @@ def build(mp_cache: dict, progress=lambda it, **k: it) -> dict:
                      "raw_labels": "open" if m["cls"] == "open_eye" else "closed",
                      "gray_path": gp, "ir_path": ip, "label_path": lp})
 
+    # Images are reused across builds, so drop what this build didn't write: a rejected image, or
+    # one whose group moved split (ranks shift when sources are added), would otherwise stay in
+    # its old split folder, where folder-reading trainers (Ultralytics) pick it up.
+    keep = {base / r[k] for r in rows if r.get("status") == "ok" for k in ("gray_path", "ir_path")}
+    keep |= {(base / r["ir_path"]).parent.parent / "labels" / Path(r["ir_path"]).with_suffix(".txt").name
+             for r in rows if r.get("status") == "ok"}
+    keep |= {base / r["label_path"] for r in rows if r.get("status") == "ok"}
+    stale = [f for v in ("gray", "ir") for f in (base / v).glob("*/*/*") if f.is_file() and f not in keep]
+    for f in stale:
+        f.unlink()
+    if stale:
+        print(f"removed {len(stale)} stale files from earlier builds")
+
     parts_dataset.write_csv(base / "index.csv", rows, INDEX_COLUMNS)
     for variant in ("gray", "ir"):
         (base / f"data_{variant}.yaml").write_text(
@@ -551,6 +664,10 @@ def summarize(rows: list[dict]) -> dict:
         "boxes_per_split": {s: dict(c) for s, c in sorted(boxes.items())},
         "head_boxes_by_source": dict(Counter(r.get("head_source") or "none"
                                              for r in ok if r.get("head_class"))),
+        "head_boxes_by_class": dict(Counter(r["head_class"] for r in ok if r.get("head_class"))),
+        "face_crops_without_head_box": sum(1 for r in ok if r["kind"] == "face" and not r.get("head_class")),
+        "landmarks_from_retry": sum(1 for r in ok if str(r.get("lm_attempt", "")) not in ("", "0")),
+        "pseudo_yawns": sum(int(r.get("pseudo_yawn") or 0) for r in ok),
         # Human head label vs. what the pitch thresholds say, where both exist: the calibration
         # check for HEAD_*_DEG ("none" = no head box / ambiguous band).
         "head_human_vs_landmarks": dict(Counter(
@@ -573,6 +690,9 @@ Classes: {classes}
   (index.csv head_source = human / human_box), otherwise they are auto-labelled from
   FaceLandmarker pitch (head_source = landmarks: |pitch| <= {straight} deg and |yaw| <= {yaw} deg
   -> straight; pitch >= {down} deg in the head-down direction -> down; otherwise no head box).
+  Landmark-only sources ({landmark_only}) ignore their own labels: head, eyes and yawn all
+  come from FaceLandmarker. Sources without yawn labels get a yawn box from the jawOpen
+  blendshape (index.csv pseudo_yawn = 1).
 
 gray/  plain luminance grayscale.   ir/  IR-simulated (Pi NoIR camera): red-dominant mix +
 histogram match toward MRL real-IR. MRL is real IR, so it is identical in both. Labels identical.
@@ -599,7 +719,8 @@ def export_zip(dest: Path | None = None) -> Path:
     readme = _README.format(
         size=config.DET_IMG_SIZE, classes=", ".join(config.DET_CLASSES),
         straight=config.HEAD_STRAIGHT_PITCH_DEG, yaw=config.HEAD_STRAIGHT_YAW_DEG,
-        down=config.HEAD_DOWN_PITCH_DEG, mrl_cap=config.DET_MRL_MAX_PER_SUBJECT_CLASS, roboflow=rf)
+        down=config.HEAD_DOWN_PITCH_DEG,
+        landmark_only=", ".join(config.ROBOFLOW_LANDMARK_ONLY_PROJECTS) or "none yet", mrl_cap=config.DET_MRL_MAX_PER_SUBJECT_CLASS, roboflow=rf)
     tmp = dest.with_suffix(".zip.tmp")
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as zf:
         zf.writestr("README.txt", readme)
