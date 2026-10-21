@@ -55,13 +55,21 @@ def parse_lat_lon(text: str) -> tuple[float, float]:
     return lat, lon
 
 
-def drowsy(p_drowsy: float = 0.88) -> Alert:
-    """What cv-argus's Orchestrator enqueues for a Drowsy detection (same as edge_chain)."""
+_first_drowsy = True
+
+
+def drowsy(p_drowsy: float = 0.95) -> Alert:
+    """What cv-argus's Orchestrator enqueues for a critical camera verdict: the first one is the
+    severity change (none -> critical, which the ESP32 raises an alert for), then keepalives."""
+    global _first_drowsy
+    transition, _first_drowsy = _first_drowsy, False
     return Alert.new(
         kind=AlertKind.DROWSINESS,
         level=2,
         source_id="cam-0",
-        payload={"class_name": "Drowsy", "probabilities": [round(1 - p_drowsy, 4), p_drowsy]},
+        payload={"class_name": "Drowsy", "probabilities": [round(1 - p_drowsy, 4), p_drowsy],
+                 "severity": "critical", "previous_severity": "none" if transition else "critical",
+                 "reason": "eyes_closed", "episode": "hil-1", "transition": transition},
     )
 
 

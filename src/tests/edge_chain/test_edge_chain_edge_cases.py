@@ -15,10 +15,10 @@ import pytest
 
 from app.models.status_route import StatusRoute
 from cv_argus.alerts import route_status
-from cv_argus.orchestrator.fusion_contract import GripState
 
 from .test_edge_chain_scenarios import (  # noqa: F401  (pi_clock/scenario are fixtures)
-    D,
+    DC,
+    DM,
     FPS,
     ND,
     NOFACE,
@@ -35,10 +35,9 @@ known_bug = pytest.mark.xfail  # alias so each marker below reads as one line
 
 
 async def _confirm_medium_incident(scenario):
-    """Drowsy with a good grip until a medium alert is posted."""
-    scenario.dev.grip = GripState.GOOD
+    """The camera's severity at medium until a medium alert is posted."""
     await scenario.frames(ND, 4)
-    await scenario.frames(D, 12)
+    await scenario.frames(DM, 6)
     assert [a["severity_level"] for _, a in scenario.dev.alert_posts] == ["medium"]
 
 
@@ -57,11 +56,10 @@ async def test_not_drowsy_after_an_incident_resolves_it(scenario, backend, truck
 
 
 @known_bug(strict=True, raises=AssertionError,
-           reason="REC-18a/CV-04: a No Face row reads as p(Drowsy)=0 and recovers the incident")
+           reason="REC-18a/CV-04/B1: a face out of frame decays to severity none, which resolves")
 async def test_no_face_mid_incident_does_not_recover(scenario, backend, truck_route):
-    """The driver slumps out of frame mid-incident. cv-argus reports `No Face` (probabilities
-    null); the firmware reads that as Not Drowsy, so the slump counts as recovery and the
-    incident is resolved. It must stay open."""
+    """The driver slumps out of frame mid-incident. With no face the rules' severity falls back
+    to none, the ESP32 reads that as recovery and resolves the incident. It must stay open."""
     route_id, _ = truck_route
     await _confirm_medium_incident(scenario)
     await scenario.frames(NOFACE, 30)
@@ -72,9 +70,9 @@ async def test_no_face_mid_incident_does_not_recover(scenario, backend, truck_ro
 
 async def test_unsynced_pi_clock_never_becomes_the_event_time(scenario, backend, truck_route):
     """REC-20 guard. A Pi with no battery-backed clock that boots offline stamps rows with its
-    last shutdown time and says so (`clock_synced: false`). Whatever the event-time fix sends as
+    last shutdown time and says so (`clock_synced: false`). Whatever the ESP32 sends as
     occurred_at, it must not be that `created_at_ms`: here it is 3 days old, so it would also
-    land the record in the past. Passes today (no occurred_at is sent at all)."""
+    land the record in the past. The ESP32 uses its GPS time instead."""
     route_id, _ = truck_route
     row = route_status("cam-0")
     row.created_at_ms = int((WALL_BASE - 3 * 24 * 3600) * 1000)
@@ -86,16 +84,12 @@ async def test_unsynced_pi_clock_never_becomes_the_event_time(scenario, backend,
     assert abs((datetime.now(timezone.utc) - stamped).total_seconds()) < 120
 
 
-@known_bug(strict=True, raises=AssertionError,
-           reason="X-16: the firmware ignores source_id, two cameras reset each other's debounce")
-async def test_two_cameras_do_not_reset_each_others_fusion(scenario, backend, truck_route):
-    """cam-0 sees a drowsy driver while cam-1 (e.g. a second angle) sees Not Drowsy. The firmware
-    feeds both streams into one fusion engine, so the alternating readings keep restarting the
-    debounce and nothing is ever raised. cam-0's critical incident must still be raised."""
+async def test_two_cameras_do_not_reset_each_others_alerts(scenario, backend, truck_route):
+    """cam-0 sees a drowsy driver while cam-1 (e.g. a second angle) sees Not Drowsy. The Pi keeps
+    each camera's severity (and episode) apart, so cam-0's critical incident is still raised."""
     route_id, _ = truck_route
-    scenario.dev.grip = GripState.BAD
     for _ in range(int(20 * FPS)):
-        scenario.orch._on_detection("cam-0", D)
+        scenario.orch._on_detection("cam-0", DC)
         scenario.orch._on_detection("cam-1", ND)
         scenario.orch._tick("cam-0")
         scenario.clock.now += 1.0 / FPS
@@ -110,13 +104,10 @@ async def test_two_cameras_do_not_reset_each_others_fusion(scenario, backend, tr
 # --- 4. Data correctness after a backlog -------------------------------------------------
 
 
-@known_bug(strict=True, raises=AssertionError,
-           reason="FUS-15a: every backlogged status gets the position at relay time")
 async def test_backlog_replay_does_not_stamp_relay_time_position(scenario, backend, truck_route):
-    """Wi-Fi is down for a stretch while the truck moves; the Pi keeps queueing heartbeats. When
-    the link is back, every row is relayed with the ESP32's position at that moment, so the
-    route history shows the truck parked where it is now. Each row must carry where the truck
-    was when it was queued (or be marked as having no position)."""
+    """The network is down for a stretch while the truck moves. Each heartbeat fails with the
+    message composed then (where the truck was), the Pi keeps that in its dead-letter queue, and
+    the replay sends exactly that, not the position at replay time (FUS-15a)."""
     route_id, _ = truck_route
     scenario.dev.wifi = False
     points = [(19.40 + i * 0.05, -99.10 - i * 0.05) for i in range(5)]
@@ -133,17 +124,14 @@ async def test_backlog_replay_does_not_stamp_relay_time_position(scenario, backe
     assert len(positions) == 5, f"{len(stored)} rows share {len(positions)} position(s)"
 
 
-@known_bug(strict=True, raises=AssertionError,
-           reason="FUS-15b: a re-served heartbeat carries the vigilance at relay time")
 async def test_backlog_heartbeat_keeps_its_own_vigilance(scenario, backend, truck_route):
     """A heartbeat queued while the driver was fine fails to post (the status endpoint answers
-    5xx for a while). Meanwhile a critical incident is confirmed. When the heartbeat finally goes
-    through it is stamped `critical`, rewriting a calm moment as an emergency."""
+    5xx for a while). Meanwhile a critical incident is raised. When the heartbeat finally goes
+    through it must still say `low`, the vigilance composed when it happened (FUS-15b)."""
     route_id, _ = truck_route
     scenario.buffer.enqueue(route_status("cam-0"))  # queued while calm
     scenario.dev.status_failures = 10**6
-    scenario.dev.grip = GripState.BAD
-    await scenario.frames(D, 12)
+    await scenario.frames(DC, 12)
     assert [a["severity_level"] for _, a in scenario.dev.alert_posts] == ["critical"]
     scenario.dev.status_failures = 0
     await scenario.drain()
@@ -154,14 +142,11 @@ async def test_backlog_heartbeat_keeps_its_own_vigilance(scenario, backend, truc
 # --- 5. Route lifecycle ----------------------------------------------------------------
 
 
-@known_bug(strict=True, raises=AssertionError,
-           reason="NET-12: a route change mid-incident leaves records the backend refuses forever")
 async def test_route_change_mid_incident_has_no_stuck_records(scenario, backend, truck_route):
     """An incident is open when the operator completes the route and starts the truck's next
-    one. Every later record for the old route gets 409 and is never ACKed (NET-01), and once the
-    device refetches its active route, an escalation on the new route would point
-    related_alert_id at the old route's alert (422). Expected: the queue keeps draining and the
-    old incident is still resolved."""
+    one (NET-12). A write the backend refuses for good (409/422) is ACKed, not retried forever,
+    the device looks its new route up after the 409, and the old incident is still resolved, so
+    the queue keeps draining."""
     route_id, _ = truck_route
     await _confirm_medium_incident(scenario)
     old = (await backend.get(f"/api/routes/{route_id}")).json()
@@ -179,7 +164,7 @@ async def test_route_change_mid_incident_has_no_stuck_records(scenario, backend,
         },
     )
     assert new.status_code == 201
-    await scenario.frames(D, 22)  # still drowsy: escalates to critical, refused with 409
+    await scenario.frames(DC, 22)  # still drowsy: escalates to critical
     await scenario.frames(ND, 12)  # then recovers
     await scenario.drain(max_polls=3)  # AssertionError if records are stuck
     old_alerts = await alerts_on(backend, route_id)
@@ -190,7 +175,7 @@ async def test_route_change_mid_incident_has_no_stuck_records(scenario, backend,
 
 
 @known_bug(strict=True, raises=AssertionError,
-           reason="BT-20: after an ESP32 reset the Pi sits in the dead session for its 10 s ACK wait")
+           reason="BT-20: after an ESP32 reset the Pi sits in the dead session for its 30 s report wait")
 async def test_esp32_reset_between_end_and_ack_recovers_on_next_poll(scenario, backend, truck_route):
     """The ESP32 resets right after END: no ACK, and the RFCOMM link is never closed cleanly
     (half-open). The Pi's one-session-at-a-time accept loop keeps waiting for the ACK, so the
@@ -208,19 +193,15 @@ async def test_esp32_reset_between_end_and_ack_recovers_on_next_poll(scenario, b
 # --- 7. Harness ------------------------------------------------------------------------
 
 
-async def test_debounce_lands_within_one_poll_of_target(scenario, backend, truck_route):
-    """X-18 guard. With the real 2 s keepalives and 5 s polls, fusion only sees readings in
-    batches, so the alert can't land exactly at the debounce. It must land between the debounce
-    (3 frames of hysteresis + 5 s) and one poll later, so timing checks elsewhere (the HIL suite's
-    FUS-01..03) can use that window instead of an exact time."""
-    scenario.dev.grip = GripState.GOOD
+async def test_alert_lands_within_one_poll_of_the_severity_change(scenario, backend, truck_route):
+    """X-18 guard. The Pi emits a severity change at once and the ESP32 polls every 2 s, so the
+    alert lands between the change and one poll later, which timing checks elsewhere (the HIL
+    suite) can use as their window."""
     await scenario.frames(ND, 4)
     start = scenario.clock.now
-    await scenario.frames(D, 20)
+    await scenario.frames(DM, 10)
     [(posted_at, body)] = scenario.dev.alert_posts
-    target = start + 3 / FPS + 5.0
     assert body["severity_level"] == "medium"
-    assert target <= posted_at <= target + POLL_EVERY_S + 1.0 / FPS, (
-        f"posted {posted_at - start:.1f} s into the episode, window "
-        f"[{target - start:.1f}, {target - start + POLL_EVERY_S:.1f}]"
+    assert start <= posted_at <= start + POLL_EVERY_S + 1.0 / FPS, (
+        f"posted {posted_at - start:.1f} s after the change, window [0, {POLL_EVERY_S:.1f}]"
     )

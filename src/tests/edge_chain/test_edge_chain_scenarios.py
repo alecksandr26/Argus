@@ -3,13 +3,13 @@ ESP32 -> real backend-argus.
 
 Unlike test_edge_chain.py, nothing here hand-builds Pi records: a scripted camera feeds
 detections into cv-argus's real `Orchestrator` (5 fps, on a fake clock), so the ESP32 side only
-ever sees what cv-argus actually emits. The old hand-built records were things cv-argus can't
-produce (Not Drowsy readings, Drowsy readings 6 s apart), which hid the biggest bug in the
-chain (X-13, Top #1 in docs/designs/edge-cloud-scenarios.md).
+ever sees what cv-argus actually emits. Each fake detection carries a rule severity the way the
+parts rules do (`DetectionResult.extras`), since the firmware alerts on that severity (no grip
+sensor yet).
 
-Every scenario fails today and is xfail(strict=True) with its scenario ID; esp32_sim.py has to
-mirror the firmware fixes (record timestamps, local grip tick, ACK policy, owed resolve, NVS
-snapshot, cell location, panic queue) for them to pass.
+Scenarios that still fail are xfail(strict=True) with their scenario ID
+(docs/designs/edge-cloud-scenarios.md); the rest pass since the "live first, dead-letter on
+failure" link and the Pi-severity alerts.
 """
 from __future__ import annotations
 
@@ -18,19 +18,21 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.models.alert import Alert as BackendAlert
+from datetime import datetime
+
 from app.models.status_route import StatusRoute
 from cv_argus.alerts import Alert, AlertKind, route_status
 from cv_argus.orchestrator import Orchestrator
-from cv_argus.orchestrator.fusion_contract import GripState
 
 from .esp32_sim import SimulatedEsp32
 
 pytestmark = pytest.mark.asyncio
 
 FPS = 5
-POLL_EVERY_S = 5.0  # config.h PI_BT_POLL_INTERVAL_MS
-WALL_BASE = 1_800_000_000.0  # fake wall clock origin (2027) for created_at_ms
+POLL_EVERY_S = 2.0  # config.h PI_BT_POLL_INTERVAL_MS
+# The fake wall clock's origin (for created_at_ms): an hour ago, so every event time the Pi
+# stamps stays inside the backend's accepted window (no more than 5 min ahead, 7 days back).
+WALL_BASE = real_time.time() - 3600.0
 
 
 class _Probs(list):
@@ -39,21 +41,25 @@ class _Probs(list):
 
 
 class _Det:
-    def __init__(self, level, p_drowsy):
+    def __init__(self, level, p_drowsy, severity, reason):
         self.level = level
         self.probabilities = _Probs([round(1 - p_drowsy, 4), p_drowsy])
         self.class_name = "Drowsy" if level == 2 else "Not Drowsy"
+        self.extras = {"severity": severity, "reason": reason, "model": "parts-rules-v1"}
 
 
-D = _Det(2, 0.9)
-ND = _Det(1, 0.1)
+DC = _Det(2, 0.95, "critical", "eyes_closed")    # what the rules say after 3 s of closed eyes
+DM = _Det(2, 0.75, "medium", "eyes_closed")      # ... after 2 s
+ND = _Det(1, 0.05, "none", "ok")
+D = DC
 NOFACE = None
 
 
 @pytest.fixture
 def pi_clock(monkeypatch, clock):
     """Point cv-argus's clock reads (orchestrator timing, Alert stamps) at the shared fake clock,
-    without touching the real `time` module that queue/thread timeouts rely on."""
+    without touching the real `time` module that queue/thread timeouts rely on. The Pi's clock
+    counts as NTP-synced, so its timestamps are the events' times."""
     fake_time = SimpleNamespace(
         monotonic=lambda: clock.now,
         monotonic_ns=lambda: int(clock.now * 1e9),
@@ -66,11 +72,12 @@ def pi_clock(monkeypatch, clock):
 
     monkeypatch.setattr(orchestrator_module, "time", fake_time)
     monkeypatch.setattr(alert_models, "time", fake_time)
+    monkeypatch.setenv("CV_ARGUS_CLOCK_SYNCED", "1")
     return clock
 
 
 class Scenario:
-    """Drives camera frames, the ESP32's local tick and its 5 s Bluetooth polls on one clock."""
+    """Drives camera frames, the ESP32's local tick and its Bluetooth polls on one clock."""
 
     def __init__(self, buffer, dev: SimulatedEsp32, clock):
         self.buffer = buffer
@@ -103,7 +110,7 @@ class Scenario:
         for _ in range(int(seconds * FPS)):
             await self._step(None, frame=False)
 
-    async def drain(self, max_polls: int = 20):
+    async def drain(self, max_polls: int = 30):
         for _ in range(max_polls):
             if self.buffer.unsent_count() == 0:
                 return
@@ -125,61 +132,60 @@ async def alerts_on(backend, route_id):
     return (await backend.get("/api/alerts", params={"route_id": route_id})).json()
 
 
-@pytest.mark.xfail(strict=True, reason="Top #1/CV-01/FUS-*: chain can't recover an incident")
+def _event_time(alert: dict) -> float:
+    """AlertOut.timestamp (the event time) as epoch seconds."""
+    return datetime.fromisoformat(alert["timestamp"].replace("Z", "+00:00")).timestamp()
+
+
 async def test_drowsy_episode_then_recovery_resolves_incident(scenario, backend, truck_route):
     route_id, _ = truck_route
-    scenario.dev.grip = GripState.BAD
     await scenario.frames(ND, 4)
-    await scenario.frames(D, 10)
+    await scenario.frames(DC, 10)
     await scenario.frames(ND, 15)
     await scenario.drain()
 
     alerts = await alerts_on(backend, route_id)
     assert [a["severity_level"] for a in alerts] == ["critical"]
+    assert alerts[0]["alert_type"] == "eyes_closed"
+    assert alerts[0]["grip_status"] == "good"  # placeholder until the sensor exists
     assert alerts[0]["resolved_at"] is not None
 
 
-@pytest.mark.xfail(strict=True, reason="FUS-01/X-03: grip is only evaluated on Pi records")
+@pytest.mark.xfail(strict=True, reason="grip sensor not wired yet: alerts follow the Pi's severity")
 async def test_grip_released_while_not_drowsy_raises_medium(scenario, backend, truck_route):
     route_id, _ = truck_route
-    scenario.dev.grip = GripState.GOOD
     await scenario.frames(ND, 10)
-    scenario.dev.grip = GripState.BAD  # hand off the wheel; camera keeps saying Not Drowsy
+    scenario.dev.grip_bad = True  # hand off the wheel; camera keeps saying Not Drowsy
     await scenario.frames(ND, 10)
     await scenario.drain()
 
     [alert] = await alerts_on(backend, route_id)
     assert alert["severity_level"] == "medium"
     assert alert["grip_status"] == "bad"
-    assert alert["alert_type"] == "grip_released"  # not "Not Drowsy"
+    assert alert["alert_type"] == "grip_released"
 
 
-@pytest.mark.xfail(strict=True, reason="FUS-02/BE-07: a backlog is fused and stamped late")
 async def test_backlog_after_30s_offline_relays_with_correct_times(
     scenario, backend, truck_route, clock
 ):
     route_id, _ = truck_route
-    scenario.dev.grip = GripState.BAD
     scenario.esp32_polling = False  # Bluetooth link down
     episode_start = clock.now
-    await scenario.frames(D, 30)
+    await scenario.frames(DC, 30)
     scenario.esp32_polling = True
     await scenario.drain()
 
     [alert] = await alerts_on(backend, route_id)
-    # Confirmed ~3 frames + 5 s debounce after the episode started, not 30 s later at relay time.
-    expected = WALL_BASE + episode_start + 0.6 + 5.0
-    occurred = BackendAlert.model_validate(alert).timestamp.timestamp()
-    assert abs(occurred - expected) <= 2.5
+    # When the camera's severity rose (the first critical frame), not 30 s later at relay time.
+    expected = WALL_BASE + episode_start
+    occurred = _event_time(alert)
+    assert abs(occurred - expected) <= 1.5
 
 
-@pytest.mark.xfail(strict=True, reason="Top #3/REC-19: an unparseable record blocks the queue")
 async def test_poison_record_does_not_block_records_behind_it(scenario, backend, truck_route):
     route_id, _ = truck_route
-    # A row the firmware can't parse at all: a NaN from the model is written as a bare NaN
-    # token, which ArduinoJson rejects, so it is never ACKed. (A row with *missing*
-    # probabilities isn't a poison: the firmware parses it and misreads it as Not Drowsy,
-    # EBT-04, see test_no_face_mid_incident_does_not_recover.)
+    # A row the firmware can't parse: a NaN from the model is written as a bare NaN token, which
+    # ArduinoJson rejects. The firmware recovers its id from the raw line and ACKs it away.
     scenario.buffer.enqueue(
         Alert.new(
             AlertKind.DROWSINESS,
@@ -193,7 +199,6 @@ async def test_poison_record_does_not_block_records_behind_it(scenario, backend,
     assert (await backend.get(f"/api/routes/{route_id}/status")).status_code == 200
 
 
-@pytest.mark.xfail(strict=True, reason="NET-01/BE-04: a permanently rejected record is retried forever")
 async def test_record_for_a_finished_route_is_dropped_and_acked(scenario, backend, truck_route):
     route_id, _ = truck_route
     await backend.put(f"/api/routes/{route_id}", json={"operative_status": "completed"})
@@ -202,26 +207,23 @@ async def test_record_for_a_finished_route_is_dropped_and_acked(scenario, backen
     assert await StatusRoute.find(StatusRoute.id_route == route_id).count() == 0
 
 
-@pytest.mark.xfail(strict=True, reason="EBT-07/BE-06: a lost ACK duplicates records in the backend")
 async def test_lost_ack_re_serve_creates_no_duplicates(scenario, backend, truck_route):
     route_id, _ = truck_route
     scenario.buffer.enqueue(route_status("cam-0"))
     scenario.dev.drop_next_ack = True  # relayed over HTTP, then the Bluetooth link drops
     await scenario.dev.poll()
-    await scenario.drain()  # the Pi re-serves the same record
+    await scenario.drain()  # the Pi re-serves the same record; client_event_id dedups it
     assert await StatusRoute.find(StatusRoute.id_route == route_id).count() == 1
 
 
-@pytest.mark.xfail(strict=True, reason="FUS-05: a failed resolve is never retried")
 async def test_failed_resolve_is_retried_until_backend_shows_resolved(
     scenario, backend, truck_route
 ):
     route_id, key = truck_route
-    scenario.dev.grip = GripState.BAD
-    await scenario.frames(D, 10)
-    scenario.dev.grip = GripState.GOOD
-    scenario.dev.device_key = "wrong-key"  # backend unreachable right when recovery confirms
+    await scenario.frames(DC, 10)
+    scenario.dev.device_key = "wrong-key"  # the backend refuses right when the driver recovers
     await scenario.frames(ND, 15)
+    assert scenario.buffer.counts()["dlq"] >= 1  # the resolve waits in the dead-letter queue
     scenario.dev.device_key = key
     await scenario.frames(ND, 10)
     await scenario.drain()
@@ -230,13 +232,12 @@ async def test_failed_resolve_is_retried_until_backend_shows_resolved(
     assert alert["resolved_at"] is not None
 
 
-@pytest.mark.xfail(strict=True, reason="FUS-10: an ESP32 reboot loses the open incident")
+@pytest.mark.xfail(strict=True, reason="FUS-10: an ESP32 reboot forgets the episode's alert id "
+                                       "(RAM only), so the recovery has nothing to resolve")
 async def test_esp32_reboot_mid_incident_still_resolves(scenario, backend, truck_route):
     route_id, _ = truck_route
-    scenario.dev.grip = GripState.BAD
-    await scenario.frames(D, 10)
-    scenario.dev = scenario.dev.reboot()  # power loss; state restored from NVS
-    scenario.dev.grip = GripState.GOOD
+    await scenario.frames(DC, 10)
+    scenario.dev = scenario.dev.reboot()  # power loss
     await scenario.frames(ND, 15)
     await scenario.drain()
 
@@ -244,7 +245,8 @@ async def test_esp32_reboot_mid_incident_still_resolves(scenario, backend, truck
     assert alert["resolved_at"] is not None
 
 
-@pytest.mark.xfail(strict=True, reason="GPS-01: no GPS fix freezes the queue; no cell fallback")
+@pytest.mark.xfail(strict=True, reason="GPS-01: no cell-location fallback; a status without a "
+                                       "GPS fix is skipped")
 async def test_no_gps_fix_uses_cell_location_marked_cell(scenario, backend, truck_route):
     route_id, _ = truck_route
     scenario.dev.gps = None
@@ -256,22 +258,17 @@ async def test_no_gps_fix_uses_cell_location_marked_cell(scenario, backend, truc
     assert status["location_accuracy_m"] == 550
 
 
-@pytest.mark.xfail(strict=True, reason="CV-07: stale camera data keeps driving fusion")
-async def test_pi_goes_silent_esp32_stops_raising_from_stale_data(scenario, backend, truck_route):
-    route_id, _ = truck_route
-    scenario.dev.grip = GripState.GOOD
-    await scenario.frames(D, 2)  # a Drowsy reading arrives, then the Pi crashes
+@pytest.mark.xfail(strict=True, reason="CV-07: no camera-offline detection on the ESP32")
+async def test_pi_goes_silent_esp32_reports_the_camera_offline(scenario, backend, truck_route):
+    await scenario.frames(DC, 2)  # a reading arrives, then the Pi crashes
     scenario.camera_alive = False
-    scenario.dev.grip = GripState.BAD
     await scenario.idle(30)
-    assert await alerts_on(backend, route_id) == []
     assert scenario.dev.camera_offline is True
 
 
-@pytest.mark.xfail(strict=True, reason="CV-04: no-face frames read as 'not drowsy'")
+@pytest.mark.xfail(strict=True, reason="CV-04/B1: a face out of frame decays to severity none")
 async def test_driver_slumps_out_of_frame_raises_an_alert(scenario, backend, truck_route):
     route_id, _ = truck_route
-    scenario.dev.grip = GripState.GOOD
     await scenario.frames(ND, 4)
     await scenario.frames(NOFACE, 20)
     await scenario.drain()
@@ -279,25 +276,23 @@ async def test_driver_slumps_out_of_frame_raises_an_alert(scenario, backend, tru
     assert alerts and alerts[0]["alert_type"] == "no_face"
 
 
-@pytest.mark.xfail(strict=True, reason="PAN-03/PAN-05: the simulated ESP32 has no panic path yet")
 async def test_panic_during_open_incident_creates_separate_critical(
     scenario, backend, truck_route
 ):
     route_id, _ = truck_route
-    scenario.dev.grip = GripState.BAD
-    await scenario.frames(D, 10)
-    await scenario.dev.press_panic()
+    await scenario.frames(DC, 10)
+    assert await scenario.dev.press_panic()
     await scenario.drain()
     alerts = await alerts_on(backend, route_id)
     sources = sorted(a["source"] for a in alerts)
     assert sources == ["fusion", "panic_button"]
 
 
-@pytest.mark.xfail(strict=True, reason="BE-12/FUS-*: escalation chain isn't fully resolved")
 async def test_escalation_chain_links_and_everything_resolves(scenario, backend, truck_route):
     route_id, _ = truck_route
-    scenario.dev.grip = GripState.GOOD  # drowsy + good grip = medium, escalates after 20 s
-    await scenario.frames(D, 30)
+    await scenario.frames(ND, 4)
+    await scenario.frames(DM, 6)   # medium first ...
+    await scenario.frames(DC, 6)   # ... then critical: the same episode
     await scenario.frames(ND, 15)
     await scenario.drain()
 
@@ -306,3 +301,25 @@ async def test_escalation_chain_links_and_everything_resolves(scenario, backend,
     assert set(by_severity) == {"medium", "critical"}
     assert by_severity["critical"]["related_alert_id"] == by_severity["medium"]["id_alert"]
     assert all(a["resolved_at"] is not None for a in alerts)
+
+
+async def test_no_credentials_dead_letters_then_delivers_with_the_original_time(
+    scenario, backend, truck_route, clock
+):
+    """The Pi has no argus-device.env yet: every backend-bound record comes back as
+    `FAIL no_credentials` and waits in the Pi's dead-letter queue, while the live stream keeps
+    flowing. Once credentials arrive, the replay delivers it with the time it happened."""
+    route_id, key = truck_route
+    scenario.dev.device_key = None
+    start = clock.now
+    await scenario.frames(DC, 6)
+    counts = scenario.buffer.counts()
+    assert counts["dlq"] >= 1 and counts["dlq_reasons"] == {"no_credentials": counts["dlq"]}
+    assert await alerts_on(backend, route_id) == []
+
+    scenario.dev.device_key = key  # argus-device.env installed
+    await scenario.frames(DC, 4)
+    await scenario.drain()
+    [alert] = await alerts_on(backend, route_id)
+    occurred = _event_time(alert)
+    assert abs(occurred - (WALL_BASE + start)) <= 1.5

@@ -1,16 +1,18 @@
 """A Python stand-in for the ESP32 firmware's relay loop, for the edge-chain tests.
 
-Mirrors `src/esp32-argus/src/esp32_argus/`'s `bluetoothPullAlerts()` (bluetooth_client.cpp)
-and `handlePiRecord()` (esp32_argus.ino) step for step, but drives the *real* Python pieces on
-either side of it:
+Mirrors `src/esp32-argus/src/esp32_argus/` step for step -- `bluetoothExchange()`
+(bluetooth_client.cpp), `parsePiRecord()` (pi_record.cpp), `decidePiEvent()`
+(pi_event_policy.cpp), the compose functions (backend_messages.cpp) and `handle()` /
+`loop()` (esp32_argus.ino) -- but drives the *real* Python pieces on either side of it:
 
 - the Pi side is cv-argus's real `SenderServer` + `Buffer`, reached over `FakeTransport`
   (the radio is the only simulated part);
-- the decision logic is cv-argus's real `FusionOrchestrator` (`fusion_contract.py`), which the
-  firmware's `fusion.cpp` is a 1:1 port of;
 - the cloud side is backend-argus's real FastAPI app, called with a real per-truck device key.
 
-GPS and the grip sensor are injected as plain values, since those are hardware readings.
+Live first, dead-letter on failure: every record is reported back to the Pi as delivered
+(`ACK`) or not (`FAIL <reason> <composed message>`); the Pi keeps only failed ones, and they're
+replayed `DLQ_REPLAY_BATCH` at a time once the backend is reachable. There's no grip sensor yet,
+so alerts follow the Pi's own severity. GPS is injected as a plain value (a hardware reading).
 Keep this in sync with the firmware by hand if either changes; there's no shared code.
 """
 from __future__ import annotations
@@ -22,28 +24,23 @@ from typing import Callable
 
 from httpx import AsyncClient
 
-from cv_argus.orchestrator.fusion_contract import (
-    DrowsyState,
-    FusionOrchestrator,
-    FusionReading,
-    GripState,
-    Severity,
-)
 from cv_argus.sender import (
     CONFIG_REQUEST,
-    END_LINE,
     NOCONFIG_LINE,
     FakeListener,
     FakeTransport,
     format_ack,
-    format_pull,
     parse_config,
+    protocol,
 )
 
-# config.h's DROWSY_PROBABILITY_THRESHOLD, itself cv-argus's FUSED_MODEL_THRESHOLD.
-DROWSY_PROBABILITY_THRESHOLD = 0.57
-PI_BT_PULL_COUNT = 50
+PI_BT_PULL_COUNT = 20  # config.h
+DLQ_REPLAY_BATCH = 5  # config.h
 PI_BT_LINE_TIMEOUT_S = 3.0
+
+_RANK = {"none": 1, "low": 2, "medium": 3, "critical": 4}
+_ALERTING = ("medium", "critical")
+_CLASSES = ("Drowsy", "Not Drowsy", "No Face")
 
 
 def fetch_config(listener: FakeListener) -> dict[str, str] | str | None:
@@ -74,168 +71,320 @@ def _reject_constant(token: str):
     raise ValueError(f"ArduinoJson rejects the token {token}")
 
 
-def parse_record_line(text: str) -> dict | None:
-    """bluetooth_client.cpp's parseRecordLine(): None for what the firmware can't parse, which it
-    then never ACKs. ArduinoJson 7 (no ARDUINOJSON_ENABLE_NAN) fails the whole line with
-    InvalidInput on a bare NaN/Infinity token, which Python's json.dumps writes by default
-    (REC-19). An unknown `kind` is rejected too (EBT-03)."""
+def parse_record_line(text: str) -> tuple[bool, dict | None, str]:
+    """pi_record.cpp's parsePiRecord(): `(ok, record, id)`. Not ok = Drop: ACK it away if the id
+    is known. ArduinoJson 7 rejects a bare NaN/Infinity token (which Python's json.dumps writes),
+    but the firmware still recovers the top-level id from the raw line (REC-19). An unknown
+    kind, an unknown class, or a reading without both probabilities (except No Face) is dropped."""
     try:
         record = json.loads(text, parse_constant=_reject_constant)
     except ValueError:
-        return None
-    if not isinstance(record, dict) or record.get("kind") not in ("drowsiness", "route_status"):
-        return None
-    return record
+        try:
+            loose = json.loads(text)  # the raw-line id recovery
+        except ValueError:
+            return False, None, ""
+        return False, None, loose.get("id", "") if isinstance(loose, dict) else ""
+    if not isinstance(record, dict) or not record.get("id"):
+        return False, None, ""
+    rid = record["id"]
+    kind = record.get("kind")
+    if kind == "route_status":
+        return True, record, rid
+    if kind != "drowsiness":
+        return False, None, rid
+    payload = record.get("payload") or {}
+    if payload.get("class_name") not in _CLASSES:
+        return False, None, rid
+    probabilities = payload.get("probabilities")
+    if probabilities is None:
+        if payload.get("class_name") != "No Face":
+            return False, None, rid
+    elif not (isinstance(probabilities, list) and len(probabilities) == 2):
+        return False, None, rid
+    return True, record, rid
+
+
+def backend_severity(severity: str | None) -> str:
+    """pi_event_policy.cpp's backendSeverity()."""
+    return severity if severity in _ALERTING else "low"
+
+
+def decide(record: dict, episodes: dict[str, str]) -> tuple[str, str | None]:
+    """pi_event_policy.cpp's decidePiEvent(): `(action, alert id)` where action is nothing /
+    alert / resolve / status, and the id is the episode's alert (escalation link or the one to
+    resolve)."""
+    if record["kind"] == "route_status":
+        return "status", None
+    p = record.get("payload") or {}
+    severity = p.get("severity")
+    if not p.get("transition") or severity not in _RANK:
+        return "nothing", None
+    previous = p.get("previous_severity")
+    open_alert = episodes.get(p.get("episode") or "")
+    if severity in _ALERTING and _RANK[severity] > _RANK.get(previous, 0):
+        return "alert", open_alert
+    if severity not in _ALERTING and previous in _ALERTING:
+        return "resolve", open_alert
+    return "nothing", None
+
+
+def _iso_from_epoch_ms(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @dataclass
 class PollResult:
     pulled: int
     acked: list[str]
+    failed: list[tuple[str, str]]  # (id, reason)
     protocol_ok: bool
+    dlq_waiting: int = 0
+    replayed: int = 0
 
 
 @dataclass
 class SimulatedEsp32:
     listener: FakeListener
     http: AsyncClient
-    device_key: str
-    route_id: str
+    device_key: str | None  # None = no credentials from the Pi yet
+    route_id: str | None    # the cached active route (ensureActiveRoute); None = look it up
     clock: Callable[[], float]  # monotonic seconds, stands in for millis() / 1000
-    grip: GripState = GripState.GOOD
     gps: tuple[float, float, float] | None = (19.43, -99.13, 72.0)  # lat, lon, km/h
-    fusion: FusionOrchestrator = field(default_factory=FusionOrchestrator)
-    # fusion.cpp's confirmedSeverity(); the Python contract has no accessor, and every
-    # FusionDecision.severity *is* the confirmed severity as of that tick.
-    confirmed_severity: Severity = Severity.LOW
-    wifi: bool = True  # wifiIsConnected()
-    # Faults a test injects. drop_next_ack: the link drops after the batch is relayed, before
-    # the ACK is sent. status_failures: that many route-status POSTs fail the way a 5xx would.
+    wifi: bool = True  # backendIsReachable()
+    # Faults a test injects. drop_next_ack: the link drops after the batch was handled, before
+    # anything is reported. status_failures: that many route-status POSTs fail like a 5xx.
     drop_next_ack: bool = False
     status_failures: int = 0
+    # Firmware state (RAM only: lost on reboot()).
+    episodes: dict[str, str] = field(default_factory=dict)
+    live_severity: str | None = None
     # What reached the backend, stamped with this device's clock (for timing assertions).
     alert_posts: list[tuple[float, dict]] = field(default_factory=list)
     status_posts: list[tuple[float, dict]] = field(default_factory=list)
+    _replay_stopped: bool = False
 
     def tick(self) -> None:
-        """loop()'s work between Bluetooth polls. The firmware has no local grip tick yet: fusion
-        only runs when a Pi record arrives (FUS-01), so there is nothing to do here."""
+        """loop()'s work between Bluetooth polls: nothing the chain depends on (no grip yet)."""
 
-    # --- bluetooth_client.cpp: bluetoothPullAlerts() -----------------------------------
+    def reboot(self) -> "SimulatedEsp32":
+        """A power loss: same wiring and credentials (NVS), RAM state (episodes) gone."""
+        return SimulatedEsp32(listener=self.listener, http=self.http,
+                              device_key=self.device_key, route_id=self.route_id,
+                              clock=self.clock, gps=self.gps, wifi=self.wifi)
+
+    # --- esp32_argus.ino: loop() -------------------------------------------------------
     async def poll(self, *, half_open_before_ack: bool = False) -> PollResult:
-        """One bluetoothPullAlerts(). `half_open_before_ack` models an ESP32 reset right after
-        END: the batch was relayed, no ACK is sent and the link is never closed, so the Pi only
-        notices when its own ACK wait runs out."""
-        client, server_side = FakeTransport.pair()
-        self.listener.offer(server_side)  # SerialBT.connect(piMac)
+        """One poll: the live outbox, then (backend reachable) a few dead letters.
+        `half_open_before_ack` models an ESP32 reset right after END: nothing is reported and
+        the link is never closed, so the Pi only notices when its own wait runs out."""
+        live = await self._exchange(protocol.format_pull(PI_BT_PULL_COUNT), replay=False,
+                                    half_open=half_open_before_ack)
+        if live.protocol_ok and live.dlq_waiting > 0 and await self._readiness() == "ready":
+            self._replay_stopped = False
+            replay = await self._exchange(protocol.format_dlq(DLQ_REPLAY_BATCH), replay=True)
+            live.replayed = replay.pulled
+            live.acked += replay.acked
+            live.failed += replay.failed
+        return live
 
-        client.write((format_pull(PI_BT_PULL_COUNT) + "\n").encode())
-        ack_ids: list[str] = []
-        pulled = 0
-        protocol_ok = True
+    # --- bluetooth_client.cpp: bluetoothExchange() --------------------------------------
+    async def _exchange(self, request: str, *, replay: bool, half_open: bool = False) -> PollResult:
+        client, server_side = FakeTransport.pair()
+        self.listener.offer(server_side)  # SerialBT.connect(piMac, PI_BT_CHANNEL)
+        client.write((request + "\n").encode())
+
+        acks: list[str] = []
+        fails: list[tuple[str, str, str | None]] = []
+        pulled, dlq_waiting, protocol_ok = 0, 0, True
         while True:
             line = client.readline(timeout=PI_BT_LINE_TIMEOUT_S)
             if line is None:
                 protocol_ok = False
                 break
             text = line.decode()
-            if text == END_LINE:
+            end = protocol.parse_end(text)
+            if end is not None:
+                dlq_waiting = end
                 break
             pulled += 1
-            record = parse_record_line(text)
-            if record is not None and await self.handle_pi_record(record):
-                ack_ids.append(record["id"])
+            ok, record, rid = parse_record_line(text)
+            if not ok:
+                if rid:
+                    acks.append(rid)  # unreadable: ACKed away so it can't block the queue
+                continue
+            kind, reason, body = await self._handle(record, replay)
+            if kind == "ack":
+                acks.append(rid)
+            elif kind == "fail":
+                fails.append((rid, reason, body))
 
-        if half_open_before_ack:
-            return PollResult(pulled=pulled, acked=[], protocol_ok=False)
-        if self.drop_next_ack and ack_ids:
+        if half_open:
+            return PollResult(pulled, [], [], False, dlq_waiting)
+        if self.drop_next_ack and (acks or fails):
             self.drop_next_ack = False
             client.close()
-            return PollResult(pulled=pulled, acked=[], protocol_ok=False)
-        if protocol_ok and ack_ids:
-            client.write((format_ack(ack_ids) + "\n").encode())
-            acked = client.readline(timeout=PI_BT_LINE_TIMEOUT_S)
-            if acked is None or not acked.decode().startswith("ACKED"):
-                protocol_ok = False
+            return PollResult(pulled, [], [], False, dlq_waiting)
+        if protocol_ok and pulled:
+            for rid, reason, body in fails:
+                client.write((protocol.format_fail(rid, reason, body) + "\n").encode())
+            if acks:
+                client.write((format_ack(acks) + "\n").encode())
+                acked = client.readline(timeout=PI_BT_LINE_TIMEOUT_S)
+                if acked is None or not acked.decode().startswith("ACKED"):
+                    protocol_ok = False
+            if protocol_ok:
+                client.write(b"DONE\n")
+                client.readline(timeout=PI_BT_LINE_TIMEOUT_S)  # "OK acked=.. failed=.. dlq=.."
         client.close()  # SerialBT.disconnect()
-        return PollResult(pulled=pulled, acked=ack_ids, protocol_ok=protocol_ok)
+        return PollResult(pulled, acks, [(r, why) for r, why, _ in fails], protocol_ok,
+                          dlq_waiting)
 
-    # --- esp32_argus.ino: handlePiRecord() ----------------------------------------------
-    async def handle_pi_record(self, record: dict) -> bool:
-        """True iff the record was relayed onward, which is what gates its ACK."""
-        if self.gps is None:
-            return False  # no GPS fix: don't ACK, the Pi re-serves it later
-        if not self.wifi:
-            return False  # "WiFi down -- not relaying"
-        lat, lon, speed = self.gps
+    # --- esp32_argus.ino: handle() -------------------------------------------------------
+    async def _handle(self, record: dict, replay: bool) -> tuple[str, str, dict | None]:
+        if replay and self._replay_stopped:
+            return "skip", "", None
+        result = await self._handle_one(record, replay)
+        if replay and result[0] == "fail":
+            self._replay_stopped = True
+        return result
 
-        if record["kind"] == "route_status":
-            return await self._post_route_status(lat, lon, speed)
+    async def _handle_one(self, record: dict, replay: bool) -> tuple[str, str, dict | None]:
+        p = record.get("payload") or {}
+        if not replay and record["kind"] == "drowsiness" and p.get("severity") in _RANK:
+            self.live_severity = p["severity"]
+        action, episode_alert = decide(record, self.episodes)
+        if action == "nothing":
+            return "ack", "", None
 
-        payload = record.get("payload") or {}
-        # parseRecordLine(): both stay 0.0f unless the array has exactly two entries, so a
-        # No Face row (probabilities: null) reads as p(Drowsy) = 0, i.e. Not Drowsy (CV-04).
-        probabilities = payload.get("probabilities")
-        p_not_drowsy, p_drowsy = 0.0, 0.0
-        if isinstance(probabilities, list) and len(probabilities) == 2:
-            p_not_drowsy, p_drowsy = probabilities[0], probabilities[1]
-        # ArduinoJson's as<String>() of a missing or null field is the text "null" (EBT-08).
-        class_name = payload.get("class_name")
-        class_name = "null" if class_name is None else str(class_name)
-        drowsy = (
-            DrowsyState.DROWSY
-            if p_drowsy >= DROWSY_PROBABILITY_THRESHOLD
-            else DrowsyState.NOT_DROWSY
-        )
-        decision = self.fusion.update(FusionReading(drowsy=drowsy, grip=self.grip, at=self.clock()))
-        self.confirmed_severity = decision.severity
-
-        ok = True  # nothing to post this tick still counts as processed
-        if decision.alert is not None:
+        stored = (record.get("dlq") or {}).get("body")
+        if stored:
+            body = dict(stored)  # the original position and time
+        elif action == "alert":
             body = {
-                "id_route": self.route_id,
-                "alert_type": class_name,
-                "severity_level": decision.alert.severity_level.value,
+                "alert_type": p.get("reason") or p.get("class_name"),
+                "severity_level": backend_severity(p.get("severity")),
                 "source": "fusion",
-                "ai_metadata": {"scores": {"not_drowsy": p_not_drowsy, "drowsy": p_drowsy}},
-                "grip_status": decision.alert.grip_status.value,
-                "coordinates": {"lat": lat, "lon": lon},
-                "speed_at_event": speed,
+                "ai_metadata": {"scores": {}},
+                "grip_status": "good",  # placeholder: no grip sensor yet
             }
-            if decision.alert.related_alert_id is not None:
-                body["related_alert_id"] = decision.alert.related_alert_id
-            resp = await self.http.post("/api/alerts", json=body, headers=self._headers())
-            ok = resp.status_code == 201
-            if ok:
-                self.alert_posts.append((self.clock(), body))
-                self.fusion.record_alert_posted(resp.json()["id_alert"])
+            if p.get("model"):
+                body["ai_metadata"]["model"] = p["model"]
+            probabilities = p.get("probabilities")
+            if probabilities:
+                body["ai_metadata"]["scores"] = {"not_drowsy": probabilities[0],
+                                                 "drowsy": probabilities[1]}
+            if episode_alert:
+                body["related_alert_id"] = episode_alert
+            self._put_position(body, "coordinates", "speed_at_event")
+            body["client_event_id"] = record["id"]
+            self._put_time(body, record)
+        elif action == "resolve":
+            if not episode_alert:
+                return "ack", "", None  # nothing this device knows to resolve
+            when = self._occurred_at(record)
+            if not when:
+                return "fail", "no_time", None
+            body = {"resolved_at": when}
+        else:  # status
+            if self.gps is None:
+                return "ack", "", None  # no position to report: skipped
+            body = {}
+            self._put_position(body, "current_coordinates", "current_speed")
+            body.update(odometer=0.0, vigilance=backend_severity(self.live_severity),
+                        client_event_id=record["id"])
+            self._put_time(body, record)
 
-        if decision.resolved_incident_id is not None:
-            resolved_at = datetime.now(timezone.utc).isoformat()  # gpsUtcIso8601() on device
-            resp = await self.http.put(
-                f"/api/alerts/{decision.resolved_incident_id}",
-                json={"resolved_at": resolved_at},
-                headers=self._headers(),
-            )
-            ok = resp.status_code == 200 and ok
-        return ok
+        ready = await self._readiness()
+        if ready != "ready":
+            return "fail", ready, body
 
-    async def _post_route_status(self, lat: float, lon: float, speed: float) -> bool:
-        if self.status_failures > 0:
+        to_send = dict(body)
+        if action == "resolve":
+            path = f"/api/alerts/{episode_alert}/resolve"
+        else:
+            key = "coordinates" if action == "alert" else "current_coordinates"
+            if action == "alert":
+                to_send["id_route"] = self.route_id
+                if episode_alert and "related_alert_id" not in to_send:
+                    to_send["related_alert_id"] = episode_alert
+            if key not in to_send:
+                if self.gps is None:
+                    return "fail", "no_gps", body
+                self._put_position(to_send, key,
+                                   "speed_at_event" if action == "alert" else "current_speed")
+            path = "/api/alerts" if action == "alert" else f"/api/routes/{self.route_id}/status"
+
+        if action == "status" and self.status_failures > 0:
             self.status_failures -= 1
-            return False  # as if the backend answered 5xx
-        body = {
-            "current_coordinates": {"lat": lat, "lon": lon},
-            "current_speed": speed,
-            "odometer": 0.0,  # no odometer sensor on the device, see config.h
-            "vigilance": self.confirmed_severity.value,
-        }
-        resp = await self.http.post(
-            f"/api/routes/{self.route_id}/status", json=body, headers=self._headers()
-        )
+            status = 503
+            resp = None
+        else:
+            resp = await self.http.post(path, json=to_send, headers=self._headers())
+            status = resp.status_code
+        self._note_status(status, route_scoped=action != "resolve")
+
+        if status in (200, 201):
+            if action == "alert":
+                self.alert_posts.append((self.clock(), to_send))
+                if p.get("episode"):
+                    self.episodes[p["episode"]] = resp.json()["id_alert"]
+            elif action == "resolve":
+                self.episodes.pop(p.get("episode") or "", None)
+            else:
+                self.status_posts.append((self.clock(), to_send))
+            return "ack", "", None
+        if status in (400, 409, 422):
+            return "ack", "", None  # rejected for good: retrying can't succeed
+        return "fail", f"http_{status}", body
+
+    async def _readiness(self) -> str:
+        """backend_api.cpp's backendReadiness()."""
+        if not self.device_key:
+            return "no_credentials"
+        if not self.wifi:
+            return "no_network"
+        if self.route_id is None:
+            self.route_id = await resolve_active_route(self.http, self.device_key)
+            if self.route_id is None:
+                return "no_route"
+        return "ready"
+
+    def _note_status(self, status: int, *, route_scoped: bool) -> None:
+        """backend_api.cpp's backendNoteStatus(): a route-scoped 404/409 forgets the route."""
+        if route_scoped and status in (404, 409):
+            self.route_id = None
+
+    def _put_position(self, body: dict, key: str, speed_key: str) -> None:
+        if self.gps is not None:
+            lat, lon, speed = self.gps
+            body[key] = {"lat": lat, "lon": lon}
+            body[speed_key] = speed
+
+    def _occurred_at(self, record: dict) -> str:
+        """The Pi's clock if NTP-synced, else GPS time (now), else nothing."""
+        if record.get("clock_synced") and record.get("created_at_ms"):
+            return _iso_from_epoch_ms(record["created_at_ms"])
+        if self.gps is not None:
+            return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return ""
+
+    def _put_time(self, body: dict, record: dict) -> None:
+        when = self._occurred_at(record)
+        if when:
+            body["occurred_at"] = when
+
+    # --- esp32_argus.ino: handlePanicButton() -------------------------------------------
+    async def press_panic(self) -> bool:
+        body = {"alert_type": "panic_button", "severity_level": "critical",
+                "source": "panic_button", "client_event_id": f"panic-{self.clock():.3f}"}
+        self._put_position(body, "coordinates", "speed_at_event")
+        if await self._readiness() != "ready" or "coordinates" not in body:
+            return False
+        body["id_route"] = self.route_id
+        resp = await self.http.post("/api/alerts", json=body, headers=self._headers())
         if resp.status_code == 201:
-            self.status_posts.append((self.clock(), body))
+            self.alert_posts.append((self.clock(), body))
         return resp.status_code == 201
 
     def _headers(self) -> dict[str, str]:
-        return {"X-Device-Api-Key": self.device_key}
+        return {"X-Device-Api-Key": self.device_key or ""}
