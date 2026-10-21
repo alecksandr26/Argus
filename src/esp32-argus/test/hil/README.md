@@ -96,13 +96,21 @@ proves nothing about the GPS. To check that the positions come from the NEO-6M:
 2. Put the GPS antenna **by a window or outside**. A cold start can take 1–15 min to get a
    fix, and indoors often never does.
 3. Watch the Serial Monitor. Every 10 s it prints a status line, for example:
-   `[gps] chars=48211 bad=0 sats=7 fix=yes lat=20.659812 lon=-103.349655`
+   `[gps] chars=48211 bad=0 sats=7 inView=11 heard=8 bestSnr=41 boots=1 fix=yes lat=20.659812 lon=-103.349655`
+
+   `sats` counts satellites *used in the fix*, so it stays 0 until there is one. Use
+   `inView`/`heard`/`bestSnr` (from the GSV sentences) to see whether the antenna is hearing
+   anything before that. `boots` counts NEO-6M power-ups (its `u-blox ag` banner): 0 or 1 is
+   normal.
 
    | What you see | Meaning |
    |---|---|
    | `chars=0` | No data from the NEO-6M: wiring (TX→GPIO 32, RX→GPIO 33), power, or baud |
    | `chars` growing, `bad` growing fast | Data is corrupted: check the wiring/ground |
-   | `chars` growing, `sats=0..3`, `fix=no` | Working, but it can't see enough sky yet. Move it or wait |
+   | `heard=0` (and `bestSnr=0`) | The antenna hears no satellites: indoors, antenna unplugged from its u.FL socket, or patch facing down. Move it outside |
+   | `heard` 1–3, or `bestSnr` under ~25 | Hearing satellites, but too weakly to download their orbits. Get more open sky, move the antenna away from the SIM800L, or wait |
+   | `heard` ≥ 4, `bestSnr` 30+, still `fix=no` | Good signal: it's downloading orbits (cold start, up to ~15 min). Wait |
+   | `boots` keeps rising | The NEO-6M is resetting, so every cold start begins again. Usually the SIM800L's 2 A transmit bursts sagging a shared supply: give the GPS its own regulator or a big capacitor |
    | `fix=yes` | Ready. Compare `lat`/`lon` with Google Maps |
 
 4. Get where you really are: in Google Maps, right-click your spot and click the coordinates
