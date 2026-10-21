@@ -32,13 +32,8 @@ String activeRouteTruckId;
 bool routeLookupAttempted = false;
 unsigned long lastRouteLookupAt = 0;
 
-struct HttpResult {
-  int status = -1;  // HTTP status, or <= 0 for a transport error / request never sent
-  String body;
-};
-
-HttpResult sendOverWifi(const char* method, const String& url, const String& body) {
-  HttpResult result;
+BackendResult sendOverWifi(const char* method, const String& url, const String& body) {
+  BackendResult result;
   if (!wifiIsConnected()) {
     Serial.println("[backend] Skipping request -- WiFi not connected");
     return result;
@@ -74,18 +69,13 @@ HttpResult sendOverWifi(const char* method, const String& url, const String& bod
   return result;
 }
 
-// Mobile data first for GET/POST, WiFi as the fallback (transport_policy.h); PUT is WiFi-only
-// because the SIM800L's AT+HTTPACTION has no PUT.
-HttpResult sendRequest(const char* method, const String& path, const String& body) {
-  HttpResult result;
-  if (!credentialsReady()) {
-    Serial.println("[backend] Skipping request -- no device credentials from the Pi yet");
-    return result;
-  }
+// Mobile data first, WiFi as the fallback (transport_policy.h).
+BackendResult sendRequest(const char* method, const String& path, const String& body) {
+  BackendResult result;
+  if (!credentialsReady()) return result;
   String url = credentials().backendUrl + path;
 
-  bool modemCanDoIt = strcmp(method, "POST") == 0 || strcmp(method, "GET") == 0;
-  if (credentials().useGprs() && modemCanDoIt && transport.pick(millis()) == Transport::Gprs) {
+  if (credentials().useGprs() && transport.pick(millis()) == Transport::Gprs) {
     result.status = gprsHttpRequest(method, url, credentials().apiKey, body, &result.body);
     transport.report(Transport::Gprs, result.status > 0, millis());
     if (result.status > 0) return result;
@@ -94,32 +84,9 @@ HttpResult sendRequest(const char* method, const String& path, const String& bod
   return sendOverWifi(method, url, body);
 }
 
-void logFailure(const char* what, int status) {
-  Serial.print("[backend] ");
-  Serial.print(what);
-  Serial.print(" failed, status=");
-  Serial.println(status);
-}
-
-// Reacts to a response status: a 401 means the key was rotated or revoked in the dashboard, so
-// ask the Pi for CONFIG again; a 404/409 on a route-scoped write means the route ended.
-void noteStatus(int httpStatus, bool routeScoped) {
-  if (httpStatus == 401) {
-    Serial.println("[backend] 401 -- device key rejected, re-fetching CONFIG from the Pi");
-    credentialsMarkStale();
-    activeRouteId = "";
-    routeLookupAttempted = false;
-  } else if (routeScoped && (httpStatus == 404 || httpStatus == 409)) {
-    Serial.println("[backend] Route no longer active -- looking it up again");
-    activeRouteId = "";
-    routeLookupAttempted = false;
-  }
-}
-
 // Makes sure activeRouteId is set, asking the backend at most once per ACTIVE_ROUTE_RETRY_MS
 // while it has none (a whole PULL batch would otherwise mean one lookup per record).
 bool ensureActiveRoute() {
-  if (!credentialsReady()) return false;
   if (activeRouteTruckId != credentials().truckId) {
     activeRouteTruckId = credentials().truckId;
     activeRouteId = "";
@@ -130,7 +97,7 @@ bool ensureActiveRoute() {
   routeLookupAttempted = true;
   lastRouteLookupAt = millis();
 
-  HttpResult response = sendRequest("GET", "/api/devices/me/active-route", String());
+  BackendResult response = sendRequest("GET", "/api/devices/me/active-route", String());
   if (response.status == 200) {
     JsonDocument doc;
     if (deserializeJson(doc, response.body) == DeserializationError::Ok) {
@@ -139,10 +106,12 @@ bool ensureActiveRoute() {
       Serial.println(activeRouteId);
     }
   } else if (response.status == 404) {
-    Serial.println("[backend] No active route for this truck yet -- holding records on the Pi");
+    Serial.println("[backend] No active route for this truck yet -- start its trip in the "
+                   "dashboard");
   } else {
-    logFailure("GET /api/devices/me/active-route", response.status);
-    noteStatus(response.status, /*routeScoped=*/false);
+    Serial.print("[backend] GET /api/devices/me/active-route failed, status=");
+    Serial.println(response.status);
+    backendNoteStatus(response.status, /*routeScoped=*/false);
   }
   return activeRouteId.length() > 0;
 }
@@ -154,95 +123,62 @@ bool backendIsReachable() {
   return credentials().useGprs() && transport.pick(millis()) == Transport::Gprs && modemIsRegistered();
 }
 
-AlertPostResult backendPostAlert(Severity severity, const String& alertType,
-                                  bool isFusionSource, float pNotDrowsy, float pDrowsy,
-                                  GripState gripStatus, bool isEscalation,
-                                  const String& relatedAlertId, double lat, double lon,
-                                  float speedKmh) {
-  AlertPostResult result;
-
-  if (!ensureActiveRoute()) return result;
-
-  JsonDocument doc;
-  doc["id_route"] = activeRouteId;
-  doc["alert_type"] = alertType;
-  doc["severity_level"] = severityToString(severity);
-  doc["source"] = isFusionSource ? "fusion" : "panic_button";
-
-  if (isFusionSource) {
-    JsonObject aiMetadata = doc["ai_metadata"].to<JsonObject>();
-    JsonObject scores = aiMetadata["scores"].to<JsonObject>();
-    scores["not_drowsy"] = pNotDrowsy;
-    scores["drowsy"] = pDrowsy;
-    doc["grip_status"] = (gripStatus == GripState::GOOD) ? "good" : "bad";
+const char* backendBlockReason(BackendBlock block) {
+  switch (block) {
+    case BackendBlock::Ready: return "ready";
+    case BackendBlock::NoCredentials: return "no_credentials";
+    case BackendBlock::NoNetwork: return "no_network";
+    case BackendBlock::NoRoute: return "no_route";
   }
-  if (isEscalation) {
-    doc["related_alert_id"] = relatedAlertId;
+  return "?";
+}
+
+const char* backendBlockHint(BackendBlock block) {
+  switch (block) {
+    case BackendBlock::Ready: return "ready";
+    case BackendBlock::NoCredentials: return "no argus-device.env on the Pi yet";
+    case BackendBlock::NoNetwork: return "no mobile data and no WiFi";
+    case BackendBlock::NoRoute: return "no trip in progress for this truck";
   }
+  return "?";
+}
 
-  JsonObject coordinates = doc["coordinates"].to<JsonObject>();
-  coordinates["lat"] = lat;
-  coordinates["lon"] = lon;
-  doc["speed_at_event"] = speedKmh;
+BackendBlock backendReadiness() {
+  if (!credentialsReady()) return BackendBlock::NoCredentials;
+  wifiEnsureConnected();
+  if (!backendIsReachable()) return BackendBlock::NoNetwork;
+  if (!ensureActiveRoute()) return BackendBlock::NoRoute;
+  return BackendBlock::Ready;
+}
 
-  String body;
-  serializeJson(doc, body);
+String backendActiveRouteId() { return activeRouteId; }
 
-  HttpResult response = sendRequest("POST", "/api/alerts", body);
-  result.httpStatus = response.status;
-  if (response.status == 201) {
-    JsonDocument responseDoc;
-    if (deserializeJson(responseDoc, response.body) == DeserializationError::Ok) {
-      result.idAlert = responseDoc["id_alert"].as<String>();
-      result.ok = true;
-    } else {
-      Serial.println("[backend] POST /api/alerts: couldn't parse the response body");
-    }
+BackendResult backendPost(const String& path, const String& body) {
+  Serial.print("[backend] -> POST ");
+  Serial.print(path);
+  Serial.print(" ");
+  Serial.println(body);
+  BackendResult result = sendRequest("POST", path, body);
+  Serial.print("[backend] <- ");
+  if (result.status > 0) {
+    Serial.print(result.status);
+    Serial.print(" ");
+    Serial.println(result.body.substring(0, 160));
   } else {
-    logFailure("POST /api/alerts", response.status);
-    noteStatus(response.status, /*routeScoped=*/true);
+    Serial.println("no answer (transport error)");
   }
   return result;
 }
 
-bool backendResolveAlert(const String& alertId, const String& resolvedAtIso8601) {
-  JsonDocument doc;
-  doc["resolved_at"] = resolvedAtIso8601;
-  String body;
-  serializeJson(doc, body);
-
-  HttpResult response = sendRequest("PUT", "/api/alerts/" + alertId, body);
-  if (response.status != 200) {
-    logFailure("PUT /api/alerts/{id}", response.status);
-    noteStatus(response.status, /*routeScoped=*/false);
-    return false;
+void backendNoteStatus(int httpStatus, bool routeScoped) {
+  if (httpStatus == 401) {
+    Serial.println("[backend] 401 -- device key rejected, re-fetching CONFIG from the Pi");
+    credentialsMarkStale();
+    activeRouteId = "";
+    routeLookupAttempted = false;
+  } else if (routeScoped && (httpStatus == 404 || httpStatus == 409)) {
+    Serial.println("[backend] Route no longer active -- looking it up again");
+    activeRouteId = "";
+    routeLookupAttempted = false;
   }
-  return true;
-}
-
-int backendPostRouteStatus(double lat, double lon, float speedKmh, float odometer,
-                            Severity vigilance, const String& clientEventId,
-                            const String& occurredAtIso8601) {
-  if (!ensureActiveRoute()) return 0;  // nothing sent: hold the record on the Pi
-
-  JsonDocument doc;
-  JsonObject coordinates = doc["current_coordinates"].to<JsonObject>();
-  coordinates["lat"] = lat;
-  coordinates["lon"] = lon;
-  doc["current_speed"] = speedKmh;
-  doc["odometer"] = odometer;
-  doc["vigilance"] = severityToString(vigilance);
-  if (clientEventId.length() > 0) doc["client_event_id"] = clientEventId;
-  if (occurredAtIso8601.length() > 0) doc["occurred_at"] = occurredAtIso8601;
-
-  String body;
-  serializeJson(doc, body);
-
-  HttpResult response =
-      sendRequest("POST", "/api/routes/" + activeRouteId + "/status", body);
-  if (response.status != 200 && response.status != 201) {
-    logFailure("POST /api/routes/{id}/status", response.status);
-    noteStatus(response.status, /*routeScoped=*/true);
-  }
-  return response.status;
 }

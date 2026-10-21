@@ -1,7 +1,8 @@
 #include "bluetooth_client.h"
 
-#include <ArduinoJson.h>
 #include <BluetoothSerial.h>
+
+#include <vector>
 
 #include "config.h"
 
@@ -70,37 +71,6 @@ bool readLine(String& out, unsigned long timeoutMs) {
   return false;
 }
 
-// Parses one of sender/protocol.py's compact JSON lines (alerts/serialization.py's
-// to_json()) into a PiRecord. Returns false on malformed JSON or an unrecognized `kind`
-// -- deliberately not guessed at, see alerts/serialization.py's own from_json(), which
-// raises rather than defaulting on an unknown kind.
-bool parseRecordLine(const String& line, PiRecord& record) {
-  JsonDocument doc;
-  if (deserializeJson(doc, line) != DeserializationError::Ok) return false;
-
-  record.id = doc["id"].as<String>();
-  String kind = doc["kind"].as<String>();
-
-  if (kind == "drowsiness") {
-    record.kind = PiRecordKind::DROWSINESS;
-    JsonObject payload = doc["payload"];
-    record.className = payload["class_name"].as<String>();
-    record.severity = payload["severity"] | "";
-    record.reason = payload["reason"] | "";
-    JsonArray probabilities = payload["probabilities"];
-    if (probabilities.size() == 2) {
-      record.pNotDrowsy = probabilities[0].as<float>();
-      record.pDrowsy = probabilities[1].as<float>();
-    }
-    return true;
-  }
-  if (kind == "route_status") {
-    record.kind = PiRecordKind::ROUTE_STATUS;
-    return true;
-  }
-  return false;
-}
-
 }  // namespace
 
 void bluetoothClientBegin() {
@@ -138,17 +108,34 @@ ConfigLineResult bluetoothFetchConfig(DeviceCredentials& out) {
   return result;
 }
 
-int bluetoothPullAlerts(bool (*onRecord)(const PiRecord& record)) {
+namespace {
+
+// "END" or "END <n>": true, with *n set (0 when the Pi sent no count).
+bool parseEnd(const String& line, int* n) {
+  if (line == "END") {
+    *n = 0;
+    return true;
+  }
+  if (!line.startsWith("END ")) return false;
+  *n = line.substring(4).toInt();
+  return true;
+}
+
+}  // namespace
+
+int bluetoothExchange(const char* request, RecordReport (*onRecord)(const PiRecord& record),
+                      int* dlqWaiting) {
+  *dlqWaiting = 0;
   if (!connectToPi()) {
     return -1;
   }
 
-  SerialBT.print("PULL ");
-  SerialBT.print(PI_BT_PULL_COUNT);
+  SerialBT.print(request);
   SerialBT.print("\n");
 
-  String ackIds;
-  int pulled = 0;
+  std::vector<std::string> acks;
+  std::vector<std::string> failLines;
+  int received = 0;
   bool protocolOk = true;
 
   while (true) {
@@ -158,33 +145,67 @@ int bluetoothPullAlerts(bool (*onRecord)(const PiRecord& record)) {
       protocolOk = false;
       break;
     }
-    if (line == "END") break;
+    if (parseEnd(line, dlqWaiting)) break;
 
-    pulled++;
+    received++;
     recordsPulled++;
     PiRecord record;
-    if (parseRecordLine(line, record) && onRecord(record)) {
-      if (ackIds.length() > 0) ackIds += ",";
-      ackIds += record.id;
+    if (parsePiRecord(line.c_str(), record) == ParseOutcome::Drop) {
+      if (record.id.empty()) {
+        Serial.println("[bt] Unreadable record with no id -- left on the Pi");
+      } else {
+        Serial.print("[bt] Unreadable record ");
+        Serial.print(record.id.c_str());
+        Serial.println(" -- ACKed away so it can't block the Pi's queue");
+        acks.push_back(record.id);
+      }
+      continue;
     }
-    // Anything not added to ackIds above (unparseable line, or onRecord returned false)
-    // is left unacked on purpose -- see this function's own doc comment.
+    RecordReport report = onRecord(record);
+    if (report.kind == ReportKind::Ack) {
+      acks.push_back(record.id);
+    } else if (report.kind == ReportKind::Fail) {
+      std::string fail = "FAIL " + record.id + " " + report.reason + " ";
+      fail += report.body.empty() ? "-" : report.body;
+      failLines.push_back(fail);
+    }
+    // Skip: not reported, the Pi keeps it as it was.
   }
 
-  if (protocolOk && ackIds.length() > 0) {
-    SerialBT.print("ACK ");
-    SerialBT.print(ackIds);
-    SerialBT.print("\n");
-
-    String ackedLine;
-    if (!readLine(ackedLine, PI_BT_LINE_TIMEOUT_MS) || !ackedLine.startsWith("ACKED")) {
-      Serial.println("[bt] Did not get a well-formed ACKED response");
-      protocolOk = false;
+  if (protocolOk && received > 0) {
+    for (const std::string& fail : failLines) {
+      SerialBT.print(fail.c_str());
+      SerialBT.print("\n");
+    }
+    if (!acks.empty()) {
+      SerialBT.print("ACK ");
+      for (size_t i = 0; i < acks.size(); i++) {
+        if (i > 0) SerialBT.print(",");
+        SerialBT.print(acks[i].c_str());
+      }
+      SerialBT.print("\n");
+      String acked;
+      if (!readLine(acked, PI_BT_LINE_TIMEOUT_MS) || !acked.startsWith("ACKED")) {
+        Serial.println("[bt] Did not get a well-formed ACKED response");
+        protocolOk = false;
+      }
+    }
+    if (protocolOk) {
+      SerialBT.print("DONE\n");
+      String result;
+      if (readLine(result, PI_BT_LINE_TIMEOUT_MS) && result.startsWith("OK")) {
+        if (!failLines.empty()) {
+          Serial.print("[bt] Pi: ");
+          Serial.println(result);  // e.g. "OK acked=3 failed=1 dlq=7"
+        }
+      } else {
+        Serial.println("[bt] The Pi didn't confirm the report (older cv-argus?)");
+      }
     }
   }
 
   SerialBT.disconnect();
-  return protocolOk ? pulled : -1;
+  return protocolOk ? received : -1;
 }
 
 bool bluetoothLinkUp() { return linkUp; }

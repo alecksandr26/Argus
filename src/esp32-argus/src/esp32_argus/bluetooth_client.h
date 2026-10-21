@@ -2,51 +2,45 @@
 
 #include <Arduino.h>
 
+#include <string>
+
 #include "device_config.h"
+#include "pi_record.h"
 
-// Pulls queued Alert/RouteStatus records off the Pi's Bluetooth SPP server --
-// src/cv-argus/src/sender/protocol.py's PULL/ACK grammar, with this device as the client
-// (see src/esp32-argus/README.md section 1). The Pi never pushes; this module always
-// initiates.
-
-enum class PiRecordKind : uint8_t { DROWSINESS, ROUTE_STATUS };
-
-struct PiRecord {
-  String id;
-  PiRecordKind kind;
-  String className;    // payload.class_name ("Not Drowsy"/"Drowsy") -- drowsiness only
-  float pNotDrowsy = 0.0f;  // payload.probabilities[0] -- drowsiness only
-  float pDrowsy = 0.0f;     // payload.probabilities[1] -- drowsiness only
-  // The parts pipeline's rule verdict (payload.severity: "none"/"low"/"medium"/"critical", and
-  // payload.reason, e.g. "eyes closed 3.2 s"). Empty when the Pi didn't send one (no face).
-  // Display only: fusion still decides from pDrowsy + grip.
-  String severity;
-  String reason;
-};
+// The Bluetooth link to the Pi: src/cv-argus/src/sender/protocol.py's grammar, with this device
+// as the client (see src/esp32-argus/README.md section 1). The Pi never pushes; this module
+// always initiates, with a fresh RFCOMM connection per exchange.
 
 void bluetoothClientBegin();
 
-// Whether the last connection attempt to the Pi succeeded. The link is a fresh RFCOMM
-// connection per poll, so "up" means "the Pi answered the last time we asked".
+// Whether the last connection attempt to the Pi succeeded ("the Pi answered the last time we
+// asked").
 bool bluetoothLinkUp();
 
 // One Serial line on the link: up/down, sessions and records since boot, how long since the Pi
 // last answered.
 void bluetoothLogStatus();
 
-// Connects to the Pi, runs one full PULL/ACK exchange, and disconnects.
-//
-// `onRecord` is called once per row pulled and must return true iff the record was
-// successfully relayed onward (e.g. the HTTP POST to backend-argus actually succeeded).
-// Only rows `onRecord` returns true for are ACKed -- per the protocol's documented
-// invariant (src/esp32-argus/README.md section 1): "Don't ACK unless you've actually
-// relayed those records onward ... and gotten a success response." A row onRecord
-// returns false for (or that fails to parse) is simply left unacked, so the Pi re-serves
-// it verbatim on the next PULL -- duplicates are fine, losing one is not.
-//
-// Returns the number of rows pulled (0 is normal -- the Pi had nothing queued), or -1 on
-// a connection/protocol failure (nothing gets ACKed in that case either).
-int bluetoothPullAlerts(bool (*onRecord)(const PiRecord& record));
+// What happened to one record, reported back to the Pi after the batch:
+// - Ack: delivered to the backend, or nothing to send (a keepalive) -> the Pi marks it sent;
+// - Fail: couldn't be delivered -> the Pi keeps it in its dead-letter queue with `reason` (one
+//   token: no_credentials, no_network, no_route, no_gps, http_503...) and `body`, the backend
+//   message composed here (with the position and time of the event);
+// - Skip: not tried this time (a replay stopped at an earlier failure) -> left as it was.
+enum class ReportKind : uint8_t { Ack, Fail, Skip };
+struct RecordReport {
+  ReportKind kind = ReportKind::Ack;
+  std::string reason;
+  std::string body;
+};
+
+// Connects, sends `request` ("PULL <n>" for the live outbox, "DLQ <k>" for dead letters), calls
+// `onRecord` for each record (an unreadable one with a known id is ACKed away without calling
+// it), reports back (FAIL lines, ACK, DONE) and disconnects. `*dlqWaiting` gets how many dead
+// letters the Pi holds. Returns the number of records received (0 is normal), or -1 on a
+// connection/protocol failure (then nothing was reported, and the Pi keeps everything as it was).
+int bluetoothExchange(const char* request, RecordReport (*onRecord)(const PiRecord& record),
+                      int* dlqWaiting);
 
 // Connects to the Pi, asks for this truck's backend credentials (`CONFIG`, see
 // device_config.h), and disconnects. Returns the parsed outcome; a connection failure or a

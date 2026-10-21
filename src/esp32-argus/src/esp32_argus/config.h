@@ -55,20 +55,27 @@
 // to it directly skips a service lookup (SDP) on every poll. 0 = look the channel up instead,
 // which the bench PC needs: Windows picks its own channel for an incoming COM port.
 #define PI_BT_CHANNEL 4
-#define PI_BT_POLL_INTERVAL_MS 5000UL
-#define PI_BT_PULL_COUNT 50 // matches sender/protocol.py's DEFAULT_PULL_LIMIT
+// Every poll pulls the live outbox (`PULL`); the Pi's keepalives come every 2 s, so this keeps
+// what the camera sees and what this device logs about 2 s apart.
+#define PI_BT_POLL_INTERVAL_MS 2000UL
+// At most this many records per poll (the Pi allows 50). Each is logged and possibly sent before
+// the Pi gets the report, so a small batch keeps that well inside the Pi's 30 s wait.
+#define PI_BT_PULL_COUNT 20
 #define PI_BT_LINE_TIMEOUT_MS 3000UL
+// Once the backend is reachable, the Pi's dead-letter queue is replayed this many records per
+// poll (`DLQ <k>`), after the live ones: the newest events always go first.
+#define DLQ_REPLAY_BATCH 5
+// The Bluetooth link's status line (up/down, sessions, records) on Serial.
+#define PI_BT_LINK_LOG_INTERVAL_MS 30000UL
 
 // =====================================================
-// Drowsiness decision threshold. cv-argus's RULE_P_DROWSY (src/cv-argus/src/constants.py)
-// is built around it: LOW sends p(Drowsy)=0.30 (below), MEDIUM/CRITICAL 0.75/0.95 (at or
-// above); tests/test_constants.py guards that side. Hand-synced, no automated check -- the same
-// verbatim-duplication pattern this project already uses for Severity (see root CLAUDE.md
-// and fusion_contract.py's own Severity docstring).
+// Grip + drowsiness fusion (fusion.*) -- NOT USED while there's no grip sensor: alerts follow the
+// Pi's own severity (pi_event_policy.h). Kept for when the sensor is wired.
+// DROWSY_PROBABILITY_THRESHOLD: cv-argus's RULE_P_DROWSY is built around it (LOW 0.30 below,
+// MEDIUM/CRITICAL 0.75/0.95 at or above; tests/test_constants.py guards that side).
 // =====================================================
 #define DROWSY_PROBABILITY_THRESHOLD 0.57f
 
-// =====================================================
 // Grip + drowsiness fusion timing windows -- mirrors
 // src/cv-argus/src/orchestrator/fusion_contract.py's FusionConfig defaults exactly. See
 // that file and src/esp32-argus/README.md section 5 before changing these; they're
@@ -96,23 +103,13 @@
 #define GPS_BAUD 9600
 
 // Bench testing only (src/esp32-argus/test/hil/). Indoors the NEO-6M usually has no fix, and
-// handlePiRecord() relays nothing without one, so 1 makes gps_module report a fixed position
-// instead. GPS date/time stays real (empty with no fix), so an incident can't be resolved on
+// a message without a position can't be sent (it goes to the Pi's dead-letter queue as
+// no_gps), so 1 makes gps_module report a fixed position instead. GPS date/time stays real (empty with no fix), so an incident can't be resolved on
 // the bench. NEVER flash a truck with this set to 1: every alert would carry these coordinates.
 #define BENCH_FAKE_GPS 0
 #define BENCH_GPS_LAT 20.6597
 #define BENCH_GPS_LON -103.3496
 #define GPS_LOG_INTERVAL_MS 10000UL // gpsLogStatus() cadence on Serial
-
-// Bench/demo only: test the Pi <-> ESP32 Bluetooth link with no backend, WiFi, SIM or GPS. 1 makes
-// this device pull from the Pi without backend credentials, print every record it gets (class,
-// severity, reason) with a banner when a CRITICAL arrives, run the grip fusion and print what it
-// decides, and ACK each record so the Pi's queue drains. Nothing is sent to the backend. The
-// Bluetooth link status is printed every BT_LINK_LOG_INTERVAL_MS. See src/esp32-argus/README.md
-// "Bluetooth link test". NEVER flash a truck with this set to 1: no alert would reach the backend.
-#define BT_LINK_TEST_MODE 0
-#define BT_LINK_TEST_POLL_INTERVAL_MS 1000UL // replaces PI_BT_POLL_INTERVAL_MS in that mode
-#define BT_LINK_LOG_INTERVAL_MS 10000UL
 
 // Panic button + grip sensor -- GPIO mapping not finalized against real hardware yet
 // (src/esp32-argus/README.md section 4 says so explicitly: "none of them have a defined

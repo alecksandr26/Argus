@@ -76,7 +76,8 @@ class SenderServer:
         listener: Listener,
         *,
         accept_timeout: float = 1.0,
-        ack_timeout: float = 10.0,
+        # The ESP32 logs and may POST each record before it reports back, so this is generous.
+        ack_timeout: float = 30.0,
         device_config: DeviceConfig | None = None,
         allowed_peers: Iterable[str] | None = None,
         link_quiet_seconds: float = DEFAULT_LINK_QUIET_SECONDS,

@@ -364,6 +364,14 @@ class TestSeverityTransitions:
         assert last.payload["severity"] == "critical"
         assert last.payload["probabilities"] == [0.05, 0.95]
 
+    def test_a_face_less_severity_change_still_has_probabilities(self):
+        # critical, then the face drops out while the class still reads Drowsy: the recovery
+        # must carry probabilities, or the ESP32 drops it as unreadable.
+        rows = _run(["none"] * 4 + ["critical"] * 4 + [None])
+        last = rows[-1]
+        assert last.payload["severity"] == "none" and last.payload["class_name"] == "Drowsy"
+        assert last.payload["probabilities"] == [0.05, 0.95]
+
     def test_no_face_frames_dont_repeat_transitions(self):
         rows = _run(["none"] * 4 + [None] * 30)
         assert len(rows) <= 3  # none, then No Face (class), nothing per frame after that

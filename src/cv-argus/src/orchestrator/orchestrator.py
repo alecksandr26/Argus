@@ -203,10 +203,11 @@ class Orchestrator:
         cls = state.reported
         # A severity change can come before the debounced class catches up (critical while the
         # class still reads Not Drowsy for a few frames), so it carries this frame's probabilities.
-        if severity_change:
+        # Only a No Face reading may go without probabilities (the ESP32 drops any other one
+        # that has none), so a face-less frame falls back to the reported class's last values.
+        probabilities = None if cls == NO_FACE else state.probabilities.get(cls)
+        if severity_change and state.latest_probabilities is not None:
             probabilities = state.latest_probabilities
-        else:
-            probabilities = None if cls == NO_FACE else state.probabilities.get(cls)
         payload = {
             # Detector extras (the parts pipeline's severity/reason/timers) go in first, so they
             # can never overwrite the keys the ESP32 and cap_unsent() depend on.
