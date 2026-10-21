@@ -1,6 +1,7 @@
 """collect.py — subject/clip naming (the no-overwrite guarantee), import, provenance log."""
 
 import importlib
+import time
 
 import pytest
 
@@ -135,3 +136,33 @@ def test_inventory(env):
     (s1 / "level_1_clip_02.mp4").write_bytes(b"x")
     (s1 / "level_2_clip_01.mp4").write_bytes(b"x")
     assert collect.inventory() == [("subject_01", 2, 1)]
+
+
+# --- webcam capture (fake camera) ---------------------------------------------------------
+
+def test_record_webcam_writes_a_readable_clip(env, monkeypatch):
+    """Regression: the temp file used to be ``*.mp4.partial``, which OpenCV can't open a writer
+    for, so a "successful" recording left an empty clip."""
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+
+    class FakeCam:
+        def isOpened(self): return True
+        def set(self, *_): return True
+        def get(self, prop):
+            return {cv2.CAP_PROP_FRAME_WIDTH: 64, cv2.CAP_PROP_FRAME_HEIGHT: 48}.get(prop, 0)
+        def read(self):
+            time.sleep(1 / 30)  # paced like a real camera; mpeg4 rejects absurd fps
+            return True, np.zeros((48, 64, 3), np.uint8)
+        def release(self): pass
+
+    real = cv2.VideoCapture
+    monkeypatch.setattr(cv2, "VideoCapture", lambda src: FakeCam() if isinstance(src, int) else real(src))
+    paths, collect = env
+    out = paths.raw_dir() / "subject_01" / "level_1_clip_01.mp4"
+    out.parent.mkdir()
+    info = collect.record_webcam(out, duration_sec=0.2, preview=False, countdown_sec=0)
+
+    assert info.n_frames > 0
+    assert collect.probe_video(out)[0] == info.n_frames
+    assert [p.name for p in out.parent.iterdir()] == ["level_1_clip_01.mp4"]  # no temp left

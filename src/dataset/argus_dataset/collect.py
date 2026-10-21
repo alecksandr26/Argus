@@ -194,8 +194,14 @@ def record_webcam(
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or (resolution[0] if resolution else 640)
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or (resolution[1] if resolution else 480)
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    tmp_path = out_path.with_suffix(".mp4.partial")
+    # OpenCV picks the container from the extension, so the temp name must end in .mp4 (an
+    # ".mp4.partial" writer silently never opens); the leading dot keeps discover_clips' glob
+    # from mistaking a crash leftover for a clip.
+    tmp_path = out_path.with_name(f".{out_path.stem}.partial.mp4")
     writer = cv2.VideoWriter(str(tmp_path), fourcc, float(target_fps), (w, h))
+    if not writer.isOpened():
+        cap.release()
+        raise IOError(f"cannot open a video writer for {tmp_path}")
 
     stop = {"flag": False}
 

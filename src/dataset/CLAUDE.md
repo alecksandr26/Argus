@@ -98,6 +98,7 @@ mirrors this (`MINORITY_WINDOW_OVERLAP`, per-class tiling spot-check) — keep t
 | `checkpoint.py` | `RunCheckpoint`: `<artifact>.completed.jsonl` (authority for "what's done"), `<artifact>.json` (progress summary), `reconcile` (drop rows for keys missing from the log — interrupted commit), `prune_missing` (drop rows/log keys whose raw `.mp4` is gone — the inverse selector, used by `update.py`), `check_config_or_die` (the `config_hash` guard), `reset`. |
 | `cnn_lstm.py` | Build 09's own driver (not a "video build"): parallel per-crop geometry → `.cache/geo_per_crop.parquet` (resumable), then windowing. |
 | `collect.py` | Clip collection into the raw tree — subject/clip naming (`next_clip_number` = `max+1`, the no-overwrite guarantee), `record_webcam` (headless-capable), `import_file` (copy or re-encode), `append_collection_log` (write-as-you-go provenance), `quick_face_coverage` (optional BlazeFace sanity check). Driven by `scripts/collect_clips.py`. |
+| `frames.py` | Stills for hand labelling (parts detector): one full frame every `interval_sec` from a webcam (`capture_stream`, wall time; reads continuously so the camera buffer never goes stale) or a video (`extract_from_video`, video time) into `raw/webcam_frames/subject_NN/<session>/` + a write-as-you-go `frames.csv`. `guided_plan` prompts through `DEFAULT_PHASES` (straight / eyes_closed / head_down / head_down_eyes_closed / yawn) with un-saved transitions; the tag in each filename is a labelling hint, not a label. Saved frames are never drawn on (overlays go on the preview copy). `next_subject_id` spans `raw_videos/` and `webcam_frames/` (one namespace). Not read by any build: labelled stills come back through a Roboflow project (README 7c). Open gap: `detection_dataset` would group them per still, not per subject. Driven by `scripts/capture_frames.py`. |
 | `update.py` | Incremental-update orchestration: `status` (per-artifact new/orphan diff of the raw tree vs. each `completed.jsonl`), `prune` (drop orphan rows + JPEGs), `run` (the `run_all.sh` build chain as one call). Driven by `scripts/update_dataset.py`. |
 | `assets.py` | Idempotent download of `face_landmarker.task` + `blaze_face_short_range.tflite`. |
 | `external.py` | **Download-only** pull + catalogue of the external datasets for the experimental "parts" architecture (eye/mouth crops → tiny CNNs): MRL Eye (zip → `raw/mrl_eye/`), the `config.ROBOFLOW_PROJECTS` YOLO exports (→ `raw/roboflow/<project>/v<N>/`), and a catalogue-only UTA-RLDD entry. Writes `raw/datasets_manifest.json` atomically. Skip-if-unchanged is checksum-based: zip sha256 for MRL, a whole-tree fingerprint for Roboflow. Its config constants are deliberately **not** in `_HASH_RELEVANT`: `config_hash` hashes every key, so adding them would invalidate every finished 01/02/06/09 run. Driven by `fetch_mrl_eye.py` / `fetch_roboflow_parts.py` / `datasets_status.py`. |
@@ -340,16 +341,20 @@ seeded (reproducible) `parts_dataset_aug/` + `.zip`. Rules agreed so far:
 
 ## What's verified vs. not
 
-- **Verified:** the test suite (`pytest` → 39 pass, 2 skipped without `[dev]`; the 2 skips are
-  the geometry-equivalence and analysis checks that need `tensorflow` / `scipy`); the NumPy
+- **Verified:** the test suite (`pytest` → 100 pass, 1 skipped without `[dev]` on 2026-10-20;
+  the skip is the geometry-equivalence check, which needs `tensorflow`); the NumPy
   geometry port vs. the real `tf.keras` layer to `atol=1e-4`; the spawn pool + checkpoint +
   resume + model-download flow end to end on synthetic video; the collector's no-overwrite
-  naming, verbatim / re-encode import, and provenance log (`test_collect.py`); the incremental
+  naming, verbatim / re-encode import, provenance log, and `record_webcam`'s write path against
+  a fake camera (`test_collect.py`); `frames.py`'s capture loop, guided plan and video
+  extraction against a fake camera + clock (`test_frames.py`); the incremental
   new-vs-orphan diff and `prune_missing` (`test_update.py`).
 - **Not verified on the dev box:** real MediaPipe inference — it needs system shared libs
   (`libgles2`/`libegl1`/…, see `README.md`) that weren't installable in the environment this
   was built in. So feature-*value* fidelity against a real Colab run is unconfirmed (expected —
   see "Same artifact" above). First real run should `verify_artifacts.py` and, if a Colab CSV
-  is handy, `verify_artifacts.py --compare`. Real webcam capture in `collect_clips.py` is also
-  unexercised (no camera in that environment) — the import path is tested, the capture loop
-  isn't.
+  is handy, `verify_artifacts.py --compare`. Real webcam capture (`collect_clips.py`,
+  `capture_frames.py`) has still not run against a physical camera; the fake-camera tests
+  caught that `record_webcam`'s `*.mp4.partial` temp file never opened (OpenCV picks the
+  container from the extension), so every webcam clip it "recorded" was empty. It now writes
+  `.<clip>.partial.mp4` (hidden, so `discover_clips`' glob can't pick up a crash leftover).

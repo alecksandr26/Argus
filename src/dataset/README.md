@@ -326,6 +326,54 @@ faces), list it in `ROBOFLOW_LANDMARK_ONLY_PROJECTS`: every box then comes from 
   rules, which were fixed after a filename-collision chain once merged 46% of the images into
   one group.
 
+## 7c. Capture our own stills to label — `scripts/capture_frames.py`
+
+The external sets are other people's cameras. This captures **full frames** of our own people
+(one every second by default) to label for the detector. They're full frames, not crops, because
+`build_detection_dataset.py` finds the face and makes the crop itself.
+
+```bash
+# guided: the person is prompted through 5 poses, 10 s each, with 3 un-saved seconds to change
+#   straight / eyes_closed / head_down / head_down_eyes_closed / yawn
+python scripts/capture_frames.py --subject new --guided --rounds 2      # ~2 min, ~100 stills
+python scripts/capture_frames.py --subject 55 --guided --phases eyes_closed head_down --phase-sec 20
+
+# free capture (a fixed time, or --duration 0 until Ctrl-C), with a tag of your choice
+python scripts/capture_frames.py --subject 55 --tag driving --duration 120 --interval 0.5
+
+# a still per second out of existing recordings (phone videos, collect_clips.py clips, ...)
+python scripts/capture_frames.py --subject 55 --tag phone --from-file ~/vids/*.mp4
+
+python scripts/capture_frames.py --list     # stills per subject per tag so far
+```
+
+Output: `raw/webcam_frames/subject_NN/<YYYYmmdd-HHMMSS>/subject_NN_<session>_0001_<tag>.jpg`,
+plus a `frames.csv` per session (time, tag, size, and a `sharpness` score; low values are
+motion-blurred and worth skipping). Add `--save-video` to keep the whole stream as `session.mp4`.
+
+- **The tag is a hint, not a label.** It's what the person was asked to do; they still blink,
+  look away or start a pose late. Label what each image actually shows.
+- **Subject ids are shared with `raw/raw_videos/`.** `--subject new` takes the next free number
+  across both, so someone recorded with `collect_clips.py` too keeps one id.
+- Same webcam setup as `collect_clips.py`: in WSL2 attach it with `usbipd` first (no
+  `/dev/video*` means "cannot open camera"). Without the `[collect]` extra there's no preview
+  window; the prompts print in the terminal instead (with a beep on each pose change).
+
+**From stills to training data** (the same path as any other Roboflow source, section 7b):
+
+1. Create a private Roboflow project, upload the session folders, and box `open_eye`,
+   `closed_eye`, `yawn`, `head_straight`, `head_down` (head boxes around the whole face; no head
+   box for a turned head). Unboxed eyes and yawns get pseudo-labelled from landmarks.
+2. Generate a version (no augmentation needed), add it to `config.ROBOFLOW_PROJECTS` and
+   `ROBOFLOW_HEADPOSE_PROJECTS`, and map its labels in `ROBOFLOW_HEAD_CLASS_MAP` /
+   `ROBOFLOW_CLASS_MAP`.
+3. `fetch_roboflow_parts.py --projects <project>`, then `build_detection_dataset.py` as above.
+
+**Before trusting test numbers from it:** the build groups images by Roboflow stem and exact
+duplicates, so stills taken a second apart of the same person are separate groups and can land
+in train *and* test. Those stills should be grouped by the `subject_NN_` filename prefix first
+(not done yet).
+
 ---
 
 ## 8. Tests
@@ -339,4 +387,5 @@ pytest
 of the notebooks' `tf.keras` `GeometricRatioFeatureLayer`) against the real layer to
 `atol=1e-4` — this is what lets the whole pipeline run without TensorFlow.
 `tests/test_collect.py` / `tests/test_update.py` cover the collector's no-overwrite naming and
-the incremental new-vs-orphan diff. `pytest` without `[dev]` skips only the TF/scipy tests.
+the incremental new-vs-orphan diff; `tests/test_frames.py` covers `capture_frames.py`'s
+one-still-per-interval loop (with a fake camera and clock) and video extraction. `pytest` without `[dev]` skips only the TF/scipy tests.

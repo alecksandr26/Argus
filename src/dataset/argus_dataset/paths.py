@@ -134,6 +134,12 @@ def roboflow_raw_dir() -> Path:
     return external_raw_dir() / "roboflow"
 
 
+def frames_raw_dir() -> Path:
+    """Stills captured for hand labelling by ``scripts/capture_frames.py``:
+    ``subject_NN/<session>/*.jpg`` + ``frames.csv`` per session. Not read by any build."""
+    return external_raw_dir() / "webcam_frames"
+
+
 def parts_dataset_dir() -> Path:
     """Merged 3-class parts dataset: ``{rgb,ir}/{open_eye,closed_eye,yawn}/`` + CSVs."""
     return processed_dir() / "parts_dataset"
