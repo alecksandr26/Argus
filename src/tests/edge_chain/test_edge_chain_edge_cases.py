@@ -17,6 +17,9 @@ from app.models.status_route import StatusRoute
 from cv_argus.alerts import route_status
 
 from .test_edge_chain_scenarios import (  # noqa: F401  (pi_clock/scenario are fixtures)
+    FACE_EYES_CLOSED,
+    FACE_GONE,
+    FACE_OPEN,
     DC,
     DM,
     FPS,
@@ -55,17 +58,21 @@ async def test_not_drowsy_after_an_incident_resolves_it(scenario, backend, truck
     assert alert["resolved_at"] is not None
 
 
-@known_bug(strict=True, raises=AssertionError,
-           reason="REC-18a/CV-04/B1: a face out of frame decays to severity none, which resolves")
 async def test_no_face_mid_incident_does_not_recover(scenario, backend, truck_route):
-    """The driver slumps out of frame mid-incident. With no face the rules' severity falls back
-    to none, the ESP32 reads that as recovery and resolves the incident. It must stay open."""
+    """REC-18a/B1: the driver's eyes close into critical, then they slump out of frame. Without a
+    face the rules' timers stop, which used to decay the alarm and resolve the incident. It must
+    stay open until the face is back and clear."""
     route_id, _ = truck_route
-    await _confirm_medium_incident(scenario)
-    await scenario.frames(NOFACE, 30)
+    await scenario.signals(FACE_OPEN, 2)
+    await scenario.signals(FACE_EYES_CLOSED, 4)
+    await scenario.signals(FACE_GONE, 30)
     await scenario.drain()
-    [alert] = await alerts_on(backend, route_id)
-    assert alert["resolved_at"] is None, "a driver out of frame resolved the incident"
+    alerts = await alerts_on(backend, route_id)
+    assert alerts and all(a["resolved_at"] is None for a in alerts), "a slumped driver recovered"
+
+    await scenario.signals(FACE_OPEN, 6)  # back, eyes open
+    await scenario.drain()
+    assert all(a["resolved_at"] is not None for a in await alerts_on(backend, route_id))
 
 
 async def test_unsynced_pi_clock_never_becomes_the_event_time(scenario, backend, truck_route):

@@ -109,11 +109,42 @@ def test_trigger_keeps_the_real_closure_length_during_the_hold():
     assert st.trigger_s == pytest.approx(3.2) and to_detection(st).extras["trigger_s"] == pytest.approx(3.2)
 
 
-def test_no_face_after_a_face_is_low():
+NOFACE = FrameSignals(face=False)
+
+
+@pytest.mark.parametrize("seconds,severity", [(2.8, "none"), (3.2, "low"), (5.2, "medium"),
+                                              (10.2, "critical")])
+def test_no_face_after_a_face_ladder(seconds, severity):
     e = PartsRuleEngine(RuleConfig())
     _, t = run(e, OPEN, 1.0)
-    st, _ = run(e, FrameSignals(face=False), 3.2, t + DT)
-    assert (st.severity, st.reason) == ("low", "no_face")
+    st, _ = run(e, NOFACE, seconds, t + DT)
+    assert st.severity == severity
+    if severity != "none":
+        assert st.reason == "no_face"
+
+
+def test_no_face_before_any_face_raises_nothing():
+    st, _ = run(PartsRuleEngine(RuleConfig()), NOFACE, 30.0)
+    assert st.severity == "none"
+
+
+def test_an_incident_holds_while_the_face_is_missing():
+    # Eyes closed into critical, then the driver slumps out of frame: no recovery, ever, while
+    # the face is gone (the eye timer stops, which used to decay the alarm after 2 s).
+    e = PartsRuleEngine(RuleConfig())
+    _, t = run(e, CLOSED, 3.2)
+    st, _ = run(e, NOFACE, 30.0, t + DT)
+    assert st.severity == "critical"
+
+
+def test_recovery_needs_the_face_back_and_clear():
+    e = PartsRuleEngine(RuleConfig())
+    _, t = run(e, CLOSED, 3.2)
+    _, t = run(e, NOFACE, 4.0, t + DT)
+    st, t = run(e, OPEN, 1.0, t + DT)
+    assert st.severity == "critical"              # 1 s of a clear face: not yet
+    st, _ = run(e, OPEN, 2.0, t + DT)
+    assert st.severity == "none"                  # 2 s clear with the face visible
 
 
 def test_thresholds_come_from_env(monkeypatch):

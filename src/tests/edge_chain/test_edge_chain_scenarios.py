@@ -23,6 +23,7 @@ from datetime import datetime
 from app.models.status_route import StatusRoute
 from cv_argus.alerts import Alert, AlertKind, route_status
 from cv_argus.orchestrator import Orchestrator
+from cv_argus.orchestrator.parts_rules import FrameSignals, PartsRuleEngine, to_detection
 
 from .esp32_sim import SimulatedEsp32
 
@@ -53,6 +54,11 @@ DM = _Det(2, 0.75, "medium", "eyes_closed")      # ... after 2 s
 ND = _Det(1, 0.05, "none", "ok")
 D = DC
 NOFACE = None
+
+# What the camera sees, for scenarios driven through the real rule engine (Scenario.signals).
+FACE_OPEN = FrameSignals(face=True, eyes_visible=True)
+FACE_EYES_CLOSED = FrameSignals(face=True, eyes_visible=True, eyes_closed=True)
+FACE_GONE = FrameSignals(face=False)
 
 
 @pytest.fixture
@@ -89,6 +95,7 @@ class Scenario:
         self.camera_alive = True
         self.esp32_polling = True
         self._next_poll = clock.now + POLL_EVERY_S
+        self.rules = PartsRuleEngine()
 
     async def _step(self, detection, *, frame: bool):
         if self.camera_alive:
@@ -103,6 +110,15 @@ class Scenario:
 
     async def frames(self, detection, seconds: float):
         for _ in range(int(seconds * FPS)):
+            await self._step(detection, frame=True)
+
+    async def signals(self, signals: FrameSignals, seconds: float):
+        """Frames as the camera sees them, through cv-argus's real rule engine, exactly like
+        parts_stages.py: no detection only when there's no face *and* no rule active."""
+        for _ in range(int(seconds * FPS)):
+            state = self.rules.update(WALL_BASE + self.clock.now, signals)
+            detection = (to_detection(state)
+                         if signals.face or state.severity != "none" else None)
             await self._step(detection, frame=True)
 
     async def idle(self, seconds: float):
@@ -266,14 +282,17 @@ async def test_pi_goes_silent_esp32_reports_the_camera_offline(scenario, backend
     assert scenario.dev.camera_offline is True
 
 
-@pytest.mark.xfail(strict=True, reason="CV-04/B1: a face out of frame decays to severity none")
 async def test_driver_slumps_out_of_frame_raises_an_alert(scenario, backend, truck_route):
+    """B1/CV-04: with no alert open, a face gone for 5 s raises its own no_face alert, which
+    escalates to critical at 10 s."""
     route_id, _ = truck_route
-    await scenario.frames(ND, 4)
-    await scenario.frames(NOFACE, 20)
+    await scenario.signals(FACE_OPEN, 4)
+    await scenario.signals(FACE_GONE, 14)
     await scenario.drain()
     alerts = await alerts_on(backend, route_id)
-    assert alerts and alerts[0]["alert_type"] == "no_face"
+    assert {a["alert_type"] for a in alerts} == {"no_face"}
+    assert sorted(a["severity_level"] for a in alerts) == ["critical", "medium"]
+    assert all(a["resolved_at"] is None for a in alerts)
 
 
 async def test_panic_during_open_incident_creates_separate_critical(

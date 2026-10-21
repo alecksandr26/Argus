@@ -76,7 +76,12 @@ RULE_HEAD_DOWN_YAWN_S = 2.0         # head down + eyes closed/not visible after 
 RULE_YAWN_EVENT_S = 1.5
 RULE_YAWN_COUNT = 3
 RULE_YAWN_WINDOW_S = 300.0
-RULE_NO_FACE_S = 3.0                # face lost this long (after having one) -> low "not visible"
+# Face lost (after having one): a driver slumped out of frame must never read as recovered
+# (user decision 2026-10-20). Low at 3 s, an alert of its own at 5 s (medium) and 10 s (critical);
+# and while the face is missing, a held severity never decays (see parts_rules).
+RULE_NO_FACE_S = 3.0                # -> low "no_face"
+RULE_NO_FACE_MEDIUM_S = 5.0         # -> medium "no_face"
+RULE_NO_FACE_CRITICAL_S = 10.0      # -> critical "no_face"
 RULE_GRACE_S = 0.4                  # a gap this short doesn't reset a running timer (2 frames)
 RULE_HEAD_GRACE_S = 1.0             # longer for the head timer: head_down misses frames often
 RULE_RECOVERY_S = 2.0               # severity only drops after all signals are clear this long

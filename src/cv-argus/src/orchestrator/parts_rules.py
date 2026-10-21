@@ -27,7 +27,7 @@ longer `RULE_HEAD_GRACE_S` (1 s), because `head_down` is missed on many frames.
 | head down + eyes closed or hidden | head down ≥ 3.0 s (2.0 s after a yawn) | **critical** |
 | head down, eyes open (looking down) | head down ≥ 3.0 s | medium |
 | yawning (fatigue) | ≥ 3 yawn events (mouth open ≥ 1.5 s) in 5 min | low (never higher) |
-| driver not visible | no face ≥ 3 s, after a face was seen | low |
+| driver not visible | no face ≥ 3 / 5 / 10 s, after a face was seen | low / medium / **critical** |
 
 Closed eyes and head down are the risks. Yawning only adds weight: it makes the eye and head
 rules fire sooner, and alone it never goes above LOW.
@@ -85,6 +85,8 @@ class RuleConfig:
     yawn_count: float = field(default_factory=lambda: _cfg("RULE_YAWN_COUNT"))
     yawn_window: float = field(default_factory=lambda: _cfg("RULE_YAWN_WINDOW_S"))
     no_face: float = field(default_factory=lambda: _cfg("RULE_NO_FACE_S"))
+    no_face_medium: float = field(default_factory=lambda: _cfg("RULE_NO_FACE_MEDIUM_S"))
+    no_face_critical: float = field(default_factory=lambda: _cfg("RULE_NO_FACE_CRITICAL_S"))
     grace: float = field(default_factory=lambda: _cfg("RULE_GRACE_S"))
     head_grace: float = field(default_factory=lambda: _cfg("RULE_HEAD_GRACE_S"))
     recovery: float = field(default_factory=lambda: _cfg("RULE_RECOVERY_S"))
@@ -220,16 +222,22 @@ class PartsRuleEngine:
                 fired.append(("medium", "head_down"))
         if len(self._yawn_events) >= cfg.yawn_count:
             fired.append(("low", "yawning"))
-        if noface >= cfg.no_face:
-            fired.append(("low", "no_face"))
+        for level, thr in (("low", cfg.no_face), ("medium", cfg.no_face_medium),
+                           ("critical", cfg.no_face_critical)):
+            if noface >= thr:
+                fired.append((level, "no_face"))
         current = max(fired, key=lambda f: _RANK[f[0]], default=("none", "ok"))
         timers = {"eyes_closed": eyes, "head_down": head, "mouth_open": mouth, "no_face": noface}
 
-        # Escalate now; de-escalate only after RULE_RECOVERY_S below the held level.
+        # Escalate now; de-escalate only after RULE_RECOVERY_S below the held level, and only
+        # while the face is visible: a driver who slumps out of frame mid-incident must not read
+        # as recovered (the timers above stop without a face, so they'd all fall to zero).
         if _RANK[current[0]] >= _RANK[self._held[0]]:
             if current != self._held:
                 self._trigger = 0.0
             self._held, self._below_since = current, None
+        elif not s.face:
+            self._below_since = None
         else:
             if self._below_since is None:
                 self._below_since = t
