@@ -17,9 +17,22 @@ struct PiRecord {
   String className;    // payload.class_name ("Not Drowsy"/"Drowsy") -- drowsiness only
   float pNotDrowsy = 0.0f;  // payload.probabilities[0] -- drowsiness only
   float pDrowsy = 0.0f;     // payload.probabilities[1] -- drowsiness only
+  // The parts pipeline's rule verdict (payload.severity: "none"/"low"/"medium"/"critical", and
+  // payload.reason, e.g. "eyes closed 3.2 s"). Empty when the Pi didn't send one (no face).
+  // Display only: fusion still decides from pDrowsy + grip.
+  String severity;
+  String reason;
 };
 
 void bluetoothClientBegin();
+
+// Whether the last connection attempt to the Pi succeeded. The link is a fresh RFCOMM
+// connection per poll, so "up" means "the Pi answered the last time we asked".
+bool bluetoothLinkUp();
+
+// One Serial line on the link: up/down, sessions and records since boot, how long since the Pi
+// last answered.
+void bluetoothLogStatus();
 
 // Connects to the Pi, runs one full PULL/ACK exchange, and disconnects.
 //

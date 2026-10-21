@@ -28,6 +28,9 @@ BT_SECURITY = getattr(socket, "BT_SECURITY", 4)
 # ESP32 with no display/keypad can't do (Just Works pairing), so it isn't the default.
 SECURITY_LEVELS = {"low": 1, "medium": 2, "high": 3}
 DEFAULT_SECURITY = "medium"
+# "Any local adapter". CPython parses an RFCOMM address strictly as six hex pairs, so the
+# PyBluez-style "" is rejected ("bad bluetooth address") before the kernel ever sees it.
+BDADDR_ANY = getattr(socket, "BDADDR_ANY", "00:00:00:00:00:00")
 
 
 def security_level(name: str) -> int:
@@ -85,7 +88,7 @@ class BluetoothSppListener(Listener):
         level = security_level(security)  # validate before touching any socket
         self._sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
         self._sock.setsockopt(SOL_BLUETOOTH, BT_SECURITY, struct.pack("BB", level, 0))
-        self._sock.bind(("", channel))
+        self._sock.bind((BDADDR_ANY, channel))
         self._sock.listen(1)
 
     def accept(self, timeout: float | None = None) -> Transport | None:

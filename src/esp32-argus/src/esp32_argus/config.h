@@ -104,6 +104,16 @@
 #define BENCH_GPS_LON -103.3496
 #define GPS_LOG_INTERVAL_MS 10000UL // gpsLogStatus() cadence on Serial
 
+// Bench/demo only: test the Pi <-> ESP32 Bluetooth link with no backend, WiFi, SIM or GPS. 1 makes
+// this device pull from the Pi without backend credentials, print every record it gets (class,
+// severity, reason) with a banner when a CRITICAL arrives, run the grip fusion and print what it
+// decides, and ACK each record so the Pi's queue drains. Nothing is sent to the backend. The
+// Bluetooth link status is printed every BT_LINK_LOG_INTERVAL_MS. See src/esp32-argus/README.md
+// "Bluetooth link test". NEVER flash a truck with this set to 1: no alert would reach the backend.
+#define BT_LINK_TEST_MODE 0
+#define BT_LINK_TEST_POLL_INTERVAL_MS 1000UL // replaces PI_BT_POLL_INTERVAL_MS in that mode
+#define BT_LINK_LOG_INTERVAL_MS 10000UL
+
 // Panic button + grip sensor -- GPIO mapping not finalized against real hardware yet
 // (src/esp32-argus/README.md section 4 says so explicitly: "none of them have a defined
 // GPIO pin mapping ... yet"). Wired here as active-low digital inputs with an internal

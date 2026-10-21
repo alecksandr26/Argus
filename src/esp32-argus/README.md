@@ -140,6 +140,33 @@ again on your next `PULL`. Rows are delivered at-least-once, never silently drop
 - `"route_status"` → `{"status": "OK"}` — this is genuinely all cv-argus produces for a status
   ping; see the gap notes in section 2 for what that means for `current_speed`/`odometer`.
 
+**How it connects.** `SerialBT.connect(PI_BT_MAC_ADDRESS, PI_BT_CHANNEL)`: straight to
+RFCOMM channel 4, where the Pi's listener sits. With channel `0` the ESP32 would first look the
+SPP service up over SDP, and the Pi registers no SDP record, so that lookup finds nothing. A
+Windows PC playing the Pi (`test/hil/`) is the exception: it needs `0`. Every poll is a fresh
+connection; `[bt] CONNECTED to the Pi` / `[bt] Can't reach the Pi` print only when that
+changes.
+
+**Payload extras.** A `drowsiness` record also carries the Pi's rule verdict:
+`payload.severity` (`none`/`low`/`medium`/`critical`) and `payload.reason` (e.g. `"eyes closed
+3.2 s"`). `PiRecord.severity`/`reason` hold them. Today they're only printed (link test mode
+below); the fusion still decides from `p_drowsy` + grip.
+
+### Bluetooth link test (`BT_LINK_TEST_MODE`)
+
+To see the Pi ↔ ESP32 link work with no backend, SIM, WiFi or GPS, set `BT_LINK_TEST_MODE 1` in
+`config.h`. The ESP32 then:
+- pulls every second without waiting for credentials;
+- prints each record (`[pi] Drowsy  severity=critical  "eyes closed 3.2 s"  p(Drowsy)=0.95`),
+  with a `!!! CRITICAL alert received from the Pi` banner when the severity turns critical;
+- runs the grip fusion and prints what it would raise;
+- ACKs everything so the Pi's queue drains;
+- prints `[bt] Pi link UP/DOWN ...` every 10 s.
+
+The Pi side and the full step-by-step (pairing, `scripts/pi_bt_server.py --inject critical`,
+then the camera) are in `src/cv-argus/README.md`, "Bluetooth link test". Set it back to `0` for
+a truck: in this mode nothing reaches the backend.
+
 ## 1b. Credentials — fetched from the Pi, not flashed in
 
 A truck is provisioned from the dashboard: **Fleet → truck → "Generate device credentials"**

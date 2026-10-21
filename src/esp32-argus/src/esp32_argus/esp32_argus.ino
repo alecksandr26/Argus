@@ -37,7 +37,62 @@ namespace {
 FusionOrchestrator fusion;
 unsigned long lastBtPollAt = 0;
 unsigned long lastGpsLogAt = 0;
+unsigned long lastBtLogAt = 0;
+String lastPiSeverity;  // BT_LINK_TEST_MODE: the banner fires on the change into critical
 }  // namespace
+
+// BT_LINK_TEST_MODE's record handler: print what the Pi sent, run the fusion and print what it
+// would raise, and ACK. No GPS, network or backend involved -- see config.h.
+bool handlePiRecordLinkTest(const PiRecord& record) {
+  if (record.kind == PiRecordKind::ROUTE_STATUS) {
+    Serial.println("[pi] route_status heartbeat");
+    return true;
+  }
+
+  Serial.print("[pi] ");
+  Serial.print(record.className);
+  if (record.severity.length() > 0) {
+    Serial.print("  severity=");
+    Serial.print(record.severity);
+  }
+  if (record.reason.length() > 0) {
+    Serial.print("  \"");
+    Serial.print(record.reason);
+    Serial.print("\"");
+  }
+  Serial.print("  p(Drowsy)=");
+  Serial.println(record.pDrowsy, 2);
+
+  if (record.severity == "critical" && lastPiSeverity != "critical") {
+    Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+    Serial.print("!!! CRITICAL alert received from the Pi: ");
+    Serial.println(record.reason.length() > 0 ? record.reason : record.className);
+    Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+  } else if (lastPiSeverity == "critical" && record.severity != "critical") {
+    Serial.println("[pi] critical cleared");
+  }
+  lastPiSeverity = record.severity;
+
+  DrowsyState drowsyState = (record.pDrowsy >= DROWSY_PROBABILITY_THRESHOLD)
+                                 ? DrowsyState::DROWSY
+                                 : DrowsyState::NOT_DROWSY;
+  GripState grip = readGripState();
+  FusionDecision decision = fusion.update({drowsyState, grip, (float)(millis() / 1000.0)});
+  if (decision.alert.present) {
+    Serial.print("[fusion] would raise a ");
+    Serial.print(severityToString(decision.alert.severityLevel));
+    Serial.print(" alert (grip ");
+    Serial.print(grip == GripState::GOOD ? "good" : "bad");
+    Serial.println(decision.alert.isEscalation ? ", escalation) -- not sent, link test mode"
+                                               : ") -- not sent, link test mode");
+    // Keep the fusion's incident bookkeeping consistent, as if the POST had succeeded.
+    fusion.recordAlertPosted(record.id);
+  }
+  if (decision.hasResolvedIncident) {
+    Serial.println("[fusion] incident resolved -- not sent, link test mode");
+  }
+  return true;
+}
 
 // Called once per record bluetoothPullAlerts() pulls off the Pi. Returns true iff the
 // record was successfully relayed onward -- see bluetooth_client.h's doc comment for why
@@ -153,6 +208,10 @@ void setup() {
   delay(1000);
   Serial.println();
   Serial.println("==== Argus ESP32 -- Message Sender Orchestrator ====");
+  if (BT_LINK_TEST_MODE) {
+    Serial.println("[main] BT_LINK_TEST_MODE is on -- printing what the Pi sends, nothing goes "
+                   "to the backend");
+  }
   if (BENCH_FAKE_GPS) {
     Serial.println("[main] WARNING: BENCH_FAKE_GPS is on -- reporting a fixed bench position");
   }
@@ -181,8 +240,19 @@ void loop() {
     gpsLogStatus();
   }
 
-  if (now - lastBtPollAt >= PI_BT_POLL_INTERVAL_MS) {
+  if (BT_LINK_TEST_MODE && now - lastBtLogAt >= BT_LINK_LOG_INTERVAL_MS) {
+    lastBtLogAt = now;
+    bluetoothLogStatus();
+  }
+
+  unsigned long pollInterval = BT_LINK_TEST_MODE ? BT_LINK_TEST_POLL_INTERVAL_MS
+                                                 : PI_BT_POLL_INTERVAL_MS;
+  if (now - lastBtPollAt >= pollInterval) {
     lastBtPollAt = now;
+    if (BT_LINK_TEST_MODE) {
+      bluetoothPullAlerts(handlePiRecordLinkTest);
+      return;
+    }
     refreshCredentialsIfStale();
     if (!credentialsReady()) {
       // Nothing could be relayed, so don't pull: records stay safely queued on the Pi.
