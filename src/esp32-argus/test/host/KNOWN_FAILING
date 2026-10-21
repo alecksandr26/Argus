@@ -4,7 +4,6 @@
 # xfail(strict=True)). Format: <test name>  <scenario IDs>: <why>
 location_policy_host_test  GPS-01/GPS-02/GPS-03: stale fixes count, no cell fallback, no network-time fallback
 grip_debounce_host_test    FUS-11: grip sensor isn't debounced
-panic_latch_host_test      PAN-01/PAN-03: panic is level-polled and never queued or retried
 pi_clock_host_test         FUS-02/FUS-09/EBT-07: fusion uses ESP32 processing time; no Pi-clock mapping or record dedup
 fusion_corner_host_test    FUS-01/03/04/05/06/10, CV-04/07: fusion corner cases (mirror of the Python contract tests)
 no_face_fusion_host_test   REC-18a/CV-04: fusion has no NO_FACE state, a slumped driver counts toward recovery

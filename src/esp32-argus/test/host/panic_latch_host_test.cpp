@@ -55,6 +55,26 @@ static void queueSurvivesReboot() {
   CHECK(!restored.deserialize("garbage"));
 }
 
+static void timeAndIdSurviveTheRoundTrip() {
+  PanicQueue q;
+  PanicEvent e;
+  e.atMs = 7;
+  e.hasFix = true;
+  e.lat = 20.6597123;
+  e.lon = -103.3496456;
+  e.occurredAt = "2026-10-20T01:02:03Z";
+  e.clientEventId = "panic-abc-7";
+  q.push(e);
+  PanicQueue restored;
+  CHECK(restored.deserialize(q.serialize()));
+  CHECK(restored.front().occurredAt == "2026-10-20T01:02:03Z");
+  CHECK(restored.front().clientEventId == "panic-abc-7");
+  CHECK_NEAR(restored.front().lat, 20.6597123, 1e-7);
+  CHECK(restored.front().hasFix);
+  PanicQueue empty;
+  CHECK(restored.deserialize(empty.serialize()) && restored.size() == 0);
+}
+
 static void queueIsBounded() {
   PanicQueue q;
   for (uint32_t i = 0; i < 100; i++) q.push({i, false, 0, 0});
@@ -68,6 +88,7 @@ int main() {
   RUN(millisWrapStillDebounces);
   RUN(queuedEventStaysUntilPosted);
   RUN(queueSurvivesReboot);
+  RUN(timeAndIdSurviveTheRoundTrip);
   RUN(queueIsBounded);
   return report("panic_latch_host_test");
 }

@@ -38,6 +38,11 @@ class EpisodeAlerts {
   bool lookup(const std::string& episode, std::string& alertId) const;
   void forget(const std::string& episode);
 
+  // A compact text form for NVS, so a reboot mid-incident can still resolve it (FUS-10).
+  // deserialize() returns false (and leaves the map empty) on anything that isn't one.
+  std::string serialize() const;
+  bool deserialize(const std::string& blob);
+
  private:
   static const int kSlots = 8;
   std::string episodes_[kSlots];

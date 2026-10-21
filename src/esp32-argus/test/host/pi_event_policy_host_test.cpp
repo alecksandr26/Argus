@@ -88,6 +88,20 @@ static void episodeMemoryIsBounded() {
   CHECK(!e.lookup("ep19", id));
 }
 
+static void episodesSurviveARebootThroughNvs() {
+  EpisodeAlerts e;
+  e.remember("ep1", "alert-1");
+  e.remember("ep2", "alert-2");
+  EpisodeAlerts restored;
+  CHECK(restored.deserialize(e.serialize()));
+  std::string id;
+  CHECK(restored.lookup("ep1", id) && id == "alert-1");
+  CHECK(restored.lookup("ep2", id) && id == "alert-2");
+  CHECK(!restored.deserialize("garbage"));
+  CHECK(!restored.lookup("ep1", id));
+  CHECK(restored.deserialize(EpisodeAlerts().serialize()));
+}
+
 static void backendSeverityMapping() {
   CHECK(std::string(backendSeverity(PiSeverity::None)) == "low");
   CHECK(std::string(backendSeverity(PiSeverity::Low)) == "low");
@@ -106,6 +120,7 @@ int main() {
   RUN(noneLowChangesSendNothing);
   RUN(unknownSeveritySendsNothing);
   RUN(episodeMemoryIsBounded);
+  RUN(episodesSurviveARebootThroughNvs);
   RUN(backendSeverityMapping);
   return report("pi_event_policy_host_test");
 }

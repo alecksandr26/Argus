@@ -248,9 +248,8 @@ async def test_failed_resolve_is_retried_until_backend_shows_resolved(
     assert alert["resolved_at"] is not None
 
 
-@pytest.mark.xfail(strict=True, reason="FUS-10: an ESP32 reboot forgets the episode's alert id "
-                                       "(RAM only), so the recovery has nothing to resolve")
 async def test_esp32_reboot_mid_incident_still_resolves(scenario, backend, truck_route):
+    """FUS-10: the episode's alert id is kept in NVS, so the recovery after a reboot resolves."""
     route_id, _ = truck_route
     await scenario.frames(DC, 10)
     scenario.dev = scenario.dev.reboot()  # power loss
@@ -305,6 +304,23 @@ async def test_panic_during_open_incident_creates_separate_critical(
     alerts = await alerts_on(backend, route_id)
     sources = sorted(a["source"] for a in alerts)
     assert sources == ["fusion", "panic_button"]
+
+
+async def test_panic_while_offline_is_delivered_once_the_backend_is_back(
+    scenario, backend, truck_route
+):
+    """PAN-03: the press is queued (in NVS on the device) and retried, never lost."""
+    route_id, key = truck_route
+    scenario.dev.device_key = "wrong-key"
+    assert not await scenario.dev.press_panic()
+    await scenario.frames(ND, 4)
+    assert await alerts_on(backend, route_id) == []
+    scenario.dev = scenario.dev.reboot()  # and the device even reboots in between
+    scenario.dev.device_key = key
+    await scenario.frames(ND, 4)
+    [alert] = await alerts_on(backend, route_id)
+    assert (alert["source"], alert["severity_level"]) == ("panic_button", "critical")
+    assert alert["coordinates"] == {"lat": 19.43, "lon": -99.13}
 
 
 async def test_escalation_chain_links_and_everything_resolves(scenario, backend, truck_route):

@@ -72,6 +72,39 @@ void EpisodeAlerts::forget(const std::string& episode) {
   }
 }
 
+std::string EpisodeAlerts::serialize() const {
+  std::string out = "EA1";
+  for (int i = 0; i < kSlots; i++) {
+    if (episodes_[i].empty()) continue;
+    out += ";" + episodes_[i] + "=" + alertIds_[i];
+  }
+  return out;
+}
+
+bool EpisodeAlerts::deserialize(const std::string& blob) {
+  *this = EpisodeAlerts();
+  if (blob.compare(0, 3, "EA1") != 0) return false;
+  size_t at = 3;
+  while (at < blob.size()) {
+    if (blob[at] != ';') {
+      *this = EpisodeAlerts();
+      return false;
+    }
+    size_t end = blob.find(';', at + 1);
+    std::string item = blob.substr(at + 1, end == std::string::npos ? std::string::npos
+                                                                     : end - at - 1);
+    size_t eq = item.find('=');
+    if (eq == std::string::npos || eq == 0) {
+      *this = EpisodeAlerts();
+      return false;
+    }
+    remember(item.substr(0, eq), item.substr(eq + 1));
+    if (end == std::string::npos) break;
+    at = end;
+  }
+  return true;
+}
+
 EventDecision decidePiEvent(const PiRecord& record, const EpisodeAlerts& episodes) {
   EventDecision d;
   if (record.kind == PiRecordKind::RouteStatus) {

@@ -155,8 +155,10 @@ class SimulatedEsp32:
     # anything is reported. status_failures: that many route-status POSTs fail like a 5xx.
     drop_next_ack: bool = False
     status_failures: int = 0
-    # Firmware state (RAM only: lost on reboot()).
+    # Firmware state. episodes and panics are kept in NVS (they survive reboot()); the rest is
+    # RAM only.
     episodes: dict[str, str] = field(default_factory=dict)
+    panics: list[dict] = field(default_factory=list)
     live_severity: str | None = None
     # What reached the backend, stamped with this device's clock (for timing assertions).
     alert_posts: list[tuple[float, dict]] = field(default_factory=list)
@@ -167,10 +169,12 @@ class SimulatedEsp32:
         """loop()'s work between Bluetooth polls: nothing the chain depends on (no grip yet)."""
 
     def reboot(self) -> "SimulatedEsp32":
-        """A power loss: same wiring and credentials (NVS), RAM state (episodes) gone."""
+        """A power loss: wiring, credentials, the episodes' alert ids and the panic queue come
+        back from NVS; everything else (the live severity, the cached route) is gone."""
         return SimulatedEsp32(listener=self.listener, http=self.http,
-                              device_key=self.device_key, route_id=self.route_id,
-                              clock=self.clock, gps=self.gps, wifi=self.wifi)
+                              device_key=self.device_key, route_id=None,
+                              clock=self.clock, gps=self.gps, wifi=self.wifi,
+                              episodes=dict(self.episodes), panics=list(self.panics))
 
     # --- esp32_argus.ino: loop() -------------------------------------------------------
     async def poll(self, *, half_open_before_ack: bool = False) -> PollResult:
@@ -179,6 +183,8 @@ class SimulatedEsp32:
         the link is never closed, so the Pi only notices when its own wait runs out."""
         live = await self._exchange(protocol.format_pull(PI_BT_PULL_COUNT), replay=False,
                                     half_open=half_open_before_ack)
+        if self.panics:
+            await self._flush_panics()
         if live.protocol_ok and live.dlq_waiting > 0 and await self._readiness() == "ready":
             self._replay_stopped = False
             replay = await self._exchange(protocol.format_dlq(DLQ_REPLAY_BATCH), replay=True)
@@ -375,16 +381,32 @@ class SimulatedEsp32:
 
     # --- esp32_argus.ino: handlePanicButton() -------------------------------------------
     async def press_panic(self) -> bool:
+        """handlePanicButton(): the SMS (not modelled), then queued in NVS and flushed. True if
+        it reached the backend right away; otherwise a later poll retries it."""
         body = {"alert_type": "panic_button", "severity_level": "critical",
                 "source": "panic_button", "client_event_id": f"panic-{self.clock():.3f}"}
         self._put_position(body, "coordinates", "speed_at_event")
-        if await self._readiness() != "ready" or "coordinates" not in body:
-            return False
-        body["id_route"] = self.route_id
-        resp = await self.http.post("/api/alerts", json=body, headers=self._headers())
-        if resp.status_code == 201:
-            self.alert_posts.append((self.clock(), body))
-        return resp.status_code == 201
+        self.panics.append(body)
+        await self._flush_panics()
+        return not self.panics
+
+    async def _flush_panics(self) -> None:
+        """flushPanics(): oldest first, while the backend takes them."""
+        while self.panics:
+            if await self._readiness() != "ready":
+                return
+            body = dict(self.panics[0])
+            if "coordinates" not in body:
+                if self.gps is None:
+                    return
+                self._put_position(body, "coordinates", "speed_at_event")
+            body["id_route"] = self.route_id
+            resp = await self.http.post("/api/alerts", json=body, headers=self._headers())
+            if resp.status_code in (200, 201):
+                self.alert_posts.append((self.clock(), body))
+            elif resp.status_code not in (400, 409, 422):
+                return
+            self.panics.pop(0)
 
     def _headers(self) -> dict[str, str]:
         return {"X-Device-Api-Key": self.device_key or ""}
