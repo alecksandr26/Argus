@@ -4,6 +4,28 @@ Every scenario the chain has to handle, the test that pins it, and its status. B
 full read-only audit of cv-argus, the ESP32 firmware, backend-argus and the docs (2026-10-17),
 after the first real-hardware bench run.
 
+> **Status update, 2026-10-20 — read this before the tables below, which are the 2026-10-17
+> audit as written.** The Pi ↔ ESP32 link became "live first, dead-letter on failure" (the ESP32
+> reports `ACK`/`FAIL` per record; only failed ones stay in the Pi's SQLite queue, replayed later
+> with their original position and time), and with no grip sensor yet the ESP32 alerts on the
+> Pi's own severity (`pi_event_policy.h`). Fixed since, with their tests now passing:
+> - **cv-argus:** REC-19 (no NaN on the wire), BUF-06 (bounded backlog), BT-20 (no stall after
+>   an ESP32 reset), REC-18a/b + CV-04 (a face out of frame holds an open alert; `no_face`
+>   alerts at 5 s medium / 10 s critical).
+> - **firmware:** Top #3 / REC-19 / EBT-03/04 (`pi_record.cpp` drops an unreadable record but
+>   ACKs it), NET-01/BE-04 (permanent rejections are ACKed), EBT-07/BE-06 (alerts carry
+>   `client_event_id`), FUS-05 (a failed resolve waits in the dead-letter queue), FUS-10 (open
+>   alert ids in NVS), PAN-01/03 (panic latched by interrupt, queued in NVS, retried), BE-12
+>   (escalations link and resolve), FUS-15a/b (replays keep their own position and vigilance),
+>   X-16 (two cameras), NET-12 (route change mid-incident), resolve over mobile data (POST).
+> - **Removed** (user decision): the grip-fusion corner-case tests (FUS-01/03/04/06/10/11,
+>   CV-04/07 in fusion, FUS-02/09 Pi-clock mapping) and `fusion_corner_host_test`,
+>   `no_face_fusion_host_test`, `grip_debounce_host_test`, `pi_clock_host_test`: `fusion.*` isn't
+>   used while there's no grip sensor; redo them with the sensor.
+> - **Still open:** GPS-01/02/03/07 (stale fixes, rolled-over GPS dates, no cell fallback),
+>   CV-07/CV-15 (no camera-offline / stalled-pipeline detection), NET-13 (WiFi retry), and the
+>   backend/UI side of replayed "missing alerts" (root `CLAUDE.md`).
+
 **Status legend**
 - 🔴 **bug**: the test asserts the correct behavior and fails today. It's marked
   `xfail(strict=True)` (Python) or listed in `src/esp32-argus/test/host/KNOWN_FAILING` (C++),

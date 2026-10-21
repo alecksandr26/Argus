@@ -167,20 +167,6 @@ async def test_drowsy_episode_then_recovery_resolves_incident(scenario, backend,
     assert alerts[0]["resolved_at"] is not None
 
 
-@pytest.mark.xfail(strict=True, reason="grip sensor not wired yet: alerts follow the Pi's severity")
-async def test_grip_released_while_not_drowsy_raises_medium(scenario, backend, truck_route):
-    route_id, _ = truck_route
-    await scenario.frames(ND, 10)
-    scenario.dev.grip_bad = True  # hand off the wheel; camera keeps saying Not Drowsy
-    await scenario.frames(ND, 10)
-    await scenario.drain()
-
-    [alert] = await alerts_on(backend, route_id)
-    assert alert["severity_level"] == "medium"
-    assert alert["grip_status"] == "bad"
-    assert alert["alert_type"] == "grip_released"
-
-
 async def test_backlog_after_30s_offline_relays_with_correct_times(
     scenario, backend, truck_route, clock
 ):

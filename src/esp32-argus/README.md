@@ -162,6 +162,12 @@ the fall back to none/low → `POST /api/alerts/{id}/resolve`; a heartbeat → `
 without a GPS fix). Keepalives send nothing. `fusion.*` (camera + grip) stays for when the
 sensor is wired.
 
+**The panic button** is caught by its interrupt (`panic_latch.*`), so a press during a long
+Bluetooth or HTTP call isn't missed. It sends the SMS at once, then queues the alert in NVS
+(with the position and GPS time of the press and its own `client_event_id`) and retries it
+every poll until the backend stores it, across reboots too. The backend alert id of each open
+episode is kept in NVS as well, so a reboot mid-incident can still resolve it.
+
 **What the serial log shows** (one line per record, keepalives included):
 ```
 [pi] critical (was none) "eyes_closed" class=Drowsy p=[0.05,0.95] episode=3f2a | gps 20.659700,-103.349600 0 km/h

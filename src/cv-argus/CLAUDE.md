@@ -98,7 +98,10 @@ overridable by env var):
 - **Head down + eyes closed or hidden:** CRITICAL at 3 s (2 s after a yawn).
 - **Head down with eyes open:** MEDIUM at 3 s.
 - **Yawning alone** (3 yawns ≥ 1.5 s within 5 min): never above LOW.
-- **No face for 3 s:** LOW.
+- **No face** (after a face was seen): LOW at 3 s, MEDIUM at 5 s, **CRITICAL at 10 s**, reason
+  `no_face` (user decision 2026-10-20: a driver slumped out of frame must never read as fine).
+- **While the face is missing, nothing recovers:** a held severity only drops after 2 s of a
+  visible, clear face, so an incident stays open while the driver is out of frame.
 
 Escalation is immediate; recovery takes 2 s clear. A gap of no more than 0.4 s (1.0 s for the
 head timer) doesn't reset a timer. This needs an epsilon: a one-frame gap at 5 fps is
@@ -120,8 +123,9 @@ sensor yet, user decision 2026-10-20).
   to medium/critical (an escalation links to the episode's alert), resolves it on the fall back,
   and does nothing for keepalives. See `src/esp32-argus/src/esp32_argus/pi_event_policy.h`.
 - A reading other than `No Face` always carries both probabilities: the ESP32 drops one without.
-- `ctx.detection` is `None` only when there's no face *and* no active rule. Known gap (B1): after
-  a held alarm decays, a face out of frame reads as severity none, which resolves the alert.
+- `ctx.detection` is `None` only when there's no face *and* no active rule. A frame with
+  non-finite probabilities is treated like one with no face, and the wire JSON is strict (a
+  non-finite number becomes null), so no row can carry a bare `NaN` token.
 
 **Logs and measurements (for the report):**
 - `OUTPUTS=logging` prints **one line per frame**, led by the **criticality** (not the binary

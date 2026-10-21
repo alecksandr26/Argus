@@ -51,7 +51,7 @@ indoors. Set it back to `0` for a real truck.
    see `../../test/hil/`). There's no WiFi network, APN, backend URL, device key, or route id to
    set: those come from the Pi over Bluetooth (`CONFIG`) and from the backend (see
    `../../README.md` section 1b). Compiling doesn't need real values. Last compile (2026-10-20,
-   `arduino-cli`, core 3.3.12, Huge APP, the live-first/dead-letter rework): 1,813,992 bytes
+   `arduino-cli`, core 3.3.12, Huge APP, with the panic queue + NVS episodes): 1,821,760 bytes
    (57% flash), 20% RAM. The Bluetooth link (pairing, `CONFIG`) ran on the real Pi + ESP32
    before that rework; the rework itself hasn't been flashed yet.
 
