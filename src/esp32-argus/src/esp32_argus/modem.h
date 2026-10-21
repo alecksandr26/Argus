@@ -33,3 +33,10 @@ String modemReadBytes(size_t n, unsigned long timeoutMs);
 
 // Polls AT+CREG? once. True if registered on the home network or roaming.
 bool modemIsRegistered();
+
+// Polls AT+CREG? once and returns its <stat>: 0 not searching, 1 home, 2 searching, 3 denied,
+// 4 unknown, 5 roaming; -1 if the modem didn't answer at all (power, wiring, baud).
+int modemRegistrationStat();
+
+// One readable phrase for a modemRegistrationStat() value, for logs.
+const char* modemRegistrationText(int stat);

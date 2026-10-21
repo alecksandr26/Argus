@@ -67,6 +67,9 @@
 #define DLQ_REPLAY_BATCH 5
 // The Bluetooth link's status line (up/down, sessions, records) on Serial.
 #define PI_BT_LINK_LOG_INTERVAL_MS 30000UL
+// How often backendIsReachable() may print why there's no network (no APN, mobile data on hold,
+// the modem's registration state), so a no_network loop explains itself without flooding Serial.
+#define NET_STATUS_LOG_INTERVAL_MS 30000UL
 
 // =====================================================
 // Grip + drowsiness fusion (fusion.*) -- NOT USED while there's no grip sensor: alerts follow the

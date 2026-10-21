@@ -118,9 +118,32 @@ bool ensureActiveRoute() {
 
 }  // namespace
 
+// Prints why there's no network, at most every NET_STATUS_LOG_INTERVAL_MS.
+static void logNoNetwork(const char* why) {
+  static bool logged = false;
+  static unsigned long lastAt = 0;
+  if (logged && millis() - lastAt < NET_STATUS_LOG_INTERVAL_MS) return;
+  logged = true;
+  lastAt = millis();
+  Serial.print("[net] No network: ");
+  Serial.println(why);
+}
+
 bool backendIsReachable() {
   if (wifiIsConnected()) return true;
-  return credentials().useGprs() && transport.pick(millis()) == Transport::Gprs && modemIsRegistered();
+  if (!credentials().useGprs()) {
+    logNoNetwork("no WiFi, and no mobile data APN from the Pi (ARGUS_GPRS_APN)");
+    return false;
+  }
+  if (transport.pick(millis()) != Transport::Gprs) {
+    logNoNetwork("mobile data failed recently (on hold for GPRS_HOLD_OFF_MS) and no WiFi");
+    return false;
+  }
+  int stat = modemRegistrationStat();
+  if (stat == 1 || stat == 5) return true;
+  String why = String("no WiFi, and mobile data unusable: ") + modemRegistrationText(stat);
+  logNoNetwork(why.c_str());
+  return false;
 }
 
 const char* backendBlockReason(BackendBlock block) {

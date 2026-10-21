@@ -50,9 +50,9 @@ indoors. Set it back to `0` for a real truck.
    flashing, and `PI_BT_CHANNEL` to the Pi's `BLUETOOTH_CHANNEL` (4; `0` for the Windows bench,
    see `../../test/hil/`). There's no WiFi network, APN, backend URL, device key, or route id to
    set: those come from the Pi over Bluetooth (`CONFIG`) and from the backend (see
-   `../../README.md` section 1b). Compiling doesn't need real values. Last compile (2026-10-20,
-   `arduino-cli`, core 3.3.12, Huge APP, with the panic queue + NVS episodes): 1,821,760 bytes
-   (57% flash), 20% RAM. The Bluetooth link (pairing, `CONFIG`) ran on the real Pi + ESP32
+   `../../README.md` section 1b). Compiling doesn't need real values. Last compile (2026-10-21,
+   `arduino-cli`, core 3.3.12, Huge APP, with whole-batch Bluetooth reads + `[net]`/`[modem]`
+   diagnostics): 1,823,600 bytes (57% flash), 20% RAM. The Bluetooth link (pairing, `CONFIG`) ran on the real Pi + ESP32
    before that rework; the rework itself hasn't been flashed yet.
 
 ## Errors already hit, and what they mean

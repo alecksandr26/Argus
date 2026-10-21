@@ -21,9 +21,15 @@ void modemBegin() {
 
   // The modem is often still settling right after power-on and misses the first poke.
   modemSendAT("AT", "OK", 2000UL);
-  modemSendAT("AT", "OK", 2000UL);
+  bool answering = modemSendAT("AT", "OK", 2000UL);
   modemSendAT("ATE0", "OK", 2000UL);  // echo off, so later reads can't false-match on our own
                                       // echoed command text
+  Serial.print("[modem] ");
+  Serial.println(answering ? "SIM800L answering" : "SIM800L not answering on its UART (power? wiring?)");
+  if (answering) {
+    Serial.print("[modem] Network: ");
+    Serial.println(modemRegistrationText(modemRegistrationStat()));
+  }
 }
 
 void modemFlush() {
@@ -76,9 +82,26 @@ String modemReadBytes(size_t n, unsigned long timeoutMs) {
   return buf;
 }
 
-bool modemIsRegistered() {
+int modemRegistrationStat() {
   String resp;
-  if (!modemSendAT("AT+CREG?", "OK", 2000UL, &resp)) return false;
+  if (!modemSendAT("AT+CREG?", "OK", 2000UL, &resp)) return -1;
   CregResult creg;
-  return parseCreg(resp.c_str(), creg) && creg.registered();
+  return parseCreg(resp.c_str(), creg) ? creg.stat : -1;
+}
+
+bool modemIsRegistered() {
+  int stat = modemRegistrationStat();
+  return stat == 1 || stat == 5;
+}
+
+const char* modemRegistrationText(int stat) {
+  switch (stat) {
+    case -1: return "the SIM800L doesn't answer (power? wiring?)";
+    case 0: return "not registered and not searching (SIM missing or locked?)";
+    case 1: return "registered (home network)";
+    case 2: return "not registered, still searching for the network (antenna? 2G coverage?)";
+    case 3: return "registration denied by the network";
+    case 5: return "registered (roaming)";
+    default: return "registration state unknown";
+  }
 }

@@ -133,11 +133,13 @@ int bluetoothExchange(const char* request, RecordReport (*onRecord)(const PiReco
   SerialBT.print(request);
   SerialBT.print("\n");
 
-  std::vector<std::string> acks;
-  std::vector<std::string> failLines;
-  int received = 0;
+  // Read the whole batch before handling any of it. BluetoothSerial's receive queue is 512 bytes
+  // (core 3.3.12) and silently drops what doesn't fit, and one record is several hundred bytes:
+  // handling each record (logs, GPS, a backend request) while the Pi was still streaming the rest
+  // lost bytes, so later lines arrived cut ("Unreadable record with no id") or never ended
+  // (timeouts). A batch cut short is now not handled at all: the Pi serves it again.
+  std::vector<String> lines;
   bool protocolOk = true;
-
   while (true) {
     String line;
     if (!readLine(line, PI_BT_LINE_TIMEOUT_MS)) {
@@ -146,7 +148,15 @@ int bluetoothExchange(const char* request, RecordReport (*onRecord)(const PiReco
       break;
     }
     if (parseEnd(line, dlqWaiting)) break;
+    lines.push_back(line);
+  }
 
+  std::vector<std::string> acks;
+  std::vector<std::string> failLines;
+  int received = 0;
+
+  for (const String& line : lines) {
+    if (!protocolOk) break;
     received++;
     recordsPulled++;
     PiRecord record;
