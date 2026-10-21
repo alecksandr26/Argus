@@ -2,6 +2,3 @@
 # The runner reports these as XFAIL; if one starts passing it reports XPASS and fails the run,
 # so the line has to be removed together with the fix (same contract as pytest's
 # xfail(strict=True)). Format: <test name>  <scenario IDs>: <why>
-location_policy_host_test  GPS-01/GPS-02/GPS-03: stale fixes count, no cell fallback, no network-time fallback
-gps_time_host_test         GPS-07a/b: GPS time is used if isValid(), even rolled-over (1999/2006) or stale
-wifi_retry_host_test       NET-13: an attempt still associating is restarted every 10 s, no wifi_retry module

@@ -22,9 +22,12 @@ after the first real-hardware bench run.
 >   CV-04/07 in fusion, FUS-02/09 Pi-clock mapping) and `fusion_corner_host_test`,
 >   `no_face_fusion_host_test`, `grip_debounce_host_test`, `pi_clock_host_test`: `fusion.*` isn't
 >   used while there's no grip sensor; redo them with the sensor.
-> - **Still open:** GPS-01/02/03/07 (stale fixes, rolled-over GPS dates, no cell fallback),
->   CV-07/CV-15 (no camera-offline / stalled-pipeline detection), NET-13 (WiFi retry), and the
->   backend/UI side of replayed "missing alerts" (root `CLAUDE.md`).
+> - **Still open, with no test for now** (their known-failure tests were removed by user decision
+>   on 2026-10-20 so the suites carry no expected failures; write a test with the fix):
+>   GPS-01/02/03/07 (stale fixes count, rolled-over GPS dates, no cell-tower fallback),
+>   CV-07/CV-15 (no camera-offline or stalled-pipeline detection), NET-13 (WiFi retry timing),
+>   and the backend/UI side of replayed "missing alerts" (root `CLAUDE.md`). Test names in the
+>   tables below that no longer exist were among these.
 
 **Status legend**
 - 🔴 **bug**: the test asserts the correct behavior and fails today. It's marked
