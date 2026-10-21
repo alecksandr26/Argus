@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from cv_argus import constants
+
 pytestmark = pytest.mark.docker
 
 MODULE_ROOT = Path(__file__).resolve().parents[1]
@@ -25,8 +27,8 @@ IMAGE_TAG = "cv-argus:pytest"
 
 # The three artifacts the Dockerfile bakes in at build time (see constants.py).
 EXPECTED_ARTIFACTS = [
-    "parts_tiny_yolo_w1_int8.tflite",
-    "parts_tiny_yolo_w1.keras",
+    constants.PARTS_INT8_FILENAME,
+    constants.PARTS_FLOAT_FILENAME,
     "blaze_face_short_range.tflite",
 ]
 

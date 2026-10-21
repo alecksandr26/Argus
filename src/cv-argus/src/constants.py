@@ -25,13 +25,18 @@ FACE_DETECTOR_MIN_DETECTION_CONFIDENCE = 0.5
 FACE_DETECTOR_BBOX_MARGIN_FRAC = 0.25
 
 # --- The "parts" pipeline: tiny YOLO-style detector + rule engine ---
-# notebook/12_tiny_grid_detector.ipynb's step-2 model "tiny_yolo_w1" (46k params). On the test
-# face crops it scored eye-state accuracy 0.95, mAP@0.5 0.63, and int8 was as accurate as float.
-# Both files are shared "Anyone with the link"; the env vars of the same name override the ids.
-PARTS_INT8_DRIVE_FILE_ID = "1r5E0CqKLd6zktj-ZqhYCo2pFtf-Abniz"    # tiny_yolo_w1_20261018_2048_int8.tflite
-PARTS_INT8_FILENAME = "parts_tiny_yolo_w1_int8.tflite"
-PARTS_FLOAT_DRIVE_FILE_ID = "1_CIhATJl1osw_q7G-qyrxMoKMd5ojl-M"   # tiny_yolo_w1_20261018_2048.keras
-PARTS_FLOAT_FILENAME = "parts_tiny_yolo_w1.keras"
+# notebook/12_tiny_grid_detector.ipynb's model "tiny_yolo_w1" (46k params), the 2026-10-20 23:35
+# run. On notebook 12's test set (int8; float within 0.01): mAP@0.5 0.756 (0.63 for the
+# 2026-10-18 model it replaces), eye-state accuracy 0.920 (0.95), head_down AP@0.5 0.743 (0.25),
+# head accuracy 0.994. Both files are shared "Anyone with the link"; the env vars of the same
+# name override the ids.
+# The filenames carry the run date ON PURPOSE: /app/models is the `model-cache` volume, and the
+# downloader skips a file already cached under the same name, so reusing a name would keep a Pi
+# silently running the previous model after an image rebuild.
+PARTS_INT8_DRIVE_FILE_ID = "1MSnhSekHeCavvFzni41-KUBAMatnXqln"    # tiny_yolo_w1_20261020_2335_int8.tflite
+PARTS_INT8_FILENAME = "parts_tiny_yolo_w1_20261020_2335_int8.tflite"
+PARTS_FLOAT_DRIVE_FILE_ID = "1ivbCARbpw25k_ZDGDIeV0T3xcShAwCl4"   # tiny_yolo_w1_20261020_2335.keras
+PARTS_FLOAT_FILENAME = "parts_tiny_yolo_w1_20261020_2335.keras"
 PARTS_DEFAULT_PRECISION = "int8"    # PARTS_PRECISION=int8|float
 # Must match the training data (src/dataset/argus_dataset/config.py DET_*) and notebook 12's IMG.
 PARTS_CLASSES = ("open_eye", "closed_eye", "yawn", "head_straight", "head_down")
@@ -43,7 +48,7 @@ PARTS_CONF_THRESHOLD = 0.25         # detection score kept for tracking (= noteb
 # p_closed / (p_open + p_closed) >= PARTS_CLOSED_EYE_THRESHOLD, a head is `head_down` when
 # p_down / (p_straight + p_down) >= PARTS_HEAD_DOWN_THRESHOLD. 0.5 = plain argmax; lower = more
 # sensitive. Each is overridable by an env var of the same name. Swept on the parts val+test
-# sets (int8): eyes are bimodal (0.5 -> 0.4: recall +0.6 pt, precision -0.5 pt); head_down is
+# sets (int8, the 2026-10-18 model; not re-swept for the 2026-10-20 one): eyes are bimodal (0.5 -> 0.4: recall +0.6 pt, precision -0.5 pt); head_down is
 # the weak class (per-frame recall 52-69%) and 0.5 -> 0.3 gains up to +7 pt at no precision cost.
 PARTS_CLOSED_EYE_THRESHOLD = 0.40
 PARTS_HEAD_DOWN_THRESHOLD = 0.30

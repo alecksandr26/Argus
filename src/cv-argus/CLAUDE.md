@@ -164,8 +164,12 @@ sensor yet, user decision 2026-10-20).
 - int8 vs float: same severity on 98.4% of frames.
 
 Not measured: a Pi 5, real cabin NoIR footage, and accuracy on unseen drivers (the clip came
-from the detector's training data). `head_down` is the detector's weakest class (AP about 0.25,
-few examples), and head pose comes **only** from it (a user decision; no FaceLandmarker here).
+from the detector's training data). Those timings are for the 2026-10-18 model; the deployed
+2026-10-20 23:35 model is the same 46k-parameter architecture (notebook 12: 1.5 ms median int8 on
+one thread). `head_down` is still the weakest class (AP@0.5 0.74, up from about 0.25, but only
+122 test boxes), and head pose comes **only** from it (a user decision; no FaceLandmarker here).
+The decision thresholds and the tracker's head-down vote were tuned on the 2026-10-18 model and
+haven't been re-swept for the new one.
 
 `orchestrator/`, `buffer/`, `sender/` and `alerts/` are done too (see "`orchestrator/`,
 `buffer/`, `sender/`, `alerts/` — done" below). A thin, always-on bridge stage hands each frame's
@@ -938,8 +942,8 @@ no business being part of it; install it separately (`pip install pytest`) for l
   metrics file and the overlay all checked). It has **not** run on a Pi 5, on real cabin NoIR
   footage, or on drivers the detector never saw; that clip is from its training sources. Don't
   describe its accuracy as validated in code comments, docs, or the titulación report: the
-  detector's own test-set numbers (eye-state 0.95, mAP@0.5 0.63, head_down AP about 0.25) are
-  per-frame and from one split.
+  detector's own test-set numbers (2026-10-20 model, int8: mAP@0.5 0.756, eye-state 0.920,
+  head_down AP@0.5 0.743) are per-frame and from one split.
 - Don't suggest enabling `OUTPUTS=...,mjpeg` (or otherwise wiring `MjpegStreamOutputStage` in)
   for anything other than a demo. It has no authentication, and this project's own stated
   cargo-theft/security risk model (root `CLAUDE.md`) makes an open, unauthenticated camera
