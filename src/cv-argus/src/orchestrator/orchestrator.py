@@ -22,6 +22,14 @@ drowsy after a while).
 
 **State is per camera source** (`source_id`), so two cameras can't reset each other.
 
+**Severity changes are transitions too.** The parts rules give a severity (none/low/medium/
+critical); the ESP32 alerts on it directly (no grip sensor yet). A change of severity is emitted
+as a `transition: true` reading right away, even when the class hasn't changed (medium ->
+critical are both `Drowsy`), with `previous_severity` and an `episode` id: one id from the moment
+the severity reaches medium until it falls back to none/low, so the ESP32 can link an incident's
+alert, its escalation and its recovery. The rules already have their own hysteresis, so this
+isn't debounced again.
+
 **One decision loop**: every wake -- a detection or a poll timeout -- checks for a class change,
 for due keepalives (so a stalled pipeline still keeps the ESP32 informed), for the heartbeat, and
 for periodic buffer housekeeping. Readings don't reset the heartbeat clock: the heartbeat is
@@ -31,6 +39,7 @@ import logging
 import queue
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -42,6 +51,9 @@ if TYPE_CHECKING:
     from ..model.detector import DetectionResult
 
 logger = logging.getLogger(__name__)
+
+# Severities the ESP32 raises an alert for; an episode lasts while the severity is one of these.
+_ALERTING = ("medium", "critical")
 
 DROWSY = "Drowsy"
 NOT_DROWSY = "Not Drowsy"
@@ -60,6 +72,11 @@ class _SourceState:
     probabilities: dict[str, list[float]] = field(default_factory=dict)
     # Latest detector extras (DetectionResult.extras), merged into every reading's payload.
     extras: dict = field(default_factory=dict)
+    # The rule severity last sent, and the open episode (see the module docstring).
+    reported_severity: str | None = None
+    current_severity: str | None = None  # this frame's, see _severity()
+    episode: str | None = None
+    latest_probabilities: list[float] | None = None
 
 
 def _classify(detection: "DetectionResult | None") -> str:
@@ -139,7 +156,11 @@ class Orchestrator:
         cls = _classify(detection)
         if detection is not None:
             state.probabilities[cls] = detection.probabilities.tolist()
+            state.latest_probabilities = state.probabilities[cls]
+        else:
+            state.latest_probabilities = None
         state.extras = dict(getattr(detection, "extras", None) or {})
+        state.current_severity = _severity(detection, state.extras)
 
         if cls == state.reported:
             state.candidate, state.candidate_frames = None, 0
@@ -153,6 +174,14 @@ class Orchestrator:
                 state.candidate, state.candidate_frames = None, 0
                 self._emit_reading(source_id, state, transition=True)
                 return
+        severity = state.current_severity
+        if (
+            state.reported is not None
+            and severity is not None
+            and severity != state.reported_severity
+        ):
+            self._emit_reading(source_id, state, transition=True, severity_change=True)
+            return
         self._maybe_keepalive(source_id, state)
 
     def _tick(self, source_id: str) -> None:
@@ -168,30 +197,56 @@ class Orchestrator:
         if time.monotonic() - state.last_reading_at >= self._keepalive_seconds:
             self._emit_reading(source_id, state, transition=False)
 
-    def _emit_reading(self, source_id: str, state: _SourceState, *, transition: bool) -> None:
+    def _emit_reading(
+        self, source_id: str, state: _SourceState, *, transition: bool, severity_change: bool = False
+    ) -> None:
         cls = state.reported
-        reading = Alert.new(
-            AlertKind.DROWSINESS,
-            level=_LEVELS[cls],
-            source_id=source_id,
+        # A severity change can come before the debounced class catches up (critical while the
+        # class still reads Not Drowsy for a few frames), so it carries this frame's probabilities.
+        if severity_change:
+            probabilities = state.latest_probabilities
+        else:
+            probabilities = None if cls == NO_FACE else state.probabilities.get(cls)
+        payload = {
             # Detector extras (the parts pipeline's severity/reason/timers) go in first, so they
-            # can never overwrite the three keys the ESP32 and cap_unsent() depend on.
-            payload={
-                **state.extras,
-                "class_name": cls,
-                "probabilities": None if cls == NO_FACE else state.probabilities.get(cls),
-                "transition": transition,
-            },
-        )
+            # can never overwrite the keys the ESP32 and cap_unsent() depend on.
+            **state.extras,
+            "class_name": cls,
+            "probabilities": probabilities,
+            "transition": transition,
+        }
+        severity = state.current_severity
+        if severity is not None:
+            payload.setdefault("severity", severity)
+            previous = state.reported_severity
+            if transition and severity in _ALERTING and state.episode is None:
+                state.episode = uuid.uuid4().hex[:12]
+            payload["previous_severity"] = previous if transition else severity
+            if state.episode is not None:
+                payload["episode"] = state.episode
+            state.reported_severity = severity
+            if transition and severity not in _ALERTING:
+                state.episode = None  # this reading is the episode's recovery
+        reading = Alert.new(AlertKind.DROWSINESS, level=_LEVELS[cls], source_id=source_id,
+                            payload=payload)
         state.last_reading_at = time.monotonic()
         if self._enqueue(reading) and transition:
-            logger.info("orchestrator: %s -> %s", source_id, cls)
+            if severity is None:
+                logger.info("orchestrator: %s -> %s", source_id, cls)
+            else:
+                reason = state.extras.get("reason") or ""
+                logger.info(
+                    "orchestrator: %s -> %s, severity %s -> %s (%s)%s | queued for the ESP32",
+                    source_id, cls, payload["previous_severity"], severity, reason,
+                    f", episode {payload['episode']}" if "episode" in payload else "",
+                )
 
     def _maybe_heartbeat(self, source_id: str) -> None:
         now = time.monotonic()
         if now - self._last_heartbeat_at >= self._heartbeat_interval:
             self._last_heartbeat_at = now
-            self._enqueue(route_status(source_id))
+            if self._enqueue(route_status(source_id)):
+                logger.info("orchestrator: heartbeat queued for the ESP32")
 
     def _maybe_maintain_buffer(self) -> None:
         now = time.monotonic()
@@ -219,3 +274,12 @@ class Orchestrator:
         except Exception:
             logger.exception("orchestrator: failed to enqueue %s record", alert.kind.value)
             return False
+
+
+def _severity(detection, extras: dict) -> str | None:
+    """The rule severity of this frame. A frame with no detection at all (no face, no rule
+    active) is `none`; a detector that reports no severity (not the parts rules) is `None`, and
+    then severity changes aren't tracked."""
+    if detection is None:
+        return "none"
+    return extras.get("severity")

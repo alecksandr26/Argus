@@ -23,6 +23,17 @@ shared and effective.
 does is `mark_sent()`, which `sender/` calls exclusively after an actual ACK from the ESP32
 (never right after handing rows over) — see `sender/server.py`. This structurally enforces
 "mark sent only on ACK" rather than relying on every caller to remember the rule.
+
+**Live first, dead-letter on failure.** Every row has a `state`:
+- `outbox`: just produced, waiting for the ESP32's next poll. Written to disk at once so a Pi
+  reboot can't lose it, but this is the live path, not the queue: rows normally leave it within
+  seconds.
+- `dlq`: the ESP32 tried and said it couldn't deliver it (`FAIL <reason>`: no credentials, no
+  network, ...), or never picked it up in time (`expire_outbox`). Kept with the ESP32's reason and
+  the backend message it composed (`dlq_body`: GPS position and time of the event), and replayed
+  oldest first once the backend is reachable again (`fetch_dlq`). This is the dead-letter queue.
+- `sent`: the ESP32 delivered it, or it had nothing to send (a keepalive). Pruned after a day.
+`sent` (0/1) is kept in step with `state` for older readers of this file.
 """
 
 import json
@@ -55,7 +66,25 @@ _ADDED_COLUMNS = {
     "mono_ms": "INTEGER",
     "boot_id": "TEXT",
     "clock_synced": "INTEGER",
+    # The dead-letter queue (see the module docstring).
+    "state": "TEXT",
+    "dlq_error": "TEXT",
+    "dlq_body": "TEXT",
+    "dlq_at_ms": "INTEGER",
+    "attempts": "INTEGER NOT NULL DEFAULT 0",
 }
+
+OUTBOX = "outbox"
+DLQ = "dlq"
+SENT = "sent"
+
+# Rows the backend cares about: heartbeats and readings that changed the class or the severity.
+# Keepalives only repeat a state the ESP32 already has, so they're never dead-lettered.
+_BACKEND_BOUND = "(kind = 'route_status' OR json_extract(payload_json, '$.transition') = 1)"
+_SELECT_ALERT = """
+    SELECT id, kind, level, created_at_ms, source_id, payload_json, geolocation_json,
+           mono_ms, boot_id, clock_synced
+"""
 
 _DEFAULT_FETCH_LIMIT = 50
 
@@ -99,6 +128,14 @@ class Buffer:
             for column, sql_type in _ADDED_COLUMNS.items():
                 if column not in existing:
                     self._conn.execute(f"ALTER TABLE alerts ADD COLUMN {column} {sql_type}")
+            # Rows from before the dead-letter queue: unsent ones are simply still live.
+            self._conn.execute(
+                "UPDATE alerts SET state = CASE sent WHEN 1 THEN ? ELSE ? END WHERE state IS NULL",
+                (SENT, OUTBOX),
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_alerts_state ON alerts (state, enqueued_at_ms)"
+            )
 
     def enqueue(self, alert: Alert) -> None:
         """Insert one row. Idempotent on `alert.id` (`INSERT OR IGNORE`) -- a caller that
@@ -114,8 +151,8 @@ class Buffer:
                 """
                 INSERT OR IGNORE INTO alerts
                     (id, kind, level, created_at_ms, source_id, payload_json, geolocation_json,
-                     sent, sent_at_ms, enqueued_at_ms, mono_ms, boot_id, clock_synced)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)
+                     sent, sent_at_ms, enqueued_at_ms, mono_ms, boot_id, clock_synced, state)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?)
                 """,
                 (
                     data["id"],
@@ -129,49 +166,116 @@ class Buffer:
                     data["mono_ms"],
                     data["boot_id"],
                     None if data["clock_synced"] is None else int(data["clock_synced"]),
+                    OUTBOX,
                 ),
             )
 
     def fetch_unsent(self, limit: int = _DEFAULT_FETCH_LIMIT) -> list[Alert]:
-        """Oldest-first, never mutates `sent` -- see the module docstring. Safe to call
-        repeatedly/idempotently, which is exactly what makes "a not-yet-acked record is always
-        safely re-served" possible in `sender/`."""
+        """The live outbox, oldest first (rows are seconds old; order matters for an episode's
+        medium -> critical). Never mutates anything -- see the module docstring. Safe to call
+        repeatedly, which is exactly what makes "a not-yet-acked record is always safely
+        re-served" possible in `sender/`. Dead-lettered rows are `fetch_dlq()`'s."""
         # Insertion order (rowid), not the wall clock: an NTP step backwards between two
         # enqueues must not serve the newer row first (CV-14).
         with self._lock:
             rows = self._conn.execute(
-                """
-                SELECT id, kind, level, created_at_ms, source_id, payload_json, geolocation_json,
-                       mono_ms, boot_id, clock_synced
-                FROM alerts
-                WHERE sent = 0
-                ORDER BY rowid ASC
-                LIMIT ?
-                """,
-                (limit,),
+                _SELECT_ALERT + "FROM alerts WHERE state = ? ORDER BY rowid ASC LIMIT ?",
+                (OUTBOX, limit),
+            ).fetchall()
+        return [_row_to_alert(row) for row in rows]
+
+    def fetch_dlq(self, limit: int) -> list[tuple[Alert, dict]]:
+        """Dead letters, oldest first, each with its `{error, body, failed_at_ms, attempts}`
+        (`body` is the backend message the ESP32 composed when it failed, or `None`)."""
+        with self._lock:
+            rows = self._conn.execute(
+                _SELECT_ALERT + """, dlq_error, dlq_body, dlq_at_ms, attempts
+                FROM alerts WHERE state = ? ORDER BY rowid ASC LIMIT ?""",
+                (DLQ, limit),
             ).fetchall()
         return [
-            from_dict(
+            (
+                _row_to_alert(row),
                 {
-                    "id": row[0],
-                    "kind": row[1],
-                    "level": row[2],
-                    "created_at_ms": row[3],
-                    "source_id": row[4],
-                    "payload": json.loads(row[5]),
-                    "geolocation": json.loads(row[6]) if row[6] is not None else None,
-                    "mono_ms": row[7],
-                    "boot_id": row[8],
-                    "clock_synced": None if row[9] is None else bool(row[9]),
-                }
+                    "error": row[10],
+                    "body": json.loads(row[11]) if row[11] else None,
+                    "failed_at_ms": row[12],
+                    "attempts": row[13],
+                },
             )
             for row in rows
         ]
 
+    def mark_dlq(self, alert_id: str, error: str, body: dict | None = None) -> bool:
+        """The ESP32 couldn't deliver `alert_id`: move it to (or keep it in) the dead-letter
+        queue with this reason. `body` replaces the stored message only when given, so a later
+        failed replay without one keeps the original position and time. Returns whether a live
+        or dead-lettered row with that id existed."""
+        now_ms = int(time.time() * 1000)
+        stored = json.dumps(body, separators=(",", ":")) if body is not None else None
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                UPDATE alerts
+                SET state = ?, dlq_error = ?,
+                    dlq_body = COALESCE(?, dlq_body),
+                    dlq_at_ms = COALESCE(dlq_at_ms, ?),
+                    attempts = attempts + 1
+                WHERE id = ? AND state IN (?, ?)
+                """,
+                (DLQ, error, stored, now_ms, alert_id, OUTBOX, DLQ),
+            )
+            return cur.rowcount == 1
+
+    def expire_outbox(self, older_than_ms: int) -> tuple[int, int]:
+        """Live rows the ESP32 didn't pick up before `older_than_ms` (epoch ms, by enqueue
+        time): the link is down. Backend-bound ones (heartbeats, transitions) move to the
+        dead-letter queue as `esp32_unreachable`, without a body (the ESP32 never saw them, so
+        there's no position); keepalives are dropped. Returns `(dead_lettered, dropped)`."""
+        now_ms = int(time.time() * 1000)
+        with self._lock:
+            moved = self._conn.execute(
+                f"""
+                UPDATE alerts
+                SET state = ?, dlq_error = 'esp32_unreachable', dlq_at_ms = ?
+                WHERE state = ? AND enqueued_at_ms < ? AND {_BACKEND_BOUND}
+                """,
+                (DLQ, now_ms, OUTBOX, older_than_ms),
+            ).rowcount
+            dropped = self._conn.execute(
+                f"DELETE FROM alerts WHERE state = ? AND enqueued_at_ms < ? AND NOT {_BACKEND_BOUND}",
+                (OUTBOX, older_than_ms),
+            ).rowcount
+        return moved, dropped
+
+    def counts(self) -> dict:
+        """`{outbox, dlq, sent, oldest_dlq_ms, dlq_reasons: {reason: n}}` for the logs."""
+        with self._lock:
+            by_state = dict(
+                self._conn.execute("SELECT state, COUNT(*) FROM alerts GROUP BY state").fetchall()
+            )
+            oldest = self._conn.execute(
+                "SELECT MIN(created_at_ms) FROM alerts WHERE state = ?", (DLQ,)
+            ).fetchone()[0]
+            reasons = dict(
+                self._conn.execute(
+                    "SELECT dlq_error, COUNT(*) FROM alerts WHERE state = ? GROUP BY dlq_error",
+                    (DLQ,),
+                ).fetchall()
+            )
+        return {
+            OUTBOX: by_state.get(OUTBOX, 0),
+            DLQ: by_state.get(DLQ, 0),
+            SENT: by_state.get(SENT, 0),
+            "oldest_dlq_ms": oldest,
+            "dlq_reasons": reasons,
+        }
+
     def mark_sent(self, ids: list[str]) -> int:
-        """Flip `sent` for exactly the given, still-unsent ids. Returns how many rows were
-        actually updated -- a caller can use a return smaller than `len(ids)` to notice an ACK
-        for an id already marked sent by a previous run (not an error, just worth a debug log)."""
+        """Mark exactly the given, not-yet-delivered ids (live or dead-lettered) as delivered.
+        Returns how many rows were actually updated -- a caller can use a return smaller than
+        `len(ids)` to notice an ACK for an id already marked sent by a previous run (not an
+        error, just worth a debug log)."""
         if not ids:
             return 0
         placeholders = ",".join("?" for _ in ids)
@@ -180,14 +284,15 @@ class Buffer:
             cur = self._conn.execute(
                 f"""
                 UPDATE alerts
-                SET sent = 1, sent_at_ms = ?
+                SET sent = 1, sent_at_ms = ?, state = ?
                 WHERE id IN ({placeholders}) AND sent = 0
                 """,
-                (sent_at_ms, *ids),
+                (sent_at_ms, SENT, *ids),
             )
             return cur.rowcount
 
     def unsent_count(self) -> int:
+        """Rows not delivered yet: the live outbox plus the dead-letter queue."""
         with self._lock:
             return self._conn.execute("SELECT COUNT(*) FROM alerts WHERE sent = 0").fetchone()[0]
 
@@ -228,6 +333,23 @@ class Buffer:
 
     def close(self) -> None:
         self._conn.close()
+
+
+def _row_to_alert(row) -> Alert:
+    return from_dict(
+        {
+            "id": row[0],
+            "kind": row[1],
+            "level": row[2],
+            "created_at_ms": row[3],
+            "source_id": row[4],
+            "payload": json.loads(row[5]),
+            "geolocation": json.loads(row[6]) if row[6] is not None else None,
+            "mono_ms": row[7],
+            "boot_id": row[8],
+            "clock_synced": None if row[9] is None else bool(row[9]),
+        }
+    )
 
 
 def open_buffer(db_path: Path | None = None) -> Buffer:

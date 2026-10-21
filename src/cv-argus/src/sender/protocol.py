@@ -20,6 +20,23 @@ credentials (see `device_config.py`), at boot and again whenever the backend ans
     Server -> Client:  CONFIG {"truck_id":...,"device_api_key":...,"backend_url":...}\\n
                        or NOCONFIG\\n                         (none provisioned on this Pi)
 
+**Live first, dead-letter on failure.** After the records, the ESP32 says per record whether it
+reached the backend. `ACK` means delivered (or nothing to send); `FAIL` means it couldn't, with a
+one-token reason and the backend message it composed, so the Pi keeps exactly that message (GPS
+position, time) in its dead-letter queue (`buffer/store.py`). `END` carries how many dead letters
+are waiting, and `DLQ <k>` asks for the oldest of them, answered the same way:
+
+    Client -> Server:  PULL <n>\\n  |  DLQ <k>\\n
+    Server -> Client:  JSON lines (a DLQ line also has "dlq": {error, body, failed_at_ms, attempts})
+    Server -> Client:  END <dead letters waiting>\\n
+    Client -> Server:  FAIL <id> <reason> <json body or ->\\n   (0..n lines)
+    Client -> Server:  ACK <id1>,<id2>,...\\n                   (if any were delivered)
+    Server -> Client:  ACKED <n>\\n
+    Client -> Server:  DONE\\n
+    Server -> Client:  OK acked=<a> failed=<f> dlq=<n>\\n
+
+A client that stops after `ACK`/`ACKED` (the original exchange) still works.
+
 Case-sensitive by design — simpler to reason about on constrained ESP32 firmware than a
 case-insensitive parser would be.
 """
@@ -40,6 +57,67 @@ _PULL_RE = re.compile(r"^PULL (\d+)$")
 # Ids are opaque tokens (Alert.id is a uuid4 hex in production, but the grammar itself doesn't
 # assume that shape) -- anything but a comma or whitespace, comma-separated.
 _ACK_RE = re.compile(r"^ACK ([^,\s]+(?:,[^,\s]+)*)$")
+
+
+DONE_LINE = "DONE"
+# The most dead letters one DLQ request can ask for: replay is meant to trickle, not flood.
+MAX_DLQ_LIMIT = 10
+
+_DLQ_RE = re.compile(r"^DLQ (\d+)$")
+# FAIL <id> <reason> <body>: id and reason are single tokens; the body (compact JSON, which may
+# contain spaces inside strings) is the rest of the line, or "-" when there is none.
+_FAIL_RE = re.compile(r"^FAIL ([^\s,]+) ([A-Za-z0-9_.:-]+)(?: (.+))?$")
+
+
+def format_end(dlq_waiting: int) -> str:
+    return f"{END_LINE} {dlq_waiting}"
+
+
+def parse_end(line: str) -> int | None:
+    """`END` or `END <n>` -> n (0 when absent); `None` if it isn't an END line."""
+    parts = line.rstrip("\r").split(" ")
+    if parts[0] != END_LINE or len(parts) > 2:
+        return None
+    if len(parts) == 1:
+        return 0
+    return int(parts[1]) if parts[1].isdigit() else None
+
+
+def parse_dlq(line: str) -> int | None:
+    match = _DLQ_RE.match(line.rstrip("\r"))
+    if match is None:
+        return None
+    return min(int(match.group(1)), MAX_DLQ_LIMIT)
+
+
+def format_dlq(k: int) -> str:
+    return f"DLQ {k}"
+
+
+def parse_fail(line: str) -> tuple[str, str, dict | None] | None:
+    """`FAIL <id> <reason> <json|->` -> `(id, reason, body or None)`; `None` if malformed. A body
+    that isn't a JSON object counts as no body rather than rejecting the whole report."""
+    match = _FAIL_RE.match(line.rstrip("\r"))
+    if match is None:
+        return None
+    raw = match.group(3)
+    body = None
+    if raw and raw != "-":
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = None
+        body = parsed if isinstance(parsed, dict) else None
+    return match.group(1), match.group(2), body
+
+
+def format_fail(alert_id: str, reason: str, body: dict | None = None) -> str:
+    payload = json.dumps(body, separators=(",", ":")) if body is not None else "-"
+    return f"FAIL {alert_id} {reason} {payload}"
+
+
+def format_result(acked: int, failed: int, dlq_waiting: int) -> str:
+    return f"OK acked={acked} failed={failed} dlq={dlq_waiting}"
 
 
 def parse_pull(line: str) -> int | None:

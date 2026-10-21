@@ -131,7 +131,7 @@ class TestServerConfig:
 
     def test_pull_still_works_alongside(self, tmp_path):
         lines = _session({"device_config": CONFIG}, "PULL 5", tmp_path=tmp_path)
-        assert lines == [protocol.END_LINE]
+        assert lines == [protocol.format_end(0)]
 
 
 class TestServerAllowlist:

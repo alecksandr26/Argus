@@ -27,7 +27,7 @@ def _pull_and_collect(client, n):
     while True:
         line = client.readline(timeout=2.0)
         assert line is not None, "server closed the connection unexpectedly"
-        if line.decode() == protocol.END_LINE:
+        if protocol.parse_end(line.decode()) is not None:
             break
         lines.append(line.decode())
     return lines
