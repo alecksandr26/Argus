@@ -144,6 +144,33 @@ Bluetooth rather than serial or Wi-Fi/MQTT) rather than `--privileged`. The CSI-
 Docker path is the one detail worth prototyping early, since libcamera device passthrough is
 fussier than a USB webcam.
 
+## Pending feature: "Missing alerts" — plan and groom it BEFORE building (don't forget)
+
+Agreed with the user (2026-10-20), deliberately not built yet, and **must be planned and groomed
+first** — don't implement it ad hoc inside another task.
+
+**What creates them.** The Pi ↔ ESP32 link is "live first, dead-letter on failure": the Pi hands
+each new message to the ESP32, the ESP32 tries the backend and answers *delivered* or *failed
+(reason) + the message it composed* (GPS position and the time it happened). Only failed messages
+go into the Pi's SQLite queue, which acts as a **dead-letter queue (DLQ)**. When the backend is
+reachable again, the ESP32 replays the DLQ little by little, newest live events always first. See
+`src/cv-argus/CLAUDE.md` (`buffer/`, `sender/`) and `src/esp32-argus/README.md`.
+
+**The gap.** Those replayed messages — alerts, route status and anything else the ESP32 sends —
+are **"missing alerts"**: real events that happened while the truck was offline, arriving late.
+Today the backend stores them like live ones (`occurred_at` is the only hint), so an old alert
+could show up in Live operations as if it were happening now.
+
+**To plan and groom (backend + UI + ESP32), at least:**
+- how the ESP32 marks a replay (a field on the existing `POST /api/alerts` /
+  `POST /api/routes/{id}/status`, or a separate endpoint), and what it carries (original time,
+  original GPS position, how long it was queued, why it failed);
+- how `backend-argus` stores them: a flag/`ingestion` field on `Alert` and `Status_Route`, and
+  that a late status must never overwrite a truck's newer "latest status";
+- how `ui-argus` shows them: in alert/route **history**, clearly labelled as recovered after a
+  lost connection — **not** in Live operations, which must only show the newest events;
+- what a guardian needs to do with them (review? acknowledge?), and how they count in reports.
+
 ## Repository state and structure
 
 Three parts of the planned architecture exist as code so far: the training notebook, the

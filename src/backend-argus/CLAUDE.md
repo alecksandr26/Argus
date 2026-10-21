@@ -397,6 +397,10 @@ what's actually been run.
 
 ## Future work (explicitly out of scope for this pass)
 
+- **"Missing alerts" — must be planned and groomed before building.** Alerts and statuses the
+  ESP32 replays from the Pi's dead-letter queue after a lost connection arrive late and need to
+  be stored as recovered events, kept out of Live operations and shown in history. Full brief in
+  the root `CLAUDE.md`, section "Pending feature: Missing alerts".
 - `Report`, `Device`, `Geofence` — modeled in the ER diagram, no consumer yet.
 - Refresh tokens / session revocation.
 - Real per-user "own truck/route only" scoping for the `truck_driver` role — needs a schema
