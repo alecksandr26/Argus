@@ -159,6 +159,16 @@ describe('R8: small backend + kill switch', () => {
       ReservedConcurrentExecutions: Match.absent(),
     })
   })
+  it('a new backend image id is a new Lambda image (a backend change always redeploys)', () => {
+    const imageUri = (id: string) => {
+      const fns = synth({ backendImageId: id }).app.findResources('AWS::Lambda::Function', {
+        Properties: { PackageType: 'Image' },
+      })
+      return JSON.stringify(Object.values(fns)[0].Properties.Code.ImageUri)
+    }
+    expect(imageUri('sha256:aaa')).not.toEqual(imageUri('sha256:bbb'))
+    expect(imageUri('sha256:aaa')).toEqual(imageUri('sha256:aaa'))
+  })
   it('invocation alarm triggers the kill switch', () => {
     t.guardrails.hasResourceProperties('AWS::CloudWatch::Alarm', {
       Threshold: KILL_SWITCH_INVOCATIONS_PER_HOUR,

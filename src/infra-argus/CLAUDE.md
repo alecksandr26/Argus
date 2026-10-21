@@ -22,6 +22,14 @@ Web Adapter extension, which proxies Lambda invocations to the same uvicorn proc
 no handler, no changes to `backend-argus`'s code or Dockerfile for Lambda. Its Mongo client is
 created once per execution environment in `lifespan`, so warm invocations reuse it.
 
+**A backend change must change the asset hash.** CDK hashes only `docker/backend-lambda/` and the
+build args, and the base image is referenced by a tag that never changes. Until 2026-10-21 that
+meant `npm run deploy` rebuilt `argus/backend-argus:latest` with new code and then kept the old
+Lambda ("no changes"); the live backend stayed on its 2026-10-18 build through a redeploy.
+`deploy.sh` now passes the image's id as `-c backendImageId=...`, which goes into the asset's
+`extraHash`; a test pins that a different id is a different image. Deploy through `npm run
+deploy`, not a bare `cdk deploy`, or the backend won't update.
+
 Secrets: `load_ssm_env.py` fetches `/argus/*` SecureString params into env vars and then `exec`s
 uvicorn. CloudFormation can't resolve `ssm-secure` into Lambda env vars, and passing secrets
 as plain template parameters would leave them readable in the template and console. Doing it in

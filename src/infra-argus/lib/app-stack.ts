@@ -47,6 +47,9 @@ export class AppStack extends cdk.Stack {
       code: lambda.DockerImageCode.fromImageAsset(path.join(INFRA_DIR, 'docker', 'backend-lambda'), {
         platform: Platform.LINUX_AMD64,
         buildArgs: { BASE_IMAGE: 'argus/backend-argus:latest' },
+        // The base image is referenced by tag, which never changes; its id makes a new backend
+        // build a new asset (see ArgusConfig.backendImageId).
+        extraHash: config.backendImageId || undefined,
       }),
       architecture: lambda.Architecture.X86_64,
       // R8: small, short, and (where the account allows it) capped concurrency.

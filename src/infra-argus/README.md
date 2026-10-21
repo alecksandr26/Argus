@@ -162,9 +162,10 @@ npm run deploy
   `Argus is live at: https://xxxx.cloudfront.net`. The first run takes ~10–15 minutes, mostly
   CloudFront.
 - **Lambda concurrency limit**: brand-new accounts sometimes have a limit of 10, which can't
-  reserve any. If the deploy fails with *"decreases account's UnreservedConcurrentExecution
-  below its minimum value"*, add `-c backendReservedConcurrency=none` (the kill switch still
-  works) or ask AWS Support to raise the limit (free).
+  reserve any (AWS keeps 10 unreserved). `npm run deploy` checks the limit and, below 12, deploys
+  with `-c backendReservedConcurrency=none` itself (the kill switch still works). With a bare
+  `cdk deploy` the error is *"decreases account's UnreservedConcurrentExecution below its minimum
+  value"*: add that flag, or ask AWS Support to raise the limit (free).
 
 ### Step 5 — Test the root_admin user
 

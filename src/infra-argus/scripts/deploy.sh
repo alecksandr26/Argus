@@ -10,7 +10,15 @@ docker build -t argus/backend-argus:latest "$SRC_DIR/backend-argus"
 
 echo "==> Deploying stacks"
 cd "$INFRA_DIR"
-CTX=()
+# The Lambda image is built FROM argus/backend-argus:latest; CDK only hashes the wrapper folder,
+# so the image id is what makes a backend change actually reach the Lambda.
+CTX=(-c "backendImageId=$(docker image inspect -f '{{.Id}}' argus/backend-argus:latest)")
+# Accounts with a Lambda concurrency limit of 10 can't reserve any (AWS keeps 10 unreserved).
+LIMIT="$(aws lambda get-account-settings --query AccountLimit.ConcurrentExecutions --output text || true)"
+if [ "$LIMIT" -lt 12 ] 2>/dev/null; then
+  echo "NOTE: Lambda concurrency limit is $LIMIT; deploying the backend without reserved concurrency."
+  CTX+=(-c backendReservedConcurrency=none)
+fi
 [ -n "${ROOT_ADMIN_EMAIL:-}" ] && CTX+=(-c "rootAdminEmail=$ROOT_ADMIN_EMAIL")
 [ -n "${ALERT_EMAIL:-}" ] && CTX+=(-c "alertEmail=$ALERT_EMAIL")
 # CLI args come last, so `-c ...` on the command line overrides .env.

@@ -24,6 +24,10 @@ export interface ArgusConfig {
   /** `undefined` = no reservation (accounts whose Lambda concurrency limit is only 10 can't reserve any). */
   backendReservedConcurrency: number | undefined
   simulatorSessionMinutes: number
+  /** The local argus/backend-argus image's id (`docker image inspect`), passed by deploy.sh. It
+   * goes into the Lambda image asset's hash: the asset is built FROM that image by tag, and CDK
+   * hashes only the wrapper folder, so without it a backend code change never redeploys. */
+  backendImageId: string
 }
 
 export function readConfig(scope: Construct): ArgusConfig {
@@ -41,5 +45,6 @@ export function readConfig(scope: Construct): ArgusConfig {
     // Capped at 2 unless explicitly turned off with `-c backendReservedConcurrency=none`.
     backendReservedConcurrency: concurrency === 'none' ? undefined : Number(concurrency ?? 2),
     simulatorSessionMinutes: sessionMinutes,
+    backendImageId: String(ctx('backendImageId') ?? ''),
   }
 }
