@@ -60,7 +60,7 @@ export function createRoute(input: RouteInput, token: string): Promise<Route> {
 
 export function updateRoute(
   id: string,
-  input: Partial<RouteInput>,
+  input: Partial<RouteInput & Pick<Route, 'actual_departure' | 'actual_arrival'>>,
   token: string,
 ): Promise<Route> {
   return apiFetch<Route>(`/api/routes/${id}`, { method: 'PUT', body: input, token }).then(

@@ -6,7 +6,7 @@ import RecordTable, { type Column } from '../components/RecordTable'
 import StatusPill from '../components/StatusPill'
 import Icon from '../components/Icon'
 import { useAuth } from '../context/AuthContext'
-import { createRoute as createRouteApi, listRoutes } from '../api/routes'
+import { createRoute as createRouteApi, listRoutes, updateRoute } from '../api/routes'
 import { listDrivers } from '../api/drivers'
 import { listTrucks } from '../api/trucks'
 import { ApiError } from '../api/client'
@@ -21,6 +21,12 @@ import type { Driver, Route, Truck } from '../types'
  * confirm" is still deferred (INTEGRATION.md) — `destination_coordinates`/`estimated_arrival`
  * stay stubbed on create, unchanged from before. The create panel is `root_admin`/`admin` only;
  * a `guardian` sees the route table read-only.
+ *
+ * Start trip / Complete trip move a route to `in_progress` / `completed`. A route is only
+ * "active" (what the truck's ESP32 gets from `GET /api/devices/me/active-route`, and so what its
+ * alerts are filed under) while `in_progress`; nothing on the backend changes that by itself.
+ * Starting is refused while the same truck already has an active trip: the device follows one
+ * route, the newest by departure, so a second one would silently take its alerts.
  */
 
 type NewRoute = {
@@ -54,6 +60,7 @@ export default function TravelManagement() {
   const [query, setQuery] = useState('')
   const [form, setForm] = useState<NewRoute>(blankRoute([], []))
   const [creating, setCreating] = useState(false)
+  const [busyRoute, setBusyRoute] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -137,6 +144,62 @@ export default function TravelManagement() {
     }
   }
 
+  async function setTrip(r: Route, next: 'in_progress' | 'completed') {
+    setError(null)
+    if (next === 'in_progress') {
+      const running = list.find(
+        (o) =>
+          o.id_truck === r.id_truck && o.id_route !== r.id_route && isActiveRoute(o.operative_status),
+      )
+      if (running) {
+        const plate = truckById.get(r.id_truck)?.plate_number ?? 'This truck'
+        setError(
+          `${plate} already has a trip in progress (${running.origin_name} → ${running.destination_name}). Complete it first.`,
+        )
+        return
+      }
+    }
+    setBusyRoute(r.id_route)
+    try {
+      const now = new Date().toISOString()
+      const updated = await updateRoute(
+        r.id_route,
+        next === 'in_progress'
+          ? { operative_status: 'in_progress', actual_departure: now }
+          : { operative_status: 'completed', actual_arrival: now },
+        token,
+      )
+      setList((prev) => prev.map((o) => (o.id_route === updated.id_route ? updated : o)))
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to update the trip')
+    } finally {
+      setBusyRoute(null)
+    }
+  }
+
+  const tripColumn: Column<Route> = {
+    header: 'Trip',
+    cell: (r) => {
+      const button = (label: string, next: 'in_progress' | 'completed') => (
+        <button
+          type="button"
+          className="btn btn--ghost"
+          style={{ padding: '4px 10px', fontSize: 11.5 }}
+          disabled={busyRoute !== null}
+          onClick={(e) => {
+            e.stopPropagation()
+            void setTrip(r, next)
+          }}
+        >
+          {label}
+        </button>
+      )
+      if (r.operative_status === 'scheduled') return button('Start trip', 'in_progress')
+      if (isActiveRoute(r.operative_status)) return button('Complete trip', 'completed')
+      return <span style={{ color: 'var(--text-faint)', fontSize: 11.5 }}>—</span>
+    },
+  }
+
   const columns: Column<Route>[] = [
     {
       header: 'Origin → Destination',
@@ -188,6 +251,7 @@ export default function TravelManagement() {
           <span style={{ color: 'var(--text-faint)', fontSize: 11.5 }}>—</span>
         ),
     },
+    ...(canWrite ? [tripColumn] : []),
   ]
 
   return (

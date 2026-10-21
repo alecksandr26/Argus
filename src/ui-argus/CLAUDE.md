@@ -366,6 +366,15 @@ for `localhost`, which the truck can't reach. guardian sees the status only. Ver
 82/82 Vitest tests across 15 files, `tsc -b && vite build`, run from a native Linux copy (the
 `/mnt/c` caveat above). Not clicked through in a real browser yet.
 
+**Start trip / Complete trip** (`TravelManagement.tsx`, tests in `pages/TravelManagement.test.tsx`):
+a Trip column for root_admin/admin. Start sets a `scheduled` route to `in_progress` with
+`actual_departure`, Complete sets an active one to `completed` with `actual_arrival`
+(`PUT /api/routes/{id}`). Before this nothing could start a route, and a truck's ESP32 only
+gets a route (`GET /api/devices/me/active-route`) while it's in progress, so a real device
+answered `no_route` forever. Starting is refused while the truck already has an active trip:
+the device follows only the newest one. Verified: lint, 86/86 Vitest tests across 16 files,
+`tsc -b && vite build`, from a native Linux copy. Not clicked through in a real browser yet.
+
 ## Next steps (not started)
 
 - Fix the `html-encoding-sniffer`/`@exodus/bytes` toolchain bug for real (pin a working
