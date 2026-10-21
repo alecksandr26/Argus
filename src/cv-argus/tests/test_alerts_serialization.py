@@ -125,8 +125,6 @@ def _reject_constant(token):
     raise ValueError(f"non-standard JSON token {token}")
 
 
-@pytest.mark.xfail(strict=True, raises=ValueError,
-                   reason="REC-19: json.dumps writes NaN/Infinity as bare tokens (allow_nan=True)")
 def test_wire_json_is_strict_even_with_nan_probabilities():
     """The ESP32's ArduinoJson 7 rejects a whole line containing NaN/Infinity (verified against
     7.4.3: InvalidInput), so the wire format must be strict JSON whatever the payload holds."""

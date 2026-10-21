@@ -291,8 +291,6 @@ def test_readers_and_writer_threads_stay_consistent(tmp_path):
     buf.close()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="BUF-06: cap_unsent only drops keepalives, so transitions/heartbeats grow forever")
 def test_unsent_backlog_stays_bounded_without_keepalives(tmp_path):
     """A permanent outage (a rotated device key the ESP32 never got, a dead ESP32) means nothing
     is ever ACKed. Keepalives are dropped first, but once only transitions and heartbeats are

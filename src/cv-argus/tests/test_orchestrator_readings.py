@@ -268,8 +268,6 @@ def test_keepalive_while_frames_flow_is_not_marked_stale(clock):
     assert all(r.payload.get("frame_age_s", 0.0) < STALE_FRAME_SECONDS for r in buf.readings())
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="REC-19: NaN probabilities are queued as-is (and written as a NaN token)")
 def test_nan_detection_is_never_reported_with_nan_probabilities(clock):
     """A NaN from the model (e.g. a zero eye width in the EAR ratio) must not reach the buffer:
     json.dumps writes it as a bare NaN token, which the ESP32's ArduinoJson rejects, so the row

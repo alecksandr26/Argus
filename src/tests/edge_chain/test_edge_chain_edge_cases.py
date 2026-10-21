@@ -174,13 +174,11 @@ async def test_route_change_mid_incident_has_no_stuck_records(scenario, backend,
 # --- 6. Connectivity -------------------------------------------------------------------
 
 
-@known_bug(strict=True, raises=AssertionError,
-           reason="BT-20: after an ESP32 reset the Pi sits in the dead session for its 30 s report wait")
 async def test_esp32_reset_between_end_and_ack_recovers_on_next_poll(scenario, backend, truck_route):
-    """The ESP32 resets right after END: no ACK, and the RFCOMM link is never closed cleanly
-    (half-open). The Pi's one-session-at-a-time accept loop keeps waiting for the ACK, so the
-    rebooted ESP32's next poll gets no answer within its 3 s line timeout. The next poll must
-    succeed."""
+    """The ESP32 resets right after END: no report, and the RFCOMM link is never closed cleanly
+    (half-open). The Pi serves one session at a time, so it used to sit in the dead one for its
+    whole report wait (BT-20). It now notices the rebooted ESP32's new connection waiting and
+    drops the old session, so the next poll succeeds."""
     scenario.buffer.enqueue(route_status("cam-0"))
     await scenario.dev.poll(half_open_before_ack=True)
     started = real_time.monotonic()

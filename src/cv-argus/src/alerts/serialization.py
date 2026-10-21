@@ -6,6 +6,7 @@ newline-delimited JSON, one `Alert` per line (see `sender/protocol.py`).
 """
 
 import json
+import math
 from typing import Any
 
 from .models import Alert, AlertKind
@@ -46,9 +47,22 @@ def from_dict(data: dict[str, Any]) -> Alert:
     )
 
 
+def _finite(value: Any) -> Any:
+    """NaN/Infinity -> None, everywhere: json.dumps would write them as bare tokens, which aren't
+    JSON, and the ESP32's ArduinoJson rejects the whole line (REC-19)."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: _finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite(v) for v in value]
+    return value
+
+
 def to_json(alert: Alert) -> str:
-    """Compact, newline-free — see the module docstring for why that matters to `sender/`."""
-    return json.dumps(to_dict(alert), separators=(",", ":"))
+    """Compact, newline-free — see the module docstring for why that matters to `sender/` — and
+    strict JSON: a non-finite number becomes null."""
+    return json.dumps(_finite(to_dict(alert)), separators=(",", ":"), allow_nan=False)
 
 
 def from_json(s: str) -> Alert:

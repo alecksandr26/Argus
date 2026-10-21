@@ -231,6 +231,9 @@ class BluezProfileListener(Listener):
         except queue.Empty:
             return None
 
+    def pending(self) -> bool:
+        return not self._connections.empty()
+
     def close(self) -> None:
         loop, stopping = self._loop, self._stopping
         if loop is not None and stopping is not None and not loop.is_closed():

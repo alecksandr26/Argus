@@ -17,6 +17,9 @@ class Transport(ABC):
     #: The connected client's address (a Bluetooth MAC for `BluetoothSppTransport`), when the
     #: transport knows it — what `SenderServer`'s peer allowlist checks.
     peer: str | None = None
+    #: True once the client has disconnected, so a `readline()` returning `None` can be told
+    #: apart from a timeout.
+    eof: bool = False
 
     @abstractmethod
     def readline(self, timeout: float | None = None) -> bytes | None:
@@ -41,6 +44,12 @@ class Listener(ABC):
         """Blocks up to `timeout` seconds for an incoming connection. Returns `None` on timeout
         so the accept-loop thread can re-check its stop event periodically — same pattern as
         `pipeline.stage.DEFAULT_QUEUE_GET_TIMEOUT`."""
+
+    def pending(self) -> bool:
+        """Whether another connection is already waiting. `SenderServer` serves one session at a
+        time, so a waiting connection while it's still in a session means the ESP32 gave that
+        session up (it reset), and the server stops waiting on it."""
+        return False
 
     @abstractmethod
     def close(self) -> None: ...
@@ -73,6 +82,7 @@ class FakeTransport(Transport):
             except queue.Empty:
                 return None
             if chunk is self._CLOSED:
+                self.eof = True
                 return None
             self._buf += chunk
         line, _, rest = self._buf.partition(b"\n")
@@ -97,6 +107,9 @@ class FakeListener(Listener):
 
     def offer(self, transport: Transport) -> None:
         self._pending.put(transport)
+
+    def pending(self) -> bool:
+        return not self._pending.empty()
 
     def accept(self, timeout: float | None = None) -> Transport | None:
         try:

@@ -36,6 +36,7 @@ for periodic buffer housekeeping. Readings don't reset the heartbeat clock: the 
 what tells the backend the route is alive, independent of the camera.
 """
 import logging
+import math
 import queue
 import threading
 import time
@@ -153,6 +154,13 @@ class Orchestrator:
         if state.frames_seen <= self._warmup_frames:
             return  # the model's window is still mostly padding
 
+        if detection is not None and not all(
+            math.isfinite(p) for p in detection.probabilities.tolist()
+        ):
+            # A NaN from the model (e.g. a zero eye width) says nothing about the driver: treat
+            # the frame like one with no face instead of queueing NaN (REC-19).
+            logger.debug("orchestrator: %s: non-finite probabilities, frame ignored", source_id)
+            detection = None
         cls = _classify(detection)
         if detection is not None:
             state.probabilities[cls] = detection.probabilities.tolist()

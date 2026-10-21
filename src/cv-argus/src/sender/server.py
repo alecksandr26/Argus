@@ -60,6 +60,9 @@ DEFAULT_OUTBOX_MAX_AGE_SECONDS = 60.0
 DEFAULT_QUEUE_LOG_SECONDS = 30.0
 # After ACKED, how long to wait for the ESP32's DONE. An older client just disconnects.
 _DONE_TIMEOUT_S = 1.0
+# The report is awaited in steps this long, checking in between whether the ESP32 has already
+# reconnected (it reset mid-session, BT-20).
+_REPORT_POLL_S = 1.0
 _HOUSEKEEPING_INTERVAL_S = 5.0
 
 
@@ -197,13 +200,23 @@ class SenderServer:
 
         by_id = {alert.id: alert for alert in alerts}
         delivered, failed = [], []
-        timeout = self._ack_timeout
+        deadline = time.monotonic() + self._ack_timeout
         while True:
-            line = transport.readline(timeout=timeout)
-            if line is None:
-                # Disconnected (or an older client that's done after ACKED) -- see the module
-                # docstring: whatever wasn't reported is safely re-served next time.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 break
+            line = transport.readline(timeout=min(_REPORT_POLL_S, remaining))
+            if line is None:
+                # Disconnected (or an older client that's done after ACKED), or the ESP32 is
+                # already back on a new connection: either way, whatever wasn't reported is
+                # safely re-served next time (see the module docstring).
+                if transport.eof:
+                    break
+                if self._listener.pending():
+                    logger.warning("sender: ESP32 reconnected mid-session (it reset?) -- "
+                                   "dropping the old session, nothing it didn't report is lost")
+                    break
+                continue
             text = line.decode(errors="replace").rstrip("\r")
             fail = protocol.parse_fail(text)
             if fail is not None:
@@ -216,7 +229,7 @@ class SenderServer:
                 updated = self._buffer.mark_sent(ids)
                 transport.write((protocol.format_acked(updated) + "\n").encode())
                 delivered.extend(by_id[i] for i in ids if i in by_id)
-                timeout = _DONE_TIMEOUT_S
+                deadline = time.monotonic() + _DONE_TIMEOUT_S
                 continue
             if text == protocol.DONE_LINE:
                 result = protocol.format_result(len(delivered), len(failed), self._dlq_waiting())

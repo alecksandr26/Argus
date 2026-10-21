@@ -11,6 +11,7 @@ no-op. `sender/__init__.py` re-exports both classes lazily (mirroring `pipeline/
 Bluetooth support to be present.
 """
 
+import select
 import socket
 import struct
 
@@ -62,13 +63,17 @@ class BluetoothSppTransport(Transport):
             while b"\n" not in self._buf:
                 chunk = self._sock.recv(4096)
                 if not chunk:
+                    self.eof = True
                     return None  # clean disconnect
                 self._buf += chunk
                 if b"\n" not in self._buf and len(self._buf) > MAX_LINE_BYTES:
                     self._buf = b""
                     return None  # a runaway line: drop it and end the session
+        except socket.timeout:
+            return None
         except OSError:
-            return None  # timeout or a socket error -- treated the same, see Transport docstring
+            self.eof = True  # a socket error ends the session like a disconnect
+            return None
         line, _, rest = self._buf.partition(b"\n")
         self._buf = rest
         return line
@@ -98,6 +103,12 @@ class BluetoothSppListener(Listener):
         except OSError:
             return None
         return BluetoothSppTransport(conn, peer=addr[0] if addr else None)
+
+    def pending(self) -> bool:
+        try:
+            return bool(select.select([self._sock], [], [], 0)[0])
+        except (OSError, ValueError):
+            return False
 
     def close(self) -> None:
         try:

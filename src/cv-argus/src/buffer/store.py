@@ -307,9 +307,10 @@ class Buffer:
             return cur.rowcount
 
     def cap_unsent(self, max_rows: int) -> int:
-        """If more than `max_rows` rows are waiting (a long Bluetooth outage), drop the oldest
-        *keepalive* readings first: they only repeat a state already queued. Class-change
-        transitions and heartbeats are never dropped here. Returns how many rows were dropped."""
+        """If more than `max_rows` rows are waiting (live or dead-lettered: a long outage), drop
+        the oldest *keepalive* readings first, since they only repeat a state already queued. If
+        that isn't enough, drop the oldest of the rest too: the SD card is finite, and the newest
+        rows describe the present (BUF-06). Returns how many rows were dropped."""
         with self._lock:
             excess = (
                 self._conn.execute("SELECT COUNT(*) FROM alerts WHERE sent = 0").fetchone()[0]
@@ -329,7 +330,18 @@ class Buffer:
                 """,
                 (excess,),
             )
-            return cur.rowcount
+            dropped = cur.rowcount
+            excess -= dropped
+            if excess > 0:
+                dropped += self._conn.execute(
+                    """
+                    DELETE FROM alerts WHERE rowid IN (
+                        SELECT rowid FROM alerts WHERE sent = 0 ORDER BY rowid ASC LIMIT ?
+                    )
+                    """,
+                    (excess,),
+                ).rowcount
+            return dropped
 
     def close(self) -> None:
         self._conn.close()

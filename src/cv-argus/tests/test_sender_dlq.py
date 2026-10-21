@@ -280,6 +280,21 @@ class TestServer:
         _send(client, "DONE")
         assert client.readline(timeout=2.0).decode() == "OK acked=0 failed=0 dlq=0"
 
+    def test_a_new_connection_ends_a_session_the_esp32_abandoned(self, buf, session):
+        # BT-20: the ESP32 resets after END and never reports; its next connection is served
+        # within about a second instead of after the whole 30 s report wait.
+        a = _reading("critical")
+        buf.enqueue(a)
+        dead = session.connect()
+        _send(dead, "PULL 10")
+        _read_batch(dead)  # ... and then nothing, the link left half-open
+        started = time.monotonic()
+        fresh = session.connect()
+        _send(fresh, "PULL 10")
+        rows, _ = _read_batch(fresh)
+        assert time.monotonic() - started < 5.0
+        assert [r["id"] for r in rows] == [a.id]  # untouched: re-served
+
     def test_failures_and_the_queue_are_logged(self, buf, session, caplog):
         a = _reading("critical")
         buf.enqueue(a)
