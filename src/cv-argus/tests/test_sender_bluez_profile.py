@@ -125,9 +125,29 @@ class _Managers(ServiceInterface):
 
 
 class _Adapter(ServiceInterface):
+    """An older BlueZ: no Connectable property, so the listener goes through Discoverable."""
+
     def __init__(self):
         super().__init__("org.bluez.Adapter1")
         self.powered, self.pairable, self.timeout = False, False, 180
+        self.discoverable, self.discoverable_timeout = False, 180
+        self.connectable = None
+
+    @dbus_property(access=PropertyAccess.READWRITE)
+    def Discoverable(self) -> "b":  # noqa: F821, N802
+        return self.discoverable
+
+    @Discoverable.setter
+    def Discoverable(self, value: "b"):  # noqa: F821, N802
+        self.discoverable = value
+
+    @dbus_property(access=PropertyAccess.READWRITE)
+    def DiscoverableTimeout(self) -> "u":  # noqa: F821, N802
+        return self.discoverable_timeout
+
+    @DiscoverableTimeout.setter
+    def DiscoverableTimeout(self, value: "u"):  # noqa: F821, N802
+        self.discoverable_timeout = value
 
     @dbus_property(access=PropertyAccess.READWRITE)
     def Powered(self) -> "b":  # noqa: F821, N802
@@ -154,6 +174,22 @@ class _Adapter(ServiceInterface):
         self.timeout = value
 
 
+class _ModernAdapter(_Adapter):
+    """A BlueZ with Adapter1.Connectable."""
+
+    def __init__(self):
+        super().__init__()
+        self.connectable = False
+
+    @dbus_property(access=PropertyAccess.READWRITE)
+    def Connectable(self) -> "b":  # noqa: F821, N802
+        return self.connectable
+
+    @Connectable.setter
+    def Connectable(self, value: "b"):  # noqa: F821, N802
+        self.connectable = value
+
+
 class _Device(ServiceInterface):
     def __init__(self):
         super().__init__("org.bluez.Device1")
@@ -171,10 +207,10 @@ class _Device(ServiceInterface):
 class FakeBluez:
     """Owns `org.bluez` on the test bus from its own thread and event loop."""
 
-    def __init__(self, address):
+    def __init__(self, address, modern=False):
         self.address = address
         self.rec = _Recorder()
-        self.adapter = _Adapter()
+        self.adapter = _ModernAdapter() if modern else _Adapter()
         self.device = _Device()
         self.loop = asyncio.new_event_loop()
         self.bus = None
@@ -255,6 +291,12 @@ class TestAgainstABus:
         assert options["RequireAuthentication"] is True
         assert options["AutoConnect"] is False
 
+    def test_older_bluez_is_made_connectable_through_discoverable(self, bluez, listener):
+        # Seen on the real Pi: not connectable until something paired, so the ESP32's first
+        # connection was ignored.
+        assert bluez.adapter.discoverable is True
+        assert bluez.adapter.discoverable_timeout == 0
+
     def test_agent_accepts_only_the_allowlisted_esp32(self, bluez, listener):
         name = listener._bus.unique_name
         ok = bluez.run(bluez.call_agent(name, "RequestConfirmation", "ou", [ESP32_PATH, 123456]))
@@ -331,3 +373,15 @@ def test_unset_allowlist_warns_how_to_fix_it(bus_address, bluez, caplog):
 def test_invalid_security_fails_before_any_bus_io():
     with pytest.raises(ValueError):
         BluezProfileListener(security="high", bus_address="unix:path=/nonexistent")
+
+
+def test_newer_bluez_is_made_connectable_directly(bus_address):
+    fake = FakeBluez(bus_address, modern=True)
+    try:
+        lst = BluezProfileListener(allowed_peers=[ESP32_MAC], bus_address=bus_address,
+                                   setup_timeout=10.0)
+        lst.close()
+        assert fake.adapter.connectable is True
+        assert fake.adapter.discoverable is False  # not needed when Connectable exists
+    finally:
+        fake.stop()

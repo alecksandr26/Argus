@@ -6,14 +6,15 @@ every hop except the Bluetooth radio:
 | Hop | What runs |
 |---|---|
 | Pi alert queue | cv-argus's real `Buffer` (SQLite, WAL) |
-| Pi Bluetooth server | cv-argus's real `SenderServer` and PULL/ACK protocol, over `FakeTransport` |
-| ESP32 relay loop | `esp32_sim.SimulatedEsp32`, a step-for-step Python mirror of `bluetoothPullAlerts()` and `handlePiRecord()` |
-| ESP32 drowsy + grip fusion | cv-argus's real `FusionOrchestrator`, which the firmware's `fusion.cpp` is a 1:1 port of |
+| Pi Bluetooth server | cv-argus's real `SenderServer` and its PULL/DLQ/FAIL/ACK/DONE protocol, over `FakeTransport` |
+| ESP32 relay loop | `esp32_sim.SimulatedEsp32`, a step-for-step Python mirror of `bluetoothExchange()`, `parsePiRecord()`, `decidePiEvent()`, the compose functions and `handle()` |
 | Cloud | backend-argus's real FastAPI app, authenticated with a real per-truck device key, on mongomock |
 
 The point is the seams none of the per-module suites cover: the protocol grammar end to end,
-the "only ACK what was actually relayed" invariant, device-key auth, and what fusion decisions
-look like once they land in the backend.
+"live first, dead-letter on failure" (only what the ESP32 couldn't deliver stays on the Pi, and
+it's replayed later with its original position and time), device-key auth, and what the alerts
+look like once they land in the backend. There's no grip sensor yet, so alerts follow the Pi's
+own severity, like the firmware.
 
 ## Running it
 
@@ -26,17 +27,12 @@ cd src/tests/edge_chain && pytest
 
 ## What it covers
 
-- A drowsy reading with bad grip, sustained past the debounce window, becomes exactly one
-  `critical` fusion alert with the right scores, grip, and GPS. A heartbeat then relays the
-  *fused* severity as the route's `vigilance`, and sustained recovery sets `resolved_at`.
-- A record the backend rejects stays unACKed on the Pi and is re-served and delivered on the
-  next pull.
-- No GPS fix means nothing is ACKed, so records wait on the Pi.
-- An alert whose POST fails is still delivered on a later poll. **This found a real bug**:
-  `FusionOrchestrator` confirmed the severity when it first raised the alert, so after a failed
-  POST the re-served record looked "steady", nothing was re-raised, the record was ACKed, and
-  the alert was lost for good. Fixed in both `fusion_contract.py` and the firmware's
-  `fusion.cpp`: an alert is now re-raised every tick until `record_alert_posted()` confirms it.
+- A camera critical becomes exactly one `critical` alert (reason as `alert_type`, the model, the
+  scores, GPS, `grip_status: "good"` as a placeholder); a heartbeat relays the camera's
+  severity as `vigilance`; the fall back resolves the alert.
+- A record the backend rejects comes back as `FAIL`, waits in the Pi's dead-letter queue, and
+  the replay delivers it, with the position where it happened.
+- Without a GPS fix an alert is dead-lettered (`no_gps`) and a heartbeat is skipped.
 
 - `test_edge_chain_scenarios.py` and `test_edge_chain_edge_cases.py` drive cv-argus's real
   `Orchestrator` (no hand-built readings) through the chain: incidents, recovery, `No Face`,
@@ -46,10 +42,10 @@ cd src/tests/edge_chain && pytest
 - `test_firmware_vectors.py` replays the shared fusion vectors (X-15) that the C++ host test
   replays against `fusion.cpp`.
 
-`esp32_sim.py` mirrors today's firmware, bugs included: a `No Face` row (probabilities `null`)
-reads as p(Drowsy)=0, a missing `class_name` is posted as `"null"`, and a line ArduinoJson can't
-parse (a bare `NaN`, an unknown `kind`) is never ACKed. When a firmware fix lands, mirror it here
-so the matching xfail starts passing.
+`esp32_sim.py` mirrors today's firmware, gaps included (the remaining xfails: grip sensor, an
+ESP32 reboot mid-incident, cell location, camera-offline detection, a face out of frame, the
+half-open reset). When a firmware fix lands, mirror it here so the matching xfail starts
+passing.
 
 ## What it doesn't cover
 

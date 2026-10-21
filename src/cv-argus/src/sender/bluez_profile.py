@@ -318,6 +318,7 @@ class BluezProfileListener(Listener):
         await _set_property(bus, adapter, "org.bluez.Adapter1", "Powered", Variant("b", True))
         await _set_property(bus, adapter, "org.bluez.Adapter1", "Pairable", Variant("b", True))
         await _set_property(bus, adapter, "org.bluez.Adapter1", "PairableTimeout", Variant("u", 0))
+        await self._make_connectable(bus)
 
         bus.export(AGENT_PATH, _Agent(self._policy, on_allowed=lambda dev: self._trust(bus, dev)))
         await _call(bus, "/org/bluez", "org.bluez.AgentManager1", "RegisterAgent", "os",
@@ -337,6 +338,27 @@ class BluezProfileListener(Listener):
                 "AutoConnect": Variant("b", False),
             },
         ])
+
+    async def _make_connectable(self, bus: MessageBus) -> None:
+        """The ESP32 opens every connection, so the adapter must accept incoming ones (page
+        scan). BlueZ only does that on its own for devices already paired, and nothing has paired
+        before the first connection -- seen on the real Pi: `btmgmt info` lacked `connectable`
+        and the ESP32 couldn't connect until `btmgmt connectable on`. Newer BlueZ has an
+        `Adapter1.Connectable` property; older ones get there through `Discoverable` (which
+        implies connectable), kept on with no timeout. Discoverable only shows the Pi's name:
+        pairing stays limited to ESP32_BT_MAC by the agent."""
+        adapter = self._adapter_path
+        try:
+            await _set_property(bus, adapter, "org.bluez.Adapter1", "Connectable",
+                                Variant("b", True))
+            logger.info("bluetooth: adapter connectable")
+            return
+        except BluezError as exc:
+            logger.debug("bluetooth: no Connectable property (%s), using Discoverable", exc)
+        await _set_property(bus, adapter, "org.bluez.Adapter1", "DiscoverableTimeout",
+                            Variant("u", 0))
+        await _set_property(bus, adapter, "org.bluez.Adapter1", "Discoverable", Variant("b", True))
+        logger.info("bluetooth: adapter discoverable (and so connectable), no timeout")
 
     async def _unregister(self, bus: MessageBus) -> None:
         """Best effort: bluetoothd also drops both when our bus connection closes."""

@@ -129,12 +129,13 @@ is the one that actually calls the backend (one firmware image fits every truck)
 3. **Pairing is automatic.** Set `ESP32_BT_MAC` in `.env` to the ESP32's Bluetooth MAC (the
    ESP32 prints `[bt] This ESP32's Bluetooth MAC: …` on its serial monitor at boot; it's the
    WiFi MAC esptool shows + 2). At startup cv-argus powers the Pi's adapter on, makes it
-   pairable and registers a pairing agent that accepts only that MAC, then marks the ESP32
-   trusted once it connects. No `bluetoothctl` needed. Check the log for
-   `bluetooth: ready through BlueZ -- serial port on RFCOMM channel 4`; a device that isn't
-   allowed shows up as `bluetooth: refused pairing from <MAC>`.
-   Not yet run on the real Pi + ESP32 pair. `BLUETOOTH_SECURITY=low` skips pairing for a quick
-   bench test, but sends the key unencrypted.
+   pairable and connectable (BlueZ alone only accepts devices it already paired, so the
+   ESP32's very first connection would be ignored), registers a pairing agent that accepts only
+   that MAC, then marks the ESP32 trusted once it connects. No `bluetoothctl` or `btmgmt`
+   needed. Check the log for `bluetooth: ready through BlueZ -- serial port on RFCOMM channel
+   4`; a device that isn't allowed shows up as `bluetooth: refused pairing from <MAC>`.
+   Verified on the real Pi + ESP32 (2026-10-20): it pairs and answers `CONFIG`.
+   `BLUETOOTH_SECURITY=low` skips pairing for a quick bench test, but sends the key unencrypted.
 4. The ESP32 asks for `CONFIG` at boot, after any `401` and every 10 minutes, caches it, and finds its route with
    `GET /api/devices/me/active-route`. The Fleet screen's Devices column shows "Key · seen …"
    once it's reporting.
@@ -145,10 +146,34 @@ So the host's bluetoothd listens on the channel (and advertises it, so the ESP32
 it up) and hands each accepted connection to the container over D-Bus — see
 `src/sender/bluez_profile.py`.
 
-Downstream of a detection, `orchestrator/` reports the debounced class as a *reading* on every
-change, plus a keepalive, and emits a periodic RouteStatus("OK") heartbeat, `buffer/` persists both to SQLite, and `sender/` answers
-the ESP32's Bluetooth poll for unsent records — see `CLAUDE.md`'s "`orchestrator/`, `buffer/`,
-`sender/`, `alerts/` — done" for the full design.
+Downstream of a detection, `orchestrator/` reports the debounced class and every severity change
+as a *reading*, plus a keepalive, and emits a periodic RouteStatus("OK") heartbeat; `buffer/`
+writes them to SQLite and `sender/` answers the ESP32's Bluetooth poll — see `CLAUDE.md`'s
+"`orchestrator/`, `buffer/`, `sender/`, `alerts/` — done" for the full design.
+
+### The ESP32 link: live first, dead-letter queue on failure
+
+The ESP32 takes the newest records every 2 s, tries to send what the backend needs (an alert
+when the severity rises to medium/critical, a resolve when it falls back, the truck's position
+on each heartbeat), and tells the Pi per record whether that worked. Only what it couldn't send
+stays in the SQLite queue, the **dead-letter queue**, with the reason and the exact message the
+ESP32 composed (where and when it happened). Once the backend is reachable again the ESP32 sends
+them back 5 at a time, after the live records. Without `argus-device.env` that's every alert
+and heartbeat (`no_credentials`), which is expected until the truck is provisioned.
+
+What the log shows:
+```
+orchestrator: cam0 -> Drowsy, severity none -> critical (eyes_closed), episode 3f2a | queued for the ESP32
+sender: ESP32 78:1C:3C:36:4A:22 couldn't deliver drowsiness critical (eyes_closed) -> dead-letter queue (no_credentials)
+sender: queue: outbox 0, dead-letter queue 7 (oldest 12 min ago, no_credentials 7)
+```
+
+Two commands in the running container (prefix them with
+`docker compose -f docker-compose.yml -f docker-compose.pi.yml exec cv-argus`):
+- `python -m cv_argus.sender.inject critical` queues a fake critical reading, to test the whole
+  link without the camera; it prints the `inject none --episode <id>` that resolves it.
+- `python -m cv_argus.buffer.status --bodies` lists the queue and each dead letter (when, what,
+  why, the composed message). Read-only.
 
 **`mjpeg` has no authentication.** It's meant for demos on a network you trust, not for leaving
 on — see `CLAUDE.md`'s "Demo" section for why this matters more than usual for this project.

@@ -108,17 +108,20 @@ run showed a ghost "closed eye" by the ear, and with ghosts counted, int8 and fl
 89% of frames instead of 98%. `trigger_s` keeps the closure length visible while the alarm is
 held.
 
-**Contract (downstream unchanged):** the ESP32 reads only `class_name` and `probabilities`.
-- MEDIUM and CRITICAL → `Drowsy` (`p_drowsy` 0.75 / 0.95, at or above its 0.57 threshold).
-- none and LOW → `Not Drowsy`.
+**Contract with the ESP32:** the firmware alerts on the rules' **severity** (there's no grip
+sensor yet, user decision 2026-10-20).
+- MEDIUM and CRITICAL → `Drowsy` (`p_drowsy` 0.75 / 0.95); none and LOW → `Not Drowsy`.
 - `severity`, `reason`, `trigger_s`, `timers`, `yawn_events` and `model` travel in
-  `DetectionResult.extras`, which the orchestrator merges into the payload. Today's firmware
-  ignores them.
-- `ctx.detection` is `None` only when there's no face *and* no active rule, which keeps "No
-  Face" semantics while a held alarm survives the face dropping out of view.
-- **Known latency:** the ESP32 still applies its own 5 s debounce plus grip fusion, so a Pi
-  CRITICAL reaches the backend about 5 s later. The follow-up is to let the firmware use
-  `payload.severity` / `reason` (e.g. `alert_type = reason`).
+  `DetectionResult.extras`, which the orchestrator merges into the payload. The ESP32 uses
+  `severity`, `reason` (as the alert's `alert_type`) and `model`.
+- The orchestrator emits a **severity change** as a `transition: true` reading at once (medium ->
+  critical too, though both are `Drowsy`), with `previous_severity` and an `episode` id that
+  lasts from medium until the severity is back to none/low. The ESP32 raises an alert on a rise
+  to medium/critical (an escalation links to the episode's alert), resolves it on the fall back,
+  and does nothing for keepalives. See `src/esp32-argus/src/esp32_argus/pi_event_policy.h`.
+- A reading other than `No Face` always carries both probabilities: the ESP32 drops one without.
+- `ctx.detection` is `None` only when there's no face *and* no active rule. Known gap (B1): after
+  a held alarm decays, a face out of frame reads as severity none, which resolves the alert.
 
 **Logs and measurements (for the report):**
 - `OUTPUTS=logging` prints **one line per frame**, led by the **criticality** (not the binary
@@ -564,6 +567,16 @@ module directly to the ESP32, not the Pi — this device has no GPS. The ESP32 a
 live GPS reading only when it relays a pulled record onward to the backend over HTTP; no
 reverse-direction Bluetooth message exists for this, and none is needed.
 
+**Live first, dead-letter on failure (user decision 2026-10-20).** Every row has a `state`:
+`outbox` (just produced, live: written to disk at once but normally gone within seconds),
+`dlq` (the ESP32 reported it couldn't deliver it, or never picked it up within 60 s), `sent`.
+The ESP32 reports per record: `ACK` (delivered, or nothing to send) or `FAIL <reason> <the
+backend message it composed>`; only failed rows stay, with that message (so the GPS position and
+time of the event survive). `fetch_unsent()` serves the outbox; `fetch_dlq()` the dead letters,
+oldest first, which the ESP32 asks for (`DLQ <k>`) only once it can reach the backend. An older
+file migrates on open (unsent → `outbox`). The backend/UI side of these replayed "missing
+alerts" is not built yet: see the root `CLAUDE.md`, "Pending feature: Missing alerts".
+
 **`buffer/` — the SQLite queue, one shared table.** `store.py`'s `Buffer` opens with `PRAGMA
 journal_mode=WAL` + `synchronous=NORMAL` + `busy_timeout=5000`, and wraps every write
 (`enqueue`/`mark_sent`) in a `threading.Lock` — WAL lets `fetch_unsent()` (a pure reader) proceed
@@ -606,12 +619,21 @@ subclass) so `main.py` can treat all three top-level components uniformly.
 **`sender/` — a custom Bluetooth SPP server, ESP32-initiated polling.** `protocol.py` defines a
 small, pure (no I/O) request/response grammar:
 ```
-Client -> Server:  PULL <n>\n
-Server -> Client:  one JSON line per unsent Alert (oldest first, up to n)
-Server -> Client:  END\n                          (even if 0 rows)
-Client -> Server:  ACK <id1>,<id2>,...\n           (only if rows were sent)
-Server -> Client:  ACKED <n>\n                     (n = rows actually marked sent)
+Client -> Server:  PULL <n>\n  |  DLQ <k>\n        (live outbox | dead letters, oldest first)
+Server -> Client:  one JSON line per record (a DLQ line also has "dlq": {error, body, ...})
+Server -> Client:  END <dead letters waiting>\n   (even if 0 rows)
+Client -> Server:  FAIL <id> <reason> <json|->\n   (0..n: couldn't deliver -> dead-letter queue)
+Client -> Server:  ACK <id1>,<id2>,...\n           (delivered, or nothing to send)
+Server -> Client:  ACKED <n>\n
+Client -> Server:  DONE\n
+Server -> Client:  OK acked=<a> failed=<f> dlq=<n>\n
 ```
+The server waits up to 30 s for the report (the ESP32 may POST each record first) and logs every
+failure, a line per session that delivered or failed anything backend-bound, and the queue every
+30 s while anything waits. Two commands in the running container:
+`python -m cv_argus.sender.inject <severity> [--episode ID]` queues a fake reading (tests the
+link without the camera), and `python -m cv_argus.buffer.status [--bodies]` lists the queue and
+the dead letters (read-only).
 `server.py`'s `SenderServer` runs a single-session-at-a-time accept loop (matches the
 one-Pi-one-ESP32 topology assumed throughout this design) against a `Transport`/`Listener`
 pair (`transport.py`). **Critical invariant**: `buffer.mark_sent()` is called *only* after an

@@ -22,7 +22,7 @@ firmware actually does with it.
 
 | File | Responsibility |
 |---|---|
-| `esp32_argus.ino` | `setup()`/`loop()` — wires every module together; `handlePiRecord()` (dispatches a pulled record to the fusion engine or straight to a route-status POST) and `handlePanicButton()` live here |
+| `esp32_argus.ino` | `setup()`/`loop()` — wires every module together; `handle()` (logs a pulled record, decides, composes, sends or reports `FAIL`), the dead-letter replay, and `handlePanicButton()` live here |
 | `config.h` | every pin and timing constant, plus the Pi's Bluetooth MAC — nothing per-truck or per-network; see "Before you flash this" below |
 | `device_config.*` | pure parser for the Pi's `CONFIG` reply (backend URL, device API key, truck id) — host-tested in `test/host/device_config_host_test.cpp` |
 | `credentials.*` | the credentials currently in use, cached in NVS; re-fetched from the Pi at every boot and after any 401 (see section 1b) |
@@ -32,10 +32,12 @@ firmware actually does with it.
 | `modem.*` | the SIM800L's UART + raw AT helpers (no TinyGsm — see `sms_module.cpp`), shared by SMS and mobile data |
 | `gprs_http.*` | HTTPS GET/POST over the SIM800L's mobile data (`AT+SAPBR` bearer, `AT+HTTP*` with `AT+HTTPSSL=1`) — the **first-choice** transport, see the network-path decision below |
 | `modem_parse.*` / `transport_policy.*` / `ack_policy.*` | pure, host-tested logic: SIM800L response parsers; GPRS-first/WiFi-fallback selection; what to do with a pulled record per HTTP status (200/201 ack, 400/409/422 ack-and-drop, 401/403/404/5xx/transport errors hold) |
-| `wifi_client.*` | the **fallback** transport (a phone hotspot or 4G MiFi works), with non-blocking reconnect; the only path for PUT |
-| `backend_api.*` | `backendPostAlert()` / `backendResolveAlert()` / `backendPostRouteStatus()` — the three HTTP calls into `backend-argus`, field-mapped per section 2 below; resolves the route via `GET /api/devices/me/active-route`; picks the transport, and on WiFi verifies an `https://` backend against the pinned CA (`root_ca.h`) |
-| `bluetooth_client.*` | the PULL/ACK client (section 1) via ESP32's built-in classic Bluetooth (`BluetoothSerial`) — a separate radio from WiFi, both run concurrently |
-| `fusion.*` | `FusionOrchestrator` — a 1:1 C++ port of `cv-argus`'s `fusion_contract.py` (section 5) |
+| `wifi_client.*` | the **fallback** transport (a phone hotspot or 4G MiFi works), with non-blocking reconnect |
+| `backend_api.*` | `backendReadiness()` (credentials, network, active route via `GET /api/devices/me/active-route`, each a `FAIL` reason) and `backendPost()` (logs the request and the answer); picks the transport, and on WiFi verifies an `https://` backend against the pinned CA (`root_ca.h`) |
+| `backend_messages.*` | pure, host-tested: composes every backend body (alert, resolve, status, panic) apart from sending it, so it can be logged and handed back to the Pi; fills the route and a missing position at send time |
+| `pi_record.*` / `pi_event_policy.*` | pure, host-tested: parse one Pi record (unreadable ones are dropped but ACKable); decide alert / escalation / resolve / status / nothing from the Pi's severity and episode |
+| `bluetooth_client.*` | `bluetoothExchange()`: one `PULL`/`DLQ` exchange with the `FAIL`/`ACK`/`DONE` report (section 1) via ESP32's built-in classic Bluetooth (`BluetoothSerial`) — a separate radio from WiFi, both run concurrently |
+| `fusion.*` | `FusionOrchestrator` — a 1:1 C++ port of `cv-argus`'s `fusion_contract.py` (section 5); **not used while there's no grip sensor** |
 | `panic_button.*` / `grip_sensor.*` | debounced digital-input wrappers; GPIO pins are placeholders (see `config.h`) — real hardware mapping isn't finalized |
 
 `src/Codigo_SMS_GPS/Codigo_SMS_GPS.ino` is the original standalone SIM800L + NEO-6M
@@ -101,71 +103,77 @@ flashed ESP32 (the PC plays the Pi over Bluetooth and the backend over WiFi; see
 
 ## 1. Bluetooth SPP client — pulling from `cv-argus`
 
-`cv-argus`'s `sender/` module (merged to `main` — fully implemented and unit-tested against a
-fake transport) runs a Bluetooth SPP **server** on the Pi. This device is the **client**: it
-connects, and initiates every exchange — the Pi never pushes. Exact grammar
-(`src/cv-argus/src/sender/protocol.py`):
+`cv-argus`'s `sender/` module runs a Bluetooth SPP **server** on the Pi (through the host's
+BlueZ, see `src/cv-argus/README.md`). This device is the **client**: it connects, and initiates
+every exchange — the Pi never pushes. Exact grammar (`src/cv-argus/src/sender/protocol.py`):
 
 ```
-you  -> Pi:   PULL <n>\n
-Pi   -> you:  one compact JSON line per unsent Alert record, oldest first, up to n rows
-Pi   -> you:  END\n                         (sent even if 0 rows matched)
-you  -> Pi:   ACK <id1>,<id2>,...\n         (only if the Pi sent ≥1 row)
-Pi   -> you:  ACKED <n>\n                   (n = rows the Pi actually marked sent)
+you  -> Pi:   PULL <n>\n  |  DLQ <k>\n       (live records | dead letters, oldest first)
+Pi   -> you:  one compact JSON line per record (a dead letter also has "dlq": {...})
+Pi   -> you:  END <dead letters waiting>\n   (sent even if 0 rows matched)
+you  -> Pi:   FAIL <id> <reason> <json|->\n   (0..n: couldn't deliver it)
+you  -> Pi:   ACK <id1>,<id2>,...\n           (delivered, or nothing to send)
+Pi   -> you:  ACKED <n>\n
+you  -> Pi:   DONE\n
+Pi   -> you:  OK acked=<a> failed=<f> dlq=<n>\n
 ```
 
-Case-sensitive, newline-delimited (no embedded newlines in the JSON lines). **Don't ACK unless
-you've actually relayed those records onward over HTTP (section 2) and gotten a success
-response** — the Pi only marks a row `sent` after your `ACK`, so if the HTTP relay fails after a
-successful pull, the safe move is to *not* ACK that pull; the same unsent rows will be served
-again on your next `PULL`. Rows are delivered at-least-once, never silently dropped — dedup by
-`id` (below) is explicitly the backend's job, not this protocol's.
+**Live first, dead-letter on failure** (user decision, 2026-10-20). Every poll (2 s) pulls the
+live records, logs each one, and reports it back: `ACK` once the backend stored it (or when
+there's nothing to send, like a keepalive), `FAIL` with a one-token reason (`no_credentials`,
+`no_network`, `no_route`, `no_gps`, `no_time`, `http_<status>`) and the backend message
+composed here, which the Pi keeps in its **dead-letter queue** with that message's GPS position
+and time. Missing credentials never stop the pulling. When the backend is reachable and the Pi
+said `END n` with n > 0, the same poll sends `DLQ 5` and replays them (stopping at the first
+failure), reusing each stored message so its original position and time are kept. A record the
+firmware can't parse (`pi_record.cpp`: a bare NaN token, an unknown kind, missing
+probabilities) is ACKed away when its id is known, so it can't block the Pi's queue. Replayed
+messages arrive at the backend late; how the backend and UI should treat them ("missing
+alerts") is still to be planned (root `CLAUDE.md`).
 
 **The JSON record shape** (`cv-argus/src/alerts/models.py`'s `Alert` dataclass):
 
 ```json
 {
-  "id": "a1b2c3d4...",             // uuid4 hex — use as an idempotency key against the backend
+  "id": "a1b2c3d4...",             // uuid4 hex — client_event_id for the backend
   "kind": "drowsiness",            // or "route_status"
-  "level": 2,                      // 1=Not Drowsy / 2=Drowsy, null for route_status
-  "created_at_ms": 1234567890123,  // epoch ms, wall clock
-  "source_id": "cam-0",            // camera/stream id — NOT a route id, see the gap below
+  "level": 2,                      // 1=Not Drowsy / 2=Drowsy, null for route_status / No Face
+  "created_at_ms": 1234567890123,  // epoch ms, wall clock; the event time when clock_synced
+  "mono_ms": 5000123456, "boot_id": "...", "clock_synced": true,
+  "source_id": "cam-0",            // camera/stream id — NOT a route id
   "payload": { "...": "..." },     // shape depends on kind, see below
   "geolocation": null               // ALWAYS null coming from cv-argus — see section 3
 }
 ```
 
 `payload` by `kind`:
-- `"drowsiness"` → `{"class_name": "Drowsy" | "Not Drowsy", "probabilities": [p_not_drowsy, p_drowsy]}`
-- `"route_status"` → `{"status": "OK"}` — this is genuinely all cv-argus produces for a status
-  ping; see the gap notes in section 2 for what that means for `current_speed`/`odometer`.
+- `"drowsiness"` → `class_name` (`Drowsy`/`Not Drowsy`/`No Face`), `probabilities`
+  (`[p_not_drowsy, p_drowsy]`, null only for `No Face`), `transition`, and the rules' verdict:
+  `severity` (`none`/`low`/`medium`/`critical`), `previous_severity`, `reason` (e.g.
+  `eyes_closed`), `episode`, `model`.
+- `"route_status"` → `{"status": "OK"}`, the heartbeat; the position and vigilance come from
+  this device.
+
+**What it sends** (no grip sensor yet, so the Pi's severity decides; `pi_event_policy.cpp`):
+a rise to medium/critical → `POST /api/alerts` (severity as is, `alert_type` = the reason,
+`grip_status: "good"` as a placeholder, an escalation links to the episode's earlier alert);
+the fall back to none/low → `POST /api/alerts/{id}/resolve`; a heartbeat → `POST
+/api/routes/{id}/status` with the current position and the camera's severity as vigilance (skipped
+without a GPS fix). Keepalives send nothing. `fusion.*` (camera + grip) stays for when the
+sensor is wired.
+
+**What the serial log shows** (one line per record, keepalives included):
+```
+[pi] critical (was none) "eyes_closed" class=Drowsy p=[0.05,0.95] episode=3f2a | gps 20.659700,-103.349600 0 km/h
+!!! CRITICAL from the camera: eyes_closed
+[backend] alert: {"alert_type":"eyes_closed","severity_level":"critical",...}
+[backend] Not sent: no_credentials (no argus-device.env on the Pi yet) -> the Pi keeps it
+```
 
 **How it connects.** `SerialBT.connect(PI_BT_MAC_ADDRESS, PI_BT_CHANNEL)`: straight to
-RFCOMM channel 4, where the Pi's listener sits. With channel `0` the ESP32 would first look the
-SPP service up over SDP, and the Pi registers no SDP record, so that lookup finds nothing. A
-Windows PC playing the Pi (`test/hil/`) is the exception: it needs `0`. Every poll is a fresh
-connection; `[bt] CONNECTED to the Pi` / `[bt] Can't reach the Pi` print only when that
-changes.
-
-**Payload extras.** A `drowsiness` record also carries the Pi's rule verdict:
-`payload.severity` (`none`/`low`/`medium`/`critical`) and `payload.reason` (e.g. `"eyes closed
-3.2 s"`). `PiRecord.severity`/`reason` hold them. Today they're only printed (link test mode
-below); the fusion still decides from `p_drowsy` + grip.
-
-### Bluetooth link test (`BT_LINK_TEST_MODE`)
-
-To see the Pi ↔ ESP32 link work with no backend, SIM, WiFi or GPS, set `BT_LINK_TEST_MODE 1` in
-`config.h`. The ESP32 then:
-- pulls every second without waiting for credentials;
-- prints each record (`[pi] Drowsy  severity=critical  "eyes closed 3.2 s"  p(Drowsy)=0.95`),
-  with a `!!! CRITICAL alert received from the Pi` banner when the severity turns critical;
-- runs the grip fusion and prints what it would raise;
-- ACKs everything so the Pi's queue drains;
-- prints `[bt] Pi link UP/DOWN ...` every 10 s.
-
-The Pi side and the full step-by-step (pairing, `scripts/pi_bt_server.py --inject critical`,
-then the camera) are in `src/cv-argus/README.md`, "Bluetooth link test". Set it back to `0` for
-a truck: in this mode nothing reaches the backend.
+RFCOMM channel 4 instead of an SDP lookup on every poll. A Windows PC playing the Pi
+(`test/hil/`) needs `0`. Every exchange is a fresh connection; `[bt] CONNECTED to the Pi` /
+`[bt] Can't reach the Pi` print only when that changes, and a link summary every 30 s.
 
 ## 1b. Credentials — fetched from the Pi, not flashed in
 
@@ -277,6 +285,10 @@ why GPIO 34-39 were avoided (no internal pull-up on that pin group). The CAN bus
 alarm speaker remain entirely unimplemented, same as before.
 
 ## 5. Grip sensor + drowsiness fusion — this device's own decision loop
+
+> **Not in use for now** (user decision, 2026-10-20): the grip sensor isn't wired, so alerts
+> follow the Pi's own severity (section 1, "What it sends") and resolving uses `POST
+> /api/alerts/{id}/resolve`. This section is the design for when the sensor is added.
 
 This is the fused severity decision this device computes from two inputs it alone has both of:
 the Pi's relayed drowsiness classification (section 1) and its own live grip-sensor reading.
