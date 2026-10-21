@@ -246,27 +246,6 @@ async def test_esp32_reboot_mid_incident_still_resolves(scenario, backend, truck
     assert alert["resolved_at"] is not None
 
 
-@pytest.mark.xfail(strict=True, reason="GPS-01: no cell-location fallback; a status without a "
-                                       "GPS fix is skipped")
-async def test_no_gps_fix_uses_cell_location_marked_cell(scenario, backend, truck_route):
-    route_id, _ = truck_route
-    scenario.dev.gps = None
-    scenario.dev.cell = (20.66, -103.37, 550)
-    scenario.buffer.enqueue(route_status("cam-0"))
-    await scenario.drain()
-    status = (await backend.get(f"/api/routes/{route_id}/status")).json()
-    assert status["location_source"] == "cell"
-    assert status["location_accuracy_m"] == 550
-
-
-@pytest.mark.xfail(strict=True, reason="CV-07: no camera-offline detection on the ESP32")
-async def test_pi_goes_silent_esp32_reports_the_camera_offline(scenario, backend, truck_route):
-    await scenario.frames(DC, 2)  # a reading arrives, then the Pi crashes
-    scenario.camera_alive = False
-    await scenario.idle(30)
-    assert scenario.dev.camera_offline is True
-
-
 async def test_driver_slumps_out_of_frame_raises_an_alert(scenario, backend, truck_route):
     """B1/CV-04: with no alert open, a face gone for 5 s raises its own no_face alert, which
     escalates to critical at 10 s."""

@@ -42,8 +42,9 @@ cd src/tests/edge_chain && pytest
 - `test_firmware_vectors.py` replays the shared fusion vectors (X-15) that the C++ host test
   replays against `fusion.cpp`.
 
-`esp32_sim.py` mirrors today's firmware, gaps included (the remaining xfails: cell location
-without a GPS fix, camera-offline detection). The no-face scenarios drive cv-argus's real rule
+`esp32_sim.py` mirrors today's firmware. Known gaps without a test here for now (removed by
+user decision 2026-10-20, still listed in `docs/designs/edge-cloud-scenarios.md`): a cell-tower
+position when there's no GPS fix, and camera-offline detection. The no-face scenarios drive cv-argus's real rule
 engine (`Scenario.signals`), not hand-made detections. When a firmware fix lands, mirror it here so the matching xfail starts
 passing.
 
