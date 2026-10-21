@@ -64,13 +64,22 @@ bool parseRecordLine(const String& line, PiRecord& record) {
 
 void bluetoothClientBegin() {
   SerialBT.begin("ESP32-Argus", /*isMaster=*/true);
+  // This is the value the Pi needs in its .env (ESP32_BT_MAC): its pairing agent accepts only
+  // this address. Not the MAC esptool or the upload log prints -- that's the WiFi base MAC.
+  String mac = SerialBT.getBtAddressString();
+  mac.toUpperCase();
+  Serial.print("[bt] This ESP32's Bluetooth MAC: ");
+  Serial.print(mac);
+  Serial.print(" (set ESP32_BT_MAC=");
+  Serial.print(mac);
+  Serial.println(" on the Pi)");
 }
 
 ConfigLineResult bluetoothFetchConfig(DeviceCredentials& out) {
   // The Pi only accepts a paired, encrypted link (cv-argus BLUETOOTH_SECURITY=medium), since
-  // this reply carries the device key. Pairing is SSP "Just Works": automatic on this side,
-  // pre-approved on the Pi with bluetoothctl (see src/cv-argus/README.md).
-  if (!SerialBT.connect(piMac)) {
+  // this reply carries the device key. Pairing is SSP "Just Works": automatic on this side, and
+  // on the Pi cv-argus's agent accepts only ESP32_BT_MAC (sender/bluez_profile.py).
+  if (!SerialBT.connect(piMac, PI_BT_CHANNEL)) {
     Serial.println("[bt] CONFIG: could not connect to the Pi's Bluetooth SPP server");
     return ConfigLineResult::Malformed;
   }
@@ -90,7 +99,7 @@ ConfigLineResult bluetoothFetchConfig(DeviceCredentials& out) {
 }
 
 int bluetoothPullAlerts(bool (*onRecord)(const PiRecord& record)) {
-  if (!SerialBT.connect(piMac)) {
+  if (!SerialBT.connect(piMac, PI_BT_CHANNEL)) {
     Serial.println("[bt] Could not connect to the Pi's Bluetooth SPP server");
     return -1;
   }

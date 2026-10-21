@@ -9,6 +9,9 @@ opencv-python-headless>=4.9,<5
 numpy>=1.26,<2
 gdown>=5.2,<6
 python-dotenv>=1.0,<2
+# sender/bluez_profile.py (SENDER_TRANSPORT=bluez): talks to the host's BlueZ over D-Bus. 2.46.4
+# ships a cp311 manylinux aarch64 wheel (checked), so no build on the Pi.
+dbus-fast>=2.46,<3
 
 # Keep in sync with setup.py's install_requires: the Dockerfile installs from this file,
 # then does `pip install -e . --no-deps` for the local package, so setup.py's

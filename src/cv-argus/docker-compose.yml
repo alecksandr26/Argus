@@ -70,23 +70,20 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DEMO_STREAM_HOST=${DEMO_STREAM_HOST:-0.0.0.0}
       - DEMO_STREAM_PORT=${DEMO_STREAM_PORT:-8080}
-      # sender/'s Bluetooth SPP server. main.py's own code-level default is "bluetooth" (the
-      # eventual production intent), but this file's default is deliberately "none": neither
-      # this compose file nor docker-compose.pi.yml passes through a real Bluetooth device yet
-      # (see the `devices:` comment below), so "bluetooth" would fail BluetoothSppListener's
-      # socket.bind() at startup and crash the whole process before the pipeline even starts --
-      # confirmed directly (constructing it on a machine with no Bluetooth adapter raises
-      # OSError immediately). Same reasoning as `restart: unless-stopped` below: this dev/base
-      # file picks the safe default, override with SENDER_TRANSPORT=bluetooth once real
-      # passthrough is added and verified against actual hardware (see
-      # src/cv-argus/CLAUDE.md's "Open decisions"). Until then, alerts/route-status heartbeats
-      # just accumulate unsent in buffer/ -- nothing is lost, there's just nothing serving them.
+      # sender/'s Bluetooth server for the ESP32. "none" here: a laptop has no ESP32 to serve,
+      # and a missing adapter would stop startup. docker-compose.pi.yml switches the Pi to
+      # "bluez" (the host's bluetoothd listens and pairs; the connection comes in over the host's
+      # D-Bus socket, which that file mounts). "bluetooth" (a raw RFCOMM socket in this process)
+      # can't work in a container on Docker's default network: Linux only creates Bluetooth
+      # sockets in the host's network namespace. Until the link is on, readings and heartbeats
+      # just queue in buffer/ -- nothing is lost.
       - SENDER_TRANSPORT=${SENDER_TRANSPORT:-none}
       - BLUETOOTH_CHANNEL=${BLUETOOTH_CHANNEL:-4}
       # The link the ESP32 connects over must be paired + encrypted ("medium") -- CONFIG sends
       # the device key across it. "low" is for an unpaired bench setup only.
       - BLUETOOTH_SECURITY=${BLUETOOTH_SECURITY:-medium}
-      # Optional: only this truck's ESP32 (comma-separated MACs) may connect at all.
+      # This truck's ESP32 Bluetooth MAC (comma-separated if several): only it may connect, and
+      # with SENDER_TRANSPORT=bluez only it may pair. The ESP32 prints it at boot.
       - ESP32_BT_MAC=${ESP32_BT_MAC:-}
     # Only actually listened on when OUTPUTS includes "mjpeg" (see src/main.py,
     # pipeline/mjpeg_output_stage.py) — harmless to always publish otherwise, nothing binds the
@@ -104,13 +101,6 @@ services:
       # camera (SOURCE=picamera) needs different device passthrough entirely — see
       # docker-compose.pi.yml, not this file.
       - /dev/video0:/dev/video0
-      # NOT YET ADDED: sender/'s real Bluetooth transport (SENDER_TRANSPORT=bluetooth) needs a
-      # device passed through here too -- a `/dev/rfcommN` device, or the host's BlueZ/D-Bus
-      # socket -- neither is wired into this file yet (flagged, not solved; don't fabricate a
-      # specific path without real Pi 5 hardware to verify it against, same convention as the
-      # camera device list above). Until this is added, SENDER_TRANSPORT=bluetooth will fail to
-      # bind inside the container even though the code path itself works (see
-      # src/cv-argus/CLAUDE.md's "Open decisions").
 
 volumes:
   model-cache:

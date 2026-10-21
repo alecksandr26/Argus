@@ -73,8 +73,10 @@ normal `POST /api/alerts`, so an emergency location text still goes out even if
 `backend-argus` itself is down. It does *not* fire for any fused drowsy+grip severity.
 
 **Before you flash this**, the only per-site value in `config.h` is `PI_BT_MAC_ADDRESS` (the
-Pi's Bluetooth MAC, from `hciconfig`/`bluetoothctl` — this device needs it to reach the Pi at
-all). **Nothing per-truck or per-network is compiled in**: the backend URL, device API key, WiFi
+Pi's Bluetooth MAC: the "Controller" line of `bluetoothctl show` on the Pi, not its WiFi MAC —
+this device needs it to reach the Pi at all). `PI_BT_CHANNEL` (4) must match cv-argus's
+`BLUETOOTH_CHANNEL`. At boot this device prints its own Bluetooth MAC
+(`[bt] This ESP32's Bluetooth MAC: …`), which goes in the Pi's `.env` as `ESP32_BT_MAC`. **Nothing per-truck or per-network is compiled in**: the backend URL, device API key, WiFi
 network and mobile-data APN come from the Pi over Bluetooth (section 1b), and the route from
 the backend (section 2), so one firmware image fits every truck. Required Arduino libraries (Library
 Manager names): `TinyGPSPlus`, `ArduinoJson` (v7+ — this code uses v7's `JsonDocument`
@@ -173,9 +175,11 @@ queued on the Pi. The key and the WiFi/APN passwords never go to `Serial`.
 
 **Link security**: the Pi requires a paired, encrypted RFCOMM link (`cv-argus`'s
 `BLUETOOTH_SECURITY=medium`), because this reply carries the key. This side pairs automatically
-(SSP "Just Works": no display or keypad); the Pi side is approved once with `bluetoothctl` (see
-`src/cv-argus/README.md`). Just Works gives encryption but no MITM protection during pairing,
-which is the known limit of a display-less device.
+(SSP "Just Works": no display or keypad). On the Pi, cv-argus's own pairing agent accepts only
+the MAC in `ESP32_BT_MAC`, so no `bluetoothctl` step is needed (`src/cv-argus/README.md`,
+"Provisioning a truck"). Just Works gives encryption but no MITM protection during pairing,
+which is the known limit of a display-less device. This device connects straight to
+`PI_BT_CHANNEL` rather than looking the channel up (SDP) on every poll.
 
 ## 2. HTTP relay to `backend-argus`
 

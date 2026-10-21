@@ -55,11 +55,12 @@ container (`down -v` also wipes the named volumes — see "Model download strate
 - Network access at build time, to download the pretrained MediaPipe bundles and the trained
   model weights (all baked into the image at `docker build`, not fetched later at container
   start — see `CLAUDE.md`'s "Why a Docker-first workflow" for why).
-- **A Bluetooth adapter, only if you want `sender/`'s real transport running.** Neither compose
-  file passes through real Bluetooth access yet (see `CLAUDE.md`'s "Open decisions"), so
-  `docker-compose.yml` defaults `SENDER_TRANSPORT=none` — alerts and RouteStatus heartbeats
-  still get decided and queued in `buffer/`'s SQLite file, there's just nothing yet dequeuing
-  them. Nothing extra is needed to run the quick start below as-is.
+- **The ESP32 link (Pi only).** On the Pi, `docker-compose.pi.yml` serves the ESP32 through
+  the host's own Bluetooth service (BlueZ, over the host's D-Bus socket), so the host only needs
+  Bluetooth on (`systemctl status bluetooth`, the Raspberry Pi OS default). On a laptop,
+  `docker-compose.yml` leaves the link off (`SENDER_TRANSPORT=none`): readings and heartbeats
+  still get decided and queued in `buffer/`'s SQLite file, there's just no ESP32 to serve them.
+  Nothing extra is needed to run the quick start below as-is.
 
 ## What you'll see
 
@@ -98,10 +99,10 @@ including model-artifact overrides not covered here).
 | `CV_ARGUS_NUM_THREADS` | `4` (in Docker) | Pins BLAS/OpenMP/TensorFlow/OpenCV thread pools. Unset outside Docker (full speed). See "Simulating the Raspberry Pi 5". |
 | `CV_ARGUS_CPUSET` / `CV_ARGUS_CPUS` / `CV_ARGUS_MEM` | `0-3` / `4` / `8g` | Container cgroup limits — the 4-core / 8 GB Pi 5 ceiling. Docker-only. |
 | `BUFFER_DIR` / `BUFFER_DB_FILENAME` | `/app/data` / `buffer.sqlite3` | Where `buffer/`'s SQLite alert queue lives — matches the `buffer-data` volume. |
-| `SENDER_TRANSPORT` | `none` (this file) / `bluetooth` (main.py's own default) | `bluetooth` (real `BluetoothSppListener` — needs a real adapter + device passthrough, see "Prerequisites") or `none` (no `SenderServer`; alerts just accumulate unsent in `buffer/`). |
-| `BLUETOOTH_CHANNEL` | `4` | Only read when `SENDER_TRANSPORT=bluetooth`: the RFCOMM channel `BluetoothSppListener` binds. |
+| `SENDER_TRANSPORT` | `none` (`docker-compose.yml`) / `bluez` (`docker-compose.pi.yml`) | `bluez`: the host's BlueZ listens and pairs, the connection comes in over D-Bus (works in rootless Docker). `none`: no `SenderServer`; readings just queue in `buffer/`. `bluetooth`: a raw RFCOMM socket, only outside Docker. Leave it out of `.env`: a value there overrides both compose files. |
+| `BLUETOOTH_CHANNEL` | `4` | The RFCOMM channel the ESP32 connects to. Must match `PI_BT_CHANNEL` in the firmware's `config.h`. |
 | `BLUETOOTH_SECURITY` | `medium` | RFCOMM security the ESP32's link must meet: `medium` = paired + encrypted (required: `CONFIG` sends the device key), `high` = also MITM-protected pairing (an ESP32 without display/keypad can't do it), `low` = anything in range, bench only. |
-| `ESP32_BT_MAC` | unset | Optional comma-separated MAC allowlist (this truck's ESP32). Unset = any paired device. |
+| `ESP32_BT_MAC` | unset | This truck's ESP32 Bluetooth MAC (the ESP32 prints it at boot). With `bluez`, the only device that may pair; with either transport, the only one that may connect. Unset = nothing new can pair, any already-paired device may connect. |
 | `ARGUS_TRUCK_ID` / `ARGUS_DEVICE_API_KEY` / `ARGUS_BACKEND_URL` | unset | This truck's backend credentials, from `argus-device.env` — see "Provisioning a truck" below. All three or none; a partial set stops startup. |
 | `ARGUS_WIFI_SSID` / `ARGUS_WIFI_PASSWORD` | unset | The WiFi the ESP32 falls back to (phone hotspot / 4G MiFi, 2.4 GHz). Set in `.env`, sent in `CONFIG`; used verbatim (spaces included). Unset = the ESP32's WiFi stays off. |
 | `ARGUS_GPRS_APN` / `ARGUS_GPRS_USER` / `ARGUS_GPRS_PASSWORD` | unset | The SIM's mobile-data APN. Set in `.env`, sent in `CONFIG`. Set = the ESP32 uses mobile data first, WiFi second; unset = WiFi only. Carrier values in `.env.example`. |
@@ -125,27 +126,24 @@ is the one that actually calls the backend (one firmware image fits every truck)
    `.env.example`. The ESP32 gets them in the same `CONFIG` reply, so nothing about the network
    is flashed into its firmware either; after changing them, `docker compose up -d` and the
    ESP32 picks them up within 10 minutes.
-3. **Pair the ESP32 once** on the Pi host, since the link must be encrypted
-   (`BLUETOOTH_SECURITY=medium`):
-   ```sh
-   bluetoothctl
-   > power on
-   > agent NoInputNoOutput
-   > default-agent
-   > pairable on
-   # power the ESP32; it pairs itself (SSP "Just Works") on its first connect
-   > trust AA:BB:CC:DD:EE:FF      # the ESP32's MAC; optionally also set ESP32_BT_MAC to it
-   ```
-   Not yet run on the real Pi + ESP32 pair: if `bluetoothctl` asks to confirm a passkey or
-   authorize a service, answer `yes`. `BLUETOOTH_SECURITY=low` skips this for a quick bench
-   test, but sends the key unencrypted.
+3. **Pairing is automatic.** Set `ESP32_BT_MAC` in `.env` to the ESP32's Bluetooth MAC (the
+   ESP32 prints `[bt] This ESP32's Bluetooth MAC: …` on its serial monitor at boot; it's the
+   WiFi MAC esptool shows + 2). At startup cv-argus powers the Pi's adapter on, makes it
+   pairable and registers a pairing agent that accepts only that MAC, then marks the ESP32
+   trusted once it connects. No `bluetoothctl` needed. Check the log for
+   `bluetooth: ready through BlueZ -- serial port on RFCOMM channel 4`; a device that isn't
+   allowed shows up as `bluetooth: refused pairing from <MAC>`.
+   Not yet run on the real Pi + ESP32 pair. `BLUETOOTH_SECURITY=low` skips pairing for a quick
+   bench test, but sends the key unencrypted.
 4. The ESP32 asks for `CONFIG` at boot, after any `401` and every 10 minutes, caches it, and finds its route with
    `GET /api/devices/me/active-route`. The Fleet screen's Devices column shows "Key · seen …"
    once it's reporting.
 
-Real Bluetooth passthrough into the container is still the open item from "Prerequisites" —
-until it's wired, `SENDER_TRANSPORT=none` keeps the container starting, and the credentials are
-loaded but nothing can fetch them.
+Why BlueZ does the listening: Linux only creates Bluetooth sockets in the host's own network
+namespace, and this Pi runs rootless Docker, where even `network_mode: host` is a separate one.
+So the host's bluetoothd listens on the channel (and advertises it, so the ESP32 could also look
+it up) and hands each accepted connection to the container over D-Bus — see
+`src/sender/bluez_profile.py`.
 
 Downstream of a detection, `orchestrator/` reports the debounced class as a *reading* on every
 change, plus a keepalive, and emits a periodic RouteStatus("OK") heartbeat, `buffer/` persists both to SQLite, and `sender/` answers
@@ -548,9 +546,8 @@ no-op, and the `SOURCE`/`OUTPUTS` guards reject bad values.
   threading/queue plumbing itself, runnable with no camera, no model, and none of `cv2`/
   `mediapipe`/`tensorflow` installed. `tests/test_pipeline_stage.py` is the maintained `pytest`
   version of the same checks.
-- **What's still genuinely open, not just undocumented**: real Bluetooth device passthrough
-  isn't wired into either compose file yet (`SENDER_TRANSPORT=none` is this file's safe
-  default — see "Prerequisites" and `CLAUDE.md`'s "Open decisions"); no ESP32 firmware/hardware
-  exists in this repo, so `BluetoothSppTransport` itself is untested against a real device; and
+- **What's still genuinely open, not just undocumented**: the ESP32 link (`SENDER_TRANSPORT=
+  bluez`, `docker-compose.pi.yml`) is tested against a private `dbus-daemon` with a stand-in
+  BlueZ, but hasn't yet run on the real Pi + ESP32 pair (real pairing, the real bluetoothd); and
   the detector hasn't been measured on a Pi 5, real cabin NoIR footage, or unseen drivers (see
   `CLAUDE.md`'s "Current status").

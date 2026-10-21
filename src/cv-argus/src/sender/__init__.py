@@ -1,7 +1,8 @@
 """`sender/` — owns communication with the ESP32: a Bluetooth SPP server (the Pi listens, the
 ESP32 initiates each poll), answering a small custom PULL/ACK protocol (see `protocol.py`).
 `BluetoothSppTransport`/`BluetoothSppListener` (`bluetooth_transport.py`) are the real,
-platform-gated transport; `FakeTransport`/`FakeListener` (`transport.py`) are in-memory
+platform-gated transport, and `BluezProfileListener` (`bluez_profile.py`) gets the same sockets
+from the host's BlueZ over D-Bus (the Pi's rootless container can't open Bluetooth sockets); `FakeTransport`/`FakeListener` (`transport.py`) are in-memory
 stand-ins for hermetic tests.
 
 **Lazy submodule import, deliberately** — `BluetoothSppTransport`/`BluetoothSppListener` are
@@ -38,6 +39,7 @@ __all__ = [
     "FakeListener",
     "BluetoothSppTransport",
     "BluetoothSppListener",
+    "BluezProfileListener",
     "SenderServer",
     "DeviceConfig",
     "DEFAULT_PULL_LIMIT",
@@ -57,6 +59,8 @@ __all__ = [
 _LAZY = {
     "BluetoothSppTransport": (".bluetooth_transport", "BluetoothSppTransport"),
     "BluetoothSppListener": (".bluetooth_transport", "BluetoothSppListener"),
+    # Needs dbus_fast, so it's lazy for the same reason.
+    "BluezProfileListener": (".bluez_profile", "BluezProfileListener"),
 }
 
 

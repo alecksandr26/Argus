@@ -220,6 +220,38 @@ class TestBuildSenderListener:
         main._build_sender_listener()
         assert built == ["medium", "low"]
 
+    def test_bluez_passes_channel_security_and_the_allowlist(self, monkeypatch):
+        monkeypatch.setenv("SENDER_TRANSPORT", "bluez")
+        monkeypatch.setenv("BLUETOOTH_CHANNEL", "5")
+        monkeypatch.setenv("ESP32_BT_MAC", "78:1C:3C:36:4A:22")
+        monkeypatch.delenv("BLUETOOTH_SECURITY", raising=False)
+        built = {}
+
+        class _FakeBluez:
+            def __init__(self, channel, security, allowed_peers):
+                built.update(channel=channel, security=security, allowed_peers=allowed_peers)
+
+        monkeypatch.setattr(main, "_bluez_listener_class", lambda: _FakeBluez)
+        assert isinstance(main._build_sender_listener(), _FakeBluez)
+        assert built == {"channel": 5, "security": "medium", "allowed_peers": ["78:1C:3C:36:4A:22"]}
+
+    def test_bluez_setup_failure_exits_with_a_hint(self, monkeypatch):
+        monkeypatch.setenv("SENDER_TRANSPORT", "bluez")
+
+        class _NoBluez:
+            def __init__(self, **_):
+                raise OSError("Bluetooth setup through BlueZ failed: no such name")
+
+        monkeypatch.setattr(main, "_bluez_listener_class", lambda: _NoBluez)
+        with pytest.raises(SystemExit, match="D-Bus socket mounted"):
+            main._build_sender_listener()
+
+    def test_bluez_rejects_high_security(self, monkeypatch):
+        monkeypatch.setenv("SENDER_TRANSPORT", "bluez")
+        monkeypatch.setenv("BLUETOOTH_SECURITY", "high")
+        with pytest.raises(SystemExit, match="BLUETOOTH_SECURITY"):
+            main._build_sender_listener()
+
     def test_unknown_security_exits(self, monkeypatch):
         from cv_argus.sender import bluetooth_transport
 

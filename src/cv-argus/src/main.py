@@ -55,13 +55,18 @@ Env vars:
 - `BUFFER_DIR`/`BUFFER_DB_FILENAME` (defaults `constants.BUFFER_DIR_DEFAULT`/
   `BUFFER_DB_FILENAME_DEFAULT`) — where `buffer/`'s SQLite file lives. See
   `cv_argus.buffer.store`.
-- `SENDER_TRANSPORT` (default `"bluetooth"`) — `"bluetooth"` (real `BluetoothSppListener`,
-  `BLUETOOTH_CHANNEL` env var, default `4`) or `"none"` (no `SenderServer` at all — a dev/CI
-  opt-out for a machine with no Bluetooth adapter). See `cv_argus.sender`.
+- `SENDER_TRANSPORT` (default `"bluetooth"`) — `"bluez"` (the Pi: `BluezProfileListener`, the
+  host's BlueZ listens and pairs over D-Bus, works in rootless Docker), `"bluetooth"` (a raw
+  in-process RFCOMM socket, `BluetoothSppListener`: only where the process shares the host's
+  network namespace) or `"none"` (no `SenderServer` at all — a dev/CI opt-out for a machine with
+  no Bluetooth adapter). Both real ones use `BLUETOOTH_CHANNEL` (default `4`). See
+  `cv_argus.sender`.
 - `BLUETOOTH_SECURITY` (default `"medium"`: paired + encrypted link required) — `low`/`medium`/
-  `high`, the RFCOMM security level the listener demands. See `sender.bluetooth_transport`.
+  `high`, the RFCOMM security level the listener demands (`bluez` has no `high`). See
+  `sender.bluetooth_transport`.
 - `ESP32_BT_MAC` (unset by default) — comma-separated Bluetooth MACs allowed to connect; unset
-  accepts any paired device.
+  accepts any paired device. With `bluez` it is also the only device the pairing agent accepts,
+  so unset means nothing new can pair.
 - `ARGUS_TRUCK_ID`/`ARGUS_DEVICE_API_KEY`/`ARGUS_BACKEND_URL` (unset by default) — this truck's
   backend credentials, from the dashboard's `argus-device.env`. Served to the ESP32 on `CONFIG`;
   all three or none. See `cv_argus.sender.device_config`.
@@ -180,25 +185,49 @@ def _latency_log_interval() -> float:
         return 10.0
 
 
+def _bluez_listener_class():
+    """Imported on demand: only `SENDER_TRANSPORT=bluez` needs `dbus_fast`."""
+    from cv_argus.sender.bluez_profile import BluezProfileListener
+
+    return BluezProfileListener
+
+
 def _build_sender_listener():
     """`SENDER_TRANSPORT` (default `"bluetooth"`) picks the `Listener` `SenderServer` accepts
-    connections on: `"bluetooth"` (`BluetoothSppListener`, `BLUETOOTH_CHANNEL` env var, default
-    `4`) or `"none"` (an explicit dev/CI opt-out — no `SenderServer` is started at all, e.g. on a
-    machine with no Bluetooth adapter). Returns `None` for `"none"`; `main()` treats that as
-    "don't start sender/ this run". Real Bluetooth container passthrough (`/dev/rfcommN` or the
-    host BlueZ socket) still isn't wired into `docker-compose.yml` — see
-    `src/cv-argus/CLAUDE.md`'s "Open decisions"."""
+    connections on:
+    - `"bluez"`: `BluezProfileListener`. The host's bluetoothd listens on `BLUETOOTH_CHANNEL`,
+      pairs only `ESP32_BT_MAC` and passes each connection in over D-Bus. What
+      `docker-compose.pi.yml` uses, since a rootless container can't open Bluetooth sockets.
+    - `"bluetooth"`: `BluetoothSppListener`, a raw RFCOMM socket in this process. Needs the
+      host's network namespace (running outside Docker, or rootful Docker with host networking).
+    - `"none"`: an explicit dev/CI opt-out, no `SenderServer` at all.
+    Returns `None` for `"none"`; `main()` treats that as "don't start sender/ this run"."""
     kind = os.environ.get("SENDER_TRANSPORT", "bluetooth").strip().lower()
+    security = os.environ.get("BLUETOOTH_SECURITY", "medium")
     if kind == "bluetooth":
         channel = int(os.environ.get("BLUETOOTH_CHANNEL", "4"))
-        security = os.environ.get("BLUETOOTH_SECURITY", "medium")
         try:
             return BluetoothSppListener(channel=channel, security=security)
         except ValueError as exc:
             raise SystemExit(f"BLUETOOTH_SECURITY: {exc}") from None
+    if kind == "bluez":
+        channel = int(os.environ.get("BLUETOOTH_CHANNEL", "4"))
+        try:
+            return _bluez_listener_class()(
+                channel=channel, security=security, allowed_peers=_allowed_peers()
+            )
+        except ValueError as exc:
+            raise SystemExit(f"BLUETOOTH_SECURITY: {exc}") from None
+        except OSError as exc:
+            raise SystemExit(
+                f"{exc} -- is the host's D-Bus socket mounted (docker-compose.pi.yml) and "
+                "bluetoothd running (`systemctl status bluetooth`)?"
+            ) from None
     if kind == "none":
         return None
-    raise SystemExit(f"Unknown SENDER_TRANSPORT={kind!r} -- expected 'bluetooth' or 'none'")
+    raise SystemExit(
+        f"Unknown SENDER_TRANSPORT={kind!r} -- expected 'bluez', 'bluetooth' or 'none'"
+    )
 
 
 def _device_config() -> DeviceConfig | None:

@@ -47,9 +47,14 @@
 // *server*; this device is the client -- see src/esp32-argus/README.md section 1 and
 // src/cv-argus/src/sender/protocol.py).
 // =====================================================
-// The Pi's Bluetooth MAC address, e.g. {0x08, 0x3A, 0xF2, 0x4B, 0x9C, 0x01}. Find it on
-// the Pi with `hciconfig` or `bluetoothctl` ("show" on the default controller).
-#define PI_BT_MAC_ADDRESS { 0xB0, 0xDC, 0xEF, 0x34, 0x4C, 0x83 } // bench: this PC's Bluetooth
+// The Pi's Bluetooth MAC address. Read it on the Pi with `bluetoothctl show` (the
+// "Controller" line); it isn't the Pi's WiFi/Ethernet MAC. For the bench test (test/hil/),
+// the PC plays the Pi: use the PC's Bluetooth MAC, e.g. { 0xB0, 0xDC, 0xEF, 0x34, 0x4C, 0x83 }.
+#define PI_BT_MAC_ADDRESS { 0x2C, 0xCF, 0x67, 0xCA, 0xD0, 0x6E } // invision-raspberry
+// The RFCOMM channel the Pi serves on: cv-argus's BLUETOOTH_CHANNEL (default 4). Connecting
+// to it directly skips a service lookup (SDP) on every poll. 0 = look the channel up instead,
+// which the bench PC needs: Windows picks its own channel for an incoming COM port.
+#define PI_BT_CHANNEL 4
 #define PI_BT_POLL_INTERVAL_MS 5000UL
 #define PI_BT_PULL_COUNT 50 // matches sender/protocol.py's DEFAULT_PULL_LIMIT
 #define PI_BT_LINE_TIMEOUT_MS 3000UL

@@ -60,6 +60,8 @@ Python venv. On a Linux machine with BlueZ (e.g. the real Pi), use `--rfcomm` in
    - Set `PI_BT_MAC_ADDRESS` to the **PC's** Bluetooth MAC, because the PC is the Pi here.
      `ipconfig /all` shows it as "Physical Address" under "Bluetooth Network Connection".
      `B0-DC-EF-34-4C-83` becomes `{ 0xB0, 0xDC, 0xEF, 0x34, 0x4C, 0x83 }`.
+   - Set `PI_BT_CHANNEL` to `0`. Windows picks its own RFCOMM channel for the incoming COM port,
+     so the ESP32 has to look it up; the real Pi serves on the fixed channel 4.
    - `BENCH_FAKE_GPS`: `1` to test Bluetooth/HTTP indoors without a GPS fix (nothing gets
      relayed without one), `0` to test the real NEO-6M (see "Testing the real GPS").
      **It must be `0` on a real truck.**
@@ -117,7 +119,7 @@ proves nothing about the GPS. To check that the positions come from the NEO-6M:
 
 | Symptom | Likely cause |
 |---|---|
-| Check 1 fails; Serial Monitor shows `[bt] Could not connect to the Pi's Bluetooth SPP server` | Wrong `PI_BT_MAC_ADDRESS`, not paired, or no *incoming* COM port (setup steps 2–4) |
+| Check 1 fails; Serial Monitor shows `[bt] Could not connect to the Pi's Bluetooth SPP server` | Wrong `PI_BT_MAC_ADDRESS`, `PI_BT_CHANNEL` not `0`, not paired, or no *incoming* COM port (setup steps 2–4) |
 | `could not open port 'COM5'` | Wrong COM number, or another program has it open |
 | Serial Monitor shows `No GPS fix yet -- ... not relaying` | The NEO-6M has no fix yet (see `[gps]` lines and "Testing the real GPS"), or set `BENCH_FAKE_GPS 1` to test without it |
 | Check 5 says "sent the BENCH_FAKE_GPS position" | `BENCH_FAKE_GPS` is still `1` in the flashed firmware |

@@ -241,10 +241,10 @@ Env vars `main.py` reads (all optional, all with defaults):
 | `LOG_LEVEL` | `INFO` | root log level; `DEBUG` adds `LoggingOutputStage`'s per-frame lines + drop-path debug logs |
 | `CV_ARGUS_NUM_THREADS` | unset (Docker: `4`) | pins BLAS/OpenMP/TF/OpenCV thread pools — `cv_argus.bootstrap`, imported first in `main.py`/`__main__.py` |
 | `BUFFER_DIR` / `BUFFER_DB_FILENAME` | `/app/data` / `buffer.sqlite3` | where `buffer/`'s SQLite alert queue lives — see "`buffer/`'s SQLite file needs a volume" and `buffer/store.py` |
-| `SENDER_TRANSPORT` | `bluetooth` (code) / `none` (this repo's compose files) | `bluetooth` (real `BluetoothSppListener`) or `none` (no `SenderServer` started — alerts accumulate unsent in `buffer/`). The compose-file default is `none` because neither compose file passes through real Bluetooth access yet — see "Open decisions" |
-| `BLUETOOTH_CHANNEL` | `4` | only read when `SENDER_TRANSPORT=bluetooth`: the RFCOMM channel `BluetoothSppListener` binds |
+| `SENDER_TRANSPORT` | `bluetooth` (code) / `none` (`docker-compose.yml`) / `bluez` (`docker-compose.pi.yml`) | `bluez` (`BluezProfileListener`: the host's bluetoothd listens + pairs, connections arrive over D-Bus — the Pi's choice), `bluetooth` (`BluetoothSppListener`, a raw in-process RFCOMM socket — only in the host's network namespace) or `none` (no `SenderServer`). See "Open decisions" for why the Pi can't use `bluetooth` |
+| `BLUETOOTH_CHANNEL` | `4` | the RFCOMM channel served (`bluez` and `bluetooth`); must match the firmware's `PI_BT_CHANNEL` |
 | `BLUETOOTH_SECURITY` | `medium` | RFCOMM `BT_SECURITY` level set on the listening socket (`low`/`medium`/`high`) — see "Device credentials" below |
-| `ESP32_BT_MAC` | unset | optional peer allowlist for `SenderServer` |
+| `ESP32_BT_MAC` | unset | peer allowlist for `SenderServer`; with `bluez` also the only MAC the pairing agent accepts (unset = nothing new pairs) |
 | `ARGUS_TRUCK_ID`/`ARGUS_DEVICE_API_KEY`/`ARGUS_BACKEND_URL` | unset | `sender/device_config.py`'s `DeviceConfig`, from the dashboard's `argus-device.env` (`docker-compose.yml` `env_file`, runtime only) |
 | `ARGUS_WIFI_SSID`/`ARGUS_WIFI_PASSWORD`/`ARGUS_GPRS_APN`/`ARGUS_GPRS_USER`/`ARGUS_GPRS_PASSWORD` | unset | optional `DeviceConfig` network fields, from `.env` (per installation), sent to the ESP32 in `CONFIG`; verbatim, not stripped |
 | model-artifact overrides | see `constants.py` | `MODEL_DIR`, `*_DRIVE_FILE_ID`, `*_FILENAME`, `*_BUNDLE_URL` — see "Model download strategy" |
@@ -641,13 +641,33 @@ per-truck key flashed in). The same reply also carries the ESP32's network setti
 SSID/password and the SIM's APN (`ARGUS_WIFI_*`/`ARGUS_GPRS_*`, optional, from `.env` rather
 than `argus-device.env` so a key rotation doesn't wipe them, and never `.strip()`ped since an
 SSID may end in a space) — so the firmware carries no network config either; no APN means the
-ESP32 stays on WiFi. Because that reply carries secrets, `BluetoothSppListener` sets
-`BT_SECURITY` (default `medium`: paired + encrypted) on the listening socket, which the kernel
-applies to every accepted connection, and `ESP32_BT_MAC` optionally allowlists the peer. The key
-is never logged and `repr(DeviceConfig)` masks it. A partial `ARGUS_*` set is a `SystemExit` at
-startup. `tests/test_sender_device_config.py` covers all of it over fakes (including the
-`setsockopt` call); the real RFCOMM security handshake is unverified until real Pi + ESP32
-hardware runs it.
+ESP32 stays on WiFi. Because that reply carries secrets, the link must be paired + encrypted
+(`BLUETOOTH_SECURITY`, default `medium`): `BluetoothSppListener` sets `BT_SECURITY` on its
+listening socket, and `BluezProfileListener` registers its profile with
+`RequireAuthentication`. `ESP32_BT_MAC` allowlists the peer. The key is never logged and
+`repr(DeviceConfig)` masks it. A partial `ARGUS_*` set is a `SystemExit` at startup.
+`tests/test_sender_device_config.py` covers all of it over fakes (including the `setsockopt`
+call); the real RFCOMM security handshake is unverified until real Pi + ESP32 hardware runs it.
+
+**`bluez_profile.py` — how the Pi actually serves the ESP32 (`SENDER_TRANSPORT=bluez`).** Linux
+creates Bluetooth sockets only in the host's own network namespace (`EAFNOSUPPORT` anywhere else,
+checked in a container), and this Pi runs rootless Docker, where even `network_mode: host` is a
+separate namespace. So `BluezProfileListener` doesn't open a socket at all. Over the host's D-Bus
+socket (mounted by `docker-compose.pi.yml`) it:
+- powers the adapter on and makes it pairable (`PairableTimeout 0`);
+- registers a `NoInputNoOutput` `Agent1` that accepts only `ESP32_BT_MAC` (rejects and logs any
+  other MAC, and every PIN/passkey request), and marks an accepted ESP32 trusted;
+- registers a `Profile1` for the Serial Port UUID on `BLUETOOTH_CHANNEL`, so bluetoothd listens,
+  advertises it over SDP, enforces `RequireAuthentication`, and passes each accepted socket in
+  with `NewConnection` (an fd over D-Bus works across namespaces). It's wrapped in the same
+  `BluetoothSppTransport`, so `SenderServer` is unchanged.
+It authenticates with `AuthExternal(uid=UID_NOT_SPECIFIED)`: dbus-daemon takes our identity from
+the socket credentials, because the container's uid 0 is a different uid on the host. A
+restarted bluetoothd (`NameOwnerChanged` for `org.bluez`) or a lost bus re-registers everything
+with a backoff. `tests/test_sender_bluez_profile.py` runs it against a private `dbus-daemon` with
+a stand-in BlueZ: setup calls, agent accept/reject, trust, a real fd through `NewConnection`, a
+restart, close, and "no BlueZ" failing construction. Real pairing and the real bluetoothd are
+still unverified until the Pi + ESP32 run it.
 
 This satisfies the grading-criteria constraint behind all of it (3.2's "not a pre-built
 client/server service" note): the PULL/ACK grammar is a protocol this project defines and
@@ -665,15 +685,14 @@ actually asking for.
     has never run against a real device — only against `FakeTransport` in the unit suite. Don't
     describe the Bluetooth path as validated end-to-end; it's a protocol design and a Pi-side
     implementation, not a tested link.
-  - **Neither compose file passes through real Bluetooth device access yet** — no
-    `/dev/rfcommN` device, no host BlueZ/D-Bus socket wired into `devices:`/`volumes:` in
-    `docker-compose.yml` or `docker-compose.pi.yml`. This is why `docker-compose.yml` defaults
-    `SENDER_TRANSPORT=none` even though `main.py`'s own code-level default is `bluetooth` —
-    setting `SENDER_TRANSPORT=bluetooth` without adding real passthrough first will crash
-    `main()` at startup (`BluetoothSppListener`'s `socket.bind()` fails immediately without a
-    real adapter — confirmed directly in this repo's own sessions). Don't fabricate a specific
-    device path without real Pi 5 hardware to verify it against, same convention as the
-    camera-passthrough device list in `docker-compose.pi.yml`.
+  - **Container access: decided as the host's BlueZ over D-Bus** (`bluez_profile.py`,
+    `SENDER_TRANSPORT=bluez`, set by `docker-compose.pi.yml` with the host's
+    `/run/dbus/system_bus_socket` mounted), **not** a raw socket, `/dev/rfcommN` or
+    `network_mode: host`. None of those can work under the Pi's rootless Docker: a Bluetooth
+    socket only exists in the host's network namespace (see the `bluez_profile.py` paragraph
+    above). `docker-compose.yml` (laptops) stays `none`: there's no ESP32 to serve, and a missing
+    adapter would stop startup. Pairing is automatic (no `bluetoothctl`) and limited to
+    `ESP32_BT_MAC`.
 - Real camera on the Pi: settled as `picamera2` (see "Python packaging" above) for the CSI
   module. **Verified at the camera level on a real Pi 5** (Raspberry Pi OS / Debian 13, IMX219,
   rootless Docker): picamera2 inside this image lists the sensor and captures frames. The full
@@ -754,9 +773,9 @@ subpackages registered in `packages=[...]`), and a real entry point (`src/main.p
 `cv-argus-run` console script) that builds and starts all three top-level components (Pipeline,
 `Orchestrator`, `SenderServer`) together — see `main.py`'s module docstring. **Real, stated
 limitations, not glossed over**: no ESP32 firmware/hardware exists anywhere in this project, so
-the Bluetooth link has never been exercised end to end against a real device; neither compose
-file wires actual Bluetooth device passthrough yet (`docker-compose.yml` defaults
-`SENDER_TRANSPORT=none` for exactly this reason — see "Open decisions"); and the
+the Bluetooth link has never been exercised end to end against a real device (the Pi side,
+`SENDER_TRANSPORT=bluez`, is tested only against a stand-in BlueZ on a private bus — see "Open
+decisions"); and the
 debounce/keepalive/heartbeat constants in `constants.py` are reasoned-through defaults, not
 tuned against a real recorded drive.
 
@@ -877,11 +896,12 @@ no business being part of it; install it separately (`pip install pytest`) for l
   "done" section's `sender/` paragraph). A tempting-looking shortcut (e.g. marking sent right
   after streaming rows in a `PULL` response, "since the ESP32 basically always gets them") would
   silently reintroduce exactly the alert-loss failure mode this design exists to avoid.
-- `docker-compose.yml`'s `SENDER_TRANSPORT` default is `none`, not `bluetooth`, even though
-  `main.py`'s own code-level default is `bluetooth` — see "Open decisions". Don't "fix" this by
-  flipping the compose default without also adding real Bluetooth device passthrough first;
-  that would make `docker compose up --build` crash at startup on any machine without a
-  Bluetooth adapter, which is the regression this default is specifically avoiding.
+- `docker-compose.yml`'s `SENDER_TRANSPORT` default is `none` (laptops) and
+  `docker-compose.pi.yml`'s is `bluez` — see "Open decisions". Don't switch the Pi to
+  `bluetooth` or "fix" it with `network_mode: host` / `/dev/rfcommN`: under rootless Docker no
+  in-container Bluetooth socket can work. And keep `SENDER_TRANSPORT` out of `.env`: Compose
+  interpolates the overlay's `${SENDER_TRANSPORT:-bluez}` from `.env`, so a value there silently
+  overrides it.
 - If asked to run `docker compose up --build` or similar: the build now succeeds with no `.env`
   at all (both Drive ids have checked-in defaults in `constants.py`). On WSL or any machine with
   no `/dev/video0`, the compose `devices:` entry fails the run; drop it (or use a `devices:

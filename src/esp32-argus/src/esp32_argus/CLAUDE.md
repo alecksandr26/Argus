@@ -47,10 +47,12 @@ indoors. Set it back to `0` for a real truck.
 6. Open `esp32_argus.ino`. Every `.h`/`.cpp` in this folder opens as a tab and compiles with it.
    (`../Codigo_SMS_GPS/` is a separate SIM800L/GPS bring-up sketch, not part of this build.)
 7. Set the Pi's Bluetooth MAC (and GPIO pins, if wired differently) in `config.h` before
-   flashing. There's no WiFi network, APN, backend URL, device key, or route id to set: those
-   come from the Pi over Bluetooth (`CONFIG`) and from the backend (see `../../README.md`
-   section 1b). Compiling doesn't need real values. Last compile with these changes (2026-10-19,
-   `arduino-cli`, core 3.3.12, Huge APP): 56% flash, 19% RAM. Not flashed or HIL-run yet.
+   flashing, and `PI_BT_CHANNEL` to the Pi's `BLUETOOTH_CHANNEL` (4; `0` for the Windows bench,
+   see `../../test/hil/`). There's no WiFi network, APN, backend URL, device key, or route id to
+   set: those come from the Pi over Bluetooth (`CONFIG`) and from the backend (see
+   `../../README.md` section 1b). Compiling doesn't need real values. Last compile (2026-10-20,
+   `arduino-cli`, core 3.3.12, Huge APP): 1,783,496 bytes (56% flash), 20% RAM. Not flashed or
+   HIL-run with these changes yet.
 
 ## Errors already hit, and what they mean
 

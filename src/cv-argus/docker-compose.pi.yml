@@ -19,6 +19,13 @@ services:
     # nothing to override here. On a 4-core / 8 GB board the limits are simply no-ops.
     environment:
       - SOURCE=picamera
+      # The ESP32 link: the host's bluetoothd listens on BLUETOOTH_CHANNEL, pairs only
+      # ESP32_BT_MAC and hands each connection in over D-Bus (sender/bluez_profile.py). A raw
+      # Bluetooth socket can't work in this container: Linux allows them only in the host's own
+      # network namespace, and rootless Docker never gives a container that, even with
+      # network_mode: host. `none` turns the link off.
+      - SENDER_TRANSPORT=${SENDER_TRANSPORT:-bluez}
+      - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
     devices:
       # Verified against a real Pi 5 (Raspberry Pi OS / Debian 13, IMX219 CSI camera): this is
       # every node libcamera's Pi 5 (PiSP) pipeline handler opens. Compose has no globs, so a
@@ -71,15 +78,12 @@ services:
       # sub-device nodes belong together; without it, it can't "acquire a CFE instance" and
       # lists zero cameras even with every device node passed through. Read-only.
       - /run/udev:/run/udev:ro
+      # The host's system D-Bus, for SENDER_TRANSPORT=bluez; only bluetoothd's API is used
+      # through it. Rootless Docker runs the container as the host user who runs Docker, so
+      # D-Bus lets it do exactly what that user may: if `bluetoothctl show` works for them
+      # without sudo, this works too.
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
     # The Pi needs to come back up on its own after a power cycle in the truck; deliberately
     # left off the base/dev compose file so a laptop container doesn't restart forever while
     # iterating on it (see the root README's "Why a Docker-first workflow").
     restart: unless-stopped
-    # NOT YET DONE: this overlay doesn't set SENDER_TRANSPORT=bluetooth or add a Bluetooth
-    # device to `devices:` -- the base file defaults SENDER_TRANSPORT=none precisely because
-    # neither compose file passes through real Bluetooth access yet (a `/dev/rfcommN` device,
-    # or the host's BlueZ/D-Bus socket -- see the root CLAUDE.md and src/cv-argus/CLAUDE.md's
-    # "Open decisions"). Flip it here once that's added and verified against real Pi 5
-    # hardware; don't just set the env var without the matching device passthrough, or
-    # SenderServer will crash main.py at startup the same way it does on a laptop with no
-    # Bluetooth adapter.
