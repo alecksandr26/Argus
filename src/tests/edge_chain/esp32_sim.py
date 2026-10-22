@@ -34,8 +34,8 @@ from cv_argus.sender import (
     protocol,
 )
 
-PI_BT_PULL_COUNT = 20  # config.h
-DLQ_REPLAY_BATCH = 5  # config.h
+PI_BT_PULL_COUNT = 8  # config.h
+DLQ_REPLAY_BATCH = 2  # config.h
 PI_BT_LINE_TIMEOUT_S = 3.0
 
 _RANK = {"none": 1, "low": 2, "medium": 3, "critical": 4}

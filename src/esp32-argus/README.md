@@ -124,7 +124,7 @@ there's nothing to send, like a keepalive), `FAIL` with a one-token reason (`no_
 `no_network`, `no_route`, `no_gps`, `no_time`, `http_<status>`) and the backend message
 composed here, which the Pi keeps in its **dead-letter queue** with that message's GPS position
 and time. Missing credentials never stop the pulling. When the backend is reachable and the Pi
-said `END n` with n > 0, the same poll sends `DLQ 5` and replays them (stopping at the first
+said `END n` with n > 0, the same poll sends `DLQ 2` and replays them (stopping at the first
 failure), reusing each stored message so its original position and time are kept. A record the
 firmware can't parse (`pi_record.cpp`: a bare NaN token, an unknown kind, missing
 probabilities) is ACKed away when its id is known, so it can't block the Pi's queue. Replayed

@@ -172,11 +172,21 @@ int bluetoothExchange(const char* request, RecordReport (*onRecord)(const PiReco
   std::vector<std::string> acks;
   std::vector<std::string> failLines;
   int received = 0;
+  // The Pi waits PI_BT_REPORT_WAIT_MS for the report after END, and each backend request over the
+  // SIM800L takes seconds. Five replays took ~60 s on the real device, the Pi gave up first, and
+  // the same five were replayed forever. So stop starting new records after the budget: the rest
+  // are left on the Pi as they were (not reported) and come back on the next poll.
+  unsigned long handlingStartedAt = millis();
+  int leftForLater = 0;
 
   for (const String& line : lines) {
     if (!protocolOk) break;
     received++;
     recordsPulled++;
+    if (millis() - handlingStartedAt >= PI_BT_HANDLE_BUDGET_MS) {
+      leftForLater++;
+      continue;
+    }
     PiRecord record;
     if (parsePiRecord(line.c_str(), record) == ParseOutcome::Drop) {
       if (record.id.empty()) {
@@ -198,6 +208,12 @@ int bluetoothExchange(const char* request, RecordReport (*onRecord)(const PiReco
       failLines.push_back(fail);
     }
     // Skip: not reported, the Pi keeps it as it was.
+  }
+  if (leftForLater > 0) {
+    Serial.print("[bt] ");
+    Serial.print(leftForLater);
+    Serial.println(" record(s) left on the Pi for the next poll (time budget, so the Pi gets the "
+                   "report before it stops waiting)");
   }
 
   if (protocolOk && received > 0) {

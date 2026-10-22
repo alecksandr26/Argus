@@ -66,9 +66,15 @@
 // Bytes reserved per line read from the Pi; a record is 200-400 B today, more just reallocates.
 #define PI_BT_LINE_RESERVE 768
 #define PI_BT_LINE_TIMEOUT_MS 3000UL
+// The Pi (cv-argus SenderServer ack_timeout) waits this long for the report after END.
+#define PI_BT_REPORT_WAIT_MS 30000UL
+// No new record is started after this much handling time in one session; the rest stay on the Pi
+// for the next poll. Leaves room for one last backend request (seconds over the SIM800L) inside
+// PI_BT_REPORT_WAIT_MS.
+#define PI_BT_HANDLE_BUDGET_MS 10000UL
 // Once the backend is reachable, the Pi's dead-letter queue is replayed this many records per
 // poll (`DLQ <k>`), after the live ones: the newest events always go first.
-#define DLQ_REPLAY_BATCH 5
+#define DLQ_REPLAY_BATCH 2  // each replay is a backend request: 5 overran the Pi's report wait
 // The Bluetooth link's status line (up/down, sessions, records) on Serial.
 #define PI_BT_LINK_LOG_INTERVAL_MS 30000UL
 // How often backendIsReachable() may print why there's no network (no APN, mobile data on hold,
