@@ -22,6 +22,15 @@ bool modemReadUntil(const char* expect, unsigned long timeoutMs, String* respons
 bool modemSendAT(const String& cmd, const char* expect, unsigned long timeoutMs,
                  String* response = nullptr);
 
+// Like modemSendAT, but with a hard deadline from the moment the command is sent instead of an
+// idle timeout. For slow network commands (AT+SAPBR=1,1): a modem that keeps talking -- e.g.
+// rebooting in a loop and printing RDY / Call Ready -- would reset an idle timeout forever.
+bool modemSendATWithin(const String& cmd, const char* expect, unsigned long totalMs,
+                       String* response = nullptr);
+
+// A modem reply on one line for logs: CR/LF runs become " | ", ends trimmed.
+String modemOneLine(const String& response);
+
 // Raw write, for payloads the modem asked for (an SMS body after '>', HTTP data after
 // "DOWNLOAD").
 void modemWrite(const String& data);

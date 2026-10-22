@@ -2,6 +2,7 @@
 
 #include <BluetoothSerial.h>
 
+#include <utility>
 #include <vector>
 
 #include "config.h"
@@ -55,6 +56,10 @@ bool connectToPi() {
 // timeoutMs.
 bool readLine(String& out, unsigned long timeoutMs) {
   out = "";
+  // One allocation per line up front. Growing a String one char at a time reallocates on almost
+  // every byte, which fragments the heap the Bluetooth stack already crowds, until an allocation
+  // fails (see bluetoothExchange).
+  out.reserve(PI_BT_LINE_RESERVE);
   // Elapsed-since-last-byte via unsigned subtraction, not an absolute deadline -- the
   // same millis()-rollover-safe pattern used throughout this firmware (see
   // wifi_client.cpp/panic_button.cpp). An absolute `millis() + timeoutMs` deadline breaks
@@ -139,6 +144,7 @@ int bluetoothExchange(const char* request, RecordReport (*onRecord)(const PiReco
   // lost bytes, so later lines arrived cut ("Unreadable record with no id") or never ended
   // (timeouts). A batch cut short is now not handled at all: the Pi serves it again.
   std::vector<String> lines;
+  lines.reserve(PI_BT_PULL_COUNT + 1);
   bool protocolOk = true;
   while (true) {
     String line;
@@ -147,8 +153,20 @@ int bluetoothExchange(const char* request, RecordReport (*onRecord)(const PiReco
       protocolOk = false;
       break;
     }
+    // A String whose allocation failed is "invalid": c_str() is NULL, and turning that into a
+    // std::string throws and aborts -- the reboot loop of 2026-10-21. End the session instead; the
+    // Pi serves the same batch again.
+    if (line.c_str() == nullptr) {
+      Serial.print("[bt] Out of memory reading the Pi's batch (free heap ");
+      Serial.print(ESP.getFreeHeap());
+      Serial.print(" B, largest block ");
+      Serial.print(ESP.getMaxAllocHeap());
+      Serial.println(" B) -- the Pi will serve it again");
+      protocolOk = false;
+      break;
+    }
     if (parseEnd(line, dlqWaiting)) break;
-    lines.push_back(line);
+    lines.push_back(std::move(line));
   }
 
   std::vector<std::string> acks;
@@ -235,5 +253,10 @@ void bluetoothLogStatus() {
     Serial.print((millis() - lastAnsweredAt) / 1000.0, 1);
     Serial.print(" s ago");
   }
-  Serial.println();
+  // A slow leak or fragmentation shows up here long before an allocation fails.
+  Serial.print(" | free heap ");
+  Serial.print(ESP.getFreeHeap());
+  Serial.print(" B, largest block ");
+  Serial.print(ESP.getMaxAllocHeap());
+  Serial.println(" B");
 }

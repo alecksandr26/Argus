@@ -47,9 +47,29 @@ bool ensureBearer() {
   bearerApn = creds.gprsApn;
   bearerUser = creds.gprsUser;
   bearerPassword = creds.gprsPassword;
-  // Can take up to 85 s per the SIM800 manual. It also answers ERROR if the bearer raced open,
-  // so re-check the status instead of trusting this reply.
-  modemSendAT("AT+SAPBR=1,1", "OK", 85000UL);
+  // Signal and data attach say *why* a bearer won't open: CSQ 99 or below ~8 is too weak, and
+  // "+CGATT: 0" means the network gives this SIM no packet data (no data plan, or no 2G data here).
+  String reply;
+  modemSendAT("AT+CSQ", "OK", 2000UL, &reply);
+  Serial.print("[gprs] Signal: ");
+  Serial.println(modemOneLine(reply));
+  modemSendAT("AT+CGATT?", "OK", 10000UL, &reply);
+  Serial.print("[gprs] Data attach: ");
+  Serial.println(modemOneLine(reply));
+  // Can take up to 85 s per the SIM800 manual, so a hard deadline (an idle timeout never ends if
+  // the modem keeps rebooting). It also answers ERROR if the bearer raced open, so re-check the
+  // status instead of trusting this reply.
+  Serial.println("[gprs] Activating the data session (AT+SAPBR=1,1, up to 85 s)...");
+  unsigned long startedAt = millis();
+  modemSendATWithin("AT+SAPBR=1,1", "OK", 85000UL, &reply);
+  Serial.print("[gprs] Modem replied after ");
+  Serial.print((millis() - startedAt) / 1000);
+  Serial.print(" s: ");
+  Serial.println(reply.length() > 0 ? modemOneLine(reply) : String("(nothing)"));
+  if (reply.indexOf("RDY") != -1 || reply.indexOf("Call Ready") != -1) {
+    Serial.println("[gprs] The SIM800L rebooted while opening data -- usually its power supply "
+                   "sagging under the ~2 A transmit bursts");
+  }
   open = bearerIsOpen();
   Serial.println(open ? "[gprs] Bearer open" : "[gprs] Could not open the GPRS bearer");
   return open;

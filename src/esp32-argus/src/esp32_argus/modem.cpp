@@ -65,6 +65,43 @@ bool modemSendAT(const String& cmd, const char* expect, unsigned long timeoutMs,
   return modemReadUntil(expect, timeoutMs, response);
 }
 
+bool modemSendATWithin(const String& cmd, const char* expect, unsigned long totalMs,
+                       String* response) {
+  modemFlush();
+  modemSerial.print(cmd);
+  modemSerial.print("\r\n");
+  String buf;
+  unsigned long sentAt = millis();
+  while (millis() - sentAt < totalMs) {
+    while (modemSerial.available()) {
+      buf += (char)modemSerial.read();
+      if (buf.indexOf(expect) != -1 || buf.indexOf("ERROR") != -1) {
+        if (response) *response = buf;
+        return buf.indexOf(expect) != -1;
+      }
+    }
+    delay(10);
+  }
+  if (response) *response = buf;
+  return false;
+}
+
+String modemOneLine(const String& response) {
+  String out;
+  bool gap = false;
+  for (size_t i = 0; i < response.length(); i++) {
+    char c = response[i];
+    if (c == '\r' || c == '\n') {
+      gap = true;
+      continue;
+    }
+    if (gap && out.length() > 0) out += " | ";
+    gap = false;
+    out += c;
+  }
+  return out;
+}
+
 void modemWrite(const String& data) { modemSerial.print(data); }
 
 void modemWriteByte(uint8_t b) { modemSerial.write(b); }

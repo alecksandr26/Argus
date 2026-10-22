@@ -58,9 +58,13 @@
 // Every poll pulls the live outbox (`PULL`); the Pi's keepalives come every 2 s, so this keeps
 // what the camera sees and what this device logs about 2 s apart.
 #define PI_BT_POLL_INTERVAL_MS 2000UL
-// At most this many records per poll (the Pi allows 50). Each is logged and possibly sent before
-// the Pi gets the report, so a small batch keeps that well inside the Pi's 30 s wait.
-#define PI_BT_PULL_COUNT 20
+// At most this many records per poll (the Pi allows 50). The whole batch is held in memory before
+// any of it is handled (see bluetoothExchange), and each record is logged and possibly sent before
+// the Pi gets the report, so a small batch keeps both the heap and the Pi's 30 s wait safe. 8
+// every PI_BT_POLL_INTERVAL_MS is still well above the Pi's one keepalive per 2 s.
+#define PI_BT_PULL_COUNT 8
+// Bytes reserved per line read from the Pi; a record is 200-400 B today, more just reallocates.
+#define PI_BT_LINE_RESERVE 768
 #define PI_BT_LINE_TIMEOUT_MS 3000UL
 // Once the backend is reachable, the Pi's dead-letter queue is replayed this many records per
 // poll (`DLQ <k>`), after the live ones: the newest events always go first.
