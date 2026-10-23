@@ -18,7 +18,9 @@ from app.geo import GeoJSONPoint
 from app.ids import get_by_id
 from app.incidents import (
     FINISHED_ROUTE_STATUSES,
+    RouteFinishedError,
     apply_points_to_route,
+    ensure_route_open,
     as_utc,
     ingest_alert,
     ingest_driver_ok,
@@ -91,11 +93,17 @@ async def _keep_minutes(route_id: str, timestamps: list[datetime]) -> set[dateti
     return {as_utc(p.timestamp).replace(second=0, microsecond=0) for p in kept}
 
 
-async def store_points(route_id: str, docs: list[StatusRoute]) -> list[StatusRoute]:
+async def store_points(
+    route_id: str, docs: list[StatusRoute], *, reject_finished: bool = True
+) -> list[StatusRoute]:
     """Inserts GPS points of one route, skipping the ones whose `(id_route, timestamp)` is
     already stored (unique index, `insert_many(ordered=False)`). Marks the first stored point of
     each UTC minute `keep` (retention, C3.3), then updates the route state from the stored
-    points (C3.5). Returns the points actually stored."""
+    points (C3.5). Returns the points actually stored.
+
+    With `reject_finished` (every device write), the route's status is re-read under the lock
+    and `RouteFinishedError` is raised, nothing stored, if it ended since the caller picked it
+    (C2.2). A user's manual write to a finished route passes `reject_finished=False`."""
     if not docs:
         return []
     by_time: dict[datetime, StatusRoute] = {}
@@ -104,6 +112,8 @@ async def store_points(route_id: str, docs: list[StatusRoute]) -> list[StatusRou
     docs = list(by_time.values())
 
     async with route_lock(route_id):
+        if reject_finished:
+            await ensure_route_open(route_id)
         kept_minutes = await _keep_minutes(route_id, list(by_time))
         for doc in docs:
             minute = as_utc(doc.timestamp).replace(second=0, microsecond=0)
@@ -156,7 +166,11 @@ async def _process_points(
         except ValidationError:
             continue  # an invalid point is skipped, never a 422 (C2.1)
         docs.append(_point_doc(route_id, point, received_at))
-    stored = await store_points(route_id, docs)
+    try:
+        stored = await store_points(route_id, docs)
+    except RouteFinishedError:
+        # Stopped/completed between `active_route_for` and the lock (C2.2).
+        return PointsResult(stored=0, route=None, status="route_finished")
     return PointsResult(stored=len(stored), route=route_id, status="ok")
 
 
@@ -190,6 +204,21 @@ async def route_at(truck_id: str, occurred_at: datetime) -> Optional[Route]:
         .sort(-Route.actual_departure)
         .first_or_none()
     )
+
+
+async def _no_route_reason(truck_id: str, occurred_at: datetime) -> str:
+    """C2.2 rule 4 [sync 2], when no route contains `occurred_at`: the truck's newest route that
+    had departed by then decides. Completed/cancelled -> `route_finished` (the event happened
+    after that route ended, e.g. an OK sent after a stop); none at all -> `no_route` (the truck
+    hadn't started any route yet)."""
+    latest = (
+        await Route.find(Route.id_truck == truck_id, Route.actual_departure <= occurred_at)
+        .sort(-Route.actual_departure)
+        .first_or_none()
+    )
+    if latest is not None and latest.operative_status in FINISHED_ROUTE_STATUSES:
+        return "route_finished"
+    return "no_route"
 
 
 def _alert_from_event(route_id: str, event: ReportEvent, occurred_at: datetime, received_at: datetime) -> Alert:
@@ -236,28 +265,33 @@ async def _process_event(
         return _rejected("wrong_truck")
     route = await route_at(truck_id, occurred_at)
     if route is None:
-        return _rejected("no_route")
+        return _rejected(await _no_route_reason(truck_id, occurred_at))
     if route.operative_status in FINISHED_ROUTE_STATUSES:
         return _rejected("route_finished")
     route_id = str(route.id)
 
-    if event.kind == "alert":
-        alert, created = await ingest_alert(
-            _alert_from_event(route_id, event, occurred_at, received_at)
+    try:
+        if event.kind == "alert":
+            alert, created = await ingest_alert(
+                _alert_from_event(route_id, event, occurred_at, received_at)
+            )
+            return EventResult(
+                status="created" if created else "duplicate", id_alert=str(alert.id)
+            )
+        created = await ingest_driver_ok(
+            DriverOk(
+                id_route=route_id,
+                episode=event.episode,
+                client_event_id=event.client_event_id,
+                occurred_at=occurred_at,
+                received_at=received_at,
+                delivery=event.delivery,
+                queued_seconds=event.queued_seconds,
+            )
         )
-        return EventResult(status="created" if created else "duplicate", id_alert=str(alert.id))
-
-    created = await ingest_driver_ok(
-        DriverOk(
-            id_route=route_id,
-            episode=event.episode,
-            client_event_id=event.client_event_id,
-            occurred_at=occurred_at,
-            received_at=received_at,
-            delivery=event.delivery,
-            queued_seconds=event.queued_seconds,
-        )
-    )
+    except RouteFinishedError:
+        # Stopped/completed between `route_at` and the lock (C2.2).
+        return _rejected("route_finished")
     newest = await newest_alert_of_episode(route_id, event.episode)
     return EventResult(
         status="created" if created else "duplicate",
@@ -274,9 +308,9 @@ async def process_report(truck: Truck, envelope: ReportEnvelope) -> ReportRespon
         if envelope.event is not None
         else None
     )
-    return ReportResponse(
-        points=points, event=event, active_route=str(active.id) if active is not None else None
-    )
+    # `points.route` is the active route, or null when there is none -- including when it was
+    # stopped while this report was being stored.
+    return ReportResponse(points=points, event=event, active_route=points.route)
 
 
 

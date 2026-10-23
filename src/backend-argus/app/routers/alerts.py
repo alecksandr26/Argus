@@ -15,6 +15,7 @@ from app.geo import to_geojson
 from app.ids import get_by_id, get_or_404
 from app.incidents import (
     FINISHED_ROUTE_STATUSES,
+    RouteFinishedError,
     as_utc,
     ingest_alert,
     mark_driver_ok,
@@ -36,6 +37,11 @@ router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 # clocks disagree a little); anything earlier is a bad value, not clock skew (BE-11).
 # `resolved_at` is the legacy request field; it now sets the alert's `driver_ok_at`.
 RESOLVE_CLOCK_SKEW = timedelta(seconds=60)
+
+# C2.4 [sync 2]: a user (JWT) can no longer set `resolved_at`; only the legacy device paths can.
+RESOLVED_AT_RETIRED = (
+    "resolved_at is retired; close the incident with POST /api/incidents/{id}/close"
+)
 
 
 async def _get_or_404(alert_id: str) -> Alert:
@@ -59,14 +65,15 @@ async def _check_related_alert(body: AlertCreate) -> None:
         )
 
 
-async def _resolve(alert: Alert, resolved_at: datetime, *, is_device: bool) -> None:
-    """The legacy "driver recovered" (`resolved_at`): sets `driver_ok_at` on `alert` and on
-    every earlier alert its escalation chain links back to (BE-12). It never closes anything;
-    closing is `POST /api/incidents/{id}/close` (docs/designs/final-tweaks-contracts.md, C2.4).
+async def _resolve(alert: Alert, resolved_at: datetime) -> None:
+    """The legacy device "driver recovered" (`resolved_at`): sets `driver_ok_at` on `alert` and
+    on every earlier alert its escalation chain links back to (BE-12). It never closes
+    anything; closing is `POST /api/incidents/{id}/close` (docs/designs/final-tweaks-contracts.md,
+    C2.4). Only device callers reach this (a user's `resolved_at` is 422, C2.4).
 
-    Idempotent: an alert that already has `driver_ok_at` keeps it (BE-10). A device gets 409 on
-    a finished route (the backend rejects everything from a device for an ended route); a user
-    (manual correction) doesn't."""
+    Idempotent: an alert that already has `driver_ok_at` keeps it (BE-10). 409 on a finished
+    route (the backend rejects everything from a device for an ended route), checked again
+    under the route's lock so a stop landing mid-request is caught too."""
     if resolved_at.tzinfo is None:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "resolved_at must include a timezone (UTC)"
@@ -75,13 +82,13 @@ async def _resolve(alert: Alert, resolved_at: datetime, *, is_device: bool) -> N
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "resolved_at is earlier than the alert itself"
         )
-    route = await get_by_id(Route, alert.id_route)
-    if is_device and route is not None and route.operative_status in FINISHED_ROUTE_STATUSES:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"Route is {route.operative_status.value}; the device should fetch its active route",
-        )
     async with route_lock(alert.id_route):
+        route = await get_by_id(Route, alert.id_route)
+        if route is not None and route.operative_status in FINISHED_ROUTE_STATUSES:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"Route is {route.operative_status.value}; the device should fetch its active route",
+            )
         chain: list[Alert] = []
         seen: set[str] = set()
         current: Optional[Alert] = await get_by_id(Alert, alert.id)
@@ -133,7 +140,7 @@ async def create_alert(
     incident state like a report event; a `low` one gets no incident. A retry with the same
     `client_event_id` returns the stored alert with 200 instead of a duplicate (BE-06)."""
     route = await get_or_404(Route, body.id_route, "Route")
-    await authorize_route_write(route, device_key, user)
+    is_device = await authorize_route_write(route, device_key, user)
 
     if body.client_event_id:
         existing = await Alert.find_one(
@@ -144,28 +151,35 @@ async def create_alert(
             return alert_out(existing)
     await _check_related_alert(body)
 
-    alert, created = await ingest_alert(
-        Alert(
-            id_route=body.id_route,
-            alert_type=body.alert_type,
-            severity_level=body.severity_level,
-            source=body.source,
-            ai_metadata=body.ai_metadata,
-            grip_status=body.grip_status,
-            related_alert_id=body.related_alert_id,
-            media_url=body.media_url,
-            coordinates=to_geojson(body.coordinates),
-            speed_at_event=body.speed_at_event,
-            timestamp=body.event_time(),
-            time_source=body.time_source,
-            location_source=body.location_source,
-            location_accuracy_m=body.location_accuracy_m,
-            client_event_id=body.client_event_id,
-        )
-    )
+    try:
+        alert, created = await ingest_alert(_alert_from_body(body), reject_finished=is_device)
+    except RouteFinishedError:
+        raise HTTPException(  # stopped/completed while this request was in flight
+            status.HTTP_409_CONFLICT, "Route has finished; the device should fetch its active route"
+        ) from None
     if not created:
         response.status_code = status.HTTP_200_OK
     return alert_out(alert)
+
+
+def _alert_from_body(body: AlertCreate) -> Alert:
+    return Alert(
+        id_route=body.id_route,
+        alert_type=body.alert_type,
+        severity_level=body.severity_level,
+        source=body.source,
+        ai_metadata=body.ai_metadata,
+        grip_status=body.grip_status,
+        related_alert_id=body.related_alert_id,
+        media_url=body.media_url,
+        coordinates=to_geojson(body.coordinates),
+        speed_at_event=body.speed_at_event,
+        timestamp=body.event_time(),
+        time_source=body.time_source,
+        location_source=body.location_source,
+        location_accuracy_m=body.location_accuracy_m,
+        client_event_id=body.client_event_id,
+    )
 
 
 @router.put("/{alert_id}", response_model=AlertOut)
@@ -178,7 +192,8 @@ async def review_alert(
     """A guardian/root_admin can set `reviewed_by_operator`/`operator_notes` (human review;
     closing is `POST /api/incidents/{id}/close`). The legacy device "resolve" (`resolved_at`,
     device key of the alert's own truck, never the reviewer fields) sets `driver_ok_at`, and is
-    409 on a finished route. A user's `resolved_at` sets it too, as a manual correction."""
+    409 on a finished route. A user's `resolved_at` is 422 (retired, C2.4): a human closes the
+    incident with `POST /api/incidents/{id}/close` instead."""
     alert = await _get_or_404(alert_id)
     is_device = await _is_alerts_own_device(alert, device_key)
     is_privileged_user = user is not None and user.role in INGESTION_ROLES
@@ -204,7 +219,9 @@ async def review_alert(
         )
 
     if body.resolved_at is not None:
-        await _resolve(alert, body.resolved_at, is_device=is_device)
+        if not is_device:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, RESOLVED_AT_RETIRED)
+        await _resolve(alert, body.resolved_at)
     review: dict = {}
     if body.reviewed_by_operator is not None:
         review["reviewed_by_operator"] = body.reviewed_by_operator
@@ -234,14 +251,16 @@ async def resolve_alert(
 ) -> AlertOut:
     """The legacy device "driver recovered": a POST twin of `PUT`'s `resolved_at`, since the
     SIM800L's HTTP stack can't send PUT (BE-09). Sets `driver_ok_at`; 409 for a device on a
-    finished route. Same callers as that path: the alert's own truck's device key, or a
-    root_admin/guardian."""
+    finished route. Only the alert's own truck's device key: a root_admin/guardian token gets
+    422 (retired, C2.4), and any other user 403."""
     alert = await _get_or_404(alert_id)
     route = await get_by_id(Route, alert.id_route)
     if route is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Alert's route not found")
     is_device = await authorize_route_access(route, device_key, user)
-    await _resolve(alert, body.resolved_at, is_device=is_device)
+    if not is_device:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, RESOLVED_AT_RETIRED)
+    await _resolve(alert, body.resolved_at)
     return alert_out(await _get_or_404(alert_id))
 
 

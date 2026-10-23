@@ -100,6 +100,67 @@ async def test_guardian_review_on_finished_route_is_allowed(api_client, guardian
     assert resp.json()["operator_notes"] == "called the driver"
 
 
+RETIRED = "resolved_at is retired; close the incident with POST /api/incidents/{id}/close"
+
+
+@pytest.mark.parametrize("role", ["guardian", "root_admin"])
+async def test_user_put_resolved_at_is_422(api_client, guardian, root_admin, rig_a, role):
+    """C2.4 [sync 2]: a human closes the incident instead; the alert is left untouched."""
+    user = {"guardian": guardian, "root_admin": root_admin}[role]
+    alert = await _alert(api_client, rig_a)
+    resp = await api_client.put(
+        f"/api/alerts/{alert['id_alert']}",
+        json={"resolved_at": "2030-01-01T09:00:00Z", "operator_notes": "ignored too"},
+        headers=auth_headers(user),
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == RETIRED
+    after = await _get(api_client, user, alert["id_alert"])
+    assert after["driver_ok_at"] is None
+    assert after["operator_notes"] == ""
+
+
+@pytest.mark.parametrize("role", ["guardian", "root_admin"])
+async def test_user_post_resolve_is_422(api_client, guardian, root_admin, rig_a, role):
+    user = {"guardian": guardian, "root_admin": root_admin}[role]
+    alert = await _alert(api_client, rig_a)
+    resp = await api_client.post(
+        f"/api/alerts/{alert['id_alert']}/resolve",
+        json={"resolved_at": "2030-01-01T09:00:00Z"},
+        headers=auth_headers(user),
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == RETIRED
+    assert (await _get(api_client, user, alert["id_alert"]))["driver_ok_at"] is None
+
+
+async def test_other_roles_resolving_stay_403(api_client, admin_user, rig_a):
+    """Roles that could never touch an alert keep their 403 (authorization comes first)."""
+    alert = await _alert(api_client, rig_a)
+    put = await api_client.put(
+        f"/api/alerts/{alert['id_alert']}",
+        json={"resolved_at": "2030-01-01T09:00:00Z"},
+        headers=auth_headers(admin_user),
+    )
+    post = await api_client.post(
+        f"/api/alerts/{alert['id_alert']}/resolve",
+        json={"resolved_at": "2030-01-01T09:00:00Z"},
+        headers=auth_headers(admin_user),
+    )
+    assert (put.status_code, post.status_code) == (403, 403)
+
+
+async def test_guardian_review_without_resolved_at_still_works(api_client, guardian, rig_a):
+    alert = await _alert(api_client, rig_a)
+    resp = await api_client.put(
+        f"/api/alerts/{alert['id_alert']}",
+        json={"reviewed_by_operator": True, "operator_notes": "checked"},
+        headers=auth_headers(guardian),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["reviewed_by_operator"] is True
+
+
 async def test_post_resolve_with_other_trucks_key_is_401(api_client, rig_a, rig_b):
     alert = await _alert(api_client, rig_a)
     resp = await api_client.post(
@@ -250,3 +311,26 @@ async def test_legacy_low_alert_gets_no_incident(api_client, root_admin, mongo_c
     route = (await api_client.get(f"/api/routes/{rig.route_id}", headers=auth_headers(root_admin))).json()
     assert alert["id_incident"] is None
     assert route["incident_state"] == "fine"
+
+
+async def test_incident_severity_never_drops_below_medium(api_client, guardian, root_admin, rig_a):
+    """C3.4 [sync 2]: every alert de-escalated to low -> the incident stays open, `medium`."""
+    first = await _alert(api_client, rig_a, severity_level="medium", grip_status="good")
+    second = await _alert(api_client, rig_a, related_alert_id=first["id_alert"])
+    assert first["id_incident"] == second["id_incident"]
+    for alert in (first, second):
+        resp = await api_client.post(
+            f"/api/alerts/{alert['id_alert']}/de-escalate",
+            json={"severity_level": "low", "reason": "false positive"},
+            headers=auth_headers(guardian),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["severity_level"] == "low"
+    incident = (
+        await api_client.get(
+            f"/api/incidents/{first['id_incident']}", headers=auth_headers(root_admin)
+        )
+    ).json()
+    assert incident["severity"] == "medium"
+    assert incident["closed_at"] is None
+    assert incident["alert_count"] == 2

@@ -39,6 +39,13 @@ FINISHED_ROUTE_STATUSES = (RouteStatus.COMPLETED, RouteStatus.CANCELLED)
 GROUPED_SEVERITIES = (Severity.MEDIUM, Severity.CRITICAL)
 
 
+class RouteFinishedError(Exception):
+    """The route was completed/cancelled by the time its lock was taken: a stop or a "Complete
+    trip" landed between the caller's route lookup and the write (C2.2 rule 4). Nothing was
+    stored. The report endpoint answers `rejected route_finished` / `points.status =
+    route_finished`; the legacy device endpoints answer 409."""
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -85,6 +92,18 @@ async def route_lock(route_id: str) -> AsyncIterator[None]:
         await collection.update_one(
             {"_id": oid, "lock_token": token}, {"$set": {"lock_token": None, "lock_until": None}}
         )
+
+
+async def ensure_route_open(route_id: str) -> None:
+    """Re-reads the route's `operative_status` (call it right after taking the route's lock)
+    and raises `RouteFinishedError` if it is completed/cancelled. A route that no longer exists
+    is let through: there's nothing to protect, and the callers' own lookups handle it."""
+    oid = to_object_id(route_id)
+    if oid is None:
+        return
+    doc = await Route.get_motor_collection().find_one({"_id": oid}, {"operative_status": 1})
+    if doc is not None and doc.get("operative_status") in {s.value for s in FINISHED_ROUTE_STATUSES}:
+        raise RouteFinishedError(route_id)
 
 
 async def _set_route(route_id: str, fields: dict) -> None:
@@ -246,13 +265,19 @@ async def lower_route_state_after_close(route_id: str) -> None:
 # --- Ingest helpers shared by the report endpoint and the legacy endpoints -------------------
 
 
-async def ingest_alert(alert: Alert) -> tuple[Alert, bool]:
+async def ingest_alert(alert: Alert, *, reject_finished: bool = True) -> tuple[Alert, bool]:
     """Stores `alert` (not yet inserted) and runs grouping + route state. Returns
     `(stored_alert, created)`; `created` is False when an alert with the same
     `(id_route, client_event_id)` already exists (that one is returned, nothing changes).
     An escalation (an earlier medium alert of the same episode) gets `related_alert_id`, and a
-    driver-OK already stored for the episode sets `driver_ok_at` (C2.2 rule 6)."""
+    driver-OK already stored for the episode sets `driver_ok_at` (C2.2 rule 6).
+
+    With `reject_finished` (every device write), the route's status is re-read under the lock
+    and `RouteFinishedError` is raised if it has ended since the caller looked it up. A user's
+    manual write to a finished route passes `reject_finished=False`."""
     async with route_lock(alert.id_route):
+        if reject_finished:
+            await ensure_route_open(alert.id_route)
         if alert.client_event_id:
             existing = await Alert.find_one(
                 Alert.id_route == alert.id_route, Alert.client_event_id == alert.client_event_id
@@ -313,8 +338,11 @@ async def newest_alert_of_episode(route_id: str, episode: str) -> Optional[Alert
 async def ingest_driver_ok(driver_ok: DriverOk) -> bool:
     """Stores a driver-OK (not yet inserted) and sets `driver_ok_at` on every alert of its
     `(id_route, episode)` that has none (C2.2 rule 7). Never closes anything and never changes
-    `incident_state`. Returns False for a duplicate `(id_route, client_event_id)`."""
+    `incident_state`. Returns False for a duplicate `(id_route, client_event_id)`. Raises
+    `RouteFinishedError` if the route ended before the lock was taken (only devices send
+    driver-OKs)."""
     async with route_lock(driver_ok.id_route):
+        await ensure_route_open(driver_ok.id_route)
         existing = await DriverOk.find_one(
             DriverOk.id_route == driver_ok.id_route,
             DriverOk.client_event_id == driver_ok.client_event_id,

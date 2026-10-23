@@ -341,7 +341,9 @@ async def test_event_is_routed_by_time_not_to_the_current_route(api_client, mong
     assert during_current["event"]["status"] == "created"
     stored = await Alert.get(during_current["event"]["id_alert"])
     assert stored.id_route == str(current.id)
-    assert between["event"]["reason"] == "no_route"
+    # Between the two routes: after the old one ended (C2.2 rule 4 [sync 2]).
+    assert between["event"]["reason"] == "route_finished"
+    # Before the truck had departed on any route.
     assert before_any["event"]["reason"] == "no_route"
 
 
@@ -360,13 +362,16 @@ async def test_stopped_route_rejects_points_events_and_ok(api_client, admin_user
         )
     ).json()
     ok = (await post_report(api_client, rig_a, event=ok_event(age_s=30))).json()
-    # An event that happened after the stop belongs to no route at all (C2.2 rule 4).
+    # Events that happened after the stop: the truck's last route had ended (C2.2 rule 4
+    # [sync 2]), so route_finished, not no_route.
     after = (await post_report(api_client, rig_a, event=report_event("after", age_s=0))).json()
+    ok_after = (await post_report(api_client, rig_a, event=ok_event("ok-after", age_s=0))).json()
     assert created["event"]["status"] == "created"
     assert late["points"] == {"stored": 0, "route": None, "status": "route_finished"}
     assert late["event"]["reason"] == "route_finished"
     assert ok["event"]["reason"] == "route_finished"
-    assert after["event"]["reason"] == "no_route"
+    assert after["event"] == {"status": "rejected", "reason": "route_finished", "id_alert": None}
+    assert ok_after["event"] == {"status": "rejected", "reason": "route_finished", "id_alert": None}
 
 
 async def test_escalation_links_to_the_medium_of_its_episode(api_client, rig_a):

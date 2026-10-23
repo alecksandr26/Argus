@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from app.auth.dependencies import get_current_user, get_current_user_optional, get_device_api_key
 from app.geo import to_geojson
 from app.ids import get_or_404
+from app.incidents import RouteFinishedError
 from app.ingestion import authorize_route_write
 from app.models.route import Route
 from app.models.status_route import StatusRoute
@@ -49,7 +50,7 @@ async def post_status(
     route, returns the stored row with 200 instead of a duplicate. No `vigilance` stores
     `unknown`. Stored points update the route's incident state like report points."""
     route = await get_or_404(Route, route_id, "Route")
-    await authorize_route_write(route, device_key, user)
+    is_device = await authorize_route_write(route, device_key, user)
 
     if body.client_event_id:
         existing = await StatusRoute.find_one(
@@ -72,7 +73,13 @@ async def post_status(
         location_accuracy_m=body.location_accuracy_m,
         client_event_id=body.client_event_id,
     )
-    if not await store_points(route_id, [record]):
+    try:
+        stored = await store_points(route_id, [record], reject_finished=is_device)
+    except RouteFinishedError:
+        raise HTTPException(  # stopped/completed while this request was in flight
+            status.HTTP_409_CONFLICT, "Route has finished; the device should fetch its active route"
+        ) from None
+    if not stored:
         existing = await StatusRoute.find_one(
             StatusRoute.id_route == route_id, StatusRoute.timestamp == record.timestamp
         )
