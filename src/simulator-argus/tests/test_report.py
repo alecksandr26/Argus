@@ -82,17 +82,28 @@ def test_rejected_carries_the_reason():
     assert (outcome.event_result, outcome.event_reason) == ("rejected", "too_old")
 
 
-def test_route_finished_points_or_event_ends_the_trip():
+def test_route_finished_points_end_the_trip():
     by_points = classify_response(200, _ok_body(status="route_finished", active_route=None), False)
     assert by_points.route_finished
     assert by_points.route_known and by_points.active_route is None
 
-    by_event = classify_response(
-        200,
-        _ok_body({"status": "rejected", "reason": "route_finished", "id_alert": None}),
-        True,
+
+def test_an_event_rejected_route_finished_ends_the_trip_only_with_no_active_route():
+    rejected = {"status": "rejected", "reason": "route_finished", "id_alert": None}
+
+    no_route = classify_response(
+        200, _ok_body(rejected, status="no_active_route", active_route=None), True
     )
-    assert by_event.route_finished
+    assert no_route.route_finished
+
+    # A route is active (e.g. a dead-letter replay from an earlier, ended route): only that
+    # event is over, not the trip.
+    still_driving = classify_response(200, _ok_body(rejected, status="ok", active_route="r2"), True)
+    assert (still_driving.event_result, still_driving.event_reason) == (
+        "rejected",
+        "route_finished",
+    )
+    assert not still_driving.route_finished
 
 
 def test_no_active_route_is_known_null_but_not_finished():

@@ -86,8 +86,18 @@ class ReportOutcome:
 
     @property
     def route_finished(self) -> bool:
-        return self.points_status == "route_finished" or (
-            self.event_result == "rejected" and self.event_reason == "route_finished"
+        """The truck's route is over, so the virtual truck stops (C2.3 keys this on the points
+        part and `active_route`, not on one event): `points.status == route_finished`, or an
+        event rejected `route_finished` while the backend says the truck has no active route.
+        An event rejected `route_finished` while a route *is* active (e.g. a dead-letter replay
+        from an earlier, ended route) only ends that one event."""
+        if self.points_status == "route_finished":
+            return True
+        return (
+            self.event_result == "rejected"
+            and self.event_reason == "route_finished"
+            and self.route_known
+            and self.active_route is None
         )
 
 
