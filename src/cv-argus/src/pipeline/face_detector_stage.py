@@ -5,7 +5,7 @@ parts detector was trained on crops built from exactly this detector's boxes. It
 box (`face_bbox_raw`, which `PartsInferenceStage` turns into the square training crop) and a
 margin-expanded box for the overlay (`face_bbox`).
 
-**One face** (`FaceLock`, contracts C1.7 `[sync 2]`). A cab can hold a passenger, or someone
+**One face** (`FaceLock`, contracts C1.7 `[sync 2]` + `[sync 3]`). A cab can hold a passenger, or someone
 leaning in at a stop, and only the driver counts:
 - With no lock, the **largest** face is locked (the one nearest the camera: the driver).
 - **Matching.** A detection matches a tracked box (the locked face or a bystander) when its
@@ -13,7 +13,11 @@ leaning in at a stop, and only the driver counts:
   factor `FACE_LOCK_MAX_SCALE` of it; the tracked box then follows the detection.
 - **Bystanders** are the other faces seen while the locked face is matched. They are carried
   forward by matching and dropped after `FACE_LOCK_MISS_GRACE_S` unseen, so a one-frame detector
-  miss doesn't turn the passenger into a "new" face.
+  miss doesn't turn the passenger into a "new" face. The grace applies **also while the locked
+  face matches** (`[sync 3]`): on such a frame the other detections update/add bystanders, and a
+  bystander not seen on that frame is kept until it has been unseen for the grace, not dropped at
+  once (otherwise a passenger missed on the frame right before the driver leaves would be a
+  "new" face and be re-acquired by rule 1).
 - **While the locked face is missing:**
   1. a *new* face (one that matches no bystander: the driver's box jumped, or came back
      displaced after a gap) re-acquires the lock on the same frame (`face_found = True`, no
@@ -22,17 +26,25 @@ leaning in at a stop, and only the driver counts:
      switch frame (timer `>= FACE_SWITCH_AFTER_S`, on the frame timestamps the rule engine uses)
      the frame still reads no face and is flagged `ctx.features["face_switched"] = True`; the
      lock moves to the largest visible face, used from the next frame;
-  3. nothing visible -> `face_found = False`; the switch timer resets, unless a bystander is
-     still inside its miss grace (a one-frame passenger miss doesn't restart the 5 s).
+  3. nothing visible -> `face_found = False`; the switch timer resets **only when no bystander
+     is still inside its miss grace** (`[sync 3]`); while one is, the timer keeps running (a
+     one-frame passenger miss doesn't restart the 5 s), and the switch itself waits for a frame
+     with a face to move to. The no-face timer still starts on or before the switch timer.
 - **Take-over.** Another face with a side `>= FACE_LOCK_TAKEOVER_SCALE` x the locked face's,
-  visible for `FACE_SWITCH_AFTER_S` while the locked face is visible too (gaps up to the miss
-  grace allowed), takes the lock: the driver, nearest the camera, takes it back from a passenger.
+  continuously visible for `FACE_SWITCH_AFTER_S` while the locked face is visible too, takes the
+  lock: the driver, nearest the camera, takes it back from a passenger. "Continuously visible"
+  allows gaps of either face up to `FACE_LOCK_MISS_GRACE_S` (`[sync 3]`); the take-over timer runs
+  from the larger face's first sighting and fires only on a frame where both faces are visible.
   The take-over frame still reads the old locked face and is flagged `face_switched`; the new face
   is used from the next frame. A smaller second face is ignored.
 - After either switch `PartsInferenceStage` feeds the flagged frame to the rules first, then
   resets the rule timers and the tracker (never the held severity).
 - Known limit (accepted): a face never seen next to the driver can't be told apart from the
-  driver coming back, so it is re-acquired at once (rule 1).
+  driver coming back, so it is re-acquired at once (rule 1). Such frames are flagged
+  `reacquired` in `ctx.features["face_lock"]` (and ` REACQUIRED` in the per-frame log line), so
+  they can be told apart from a normally tracked frame in the Pi's logs.
+- `ctx.features["face_lock"]` = `{faces, ignored, switch_s, takeover_s, switched, reacquired}`
+  on every frame this stage runs (contracts C1.7 `[sync 3]`, "Logs").
 """
 
 from __future__ import annotations
@@ -342,7 +354,8 @@ class FaceDetectorCropStage(Stage):
         ctx.features["face_lock"] = {"faces": lock.faces, "ignored": lock.ignored,
                                      "switch_s": lock.switch_elapsed_s,
                                      "takeover_s": lock.takeover_elapsed_s,
-                                     "switched": lock.switched}
+                                     "switched": lock.switched,
+                                     "reacquired": lock.reacquired}
         if lock.switched:
             ctx.features["face_switched"] = True
         if lock.box is None:

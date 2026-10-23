@@ -10,7 +10,8 @@ it*, not only `Drowsy`/`Not Drowsy`:
   time of **every pipeline step** (BlazeFace, crop, infer, decode, track, rules, the queueing
   between stages, end to end), so the bottleneck is visible frame by frame, and the board's
   CPU per core / RAM (`resources.py`, re-sampled once a second), and the face lock's verdict
-  (faces seen, faces ignored, the switch / take-over timers, the switch frame; contracts C1.7).
+  (faces seen, faces ignored, the switch / take-over timers, the switch frame, a rule-1
+  re-acquisition; contracts C1.7).
 - `MetricsLogOutputStage` (`OUTPUTS=...,metrics`) appends the same facts as one JSON object per
   frame to `METRICS_LOG_PATH`, along with every timing (BlazeFace, crop, infer, decode, track,
   rules, end to end). This is the measurement log for the report; `scripts/summarize_metrics.py`
@@ -93,18 +94,21 @@ def _round_or_none(v, nd=2):
 
 def _face_lock_record(lock: dict | None) -> dict | None:
     """`FaceDetectorCropStage`'s face-lock verdict (contracts C1.7): faces seen, faces ignored
-    (not the locked one), the missing-face switch timer, the take-over timer, and whether this
-    is a switch frame. `None` when the face stage didn't run (tests, other pipelines)."""
+    (not the locked one), the missing-face switch timer, the take-over timer, whether this is a
+    switch frame, and whether the lock re-acquired a new face on it (rule 1). `None` when the
+    face stage didn't run (tests, other pipelines)."""
     if lock is None:
         return None
     return {"faces": int(lock.get("faces", 0)), "ignored": int(lock.get("ignored", 0)),
             "switch_s": _round_or_none(lock.get("switch_s")),
             "takeover_s": _round_or_none(lock.get("takeover_s")),
-            "switched": bool(lock.get("switched", False))}
+            "switched": bool(lock.get("switched", False)),
+            "reacquired": bool(lock.get("reacquired", False))}
 
 
 def _format_face_lock(lock: dict | None) -> str:
-    """` faces=2 ignored=1 switch=2.4s SWITCHED`, or "" without a face-lock verdict."""
+    """` faces=2 ignored=1 switch=2.4s SWITCHED` (or ` ... REACQUIRED`), or "" without a
+    face-lock verdict."""
     if lock is None:
         return ""
     out = f" faces={lock['faces']} ignored={lock['ignored']}"
@@ -114,6 +118,8 @@ def _format_face_lock(lock: dict | None) -> str:
         out += f" takeover={lock['takeover_s']:.1f}s"
     if lock["switched"]:
         out += " SWITCHED"
+    if lock.get("reacquired"):
+        out += " REACQUIRED"
     return out
 
 
@@ -132,7 +138,7 @@ def format_parts_line(rec: dict) -> str:
 
     The face-lock part (`faces`, `ignored`, `switch=` while the locked face is missing and only
     bystanders are in view, `takeover=` while a larger face waits to take the lock, `SWITCHED` on
-    the switch frame) is there when `FaceDetectorCropStage` ran, so "a second person in view has
+    the switch frame, `REACQUIRED` when the lock re-acquired a new face) is there when `FaceDetectorCropStage` ran, so "a second person in view has
     no effect" can be checked from the Pi's log.
     """
     sev = rec["severity"].upper()
