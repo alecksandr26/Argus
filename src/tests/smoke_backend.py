@@ -294,9 +294,10 @@ def _device_report_round_trip(token: str, device_key: str, route_id: str, suffix
          "report after stop: points and event refused (route_finished)",
          f"status={status} points={points} event={event}")
 
-    # A dead letter replayed after the stop: it happened during the route (occurred_at between
-    # actual_departure and the stop), and arrives late. Routed by time, its route is finished.
-    age_s = round(time.monotonic() - t0 - 0.2, 1)
+    # A dead letter replayed after the stop: it happened during the route, and arrives late.
+    # occurred_at = received_at - age_s = t0 - 0.5 s: after actual_departure (about 1 s before
+    # t0, see the sleep above) and before the stop. Routed by time, its route is finished.
+    age_s = round(time.monotonic() - t0 + 0.5, 1)
     status, body = _report(device_key, [],
                            _event(f"smoke-replayed-{suffix}", episode, "alert", age_s=age_s))
     event = body.get("event") or {}
