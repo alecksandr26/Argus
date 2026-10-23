@@ -4,13 +4,13 @@
 in this project (see `models.py`'s module docstring) — safe to import from anywhere cheaply.
 """
 
-from .models import Alert, AlertKind, route_status
-from .serialization import from_dict, from_json, to_dict, to_json
+from .models import Alert, AlertKind
+from .serialization import age_seconds, from_dict, from_json, to_dict, to_json
 
 __all__ = [
     "Alert",
     "AlertKind",
-    "route_status",
+    "age_seconds",
     "to_dict",
     "from_dict",
     "to_json",

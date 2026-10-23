@@ -27,13 +27,18 @@ longer `RULE_HEAD_GRACE_S` (1 s), because `head_down` is missed on many frames.
 | head down + eyes closed or hidden | head down ≥ 3.0 s (2.0 s after a yawn) | **critical** |
 | head down, eyes open (looking down) | head down ≥ 3.0 s | medium |
 | yawning (fatigue) | ≥ 3 yawn events (mouth open ≥ 1.5 s) in 5 min | low (never higher) |
-| driver not visible | no face ≥ 3 / 5 / 10 s, after a face was seen | low / medium / **critical** |
+| driver not visible | no face ≥ 5 s, after a face was seen | **critical** (no low/medium step) |
 
 Closed eyes and head down are the risks. Yawning only adds weight: it makes the eye and head
 rules fire sooner, and alone it never goes above LOW.
 
 **Hold and recovery.** Severity escalates immediately. It only drops after the rules have stayed
 below it for `RULE_RECOVERY_S`, so the alarm doesn't flicker off between frames of a closure.
+
+**Face switch** (`reset_signals()`, contract C1.7). When the face stage switches to another face
+(the locked one gone for `FACE_SWITCH_AFTER_S`), it resets every running timer and the yawn
+history, but never the held severity: a `critical` stays held and the new face still needs
+`RULE_RECOVERY_S` of a clear face to drop it. The switch itself never emits a transition.
 
 **Contract mapping** (`to_detection`): the ESP32 firmware only reads `class_name` and
 `probabilities`, and treats `p_drowsy ≥ 0.57` as drowsy.
@@ -84,8 +89,6 @@ class RuleConfig:
     yawn_event: float = field(default_factory=lambda: _cfg("RULE_YAWN_EVENT_S"))
     yawn_count: float = field(default_factory=lambda: _cfg("RULE_YAWN_COUNT"))
     yawn_window: float = field(default_factory=lambda: _cfg("RULE_YAWN_WINDOW_S"))
-    no_face: float = field(default_factory=lambda: _cfg("RULE_NO_FACE_S"))
-    no_face_medium: float = field(default_factory=lambda: _cfg("RULE_NO_FACE_MEDIUM_S"))
     no_face_critical: float = field(default_factory=lambda: _cfg("RULE_NO_FACE_CRITICAL_S"))
     grace: float = field(default_factory=lambda: _cfg("RULE_GRACE_S"))
     head_grace: float = field(default_factory=lambda: _cfg("RULE_HEAD_GRACE_S"))
@@ -184,6 +187,21 @@ class PartsRuleEngine:
         self._below_since: float | None = None
         self._trigger = 0.0
 
+    def reset_signals(self) -> None:
+        """Forget every running timer, the yawn history and the recovery timer, keeping the held
+        severity, its reason, the trigger length and whether a face was ever seen (contract
+        C1.7). Called once per face switch, so the new face starts from clean timers while a held
+        alarm stays held until the new face has been clear for `RULE_RECOVERY_S`."""
+        g = self.cfg.grace
+        self._eyes = ContinuousTimer(g)
+        self._head = ContinuousTimer(self.cfg.head_grace)
+        self._mouth = ContinuousTimer(g)
+        self._noface = ContinuousTimer(g)
+        self._yawn_counted = False
+        self._yawn_events = deque()
+        self._last_yawn_end = None
+        self._below_since = None
+
     def update(self, t: float, s: FrameSignals) -> RuleState:
         cfg = self.cfg
         if s.face:
@@ -222,10 +240,10 @@ class PartsRuleEngine:
                 fired.append(("medium", "head_down"))
         if len(self._yawn_events) >= cfg.yawn_count:
             fired.append(("low", "yawning"))
-        for level, thr in (("low", cfg.no_face), ("medium", cfg.no_face_medium),
-                           ("critical", cfg.no_face_critical)):
-            if noface >= thr:
-                fired.append((level, "no_face"))
+        # No ladder: a missing face goes straight to critical (contract C1.5). `>=` on purpose:
+        # the face switch (C1.7) relies on it firing on or before the switch frame.
+        if noface >= cfg.no_face_critical:
+            fired.append(("critical", "no_face"))
         current = max(fired, key=lambda f: _RANK[f[0]], default=("none", "ok"))
         timers = {"eyes_closed": eyes, "head_down": head, "mouth_open": mouth, "no_face": noface}
 

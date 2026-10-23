@@ -55,3 +55,35 @@ def test_model_filenames_have_expected_extensions():
     assert constants.PARTS_INT8_FILENAME.endswith(".tflite")
     assert constants.PARTS_FLOAT_FILENAME.endswith(".keras")
     assert constants.FACE_DETECTOR_BUNDLE_FILENAME.endswith(".tflite")
+
+
+# --- Final tweaks, contract C4 (T1's RULE_*/ORCHESTRATOR_*/BUFFER_* names) ---------------------
+
+def test_no_face_is_a_single_critical_at_5s():
+    assert constants.RULE_NO_FACE_CRITICAL_S == 5.0
+    for gone in ("RULE_NO_FACE_S", "RULE_NO_FACE_MEDIUM_S"):
+        assert not hasattr(constants, gone), gone
+    # Recovery must be shorter than the no-face critical, or a returning face could never clear
+    # it before another absence re-raised it.
+    assert constants.RULE_RECOVERY_S < constants.RULE_NO_FACE_CRITICAL_S
+
+
+def test_heartbeat_is_removed_and_keepalives_stay_at_2s():
+    assert not hasattr(constants, "ORCHESTRATOR_HEARTBEAT_INTERVAL_SECONDS")
+    assert constants.ORCHESTRATOR_KEEPALIVE_SECONDS == 2.0
+    assert constants.ORCHESTRATOR_LOOP_POLL_SECONDS <= constants.ORCHESTRATOR_KEEPALIVE_SECONDS
+
+
+def test_dlq_constants_match_c4():
+    assert constants.BUFFER_LEASE_SECONDS == 120.0
+    assert constants.BUFFER_DLQ_MAX_ATTEMPTS == 5
+    assert constants.BUFFER_ARCHIVE_NOW_REASONS == (
+        "route_finished", "no_route", "too_old", "wrong_truck", "invalid")
+    assert constants.BUFFER_MAX_UNSENT_ROWS == 20000
+
+
+def test_sender_limits_match_c4():
+    from cv_argus.sender import protocol, server
+    assert protocol.MAX_PULL_LIMIT == 50
+    assert protocol.MAX_DLQ_LIMIT == 1
+    assert server.DEFAULT_OUTBOX_MAX_AGE_SECONDS == 60.0

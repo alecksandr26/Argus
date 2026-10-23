@@ -82,11 +82,10 @@ RULE_YAWN_EVENT_S = 1.5
 RULE_YAWN_COUNT = 3
 RULE_YAWN_WINDOW_S = 300.0
 # Face lost (after having one): a driver slumped out of frame must never read as recovered
-# (user decision 2026-10-20). Low at 3 s, an alert of its own at 5 s (medium) and 10 s (critical);
-# and while the face is missing, a held severity never decays (see parts_rules).
-RULE_NO_FACE_S = 3.0                # -> low "no_face"
-RULE_NO_FACE_MEDIUM_S = 5.0         # -> medium "no_face"
-RULE_NO_FACE_CRITICAL_S = 10.0      # -> critical "no_face"
+# (user decision 2026-10-20). No ladder: one CRITICAL "no_face" after this long, with no low or
+# medium step before it (final tweaks, contract C1.5/C4); and while the face is missing, a held
+# severity never decays (see parts_rules).
+RULE_NO_FACE_CRITICAL_S = 5.0       # -> critical "no_face"
 RULE_GRACE_S = 0.4                  # a gap this short doesn't reset a running timer (2 frames)
 RULE_HEAD_GRACE_S = 1.0             # longer for the head timer: head_down misses frames often
 RULE_RECOVERY_S = 2.0               # severity only drops after all signals are clear this long
@@ -133,14 +132,24 @@ ORCHESTRATOR_WARMUP_FRAMES = 10
 BUFFER_KEEP_SENT_SECONDS = 24 * 3600
 BUFFER_MAX_UNSENT_ROWS = 20000
 BUFFER_MAINTENANCE_INTERVAL_SECONDS = 600.0
-# Cadence for the RouteStatus("OK") heartbeat when no Alert is due -- lets the backend/ESP32
-# distinguish "quiet because everything's fine" from "the Pi died". 60s default: frequent enough
-# that a stuck/crashed Pi is noticed within about a minute, infrequent enough not to flood the
-# buffer with heartbeats between real alerts (at 60s this adds at most ~1440 extra rows/day).
-ORCHESTRATOR_HEARTBEAT_INTERVAL_SECONDS = 60.0
-# How long the decision loop blocks on its input queue before re-checking its own stop event and
-# whether a heartbeat is due -- mirrors pipeline/stage.py's DEFAULT_QUEUE_GET_TIMEOUT rationale
-# (responsive shutdown without busy-looping), but this also gates heartbeat timing resolution.
+# Rows over BUFFER_MAX_UNSENT_ROWS: keepalives are deleted first, then the oldest of the rest are
+# moved to the `archive` table (never deleted) -- see buffer/store.py.
+#
+# Dead-letter queue (buffer/store.py, contract C1.6). It holds critical alerts only.
+# `TAKEN` leases rows to the ESP32's sender task for this long; an expired lease puts the row
+# back where it was (not an attempt).
+BUFFER_LEASE_SECONDS = 120.0
+# A critical is archived after this many failed attempts (the live failure that dead-letters it
+# is attempt 1; every DLQ replay is one more).
+BUFFER_DLQ_MAX_ATTEMPTS = 5
+# FAIL reasons that archive a critical at once: the backend will never accept it.
+BUFFER_ARCHIVE_NOW_REASONS = ("route_finished", "no_route", "too_old", "wrong_truck", "invalid")
+# The 60 s RouteStatus("OK") heartbeat is gone (final tweaks, contract C1.5): the ESP32 sends a
+# GPS report every 5 s on its own, and the 2 s keepalives tell it the camera is alive.
+#
+# How long the decision loop blocks on its input queue before re-checking its own stop event,
+# due keepalives and buffer housekeeping -- mirrors pipeline/stage.py's DEFAULT_QUEUE_GET_TIMEOUT
+# rationale (responsive shutdown without busy-looping).
 ORCHESTRATOR_LOOP_POLL_SECONDS = 1.0
 
 # --- Shared ---

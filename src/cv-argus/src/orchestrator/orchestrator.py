@@ -1,5 +1,5 @@
-"""`Orchestrator` — turns per-frame `DetectionResult`s into the *readings* the ESP32 fuses with its
-grip sensor, plus a periodic RouteStatus("OK") heartbeat. Owns its own thread, independent of the
+"""`Orchestrator` — turns per-frame `DetectionResult`s into the *readings* the ESP32 turns into
+backend events and GPS-report vigilance. Owns its own thread, independent of the
 `Pipeline` (see the approved alert-pipeline plan's "three independent peers" decision) — fed by
 `OrchestratorBridgeOutputStage` (see `bridge.py`) via a plain `queue.Queue`.
 
@@ -28,12 +28,18 @@ as a `transition: true` reading right away, even when the class hasn't changed (
 critical are both `Drowsy`), with `previous_severity` and an `episode` id: one id from the moment
 the severity reaches medium until it falls back to none/low, so the ESP32 can link an incident's
 alert, its escalation and its recovery. The rules already have their own hysteresis, so this
-isn't debounced again.
+isn't debounced again -- and a severity change also adopts this frame's class at once, so the
+recovery record ("driver OK again") carries `Not Drowsy` right away instead of a stale `Drowsy`
+followed by a class-only transition a few frames later (contract C1.5). A reason change at the
+same severity emits nothing.
+
+Which of these records become backend events (medium alert, critical alert or escalation, driver
+OK) is decided by the ESP32 with the rule in contract C1.5; keepalives never reach the backend.
 
 **One decision loop**: every wake -- a detection or a poll timeout -- checks for a class change,
-for due keepalives (so a stalled pipeline still keeps the ESP32 informed), for the heartbeat, and
-for periodic buffer housekeeping. Readings don't reset the heartbeat clock: the heartbeat is
-what tells the backend the route is alive, independent of the camera.
+for due keepalives (so a stalled pipeline still keeps the ESP32 informed) and for periodic buffer
+housekeeping. There is no heartbeat any more (contract C1.5): the ESP32 reports GPS every 5 s on
+its own, and the 2 s keepalives tell it the camera is alive.
 """
 import logging
 import math
@@ -45,7 +51,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .. import constants
-from ..alerts import Alert, AlertKind, route_status
+from ..alerts import Alert, AlertKind
 from ..buffer import Buffer
 
 if TYPE_CHECKING:
@@ -88,8 +94,7 @@ def _classify(detection: "DetectionResult | None") -> str:
 
 class Orchestrator:
     """Consumes `(source_id, DetectionResult | None)` pairs from `input_queue` (fed by
-    `OrchestratorBridgeOutputStage`) on its own thread and enqueues readings and heartbeats into
-    `buffer`.
+    `OrchestratorBridgeOutputStage`) on its own thread and enqueues readings into `buffer`.
 
     `start()`/`stop()`/`join()`/`is_alive` deliberately mirror `pipeline.stage.Pipeline`'s own
     method names, even though this isn't a `Pipeline`/`Stage` subclass, so `main.py` can treat
@@ -103,7 +108,6 @@ class Orchestrator:
         debounce_frames: int = constants.ORCHESTRATOR_DEBOUNCE_FRAMES,
         keepalive_seconds: float = constants.ORCHESTRATOR_KEEPALIVE_SECONDS,
         warmup_frames: int = constants.ORCHESTRATOR_WARMUP_FRAMES,
-        heartbeat_interval_seconds: float = constants.ORCHESTRATOR_HEARTBEAT_INTERVAL_SECONDS,
         poll_seconds: float = constants.ORCHESTRATOR_LOOP_POLL_SECONDS,
         input_maxsize: int = 16,
     ) -> None:
@@ -112,12 +116,10 @@ class Orchestrator:
         self._debounce_frames = debounce_frames
         self._keepalive_seconds = keepalive_seconds
         self._warmup_frames = warmup_frames
-        self._heartbeat_interval = heartbeat_interval_seconds
         self._poll_seconds = poll_seconds
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._sources: dict[str, _SourceState] = {}
-        self._last_heartbeat_at = time.monotonic()
         self._last_maintenance_at = time.monotonic()
 
     def start(self) -> None:
@@ -170,6 +172,18 @@ class Orchestrator:
         state.extras = dict(getattr(detection, "extras", None) or {})
         state.current_severity = _severity(detection, state.extras)
 
+        severity = state.current_severity
+        if (
+            state.reported is not None
+            and severity is not None
+            and severity != state.reported_severity
+        ):
+            # The rules debounce severity themselves; the class follows it at once, so the
+            # record (a raise, an escalation or the recovery) carries this frame's class.
+            state.reported = cls
+            state.candidate, state.candidate_frames = None, 0
+            self._emit_reading(source_id, state, transition=True, severity_change=True)
+            return
         if cls == state.reported:
             state.candidate, state.candidate_frames = None, 0
         else:
@@ -182,21 +196,12 @@ class Orchestrator:
                 state.candidate, state.candidate_frames = None, 0
                 self._emit_reading(source_id, state, transition=True)
                 return
-        severity = state.current_severity
-        if (
-            state.reported is not None
-            and severity is not None
-            and severity != state.reported_severity
-        ):
-            self._emit_reading(source_id, state, transition=True, severity_change=True)
-            return
         self._maybe_keepalive(source_id, state)
 
     def _tick(self, source_id: str) -> None:
-        """Poll-timeout work: keepalives for every source, the heartbeat, buffer housekeeping."""
+        """Poll-timeout work: keepalives for every source, buffer housekeeping."""
         for sid, state in self._sources.items():
             self._maybe_keepalive(sid, state)
-        self._maybe_heartbeat(source_id)
         self._maybe_maintain_buffer()
 
     def _maybe_keepalive(self, source_id: str, state: _SourceState) -> None:
@@ -250,13 +255,6 @@ class Orchestrator:
                     f", episode {payload['episode']}" if "episode" in payload else "",
                 )
 
-    def _maybe_heartbeat(self, source_id: str) -> None:
-        now = time.monotonic()
-        if now - self._last_heartbeat_at >= self._heartbeat_interval:
-            self._last_heartbeat_at = now
-            if self._enqueue(route_status(source_id)):
-                logger.info("orchestrator: heartbeat queued for the ESP32")
-
     def _maybe_maintain_buffer(self) -> None:
         now = time.monotonic()
         if now - self._last_maintenance_at < constants.BUFFER_MAINTENANCE_INTERVAL_SECONDS:
@@ -270,7 +268,8 @@ class Orchestrator:
                 cutoff_ms = int((time.time() - constants.BUFFER_KEEP_SENT_SECONDS) * 1000)
                 prune(older_than_ms=cutoff_ms)
             if cap is not None and (dropped := cap(max_rows=constants.BUFFER_MAX_UNSENT_ROWS)):
-                logger.warning("orchestrator: buffer full, dropped %d old keepalives", dropped)
+                logger.warning("orchestrator: buffer full, %d old row(s) dropped (keepalives) "
+                               "or archived (cap_unsent)", dropped)
         except Exception:
             logger.exception("orchestrator: buffer maintenance failed")
 

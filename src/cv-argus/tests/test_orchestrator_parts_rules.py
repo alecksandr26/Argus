@@ -112,15 +112,34 @@ def test_trigger_keeps_the_real_closure_length_during_the_hold():
 NOFACE = FrameSignals(face=False)
 
 
-@pytest.mark.parametrize("seconds,severity", [(2.8, "none"), (3.2, "low"), (5.2, "medium"),
+@pytest.mark.parametrize("seconds,severity", [(3.2, "none"), (4.8, "none"), (5.0, "critical"),
                                               (10.2, "critical")])
-def test_no_face_after_a_face_ladder(seconds, severity):
+def test_no_face_after_a_face_is_a_single_critical_at_5s(seconds, severity):
+    """No ladder (contract C1.5): nothing at all before 5 s, then critical straight away."""
     e = PartsRuleEngine(RuleConfig())
     _, t = run(e, OPEN, 1.0)
     st, _ = run(e, NOFACE, seconds, t + DT)
     assert st.severity == severity
     if severity != "none":
         assert st.reason == "no_face"
+
+
+def test_no_face_never_passes_through_low_or_medium():
+    e = PartsRuleEngine(RuleConfig())
+    _, t = run(e, OPEN, 1.0)
+    t += DT
+    seen = []
+    for _ in range(40):                            # 8 s without a face
+        seen.append(e.update(t, NOFACE).severity)
+        t += DT
+    assert set(seen) == {"none", "critical"}
+    assert seen.index("critical") == 25            # the frame where the timer reaches 5.0 s
+
+
+def test_no_face_threshold_is_the_c4_constant():
+    assert constants.RULE_NO_FACE_CRITICAL_S == 5.0
+    assert not hasattr(constants, "RULE_NO_FACE_S")
+    assert not hasattr(constants, "RULE_NO_FACE_MEDIUM_S")
 
 
 def test_no_face_before_any_face_raises_nothing():
@@ -207,3 +226,62 @@ def test_head_timer_survives_alternating_misses():
         st = e.update(t, down if k % 3 == 0 else OPEN)
         t += DT
     assert st.timers["head_down"] >= 3.0 and st.severity == "medium" and st.reason == "head_down"
+
+
+# --- reset_signals() (contract C1.7: a face switch resets the timers, never the held severity) ---
+
+def test_reset_signals_keeps_a_held_critical():
+    e = PartsRuleEngine(RuleConfig())
+    _, t = run(e, CLOSED, 3.2)
+    e.reset_signals()
+    st = e.update(t + DT, OPEN)
+    assert (st.severity, st.reason) == ("critical", "eyes_closed")
+    assert st.trigger_s == pytest.approx(3.2)
+    assert st.timers == {"eyes_closed": 0.0, "head_down": 0.0, "mouth_open": 0.0, "no_face": 0.0}
+
+
+def test_reset_signals_new_face_still_needs_the_full_recovery():
+    e = PartsRuleEngine(RuleConfig())
+    _, t = run(e, CLOSED, 3.2)
+    st, t = run(e, OPEN, 1.6, t + DT)             # 1.6 s into the 2 s recovery
+    assert st.severity == "critical"
+    e.reset_signals()                              # the recovery timer starts over
+    st, t = run(e, OPEN, 1.6, t + DT)
+    assert st.severity == "critical"
+    st, _ = run(e, OPEN, 0.4, t + DT)
+    assert st.severity == "none"
+
+
+def test_reset_signals_keeps_a_no_face_critical_through_the_switch():
+    """C1.7 [sync 1]: the no-face critical fires on or before the switch frame, the face stage
+    feeds that frame first, then resets; the new face must recover it like any other."""
+    e = PartsRuleEngine(RuleConfig())
+    _, t = run(e, OPEN, 1.0)
+    st, t = run(e, NOFACE, 5.0, t + DT)            # the switch frame (5 s missing)
+    assert st.severity == "critical"
+    e.reset_signals()
+    st, t = run(e, OPEN, 1.8, t + DT)
+    assert (st.severity, st.reason) == ("critical", "no_face")
+    st, _ = run(e, OPEN, 0.2, t + DT)
+    assert st.severity == "none"
+
+
+def test_reset_signals_clears_running_timers_and_yawns():
+    e = PartsRuleEngine(RuleConfig())
+    _, t = run(e, FrameSignals(face=True, eyes_visible=True, mouth_open=True), 2.0)
+    st, t = run(e, CLOSED, 1.2, t + DT)            # after a yawn: 1.2 s closed -> low
+    assert st.after_yawn and st.severity == "low" and st.yawn_events == 1
+    e.reset_signals()
+    st = e.update(t + DT, CLOSED)
+    assert not st.after_yawn and st.yawn_events == 0
+    assert st.timers["eyes_closed"] == 0.0
+    st, _ = run(e, CLOSED, 1.2, t + 2 * DT)        # counts from the first frame after the reset
+    assert st.timers["eyes_closed"] == pytest.approx(1.4)
+
+
+def test_reset_signals_remembers_a_face_was_seen():
+    e = PartsRuleEngine(RuleConfig())
+    _, t = run(e, OPEN, 1.0)
+    e.reset_signals()
+    st, _ = run(e, NOFACE, 5.0, t + DT)
+    assert st.severity == "critical"

@@ -7,8 +7,10 @@ newline-delimited JSON, one `Alert` per line (see `sender/protocol.py`).
 
 import json
 import math
+import time
 from typing import Any
 
+from . import models
 from .models import Alert, AlertKind
 
 
@@ -67,3 +69,32 @@ def to_json(alert: Alert) -> str:
 
 def from_json(s: str) -> Alert:
     return from_dict(json.loads(s))
+
+
+def age_seconds(
+    alert: Alert,
+    *,
+    boot_id: str | None = None,
+    mono_ms_now: int | None = None,
+    wall_ms_now: int | None = None,
+    synced_now: bool | None = None,
+) -> float | None:
+    """Seconds from the event to now, for the `age_s` serve-time field (contract C1.4), rounded to
+    0.1 s, or `None` when it can't be known.
+
+    - Same boot as now and a monotonic stamp: `(monotonic now - mono_ms) / 1000` (immune to NTP
+      steps and an unsynced clock).
+    - Else, when both the row's and the Pi's wall clock are synced: wall-clock difference,
+      clamped to >= 0.
+    - Else `None`: the ESP32 then answers `FAIL <id> too_old -` and the row is archived.
+
+    The keyword arguments default to this process's boot id and clocks; tests pass them."""
+    boot_id = models.BOOT_ID if boot_id is None else boot_id
+    if alert.boot_id is not None and alert.boot_id == boot_id and alert.mono_ms is not None:
+        now = int(time.monotonic() * 1000) if mono_ms_now is None else mono_ms_now
+        return round(max(0, now - alert.mono_ms) / 1000.0, 1)
+    synced = models.clock_synced() if synced_now is None else synced_now
+    if alert.clock_synced and synced:
+        now = int(time.time() * 1000) if wall_ms_now is None else wall_ms_now
+        return round(max(0, now - alert.created_at_ms) / 1000.0, 1)
+    return None

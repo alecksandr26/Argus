@@ -2,7 +2,7 @@
 
 import pytest
 
-from cv_argus.alerts import Alert, AlertKind, from_dict, from_json, route_status, to_dict, to_json
+from cv_argus.alerts import Alert, AlertKind, age_seconds, from_dict, from_json, to_dict, to_json
 
 
 def test_drowsiness_alert_round_trips_through_dict():
@@ -15,8 +15,9 @@ def test_drowsiness_alert_round_trips_through_dict():
     assert from_dict(to_dict(alert)) == alert
 
 
-def test_route_status_alert_round_trips_through_dict():
-    alert = route_status("cam0")
+def test_no_face_alert_round_trips_through_dict():
+    alert = Alert.new(AlertKind.DROWSINESS, level=None, source_id="cam0",
+                      payload={"class_name": "No Face", "probabilities": None})
     assert from_dict(to_dict(alert)) == alert
 
 
@@ -42,18 +43,67 @@ def test_to_json_has_no_embedded_newline():
     assert "\n" not in to_json(alert)
 
 
+def _reading():
+    return Alert.new(AlertKind.DROWSINESS, level=1, source_id="cam0",
+                     payload={"class_name": "Not Drowsy", "probabilities": [0.9, 0.1]})
+
+
 def test_from_dict_rejects_unknown_kind():
-    data = to_dict(route_status("cam0"))
+    data = to_dict(_reading())
     data["kind"] = "panic"
     with pytest.raises(ValueError, match="unknown Alert kind"):
         from_dict(data)
 
 
+def test_from_dict_rejects_the_removed_route_status_kind():
+    data = to_dict(_reading())
+    data["kind"] = "route_status"
+    with pytest.raises(ValueError, match="unknown Alert kind"):
+        from_dict(data)
+
+
 def test_from_json_rejects_unknown_kind():
-    alert = route_status("cam0")
-    bad_json = to_json(alert).replace('"route_status"', '"panic"')
+    bad_json = to_json(_reading()).replace('"drowsiness"', '"panic"')
     with pytest.raises(ValueError, match="unknown Alert kind"):
         from_json(bad_json)
+
+
+# --- age_s (contract C1.4: computed at serve time, never stored) --------------------------------
+
+def _stamped(mono_ms, boot_id, created_at_ms=1_000_000, clock_synced=True):
+    return Alert(id="x", kind=AlertKind.DROWSINESS, level=1, created_at_ms=created_at_ms,
+                 source_id="cam0", payload={}, mono_ms=mono_ms, boot_id=boot_id,
+                 clock_synced=clock_synced)
+
+
+def test_age_same_boot_uses_the_monotonic_clock():
+    a = _stamped(mono_ms=10_000, boot_id="b1", created_at_ms=0)
+    assert age_seconds(a, boot_id="b1", mono_ms_now=11_449, wall_ms_now=999_999_999,
+                       synced_now=True) == 1.4
+
+
+def test_age_other_boot_uses_the_wall_clock_when_both_are_synced():
+    a = _stamped(mono_ms=10_000, boot_id="old", created_at_ms=1_000_000)
+    assert age_seconds(a, boot_id="b1", mono_ms_now=1, wall_ms_now=1_037_000,
+                       synced_now=True) == 37.0
+
+
+def test_age_wall_clock_is_clamped_at_zero():
+    a = _stamped(mono_ms=None, boot_id=None, created_at_ms=2_000_000)
+    assert age_seconds(a, boot_id="b1", wall_ms_now=1_000_000, synced_now=True) == 0.0
+
+
+@pytest.mark.parametrize("row_synced,now_synced", [(False, True), (True, False), (None, True)])
+def test_age_is_unknowable_without_a_synced_clock_on_both_sides(row_synced, now_synced):
+    a = _stamped(mono_ms=10_000, boot_id="old", clock_synced=row_synced)
+    assert age_seconds(a, boot_id="b1", mono_ms_now=20_000, wall_ms_now=2_000_000,
+                       synced_now=now_synced) is None
+
+
+def test_age_defaults_to_this_process():
+    a = Alert.new(AlertKind.DROWSINESS, level=1, source_id="cam0", payload={})
+    age = age_seconds(a)
+    assert age is not None and 0.0 <= age < 5.0
 
 
 # --- Wire-format corner cases --------------------------------------------------------------------
