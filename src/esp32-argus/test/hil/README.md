@@ -33,9 +33,15 @@ It stops as soon as checks 5–7 have happened (or after `--duration`, default 1
 of MongoDB, listening on `0.0.0.0:8000`. No Docker, no `mongod`. It seeds one truck/route with
 **fixed** ids and a **fixed** device key, so `config.h` stays valid across runs.
 
-**Status:** the PC side is verified end to end against a fake ESP32 on a virtual serial port.
-The real Windows Bluetooth + real firmware run hasn't happened yet. Steps 3–4 below (pairing and
-the incoming COM port) are the untested part.
+**Status:** this is the v2 bench (final tweaks), and it has **not run end to end yet**: not
+against the real ESP32 (the v2 firmware compiles, `../compile.sh`, but hasn't been flashed), and
+not against a fake one either. What is checked: the script starts and imports cv-argus's v2
+`SenderServer`/`Buffer` and backend-argus's app from the final-tweaks branches (2026-10-23, on a
+local merge of T1 + T4). The same Pi server, report endpoint and a Python mirror of the firmware
+run together in `src/tests/edge_chain/` (66 passed on that merge). The **v1** bench (protocol v1
+and the retired per-message endpoints) passed all its checks on real hardware on 2026-10-17, over
+WiFi with `BENCH_FAKE_GPS 1`, including steps 3–4 below (pairing and the incoming COM port).
+Flash the v2 firmware and run this before trusting the device side of v2.
 
 ## Why Windows, not WSL
 
