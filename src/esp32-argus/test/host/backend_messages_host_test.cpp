@@ -1,6 +1,8 @@
-// The backend message bodies, composed apart from sending (logged, and kept by the Pi when they
-// can't be sent). Field names must match backend-argus's AlertCreate / StatusRouteCreate.
-// SOURCES: backend_messages.cpp
+// The one backend message, POST /api/devices/me/report (docs/designs/final-tweaks-contracts.md
+// C2): composed apart from sending (logged, and the event object kept by the Pi when a critical
+// can't be delivered), and its 200 answer parsed. Field names must match backend-argus's report
+// schema.
+// SOURCES: backend_messages.cpp pi_event_policy.cpp
 // NEEDS: arduinojson
 #include <ArduinoJson.h>
 
@@ -8,15 +10,7 @@
 
 #include "backend_messages.h"
 #include "check.h"
-
-static GpsSnapshot fix() {
-  GpsSnapshot g;
-  g.hasFix = true;
-  g.lat = 20.6736;
-  g.lon = -103.344;
-  g.speedKmh = 72.5f;
-  return g;
-}
+#include "config.h"
 
 static JsonDocument parse(const std::string& body) {
   JsonDocument doc;
@@ -24,120 +18,295 @@ static JsonDocument parse(const std::string& body) {
   return doc;
 }
 
-static AlertFields critical() {
-  AlertFields a;
-  a.clientEventId = "rec-1";
-  a.alertType = "eyes_closed";
-  a.severity = "critical";
-  a.model = "parts-rules-v1";
-  a.hasScores = true;
-  a.pNotDrowsy = 0.05f;
-  a.pDrowsy = 0.95f;
-  a.occurredAt = "2026-10-20T01:02:03Z";
-  return a;
+static PiRecord criticalRecord() {
+  PiRecord r;
+  r.id = "3f2a9c";
+  r.className = "Drowsy";
+  r.transition = true;
+  r.severity = "critical";
+  r.previousSeverity = "medium";
+  r.episode = "a1b2c3d4e5f6";
+  r.reason = "eyes_closed";
+  r.model = "parts-rules-v1";
+  r.hasProbabilities = true;
+  r.pNotDrowsy = 0.05f;
+  r.pDrowsy = 0.95f;
+  r.hasAgeS = true;
+  r.ageS = 1.6f;
+  return r;
 }
 
-static void alertBodyHasTheBackendFields() {
-  JsonDocument d = parse(composeAlertBody(critical(), fix()));
+static EventPosition here(bool lastKnown = false, float ageS = 0.0f) {
+  EventPosition p;
+  p.known = true;
+  p.lat = 20.6597;
+  p.lon = -103.3496;
+  p.lastKnown = lastKnown;
+  p.locationAgeS = ageS;
+  return p;
+}
+
+static void criticalAlertEventHasTheC2Fields() {
+  ReportEvent ev = eventFromRecord(criticalRecord(), PiEventKind::AlertCritical, here(), true, 62.5f);
+  std::string body = composeEventJson(ev, 1.64f, EventDelivery::Live, 0);
+  // The wire text is exact; ArduinoJson reads a short decimal back as a float, so the read-back
+  // checks below are only float-accurate (1e-5 degrees, about 1 m).
+  CHECK(body.find(R"("lat":20.6597,"lon":-103.3496)") != std::string::npos);
+  JsonDocument d = parse(body);
+  CHECK(d["client_event_id"] == "3f2a9c");
+  CHECK(d["episode"] == "a1b2c3d4e5f6");
+  CHECK(d["kind"] == "alert");
+  CHECK(d["severity"] == "critical");
   CHECK(d["alert_type"] == "eyes_closed");
-  CHECK(d["severity_level"] == "critical");
-  CHECK(d["source"] == "fusion");
-  CHECK(d["grip_status"] == "good");
+  CHECK_NEAR(d["age_s"].as<float>(), 1.6, 1e-4);
+  CHECK(d["delivery"] == "live");
+  CHECK(d["queued_seconds"].as<float>() == 0.0f);
+  CHECK_NEAR(d["position"]["lat"].as<double>(), 20.6597, 1e-5);
+  CHECK_NEAR(d["position"]["lon"].as<double>(), -103.3496, 1e-5);
+  CHECK(d["position"]["last_known"] == false);
+  CHECK(d["position"]["location_age_s"].as<float>() == 0.0f);
+  CHECK_NEAR(d["speed"].as<float>(), 62.5, 1e-4);
   CHECK(d["ai_metadata"]["model"] == "parts-rules-v1");
   CHECK_NEAR(d["ai_metadata"]["scores"]["drowsy"].as<float>(), 0.95, 1e-6);
-  CHECK_NEAR(d["coordinates"]["lat"].as<double>(), 20.6736, 1e-6);
-  CHECK_NEAR(d["speed_at_event"].as<float>(), 72.5, 1e-6);
-  CHECK(d["client_event_id"] == "rec-1");
-  CHECK(d["occurred_at"] == "2026-10-20T01:02:03Z");
-  CHECK(d["id_route"].isNull());          // added at send time
-  CHECK(d["related_alert_id"].isNull());  // not an escalation
+  CHECK_NEAR(d["ai_metadata"]["scores"]["not_drowsy"].as<float>(), 0.05, 1e-6);
+  // Nothing absolute and nothing of the retired endpoints.
+  CHECK(d["occurred_at"].isNull());
+  CHECK(d["id_route"].isNull());
+  CHECK(d["grip_status"].isNull());
+  CHECK(d["related_alert_id"].isNull());
 }
 
-static void alertWithoutFixHasNoCoordinates() {
-  std::string body = composeAlertBody(critical(), GpsSnapshot());
-  CHECK(!bodyHasCoordinates(body));
+static void mediumAlertAndAReasonlessRecord() {
+  PiRecord r = criticalRecord();
+  r.severity = "medium";
+  r.previousSeverity = "none";
+  r.reason = "";
+  ReportEvent ev = eventFromRecord(r, PiEventKind::AlertMedium, here(), true, 0);
+  JsonDocument d = parse(composeEventJson(ev, 0, EventDelivery::Live, 0));
+  CHECK(d["severity"] == "medium");
+  CHECK(d["alert_type"] == "Drowsy");  // no reason: the class (never an empty alert_type)
 }
 
-static void noOccurredAtMeansServerTime() {
-  AlertFields a = critical();
-  a.occurredAt = "";
-  CHECK(parse(composeAlertBody(a, fix()))["occurred_at"].isNull());
+static void driverOkEventHasNoSeverity() {
+  PiRecord r = criticalRecord();
+  r.severity = "none";
+  r.previousSeverity = "critical";
+  r.reason = "ok";
+  ReportEvent ev = eventFromRecord(r, PiEventKind::DriverOk, here(), true, 50);
+  JsonDocument d = parse(composeEventJson(ev, 0.2f, EventDelivery::Live, 0));
+  CHECK(d["kind"] == "ok");
+  CHECK(d["severity"].isNull());
+  CHECK(d["alert_type"].isNull());
+  CHECK(d["episode"] == "a1b2c3d4e5f6");  // matched to its alerts by (route, episode)
 }
 
-static void statusBody() {
-  JsonDocument d = parse(composeStatusBody("hb-1", "medium", "", fix()));
-  // ArduinoJson keeps a short value like -103.344 as a float internally (lossless in decimal;
-  // the wire text is exact), so reading it back as a double is only float-accurate.
-  CHECK_NEAR(d["current_coordinates"]["lon"].as<double>(), -103.344, 1e-5);
-  CHECK_NEAR(d["current_speed"].as<float>(), 72.5, 1e-6);
-  CHECK(d["odometer"].as<double>() == 0.0);
-  CHECK(d["vigilance"] == "medium");
-  CHECK(d["client_event_id"] == "hb-1");
+static void missingEpisodeFallsBackToTheRecordId() {
+  PiRecord r = criticalRecord();
+  r.episode = "";
+  ReportEvent ev = eventFromRecord(r, PiEventKind::AlertCritical, EventPosition(), false, 0);
+  CHECK(ev.episode == "3f2a9c");
 }
 
-static void resolveBody() {
-  CHECK(composeResolveBody("2026-10-20T01:02:03Z") == R"({"resolved_at":"2026-10-20T01:02:03Z"})");
+static void unknownPositionAndSpeedAreNull() {
+  PiRecord r = criticalRecord();
+  r.hasProbabilities = false;  // a No Face critical has no scores
+  r.model = "";
+  ReportEvent ev = eventFromRecord(r, PiEventKind::AlertCritical, EventPosition(), false, 0);
+  JsonDocument d = parse(composeEventJson(ev, 3, EventDelivery::Live, 0));
+  CHECK(d["position"].isNull());
+  CHECK(!d["position"].isUnbound());  // present, as null: "position unknown"
+  CHECK(d["speed"].isNull());
+  CHECK(d["ai_metadata"].isNull());
 }
 
-static void completeAddsRouteAndLinkButKeepsTheOriginalPosition() {
-  std::string body = composeAlertBody(critical(), fix());
-  SendTimeFill f;
-  f.routeId = "route-9";
-  f.relatedAlertId = "alert-1";
-  f.gps.hasFix = true;
-  f.gps.lat = 1.0;  // a later position must not replace where it happened
-  bool usedNow = true;
-  CHECK(completeBody(body, f, /*isAlert=*/true, &usedNow));
-  CHECK(!usedNow);
-  JsonDocument d = parse(body);
-  CHECK(d["id_route"] == "route-9");
-  CHECK(d["related_alert_id"] == "alert-1");
-  CHECK_NEAR(d["coordinates"]["lat"].as<double>(), 20.6736, 1e-6);
+static void scoresWithoutModelKeepTheModelNull() {
+  PiRecord r = criticalRecord();
+  r.model = "";
+  ReportEvent ev = eventFromRecord(r, PiEventKind::AlertCritical, here(), true, 1);
+  JsonDocument d = parse(composeEventJson(ev, 0, EventDelivery::Live, 0));
+  CHECK(d["ai_metadata"]["model"].isNull());
+  CHECK(d["ai_metadata"]["scores"]["drowsy"].is<float>());
 }
 
-static void completeKeepsAnExistingLink() {
-  AlertFields a = critical();
-  a.relatedAlertId = "alert-0";
-  std::string body = composeAlertBody(a, fix());
-  SendTimeFill f;
-  f.relatedAlertId = "alert-1";
-  CHECK(completeBody(body, f, true, nullptr));
-  CHECK(parse(body)["related_alert_id"] == "alert-0");
+static void lastKnownPositionIsLabelled() {
+  ReportEvent ev = eventFromRecord(criticalRecord(), PiEventKind::AlertCritical,
+                                   here(true, 125.04f), false, 0);
+  JsonDocument d = parse(composeEventJson(ev, 0, EventDelivery::Live, 0));
+  CHECK(d["position"]["last_known"] == true);
+  CHECK_NEAR(d["position"]["location_age_s"].as<float>(), 125.0, 1e-4);
 }
 
-static void completeFillsAMissingPositionFromTheCurrentFix() {
-  std::string body = composeStatusBody("hb", "low", "", GpsSnapshot());
-  SendTimeFill f;
-  f.gps = fix();
-  bool usedNow = false;
-  CHECK(completeBody(body, f, /*isAlert=*/false, &usedNow));
-  CHECK(usedNow);
-  CHECK(bodyHasCoordinates(body));
+static void storedEventRoundTripsForADlqReplay() {
+  // The FAIL body is the composed event; a replay re-reads it and only the per-attempt fields
+  // change (age_s, delivery, queued_seconds), C1.8.
+  ReportEvent ev = eventFromRecord(criticalRecord(), PiEventKind::AlertCritical,
+                                   here(true, 12), true, 62.5f);
+  std::string stored = composeEventJson(ev, 1.6f, EventDelivery::Live, 0);
+  ReportEvent back;
+  CHECK(eventFromStoredJson(stored, back));
+  JsonDocument d = parse(composeEventJson(back, 95.3f, EventDelivery::Dlq, 37.0f));
+  CHECK(d["client_event_id"] == "3f2a9c");
+  CHECK(d["episode"] == "a1b2c3d4e5f6");
+  CHECK(d["severity"] == "critical");
+  CHECK(d["alert_type"] == "eyes_closed");
+  CHECK_NEAR(d["age_s"].as<float>(), 95.3, 1e-4);
+  CHECK(d["delivery"] == "dlq");
+  CHECK_NEAR(d["queued_seconds"].as<float>(), 37.0, 1e-4);
+  CHECK_NEAR(d["position"]["lat"].as<double>(), 20.6597, 1e-5);  // where it happened
+  CHECK(d["position"]["last_known"] == true);
+  CHECK_NEAR(d["position"]["location_age_s"].as<float>(), 12.0, 1e-4);
+  CHECK_NEAR(d["speed"].as<float>(), 62.5, 1e-4);
+  CHECK(d["ai_metadata"]["model"] == "parts-rules-v1");
 }
 
-static void completeFailsWithNoPositionAnywhere() {
-  std::string body = composeAlertBody(critical(), GpsSnapshot());
-  SendTimeFill f;
-  CHECK(!completeBody(body, f, true, nullptr));
-  std::string notJson = "nope";
-  CHECK(!completeBody(notJson, f, true, nullptr));
+static void unusableStoredEventsAreRefused() {
+  ReportEvent out;
+  CHECK(!eventFromStoredJson("", out));
+  CHECK(!eventFromStoredJson("nope", out));
+  CHECK(!eventFromStoredJson("[]", out));
+  CHECK(!eventFromStoredJson(R"({"kind":"alert","severity":"critical","alert_type":"x"})", out));
+  CHECK(!eventFromStoredJson(
+      R"({"client_event_id":"a","episode":"e","kind":"alert","severity":"low","alert_type":"x"})",
+      out));
+  CHECK(!eventFromStoredJson(
+      R"({"client_event_id":"a","episode":"e","kind":"panic","severity":"critical","alert_type":"x"})",
+      out));
+  // The retired POST /api/alerts body a v1 firmware may have left in the DLQ.
+  CHECK(!eventFromStoredJson(
+      R"({"alert_type":"eyes_closed","severity_level":"critical","source":"fusion","client_event_id":"a"})",
+      out));
 }
 
-static void isoFormatting() {
-  CHECK(isoFromEpochMs(0) == "1970-01-01T00:00:00Z");
-  CHECK(isoFromEpochMs(1792264812358ULL) == "2026-10-17T19:20:12Z");
+static TrackPoint point(uint32_t atMs, const char* vigilance, bool lastKnown = false) {
+  TrackPoint t;
+  t.atMs = atMs;
+  t.lat = 20.5 + atMs / 1e6;
+  t.lon = -103.25;
+  t.speedKmh = 61.26f;
+  t.vigilance = vigilance;
+  t.lastKnown = lastKnown;
+  t.locationAgeS = lastKnown ? 30.0f : 0.0f;
+  return t;
+}
+
+static void reportCarriesPointsOldestFirstWithRelativeAges() {
+  TrackPoint pts[3] = {point(1000, "low"), point(2000, "medium"), point(3000, "unknown", true)};
+  JsonDocument d = parse(composeReportBody(pts, 3, 5000, nullptr, 0, EventDelivery::Live, 0));
+  JsonArray p = d["points"];
+  CHECK(p.size() == 3);
+  CHECK_NEAR(p[0]["age_s"].as<float>(), 4.0, 1e-4);
+  CHECK_NEAR(p[2]["age_s"].as<float>(), 2.0, 1e-4);
+  CHECK(p[0]["vigilance"] == "low");
+  CHECK(p[1]["vigilance"] == "medium");
+  CHECK_NEAR(p[0]["speed"].as<float>(), 61.3, 1e-4);
+  CHECK(p[0]["last_known"] == false);
+  CHECK(p[0]["location_age_s"].as<float>() == 0.0f);
+  CHECK(p[2]["last_known"] == true);
+  CHECK(p[2]["speed"].as<float>() == 0.0f);  // 0 when last_known (C2.1)
+  CHECK_NEAR(p[2]["location_age_s"].as<float>(), 30.0, 1e-4);
+  CHECK(d["event"].isNull());
+}
+
+static void reportKeepsOnlyTheNewestTenPoints() {
+  TrackPoint pts[13];
+  for (int i = 0; i < 13; i++) pts[i] = point(1000 * (i + 1), "low");
+  JsonDocument d = parse(composeReportBody(pts, 13, 14000, nullptr, 0, EventDelivery::Live, 0));
+  JsonArray p = d["points"];
+  CHECK(p.size() == REPORT_MAX_POINTS);
+  CHECK_NEAR(p[0]["age_s"].as<float>(), 10.0, 1e-4);  // points 4..13
+  CHECK_NEAR(p[9]["age_s"].as<float>(), 1.0, 1e-4);
+}
+
+static void emptyReportStillHasAPointsArray() {
+  JsonDocument d = parse(composeReportBody(nullptr, 0, 0, nullptr, 0, EventDelivery::Live, 0));
+  CHECK(d["points"].is<JsonArray>());
+  CHECK(d["points"].size() == 0);
+}
+
+static void reportWithAnEvent() {
+  TrackPoint pts[1] = {point(1000, "critical")};
+  ReportEvent ev = eventFromRecord(criticalRecord(), PiEventKind::AlertCritical, here(), true, 60);
+  JsonDocument d = parse(composeReportBody(pts, 1, 1500, &ev, 2.0f, EventDelivery::Live, 0));
+  CHECK(d["points"].size() == 1);
+  CHECK(d["event"]["kind"] == "alert");
+  CHECK_NEAR(d["event"]["age_s"].as<float>(), 2.0, 1e-4);
+}
+
+static void agesAreRoundedAndNeverNegative() {
+  CHECK_NEAR(roundAge(1.04f), 1.0, 1e-6);
+  CHECK_NEAR(roundAge(1.06f), 1.1, 1e-6);
+  CHECK(roundAge(-3.0f) == 0.0f);
+  CHECK(roundAge(NAN) == 0.0f);
+}
+
+static void parsesACreatedResponse() {
+  ReportResponse r;
+  CHECK(parseReportResponse(
+      R"({"points":{"stored":5,"route":"6650","status":"ok"},)"
+      R"("event":{"status":"created","reason":null,"id_alert":"6651"},"active_route":"6650"})",
+      r));
+  CHECK(r.pointsStored == 5);
+  CHECK(r.pointsStatus == PointsStatus::Ok);
+  CHECK(r.eventStatus == EventStatus::Created);
+  CHECK(r.eventReason.empty());
+  CHECK(r.idAlert == "6651");
+  CHECK(r.hasActiveRoute);
+  CHECK(r.activeRoute == "6650");
+}
+
+static void parsesARejectionAndANullRoute() {
+  ReportResponse r;
+  CHECK(parseReportResponse(
+      R"({"points":{"stored":0,"route":null,"status":"route_finished"},)"
+      R"("event":{"status":"rejected","reason":"route_finished","id_alert":null},"active_route":null})",
+      r));
+  CHECK(r.pointsStatus == PointsStatus::RouteFinished);
+  CHECK(r.eventStatus == EventStatus::Rejected);
+  CHECK(r.eventReason == "route_finished");
+  CHECK(!r.hasActiveRoute);
+}
+
+static void parsesDuplicateNoEventAndNoActiveRoute() {
+  ReportResponse r;
+  CHECK(parseReportResponse(
+      R"({"points":{"stored":0,"route":null,"status":"no_active_route"},"event":null,"active_route":null})",
+      r));
+  CHECK(r.pointsStatus == PointsStatus::NoActiveRoute);
+  CHECK(r.eventStatus == EventStatus::Absent);
+  CHECK(parseReportResponse(R"({"points":{"stored":1,"status":"ok"},)"
+                            R"("event":{"status":"duplicate","id_alert":"a"},"active_route":"r"})",
+                            r));
+  CHECK(r.eventStatus == EventStatus::Duplicate);
+  CHECK(parseReportResponse(R"({"event":{"status":"weird"}})", r));
+  CHECK(r.eventStatus == EventStatus::Unknown);
+  CHECK(r.pointsStatus == PointsStatus::Unknown);
+}
+
+static void unparseableResponseIsRefused() {
+  ReportResponse r;
+  CHECK(!parseReportResponse("", r));
+  CHECK(!parseReportResponse("<html>502</html>", r));
+  CHECK(!parseReportResponse("[1]", r));
 }
 
 int main() {
-  RUN(alertBodyHasTheBackendFields);
-  RUN(alertWithoutFixHasNoCoordinates);
-  RUN(noOccurredAtMeansServerTime);
-  RUN(statusBody);
-  RUN(resolveBody);
-  RUN(completeAddsRouteAndLinkButKeepsTheOriginalPosition);
-  RUN(completeKeepsAnExistingLink);
-  RUN(completeFillsAMissingPositionFromTheCurrentFix);
-  RUN(completeFailsWithNoPositionAnywhere);
-  RUN(isoFormatting);
+  RUN(criticalAlertEventHasTheC2Fields);
+  RUN(mediumAlertAndAReasonlessRecord);
+  RUN(driverOkEventHasNoSeverity);
+  RUN(missingEpisodeFallsBackToTheRecordId);
+  RUN(unknownPositionAndSpeedAreNull);
+  RUN(scoresWithoutModelKeepTheModelNull);
+  RUN(lastKnownPositionIsLabelled);
+  RUN(storedEventRoundTripsForADlqReplay);
+  RUN(unusableStoredEventsAreRefused);
+  RUN(reportCarriesPointsOldestFirstWithRelativeAges);
+  RUN(reportKeepsOnlyTheNewestTenPoints);
+  RUN(emptyReportStillHasAPointsArray);
+  RUN(reportWithAnEvent);
+  RUN(agesAreRoundedAndNeverNegative);
+  RUN(parsesACreatedResponse);
+  RUN(parsesARejectionAndANullRoute);
+  RUN(parsesDuplicateNoEventAndNoActiveRoute);
+  RUN(unparseableResponseIsRefused);
   return report("backend_messages_host_test");
 }

@@ -26,8 +26,54 @@
 // =====================================================
 // Generous on purpose: a Lambda cold start behind CloudFront can take several seconds.
 #define BACKEND_HTTP_TIMEOUT_MS 15000
-// How often to retry GET /api/devices/me/active-route while the truck has no active route.
+// Points-only report cadence while the backend says this truck has no active route
+// (`active_route: null` in a 200): every 30 s instead of every REPORT_INTERVAL_MS. Events still go
+// at once. Before the first 200 the route is unknown, not null: the 5 s cadence applies (C2.3).
 #define ACTIVE_ROUTE_RETRY_MS 30000UL
+
+// =====================================================
+// Reports -- POST /api/devices/me/report, the only device write (final-tweaks contracts C2, C4).
+// One report = the GPS points since the last report + at most one event (alert, escalation or
+// driver OK). Sent by the sender task (sender_policy.h), which owns the modem and HTTP.
+// =====================================================
+// A points-only report goes this long after the previous report (of any kind) ended.
+#define REPORT_INTERVAL_MS 5000UL
+// A live event whose attempt failed is retried no sooner than this after that attempt ended. A
+// new event goes at once.
+#define MIN_SEND_GAP_MS 1000UL
+// At most this many points per report (the newest kept); must match backend-argus's
+// app/constants.py REPORT_MAX_POINTS.
+#define REPORT_MAX_POINTS 10
+// One whole attempt (connect/TLS + request + answer), a real deadline, not an idle timeout.
+#define ATTEMPT_TIMEOUT_WIFI_MS 8000UL
+#define ATTEMPT_TIMEOUT_MOBILE_FIRST_MS 8000UL   // an event's (or a points-only report's) 1st try
+#define ATTEMPT_TIMEOUT_MOBILE_RETRY_MS 15000UL  // a live retry, and every DLQ replay
+// Added to a mobile attempt that must first set the modem up (after power-on or a lost signal:
+// registration check + bearer).
+#define MODEM_SETUP_TIMEOUT_MS 10000UL
+// How long a live event is retried before giving up on it live: a critical then goes to the
+// Pi's DLQ (FAIL <reason> <event>), a medium or an OK is dropped (FAIL retry_window -). Measured
+// from when this device took it from the Pi.
+#define LIVE_RETRY_CRITICAL_MS 60000UL
+#define LIVE_RETRY_MEDIUM_MS 30000UL
+#define LIVE_RETRY_OK_MS 30000UL
+// Live events held at once (static slots). One alert per incident keeps this far from full; when
+// it is full a new event isn't TAKEN and stays on the Pi, which serves it again.
+#define SENDER_LIVE_SLOTS 8
+// Reports to the Pi (ACK/FAIL of finished events) waiting for the next Bluetooth session.
+#define SENDER_OUTCOME_SLOTS 16
+
+// =====================================================
+// GPS points
+// =====================================================
+// One point per GPS read (current fix, or the last known position when there's none).
+#define GPS_READ_INTERVAL_MS 1000UL
+// The last good position is saved to NVS this often while there's a fix, and at once on losing it
+// (with the fix's GPS time, so its age is known after a reboot).
+#define GPS_LAST_KNOWN_SAVE_MS 60000UL
+// A point's vigilance is the Pi's latest severity; "unknown" when no Pi record arrived for this
+// long (or none since boot).
+#define PI_STALE_MS 10000UL
 // How often to ask the Pi for CONFIG again after it answered NOCONFIG (not provisioned).
 #define CONFIG_RETRY_INTERVAL_MS 60000UL
 // How often to re-ask the Pi for CONFIG even when everything works, so a changed .env on the
@@ -72,9 +118,8 @@
 // for the next poll. Leaves room for one last backend request (seconds over the SIM800L) inside
 // PI_BT_REPORT_WAIT_MS.
 #define PI_BT_HANDLE_BUDGET_MS 10000UL
-// Once the backend is reachable, the Pi's dead-letter queue is replayed this many records per
-// poll (`DLQ <k>`), after the live ones: the newest events always go first.
-#define DLQ_REPLAY_BATCH 2  // each replay is a backend request: 5 overran the Pi's report wait
+// The Pi's dead-letter queue is replayed one row per session (`DLQ 1`, the Pi's MAX_DLQ_LIMIT),
+// only while no live event is pending (sender_policy.h). DLQ_REPLAY_BATCH is gone (C4).
 // The Bluetooth link's status line (up/down, sessions, records) on Serial.
 #define PI_BT_LINK_LOG_INTERVAL_MS 30000UL
 // How often backendIsReachable() may print why there's no network (no APN, mobile data on hold,
