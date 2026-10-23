@@ -1,5 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
-import type { APIRequestContext, APIResponse, Locator, Page } from '@playwright/test'
+import type {
+  APIRequestContext,
+  APIResponse,
+  Locator,
+  Page,
+  Request,
+  Response,
+} from '@playwright/test'
 
 /**
  * Shared across every spec file — pulled out once `users.spec.ts`/`trucks.spec.ts`/
@@ -42,6 +49,65 @@ export async function login(page: Page, email: string, password: string) {
 
 export async function logout(page: Page) {
   await page.getByText('Sign out').click()
+}
+
+/** Matches the browser's own call to `method apiPath` on the backend (any origin, no query). */
+function isApiCall(method: string, apiPath: string) {
+  return (res: Response) => {
+    const url = new URL(res.url())
+    return res.request().method() === method && url.pathname.replace(/\/$/, '') === apiPath
+  }
+}
+
+/**
+ * Opens a list screen (Fleet, Drivers, Access) with a full navigation and waits until its
+ * initial `GET apiPath` has answered 200, i.e. until the table has loaded.
+ *
+ * Those screens load the list once on mount and *prepend* a created row locally (no reload
+ * after a create). A create submitted while that first `GET` is still in flight can therefore
+ * be wiped out when the `GET` lands with the list as it was before the `POST`: the row shows,
+ * then disappears, or never shows. Waiting for the load first removes that race.
+ */
+export async function gotoLoadedList(page: Page, route: string, apiPath: string) {
+  // Only a `GET` the *new* document sends counts: when login() has just landed on this same
+  // screen, the previous mount's own `GET` may still answer after this navigation starts, and
+  // accepting it would leave the new mount's load in flight. Playwright emits `request` events in
+  // order and keeps one `Request` object per request, so "issued after the navigation request"
+  // is exact (no clock comparison).
+  let navigationStarted = false
+  const issuedByNewDocument = new Set<Request>()
+  const onRequest = (req: Request) => {
+    if (req.isNavigationRequest() && req.frame() === page.mainFrame()) navigationStarted = true
+    else if (navigationStarted) issuedByNewDocument.add(req)
+  }
+  const isListLoad = isApiCall('GET', apiPath)
+  page.on('request', onRequest)
+  try {
+    const [res] = await Promise.all([
+      page.waitForResponse((r) => issuedByNewDocument.has(r.request()) && isListLoad(r)),
+      page.goto(route),
+    ])
+    if (res.status() !== 200) {
+      throw new Error(`GET ${apiPath} on ${route} answered ${res.status()}: ${await res.text()}`)
+    }
+  } finally {
+    page.off('request', onRequest)
+  }
+}
+
+/**
+ * Clicks a form's create button and waits for the browser's `POST apiPath` to answer 201, so a
+ * failed create fails here with the backend's own error instead of as a missing table row, and
+ * a caller that navigates or signs out next can't abort the request mid-flight.
+ */
+export async function submitCreate(page: Page, buttonName: string, apiPath: string) {
+  const [res] = await Promise.all([
+    page.waitForResponse(isApiCall('POST', apiPath)),
+    page.getByRole('button', { name: buttonName }).click(),
+  ])
+  if (res.status() !== 201) {
+    throw new Error(`POST ${apiPath} answered ${res.status()}: ${await res.text()}`)
+  }
 }
 
 /**
