@@ -11,7 +11,8 @@ from app.models.common import RouteStatus
 from app.models.incident import Incident
 from app.models.route import Route
 from app.models.status_route import StatusRoute
-from scripts.migrate_final_tweaks import MIGRATION_USER, migrate
+from scripts.migrate_final_tweaks import ENDED_ROUTE_NOTE, MIGRATION_USER, migrate
+from scripts.migrate_final_tweaks import MIGRATION_NOTE as MIGRATION_NOTE_ALL_REVIEWED
 from tests.conftest import make_rig
 
 T0 = datetime(2030, 1, 1, 8, tzinfo=timezone.utc)
@@ -109,6 +110,9 @@ async def test_migration(mongo_client):
         "resolved_at_moved": 1,
         "routes_with_times_backfilled": 2,
         "alerts_grouped": 6,  # medium/critical, the panic row included; the low one not
+        # The finished route's only incident was all reviewed, so the migration closed it.
+        "open_incidents_on_ended_routes": 0,
+        "ended_route_incidents_closed": 0,
         "points_flagged": 3,
         "duplicate_points_removed": 1,
         "duplicate_alert_ids_cleared": 1,
@@ -152,3 +156,83 @@ async def test_migration(mongo_client):
     again = await migrate(client=mongo_client)
     assert set(again.values()) == {0}
     assert await Incident.find_all().count() == 3
+
+
+async def _seed_ended_routes():
+    """Unreviewed history on routes that already ended (plus an active route): what would fill
+    Live operations with old open incidents after the migration."""
+    active = await make_rig("END-0", departed_ago=timedelta(hours=2))
+    completed = await make_rig("END-1", route_status=RouteStatus.COMPLETED)
+    cancelled = await make_rig("END-2", route_status=RouteStatus.CANCELLED)
+    await Alert.get_motor_collection().insert_many(
+        [
+            # Two incidents on the completed route (2 h apart).
+            _old_alert(completed.route_id, T0, "medium"),
+            _old_alert(completed.route_id, T0 + timedelta(minutes=5)),
+            _old_alert(completed.route_id, T0 + timedelta(hours=2)),
+            # One on the cancelled route, one of its alerts reviewed (not all: stays open).
+            _old_alert(cancelled.route_id, T0, "medium", reviewed_by_operator=True),
+            _old_alert(cancelled.route_id, T0 + timedelta(minutes=1)),
+            # All reviewed: closed by the migration as before, whatever the flag.
+            _old_alert(cancelled.route_id, T0 + timedelta(hours=5), reviewed_by_operator=True),
+            # On the active route: stays open in any case.
+            _old_alert(active.route_id, T0),
+        ]
+    )
+    return active, completed, cancelled
+
+
+async def test_dry_run_counts_open_incidents_on_ended_routes(mongo_client):
+    await _seed_ended_routes()
+    dry = await migrate(client=mongo_client, dry_run=True)
+    assert dry["alerts_grouped"] == 7
+    assert dry["open_incidents_on_ended_routes"] == 3
+    assert dry["ended_route_incidents_closed"] == 0
+    flagged = await migrate(client=mongo_client, dry_run=True, close_ended_routes=True)
+    assert flagged["ended_route_incidents_closed"] == 3
+    assert await Incident.find_all().count() == 0  # a dry run writes nothing
+
+
+async def test_default_leaves_ended_route_incidents_open(mongo_client):
+    active, completed, cancelled = await _seed_ended_routes()
+    report = await migrate(client=mongo_client)
+    assert report["open_incidents_on_ended_routes"] == 3
+    assert report["ended_route_incidents_closed"] == 0
+    open_incidents = await Incident.find(Incident.closed_at == None).to_list()  # noqa: E711
+    assert sorted(i.id_route for i in open_incidents) == sorted(
+        [completed.route_id, completed.route_id, cancelled.route_id, active.route_id]
+    )
+    assert (await Route.get(completed.route_id)).incident_state == "critical"
+
+
+async def test_close_ended_routes_closes_them_with_a_note(mongo_client):
+    active, completed, cancelled = await _seed_ended_routes()
+    report = await migrate(client=mongo_client, close_ended_routes=True)
+    assert report["open_incidents_on_ended_routes"] == 3
+    assert report["ended_route_incidents_closed"] == 3
+
+    ended = await Incident.find(
+        {"id_route": {"$in": [completed.route_id, cancelled.route_id]}}
+    ).to_list()
+    by_note = sorted((i.close_note, i.closed_by or "") for i in ended)
+    assert by_note == sorted(
+        [(ENDED_ROUTE_NOTE, "")] * 3 + [(MIGRATION_NOTE_ALL_REVIEWED, MIGRATION_USER)]
+    )
+    assert [i.closed_by for i in ended if i.close_note == ENDED_ROUTE_NOTE] == [None] * 3
+    assert all(i.closed_at is not None for i in ended)
+    closed_alerts = await Alert.find(
+        {"id_route": {"$in": [completed.route_id, cancelled.route_id]}}
+    ).to_list()
+    assert all(a.closed_at is not None for a in closed_alerts)
+    # Nothing was reviewed on the guardian's behalf.
+    assert sum(a.reviewed_by_operator for a in closed_alerts) == 2
+    # Closing lowers the ended routes' state; the active route keeps its open incident.
+    assert (await Route.get(completed.route_id)).incident_state == "fine"
+    assert (await Route.get(cancelled.route_id)).incident_state == "fine"
+    still_open = await Incident.find(Incident.closed_at == None).to_list()  # noqa: E711
+    assert [i.id_route for i in still_open] == [active.route_id]
+    assert (await Route.get(active.route_id)).incident_state == "critical"
+
+    again = await migrate(client=mongo_client, close_ended_routes=True)
+    assert set(again.values()) == {0}
+

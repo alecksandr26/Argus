@@ -1,8 +1,11 @@
 """One-off, idempotent migration of an existing database to the final-tweaks data model
 (docs/designs/final-tweaks-contracts.md). Run it once after deploying the new backend:
 
-    python -m scripts.migrate_final_tweaks            # apply
-    python -m scripts.migrate_final_tweaks --dry-run  # only count what would change
+    python -m scripts.migrate_final_tweaks --dry-run               # only count what would change
+    python -m scripts.migrate_final_tweaks                         # apply
+    python -m scripts.migrate_final_tweaks --close-ended-routes    # apply, and close the
+                                                                   # incidents it creates on
+                                                                   # routes that already ended
 
 against whatever `MONGO_URI`/`MONGO_DB` the environment points at (from `src/backend-argus/`).
 Every step is safe to run again; a second run changes nothing.
@@ -14,9 +17,17 @@ Steps, in order:
    departure; completed with no arrival -> its last update.
 3. Incidents for historical medium/critical alerts (grouped exactly like new ones), the route
    `incident_state` they imply, and closing the incidents whose alerts were all reviewed
-   already (a guardian looked at them before incidents existed).
+   already (a guardian looked at them before incidents existed). The others stay open, and
+   `/api/live` lists every open incident, ended routes' included: the report's
+   `open_incidents_on_ended_routes` says how many of those the migration creates on
+   completed/cancelled routes (the dry run counts them too). `--close-ended-routes` (off by
+   default; the user decides) closes exactly those, with `closed_by: null` and a migration
+   note, so Live operations doesn't start full of old history. Pass it on the first real run:
+   a later run has nothing left to group, so it closes nothing.
 4. GPS points: `keep` for the first point of each route-minute (retention), and duplicates of
-   the same `(id_route, timestamp)` removed (keeping the first stored).
+   the same `(id_route, timestamp)` removed (keeping the first stored). Destructive once the
+   TTL index exists: MongoDB's TTL pass then deletes every point with `keep: false` older than
+   7 days, i.e. GPS history older than a week keeps one point per route per minute.
 5. Alerts sharing an `(id_route, client_event_id)`: the later copies lose the id (kept, not
    deleted) so the unique index can build.
 6. Drops the old plain `(id_route, client_event_id)` alerts index and creates the unique and
@@ -32,7 +43,10 @@ from datetime import datetime, timezone
 from pymongo.errors import OperationFailure
 
 from app.database import init_db
+from app.ids import to_object_id
+from app.constants import INCIDENT_GROUP_WINDOW
 from app.incidents import (
+    FINISHED_ROUTE_STATUSES,
     GROUPED_SEVERITIES,
     as_utc,
     group_alert,
@@ -48,6 +62,7 @@ from app.models.status_route import StatusRoute
 
 MIGRATION_USER = "migration"
 MIGRATION_NOTE = "Closed by the final-tweaks migration: every alert was reviewed before incidents existed."
+ENDED_ROUTE_NOTE = "Closed by the final-tweaks migration: route had already ended"
 OLD_ALERT_EVENT_INDEX = "id_route_1_client_event_id_1"
 
 
@@ -85,9 +100,73 @@ async def backfill_route_times(dry_run: bool = False) -> int:
     return count
 
 
-async def backfill_incidents(dry_run: bool = False) -> int:
-    """Returns the number of alerts grouped. Also closes the incidents whose alerts were all
-    reviewed, and sets each route's `incident_state` from its open incidents."""
+async def _ended_route_ids() -> set[str]:
+    finished = [st.value for st in FINISHED_ROUTE_STATUSES]
+    return {str(r.id) for r in await Route.find({"operative_status": {"$in": finished}}).to_list()}
+
+
+async def _simulate_grouping(alerts: list[Alert]) -> list[dict]:
+    """Dry run: groups `alerts` (timestamp ascending) in memory exactly like `group_alert`
+    would, against the open incidents already stored. Returns the incidents the migration
+    would create, each as `{"id_route", "reviewed": [bool per alert]}`, plus the existing ones
+    it would add alerts to (`"existing": True`)."""
+    by_route: dict[str, list[dict]] = defaultdict(list)
+    for incident in await Incident.find(Incident.closed_at == None).to_list():  # noqa: E711
+        members = await Alert.find(Alert.id_incident == str(incident.id)).to_list()
+        by_route[incident.id_route].append(
+            {
+                "id_route": incident.id_route,
+                "first": as_utc(incident.first_alert_at),
+                "last": as_utc(incident.last_alert_at),
+                "reviewed": [a.reviewed_by_operator for a in members],
+                "existing": True,
+                "touched": False,
+            }
+        )
+    for alert in alerts:
+        t = as_utc(alert.timestamp)
+        candidates = [
+            i
+            for i in by_route[alert.id_route]
+            if i["first"] - INCIDENT_GROUP_WINDOW < t < i["last"] + INCIDENT_GROUP_WINDOW
+        ]
+        if candidates:
+            incident = max(candidates, key=lambda i: i["last"])
+        else:
+            incident = {
+                "id_route": alert.id_route,
+                "first": t,
+                "last": t,
+                "reviewed": [],
+                "existing": False,
+                "touched": False,
+            }
+            by_route[alert.id_route].append(incident)
+        incident["first"] = min(incident["first"], t)
+        incident["last"] = max(incident["last"], t)
+        incident["reviewed"].append(alert.reviewed_by_operator)
+        incident["touched"] = True
+    return [i for incidents in by_route.values() for i in incidents if i["touched"]]
+
+
+async def _close(incident_id: str, closed_by, note: str, now: datetime) -> None:
+    await Incident.get_motor_collection().update_one(
+        {"_id": to_object_id(incident_id)},
+        {"$set": {"closed_at": now, "closed_by": closed_by, "close_note": note}},
+    )
+    await Alert.get_motor_collection().update_many(
+        {"id_incident": incident_id}, {"$set": {"closed_at": now}}
+    )
+
+
+async def backfill_incidents(dry_run: bool = False, close_ended_routes: bool = False) -> dict:
+    """Groups historical medium/critical alerts into incidents. Closes the incidents whose
+    alerts were all reviewed, and (with `close_ended_routes`) the other new ones on completed/
+    cancelled routes; then sets each route's `incident_state` from its open incidents.
+
+    Returns `alerts_grouped`, `open_incidents_on_ended_routes` (incidents this run creates, or
+    would create, that stay open on a completed/cancelled route unless `close_ended_routes`),
+    and `ended_route_incidents_closed`."""
     alerts = (
         await Alert.find(
             {
@@ -98,34 +177,56 @@ async def backfill_incidents(dry_run: bool = False) -> int:
         .sort(+Alert.timestamp)
         .to_list()
     )
+    ended = await _ended_route_ids()
     if dry_run:
-        return len(alerts)
-    new_incidents: set[str] = set()
+        simulated = await _simulate_grouping(alerts)
+        on_ended = sum(
+            1
+            for i in simulated
+            if not i["existing"] and i["id_route"] in ended and not all(i["reviewed"])
+        )
+        return {
+            "alerts_grouped": len(alerts),
+            "open_incidents_on_ended_routes": on_ended,
+            "ended_route_incidents_closed": on_ended if close_ended_routes else 0,
+        }
+
+    already_open = {
+        str(i.id) for i in await Incident.find(Incident.closed_at == None).to_list()  # noqa: E711
+    }
+    touched: set[str] = set()
     for alert in alerts:
         incident = await group_alert(alert)
         if incident is not None:
-            new_incidents.add(str(incident.id))
+            touched.add(str(incident.id))
         await raise_route_state(alert.id_route, alert.severity_level, alert.timestamp)
 
     now = datetime.now(timezone.utc)
     routes_touched: set[str] = set()
-    for incident_id in new_incidents:
+    on_ended = 0
+    closed_ended = 0
+    for incident_id in touched:
         incident = await Incident.get(incident_id)
         if incident is None or incident.closed_at is not None:
             continue
+        routes_touched.add(incident.id_route)
         members = await Alert.find(Alert.id_incident == incident_id).to_list()
         if members and all(a.reviewed_by_operator for a in members):
-            await Incident.get_motor_collection().update_one(
-                {"_id": incident.id},
-                {"$set": {"closed_at": now, "closed_by": MIGRATION_USER, "close_note": MIGRATION_NOTE}},
-            )
-            await Alert.get_motor_collection().update_many(
-                {"id_incident": incident_id}, {"$set": {"closed_at": now}}
-            )
-        routes_touched.add(incident.id_route)
+            await _close(incident_id, MIGRATION_USER, MIGRATION_NOTE, now)
+            continue
+        if incident_id in already_open or incident.id_route not in ended:
+            continue
+        on_ended += 1
+        if close_ended_routes:
+            await _close(incident_id, None, ENDED_ROUTE_NOTE, now)
+            closed_ended += 1
     for route_id in routes_touched:
         await lower_route_state_after_close(route_id)
-    return len(alerts)
+    return {
+        "alerts_grouped": len(alerts),
+        "open_incidents_on_ended_routes": on_ended,
+        "ended_route_incidents_closed": closed_ended,
+    }
 
 
 async def backfill_points(dry_run: bool = False) -> tuple[int, int]:
@@ -185,15 +286,15 @@ async def replace_indexes(database) -> None:
     await ensure_indexes(database, strict=True)
 
 
-async def migrate(*, client=None, dry_run: bool = False) -> dict:
+async def migrate(*, client=None, dry_run: bool = False, close_ended_routes: bool = False) -> dict:
     from app.config import settings
 
     client = await init_db(client=client)
     report = {
         "resolved_at_moved": await migrate_resolved_at(dry_run),
         "routes_with_times_backfilled": await backfill_route_times(dry_run),
-        "alerts_grouped": await backfill_incidents(dry_run),
     }
+    report.update(await backfill_incidents(dry_run, close_ended_routes))
     report["points_flagged"], report["duplicate_points_removed"] = await backfill_points(dry_run)
     report["duplicate_alert_ids_cleared"] = await clear_duplicate_alert_event_ids(dry_run)
     if not dry_run:
@@ -204,8 +305,19 @@ async def migrate(*, client=None, dry_run: bool = False) -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--dry-run", action="store_true", help="only count what would change")
+    parser.add_argument(
+        "--close-ended-routes",
+        action="store_true",
+        help=(
+            "close the incidents the migration creates on completed/cancelled routes "
+            "(closed_by null, with a migration note) instead of leaving them open in Live "
+            "operations; off by default"
+        ),
+    )
     args = parser.parse_args()
-    result = asyncio.run(migrate(dry_run=args.dry_run))
+    result = asyncio.run(
+        migrate(dry_run=args.dry_run, close_ended_routes=args.close_ended_routes)
+    )
     print("Dry run (nothing written):" if args.dry_run else "Migrated:")
     for key, value in result.items():
         print(f"  {key}: {value}")
