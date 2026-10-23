@@ -2,7 +2,8 @@
 same device-key auth), served by uvicorn on the LAN so the ESP32 can reach it over WiFi, but on
 mongomock-motor instead of MongoDB. No Docker, no mongod; data lives only as long as the process.
 
-Seeds one truck/driver/in-progress route with FIXED ids and a FIXED device key. The ESP32 gets
+Seeds one truck/driver/in-progress route (departed at startup) with FIXED ids and a FIXED device
+key. The ESP32 reports to POST /api/devices/me/report (C2), the only device write. The ESP32 gets
 the key and backend URL from the Pi over Bluetooth (CONFIG), so `esp32_hil.py` hands them to its
 SenderServer as a DeviceConfig (`bench_device_config()`) -- nothing to copy into config.h.
 
@@ -75,6 +76,9 @@ async def _seed() -> None:
         destination_name="CDMX",
         destination_coordinates=GeoJSONPoint(coordinates=(-99.13, 19.43)),
         estimated_departure=datetime.now(timezone.utc),
+        # Events are routed by time (C2.2 rule 4): an in-progress route needs its departure, or
+        # every event from the bench ESP32 would be rejected no_route.
+        actual_departure=datetime.now(timezone.utc),
         operative_status=RouteStatus.IN_PROGRESS,
     ).insert()
 

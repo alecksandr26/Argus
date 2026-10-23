@@ -1,11 +1,15 @@
 """Bench test against the REAL ESP32: this machine plays the Pi and the cloud at once.
 
-    cv-argus Buffer + SenderServer (real code) --Bluetooth SPP--> ESP32 (real firmware)
-        --WiFi/HTTP, device key--> backend-argus (real app, in memory, see bench_backend.py)
+    cv-argus Buffer + SenderServer (real code) --Bluetooth SPP v2--> ESP32 (real firmware)
+        --WiFi, POST /api/devices/me/report, device key--> backend-argus (real app, in memory,
+        see bench_backend.py)
 
-It feeds the Pi's buffer the records cv-argus produces (Drowsy readings + route_status
-heartbeats), logs every protocol line the ESP32 exchanges, and watches the backend for what the
-ESP32 relays. Prints [ OK ]/[FAIL] per check and exits 0 only if all of them pass.
+It feeds the Pi's buffer what cv-argus's orchestrator produces under protocol v2
+(docs/designs/final-tweaks-contracts.md C1.4/C1.5): a keepalive every 2 s, one CRITICAL raise
+(an event) after --alert-after seconds, keepalives while it is held, then the recovery (a driver
+OK) after --recover-after more seconds. It logs every protocol line the ESP32 exchanges and
+watches the backend for what the ESP32 reports. Prints [ OK ]/[FAIL] per check and exits 0 only
+if all of them pass.
 
     python src/esp32-argus/test/hil/esp32_hil.py --serial auto     # Windows incoming SPP COM port(s)
     python src/esp32-argus/test/hil/esp32_hil.py --rfcomm 4     # Linux/BlueZ (e.g. the real Pi)
@@ -19,14 +23,15 @@ import math
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 import _imports  # noqa: F401  (path wiring, must come first)
 
 import httpx
 
-from bench_backend import BenchBackend, ROUTE_ID, bench_device_config
-from cv_argus.alerts import Alert, AlertKind, route_status
+from bench_backend import BenchBackend, ROUTE_ID, TRUCK_ID, bench_device_config
+from cv_argus.alerts import Alert, AlertKind
 from cv_argus.buffer import open_buffer
 from cv_argus.sender import SenderServer
 from cv_argus.sender.protocol import parse_config
@@ -55,22 +60,55 @@ def parse_lat_lon(text: str) -> tuple[float, float]:
     return lat, lon
 
 
-_first_drowsy = True
+class PiScript:
+    """What cv-argus's orchestrator enqueues for one incident, as v2 records: keepalives
+    (transition false) every `keepalive_every` s, a none -> critical raise after `alert_after` s,
+    and the critical -> none recovery (a driver OK, same episode) `recover_after` s later."""
 
+    def __init__(self, alert_after: float, recover_after: float, keepalive_every: float = 2.0):
+        self.alert_after = alert_after
+        self.recover_after = recover_after
+        self.keepalive_every = keepalive_every
+        self.episode = uuid.uuid4().hex[:12]
+        self.severity = "none"
+        self.raised_id: str | None = None
+        self.ok_id: str | None = None
+        self._last_keepalive: float | None = None
 
-def drowsy(p_drowsy: float = 0.95) -> Alert:
-    """What cv-argus's Orchestrator enqueues for a critical camera verdict: the first one is the
-    severity change (none -> critical, which the ESP32 raises an alert for), then keepalives."""
-    global _first_drowsy
-    transition, _first_drowsy = _first_drowsy, False
-    return Alert.new(
-        kind=AlertKind.DROWSINESS,
-        level=2,
-        source_id="cam-0",
-        payload={"class_name": "Drowsy", "probabilities": [round(1 - p_drowsy, 4), p_drowsy],
-                 "severity": "critical", "previous_severity": "none" if transition else "critical",
-                 "reason": "eyes_closed", "episode": "hil-1", "transition": transition},
-    )
+    @staticmethod
+    def _record(severity: str, previous: str, transition: bool, episode: str | None) -> Alert:
+        drowsy = severity in ("medium", "critical")
+        payload = {
+            "class_name": "Drowsy" if drowsy else "Not Drowsy",
+            "probabilities": [0.05, 0.95] if drowsy else [0.9, 0.1],
+            "transition": transition,
+            "severity": severity,
+            "previous_severity": previous,
+            "reason": "eyes_closed" if drowsy else "ok",
+            "model": "parts-rules-v1",
+        }
+        if episode:
+            payload["episode"] = episode
+        return Alert.new(kind=AlertKind.DROWSINESS, level=2 if drowsy else 1, source_id="cam-0",
+                         payload=payload)
+
+    def tick(self, elapsed: float) -> list[Alert]:
+        out: list[Alert] = []
+        if self.raised_id is None and elapsed >= self.alert_after:
+            alert = self._record("critical", "none", True, self.episode)
+            self.raised_id, self.severity = alert.id, "critical"
+            out.append(alert)
+        elif (self.raised_id is not None and self.ok_id is None
+              and elapsed >= self.alert_after + self.recover_after):
+            # The recovery record carries the episode too (C1.4), then it ends.
+            alert = self._record("none", "critical", True, self.episode)
+            self.ok_id, self.severity = alert.id, "none"
+            out.append(alert)
+        if self._last_keepalive is None or elapsed - self._last_keepalive >= self.keepalive_every:
+            self._last_keepalive = elapsed
+            held = self.episode if self.severity == "critical" else None
+            out.append(self._record(self.severity, self.severity, False, held))
+        return out
 
 
 # --- Transports ---------------------------------------------------------------------------
@@ -125,7 +163,7 @@ class SerialSppListener(Listener):
     only while a program holds the port open. With more than one incoming port Windows
     advertises them all and the ESP32 takes whichever it finds first, so this listens on every
     one given. A COM port has no accept event, so a session starts when the first byte (the
-    CONFIG or PULL) arrives."""
+    CONFIG, PULL or DLQ) arrives."""
 
     def __init__(self, port_names: list[str]) -> None:
         import serial
@@ -162,12 +200,13 @@ class SerialSppListener(Listener):
 
 
 class LoggingTransport(Transport):
-    """Prints every line in both directions, and counts CONFIGs/PULLs/ACKs for the final checks.
+    """Prints every line in both directions, and counts CONFIG/PULL/ACK/TAKEN for the final checks.
     The device key in a CONFIG reply is masked."""
 
     configs = 0
     pulls = 0
     acks = 0
+    taken = 0
 
     def __init__(self, inner: Transport) -> None:
         self._inner = inner
@@ -183,6 +222,8 @@ class LoggingTransport(Transport):
                 LoggingTransport.pulls += 1
             elif text.startswith("ACK"):
                 LoggingTransport.acks += 1
+            elif text.startswith("TAKEN"):
+                LoggingTransport.taken += 1
         return line
 
     def write(self, data: bytes) -> None:
@@ -264,8 +305,11 @@ def main() -> int:
         help="Windows incoming Bluetooth COM port(s): 'auto' (every incoming one), COM4, or COM4,COM6",
     )
     where.add_argument("--rfcomm", type=int, help="Linux/BlueZ RFCOMM channel, e.g. 4")
-    parser.add_argument("--duration", type=float, default=120.0, help="seconds to run (max)")
-    parser.add_argument("--drowsy-every", type=float, default=1.0, help="seconds per Drowsy record")
+    parser.add_argument("--duration", type=float, default=150.0, help="seconds to run (max)")
+    parser.add_argument("--alert-after", type=float, default=15.0,
+                        help="seconds before the CRITICAL raise (after the ESP32's first PULL)")
+    parser.add_argument("--recover-after", type=float, default=20.0,
+                        help="seconds the CRITICAL is held before the recovery (driver OK)")
     parser.add_argument(
         "--expect-location",
         type=parse_lat_lon,
@@ -274,16 +318,15 @@ def main() -> int:
         "it sends must be within --tolerance-m of it, from the NEO-6M (not BENCH_FAKE_GPS)",
     )
     parser.add_argument("--tolerance-m", type=float, default=100.0, help="for --expect-location")
-    parser.add_argument("--heartbeat-every", type=float, default=10.0, help="seconds per route_status")
     args = parser.parse_args()
 
     backend = BenchBackend()
     backend.start()
     device_config = bench_device_config()
     print(
-        f"Bench backend up at {device_config.backend_url}. The ESP32 gets that URL and the "
-        "bench device key from this PC over Bluetooth (CONFIG) -- config.h only needs WiFi and "
-        "PI_BT_MAC_ADDRESS.\n"
+        f"Bench backend up at {device_config.backend_url}. The ESP32 gets that URL, the bench "
+        "device key and the WiFi from this PC over Bluetooth (CONFIG) -- config.h only needs "
+        "PI_BT_MAC_ADDRESS and PI_BT_CHANNEL.\n"
     )
 
     buffer = open_buffer(Path(tempfile.mkdtemp(prefix="argus-hil-")) / "buffer.sqlite3")
@@ -300,69 +343,91 @@ def main() -> int:
     http.headers["Authorization"] = f"Bearer {token}"
 
     print(f"Feeding the Pi buffer for up to {args.duration:.0f}s. Waiting for the ESP32...\n")
+    script = PiScript(args.alert_after, args.recover_after)
     enqueued = 0
-    seen_alerts: set[str] = set()
+    alerts: dict[str, dict] = {}
     positions: list[tuple[float, float]] = []
-    status = None
-    start = last_drowsy = last_heartbeat = time.monotonic()
-    buffer.enqueue(route_status("cam-0"))
-    enqueued += 1
+    points_seen = 0
+    last_seen = None
+    start = time.monotonic()
+    script_start: float | None = None
     try:
         while time.monotonic() - start < args.duration:
             now = time.monotonic()
-            if now - last_drowsy >= args.drowsy_every:
-                buffer.enqueue(drowsy())
+            # The incident's clock starts once the ESP32 is pulling, so its first CONFIG + WiFi
+            # join doesn't eat the alert's live window.
+            if script_start is None and LoggingTransport.pulls:
+                script_start = now
+            for record in script.tick(now - script_start if script_start is not None else 0.0):
+                buffer.enqueue(record)
                 enqueued += 1
-                last_drowsy = now
-            if now - last_heartbeat >= args.heartbeat_every:
-                buffer.enqueue(route_status("cam-0"))
-                enqueued += 1
-                last_heartbeat = now
+                if record.payload["transition"]:
+                    print(f"  [pi] enqueued {record.payload['previous_severity']} -> "
+                          f"{record.payload['severity']} ({record.id[:8]}, episode {script.episode})")
 
             for alert in http.get("/api/alerts", params={"route_id": ROUTE_ID}).json():
-                if alert["id_alert"] not in seen_alerts:
-                    seen_alerts.add(alert["id_alert"])
-                    positions.append((alert["coordinates"]["lat"], alert["coordinates"]["lon"]))
+                previous = alerts.get(alert["id_alert"])
+                alerts[alert["id_alert"]] = alert
+                if previous is None:
+                    if alert.get("coordinates"):
+                        positions.append((alert["coordinates"]["lat"], alert["coordinates"]["lon"]))
                     print(
                         f"  [http] alert from ESP32: {alert['alert_type']} "
-                        f"severity={alert['severity_level']} source={alert['source']} "
-                        f"grip={alert['grip_status']} at {alert['coordinates']}"
+                        f"severity={alert['severity_level']} delivery={alert.get('delivery')} "
+                        f"at {alert.get('coordinates') or 'position unknown'}"
+                        + (" (last known)" if alert.get("location_is_last_known") else "")
                     )
-            resp = http.get(f"/api/routes/{ROUTE_ID}/status")
-            if resp.status_code == 200 and resp.json() != status:
-                status = resp.json()
-                coords = status["current_coordinates"]
-                positions.append((coords["lat"], coords["lon"]))
-                print(
-                    f"  [http] route status from ESP32: vigilance={status['vigilance']} "
-                    f"at {status['current_coordinates']}"
-                )
+                elif alert.get("driver_ok_at") and not previous.get("driver_ok_at"):
+                    print(f"  [http] driver OK for that alert at {alert['driver_ok_at']}")
+            track = http.get(f"/api/routes/{ROUTE_ID}/track")
+            if track.status_code == 200:
+                points = track.json()["points"]
+                for p in points[points_seen:]:
+                    positions.append((p["lat"], p["lon"]))
+                if len(points) > points_seen:
+                    p = points[-1]
+                    print(f"  [http] {len(points) - points_seen} GPS point(s), newest {p['lat']:.6f},"
+                          f"{p['lon']:.6f} vigilance={p['vigilance']}"
+                          + (" (last known)" if p["last_known"] else ""))
+                points_seen = len(points)
+            truck = http.get(f"/api/trucks/{TRUCK_ID}")
+            if truck.status_code == 200:
+                last_seen = truck.json().get("device_last_seen_at") or last_seen
 
-            if seen_alerts and status is not None and LoggingTransport.acks:
+            raised = [a for a in alerts.values() if a["severity_level"] == "critical"]
+            if script.ok_id and raised and raised[0].get("driver_ok_at") and points_seen:
                 break  # everything the checks need has happened
             time.sleep(0.5)
     except KeyboardInterrupt:
         print("\nInterrupted.")
     finally:
-        unsent = buffer.unsent_count()
+        counts = buffer.counts()
         server.stop()
         server.join(timeout=3.0)
         buffer.close()
         http.close()
         backend.stop()
 
-    print()
+    critical = [a for a in alerts.values() if a["severity_level"] == "critical"]
+    print(f"\nPi buffer at the end: {counts}")
     results = [
         _log(LoggingTransport.configs > 0,
              "ESP32 fetched its backend credentials over Bluetooth (CONFIG)",
              f"{LoggingTransport.configs} request(s)"),
         _log(LoggingTransport.pulls > 0, "ESP32 connected over Bluetooth and sent PULL",
              f"{LoggingTransport.pulls} pull(s)"),
-        _log(LoggingTransport.acks > 0, "ESP32 ACKed relayed records",
-             f"{enqueued - unsent}/{enqueued} records left the Pi buffer"),
-        _log(status is not None, "route status reached the backend over HTTP (device key)"),
-        _log(bool(seen_alerts), "fusion alert reached the backend over HTTP (device key)",
-             f"{len(seen_alerts)} alert(s)"),
+        _log(LoggingTransport.acks > 0 and LoggingTransport.taken > 0,
+             "ESP32 ACKed keepalives and TAKEN the events (protocol v2)",
+             f"{LoggingTransport.acks} ACK line(s), {LoggingTransport.taken} TAKEN line(s), "
+             f"{enqueued} record(s) enqueued"),
+        _log(last_seen is not None, "a report reached the backend (device_last_seen_at)",
+             f"last seen {last_seen}"),
+        _log(points_seen > 0, "GPS points reached the route (needs a fix or BENCH_FAKE_GPS 1)",
+             f"{points_seen} point(s)"),
+        _log(len(critical) == 1, "exactly one CRITICAL alert for the incident",
+             f"{len(critical)} critical, {len(alerts)} alert(s) in all"),
+        _log(bool(critical) and bool(critical[0].get("driver_ok_at")),
+             "the driver OK reached it (driver_ok_at set; the alert stays open)"),
     ]
     if args.expect_location:
         results.append(check_location(positions, args.expect_location, args.tolerance_m))
