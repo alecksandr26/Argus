@@ -24,6 +24,16 @@ FACE_DETECTOR_BUNDLE_FILENAME = "blaze_face_short_range.tflite"
 FACE_DETECTOR_MIN_DETECTION_CONFIDENCE = 0.5
 FACE_DETECTOR_BBOX_MARGIN_FRAC = 0.25
 
+# One face (pipeline/face_detector_stage.py `FaceLock`): the largest face is locked and followed;
+# every other face is ignored. A detection is the locked face when its centre is within
+# FACE_LOCK_MAX_SHIFT_FRAC x the locked box's side of the locked centre and its side is within a
+# factor FACE_LOCK_MAX_SCALE of it (the box is updated every matched frame, so the lock follows a
+# moving driver). While the locked face is missing and another face stays visible for
+# FACE_SWITCH_AFTER_S, the lock switches to the largest visible face (contracts C1.7).
+FACE_SWITCH_AFTER_S = 5.0
+FACE_LOCK_MAX_SHIFT_FRAC = 0.6
+FACE_LOCK_MAX_SCALE = 1.6
+
 # --- The "parts" pipeline: tiny YOLO-style detector + rule engine ---
 # notebook/12_tiny_grid_detector.ipynb's model "tiny_yolo_w1" (46k params), the 2026-10-20 23:35
 # run. On notebook 12's test set (int8; float within 0.01): mAP@0.5 0.756 (0.63 for the

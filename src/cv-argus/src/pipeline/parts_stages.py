@@ -20,7 +20,13 @@ It writes:
   next to BlazeFace's `face`, for the metrics log.
 
 Frames **without** a face still tick the rule engine, because
-"face lost for 3 s" is itself a rule and timers need every timestamp.
+"face lost for 5 s" is itself a rule and timers need every timestamp.
+
+**Face switch** (contracts C1.7). When `FaceDetectorCropStage` marks the frame
+`ctx.features["face_switched"]` (the locked face was gone and someone else stayed in view for
+`FACE_SWITCH_AFTER_S`), this stage feeds that frame to the rule engine **first** (it reads as
+no face), then calls `PartsRuleEngine.reset_signals()` (timers only; the held severity stays)
+and resets the `PartsTracker`, so the new face starts with fresh timers and tracks.
 """
 
 from __future__ import annotations
@@ -74,6 +80,9 @@ class PartsInferenceStage(Stage):
         timing["rules"] = 1000.0 * (time.perf_counter() - t2)
         timing["parts_stage"] = 1000.0 * (time.perf_counter() - t0)
 
+        if ctx.features.get("face_switched"):
+            tracks = self._on_face_switch()
+
         ctx.detection = to_detection(state) if (raw_box is not None or state.severity != "none") else None
         ctx.features["parts"] = {
             "tracks": tracks,
@@ -85,3 +94,16 @@ class PartsInferenceStage(Stage):
             "infer_ms": 1000.0 * self._detector.last_phase_seconds.get("infer", 0.0),
         }
         return ctx
+
+    def _on_face_switch(self) -> list:
+        """After the switch frame went through the rules: reset the rule timers (never the held
+        severity) and the tracker. `reset_signals` is reached through `getattr` because it lands
+        with T1's rule-engine change (contracts section 0); without it only the tracker resets."""
+        reset_signals = getattr(self._rules, "reset_signals", None)
+        if callable(reset_signals):
+            reset_signals()
+        else:
+            logger.warning("face switch: rule engine has no reset_signals(); only the tracker was reset")
+        self._tracker.reset()
+        logger.info("face switch: rule timers and part tracks reset for the new face")
+        return self._tracker.tracks
