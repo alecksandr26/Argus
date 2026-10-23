@@ -3,7 +3,9 @@ idempotent (no duplicates on a second run, the shape `SEED_DEMO_DATA` relies on 
 backend startup) and that the destructive (`reset=True`) path still seeds the full dataset."""
 import pytest
 
+from app.models.alert import Alert
 from app.models.driver import Driver
+from app.models.incident import Incident
 from app.models.route import Route
 from app.models.truck import Truck
 from app.models.user import User
@@ -43,6 +45,25 @@ async def test_reset_seed_produces_the_full_dataset(mongo_client):
     assert await Route.find_all().count() == 4
     roles = {u.role.value for u in await User.find_all().to_list()}
     assert roles == {"root_admin", "admin", "guardian"}
+
+
+@pytest.mark.asyncio
+async def test_seed_has_incidents_and_no_panic(mongo_client):
+    """The panic button is retired, so the demo has no panic alert; every demo alert is in an
+    incident (the reviewed one on the completed route closed), and the routes' incident_state
+    follows their open incidents."""
+    await seed(reset=True, client=mongo_client)
+    alerts = await Alert.find_all().to_list()
+    assert {a.source.value for a in alerts} == {"fusion"}
+    assert all(a.id_incident for a in alerts)
+    incidents = await Incident.find_all().to_list()
+    assert len(incidents) == 3
+    assert sum(i.closed_at is not None for i in incidents) == 1
+    states = {r.operative_status.value: r.incident_state.value for r in await Route.find_all().to_list()}
+    assert states["in_progress"] == "critical"
+    assert states["in_progress_alert"] == "critical"
+    assert states["completed"] == "fine"
+    assert any(a.delivery.value == "dlq" and a.location_is_last_known for a in alerts)
 
 
 @pytest.mark.asyncio
