@@ -55,6 +55,7 @@ never resent**; `python -m cv_argus.buffer.status` shows them.
 """
 
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -62,6 +63,8 @@ from pathlib import Path
 
 from .. import constants
 from ..alerts import Alert, from_dict, to_dict
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS alerts (
@@ -500,18 +503,26 @@ class Buffer:
            first composed event, with the event-time position, wins); at
            `BUFFER_DLQ_MAX_ATTEMPTS` the row is archived as `max_attempts`.
 
+        **Repeated-FAIL guard** (contract C1.6, sync 2): rule 4 applies only to an `outbox` row
+        (leased or not) or to a *leased* `dlq` row. Every FAIL clears the lease, so a rule-4 FAIL
+        for a non-leased `dlq` row is a resend of one already applied (the ESP32 resends outcomes
+        it got no `OK` for, C1.2/C1.8): it is ignored, not counted, and logged at debug. Accepted
+        cost: a DLQ replay whose lease lapsed before its FAIL arrived is an uncounted attempt.
+        Rules 1-3 need no guard.
+
         Returns `"archived"`, `"dlq"` or `"requeued"`, or `None` when the id is unknown, sent or
-        already archived (ignored)."""
+        already archived, or the FAIL is a repeat (ignored)."""
         now = _now_ms() if now_ms is None else now_ms
         stored = json.dumps(body, separators=(",", ":")) if body is not None else None
         with self._lock:
             row = self._conn.execute(
-                f"SELECT state, {_CRITICAL_EVENT} FROM alerts WHERE id = ? AND state IN (?, ?)",
-                (alert_id, OUTBOX, DLQ),
+                f"""SELECT state, {_CRITICAL_EVENT}, NOT {_NOT_LEASED}
+                    FROM alerts WHERE id = ? AND state IN (?, ?)""",
+                (now, alert_id, OUTBOX, DLQ),
             ).fetchone()
             if row is None:
                 return None
-            state, critical = row[0], bool(row[1])
+            state, critical, leased = row[0], bool(row[1]), bool(row[2])
             where, params = "id = ?", (alert_id,)
             if not critical or reason in constants.BUFFER_ARCHIVE_NOW_REASONS:
                 self._conn.execute(
@@ -525,6 +536,12 @@ class Buffer:
                     "UPDATE alerts SET lease_until_ms = NULL WHERE id = ?", (alert_id,)
                 )
                 return FAIL_REQUEUED
+            if state == DLQ and not leased:
+                logger.debug(
+                    "buffer: ignoring repeated FAIL %s for dead letter %s (not leased)",
+                    reason, alert_id,
+                )
+                return None
             next_round = self._next_dlq_round() if state == OUTBOX else None
             self._conn.execute(
                 """
@@ -649,8 +666,10 @@ class Buffer:
         the oldest *keepalive* readings first (deleted: they only repeat a state already
         queued). If that isn't enough, the oldest of the rest are moved to the archive with
         reason `cap_unsent` -- never deleted: the SD card is finite, and the newest rows describe
-        the present (BUF-06), but an alert is kept on record. Returns how many rows were dropped
-        or archived."""
+        the present (BUF-06), but an alert is kept on record. **Leased rows are exempt**
+        (contract C1.6, sync 2): they are neither deleted nor archived, since the ESP32 may
+        already have delivered them and its ACK must still land (they still count towards the
+        total). Returns how many rows were dropped or archived."""
         now = _now_ms() if now_ms is None else now_ms
         with self._lock:
             excess = (
@@ -660,25 +679,29 @@ class Buffer:
             if excess <= 0:
                 return 0
             dropped = self._conn.execute(
-                """
+                f"""
                 DELETE FROM alerts WHERE rowid IN (
                     SELECT rowid FROM alerts
                     WHERE sent = 0 AND kind = 'drowsiness'
                       AND json_extract(payload_json, '$.transition') = 0
+                      AND {_NOT_LEASED}
                     ORDER BY rowid ASC
                     LIMIT ?
                 )
                 """,
-                (excess,),
+                (now, excess),
             ).rowcount
             excess -= dropped
             if excess > 0:
                 ids = [r[0] for r in self._conn.execute(
-                    "SELECT id FROM alerts WHERE sent = 0 ORDER BY rowid ASC LIMIT ?", (excess,)
+                    f"SELECT id FROM alerts WHERE sent = 0 AND {_NOT_LEASED}"
+                    " ORDER BY rowid ASC LIMIT ?",
+                    (now, excess),
                 ).fetchall()]
-                dropped += self._archive_where(
-                    f"id IN ({_marks(ids)})", tuple(ids), ARCHIVE_CAP_UNSENT, now
-                )
+                if ids:
+                    dropped += self._archive_where(
+                        f"id IN ({_marks(ids)})", tuple(ids), ARCHIVE_CAP_UNSENT, now
+                    )
             return dropped
 
     def close(self) -> None:

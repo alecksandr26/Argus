@@ -32,6 +32,10 @@ Report lines:
     FAIL <id> <reason> <body>   (no reply)      couldn't deliver; body is compact JSON or "-"
     TAKEN <id1>,<id2>,...       -> LEASED <n>   the ESP32 holds these rows, reports them later
 
+Report lines take effect the moment the Pi reads them; `DONE` -> `OK` is only a summary. A
+session that breaks before `OK` keeps every line already applied, and resending them is safe (ACK
+is idempotent, a repeated FAIL is ignored: `Buffer.apply_fail`).
+
 `<dlq_waiting>`/`<outbox_waiting>` count rows that aren't leased. A trailing `\\r` (a CRLF client)
 is tolerated. Case-sensitive by design — simpler to reason about on constrained ESP32 firmware
 than a case-insensitive parser would be.

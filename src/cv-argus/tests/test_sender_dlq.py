@@ -65,6 +65,13 @@ def _dead_letter(buf, alert, reason="no_network", body=None):
     assert buf.apply_fail(alert.id, reason, body) == "dlq"
 
 
+def _replay_fail(buf, alert_id, reason="no_network", body=None):
+    """A failed DLQ replay as the ESP32 does it: the row was served and `TAKEN` (leased), then
+    `FAIL`ed. A FAIL for a dead letter that isn't leased is a resend and is ignored (C1.6)."""
+    assert buf.lease([alert_id]) == 1
+    return buf.apply_fail(alert_id, reason, body)
+
+
 # --- which rows are events (C1.5) -----------------------------------------------------------
 
 @pytest.mark.parametrize("severity,previous,transition,expected", [
@@ -153,8 +160,8 @@ class TestFail:
         a = _critical()
         buf.enqueue(a)
         buf.apply_fail(a.id, "no_network", {"original": True})
-        buf.apply_fail(a.id, "http_503", {"later": True})
-        buf.apply_fail(a.id, "timeout", None)
+        _replay_fail(buf, a.id, "http_503", {"later": True})
+        _replay_fail(buf, a.id, "timeout", None)
         [(_, dlq)] = buf.fetch_dlq(10)
         assert dlq["body"] == {"original": True}
         assert dlq["error"] == "timeout" and dlq["attempts"] == 3
@@ -163,18 +170,19 @@ class TestFail:
         a = _critical()
         buf.enqueue(a)
         buf.expire_outbox(int(time.time() * 1000) + 1000)     # esp32_unreachable, no body
-        buf.apply_fail(a.id, "no_network", {"composed": True})
+        _replay_fail(buf, a.id, "no_network", {"composed": True})
         [(_, dlq)] = buf.fetch_dlq(10)
         assert dlq["body"] == {"composed": True} and dlq["attempts"] == 1
 
     def test_every_attempt_counts_and_5_archive_it(self, buf):
         a = _critical()
         buf.enqueue(a)
-        for attempt in range(1, constants.BUFFER_DLQ_MAX_ATTEMPTS):
-            assert buf.apply_fail(a.id, "no_network") == "dlq"
+        assert buf.apply_fail(a.id, "no_network") == "dlq"     # the live failure: attempt 1
+        for attempt in range(2, constants.BUFFER_DLQ_MAX_ATTEMPTS):
             [(_, dlq)] = buf.fetch_dlq(10)
-            assert dlq["attempts"] == attempt
-        assert buf.apply_fail(a.id, "timeout") == "archived"
+            assert dlq["attempts"] == attempt - 1
+            assert _replay_fail(buf, a.id, "no_network") == "dlq"
+        assert _replay_fail(buf, a.id, "timeout") == "archived"
         assert _archive(buf) == {a.id: "max_attempts"}
         row = buf._conn.execute(
             "SELECT attempts, last_error, archived_at_ms FROM archive WHERE id = ?", (a.id,)
@@ -214,6 +222,99 @@ class TestFail:
         assert buf.mark_sent([a.id, gone.id]) == 1
         assert buf.fetch_dlq(10) == [] and buf.counts()["sent"] == 1
 
+    # --- [sync 2] repeated-FAIL guard, retry_window and other reasons --------------------
+
+    def _row(self, buf, alert_id):
+        return buf._conn.execute(
+            "SELECT state, attempts, lease_until_ms, dlq_round, dlq_body FROM alerts WHERE id = ?",
+            (alert_id,),
+        ).fetchone()
+
+    def test_the_same_replay_fail_twice_counts_one_attempt(self, buf, caplog):
+        a = _critical()
+        _dead_letter(buf, a)                                   # attempt 1
+        buf.serve_dlq(1)
+        buf.lease([a.id])
+        assert buf.apply_fail(a.id, "no_network") == "dlq"     # attempt 2, lease cleared
+        with caplog.at_level("DEBUG", logger="cv_argus.buffer.store"):
+            assert buf.apply_fail(a.id, "no_network") is None  # resent: ignored
+        assert "ignoring repeated FAIL" in caplog.text
+        [(_, dlq)] = buf.fetch_dlq(1)
+        assert dlq["attempts"] == 2
+
+    def test_an_outbox_critical_failed_twice_is_one_attempt_in_the_dlq(self, buf):
+        a = _critical()
+        buf.enqueue(a)
+        buf.lease([a.id])
+        body = {"first": True}
+        assert buf.apply_fail(a.id, "no_network", body) == "dlq"
+        assert buf.apply_fail(a.id, "no_network", body) is None
+        state, attempts, lease, _, stored = self._row(buf, a.id)
+        assert (state, attempts, lease) == ("dlq", 1, None)
+        assert json.loads(stored) == body
+
+    def test_an_expired_lease_makes_a_late_fail_an_uncounted_attempt(self, buf):
+        # Accepted cost (C1.6): the replay's FAIL arrived after its 120 s lease lapsed.
+        a = _critical()
+        _dead_letter(buf, a)
+        buf.lease([a.id], now_ms=1_000_000)
+        assert buf.apply_fail(a.id, "no_network", now_ms=1_000_000 + LEASE_MS + 1) is None
+        assert buf.fetch_dlq(1)[0][1]["attempts"] == 1
+
+    @pytest.mark.parametrize("reason", ["too_old", "route_finished", "invalid"])
+    def test_rule_3_still_archives_a_dead_letter_served_but_not_taken(self, buf, reason):
+        a = _critical()
+        _dead_letter(buf, a)
+        assert buf.serve_dlq(1)[0][0].id == a.id               # served, never TAKEN
+        assert buf.apply_fail(a.id, reason) == "archived"
+        assert _archive(buf) == {a.id: reason}
+
+    def test_rule_1_still_archives_an_unleased_non_critical(self, buf):
+        # A non-critical never sits in the DLQ after the v2 migration; place one there directly
+        # (a hand-edited or half-migrated file) to show rule 1 needs no lease.
+        m = _medium()
+        buf.enqueue(m)
+        buf._conn.execute("UPDATE alerts SET state = 'dlq' WHERE id = ?", (m.id,))
+        assert buf.apply_fail(m.id, "no_network") == "archived"
+        assert _archive(buf) == {m.id: "no_network"}
+
+    def test_a_preempted_live_critical_stays_in_the_outbox(self, buf):
+        # [sync 2] rule 2 on a live row: lease cleared, attempts and round unchanged.
+        a = _critical()
+        buf.enqueue(a)
+        buf.lease([a.id])
+        assert buf.apply_fail(a.id, "preempted") == "requeued"
+        assert self._row(buf, a.id)[:4] == ("outbox", 0, None, 0)
+        assert [x.id for x in buf.fetch_unsent()] == [a.id]
+        assert buf.waiting() == (0, 1)
+
+    def test_a_critical_failed_with_retry_window_is_rule_4(self, buf):
+        a = _critical()
+        buf.enqueue(a)
+        buf.lease([a.id])
+        body = {"severity": "critical", "position": None}
+        assert buf.apply_fail(a.id, "retry_window", body) == "dlq"
+        [(_, dlq)] = buf.fetch_dlq(1)
+        assert dlq["attempts"] == 1 and dlq["body"] == body and dlq["error"] == "retry_window"
+        assert _archive(buf) == {}
+
+    @pytest.mark.parametrize("make", [_medium, _ok], ids=["medium", "driver_ok"])
+    def test_a_medium_or_ok_failed_with_retry_window_is_archived(self, buf, make):
+        a = make()
+        buf.enqueue(a)
+        buf.lease([a.id])
+        assert buf.apply_fail(a.id, "retry_window") == "archived"
+        assert _archive(buf) == {a.id: "retry_window"}
+
+    @pytest.mark.parametrize("reason", ["bad_response", "http_503", "http_500", "no_credentials",
+                                        "transport_error", "something_new"])
+    def test_other_reasons_are_rule_4(self, buf, reason):
+        a = _critical()
+        buf.enqueue(a)
+        assert buf.apply_fail(a.id, reason) == "dlq"
+        [(_, dlq)] = buf.fetch_dlq(1)
+        assert dlq["attempts"] == 1 and dlq["error"] == reason
+
 
 # --- buffer: DLQ order (newest first, round-robin) -------------------------------------------
 
@@ -250,7 +351,7 @@ class TestDlqOrder:
     def test_a_failed_replay_keeps_its_round(self, buf):
         old, mid, new = self._three(buf)
         [(a, _)] = buf.serve_dlq(1)
-        buf.apply_fail(a.id, "no_network")
+        assert _replay_fail(buf, a.id, "no_network") == "dlq"
         assert buf.serve_dlq(1)[0][0].id == mid.id      # new can't take two attempts in a row
 
     def test_only_one_row_per_dlq_request(self):
@@ -654,6 +755,25 @@ class TestServer:
         _done(report)
         [(_, dlq)] = buf.fetch_dlq(1)
         assert dlq["error"] == "http_503" and dlq["attempts"] == 2 and dlq["body"] == {"keep": 1}
+
+    def test_a_fail_resent_after_a_broken_session_is_not_counted(self, buf, session):
+        # C1.2 [sync 2]: report lines take effect when read; the ESP32 resends outcomes it got
+        # no OK for, and the repeated FAIL is ignored (not an attempt, not in `failed`).
+        a = _critical()
+        _dead_letter(buf, a, body={"keep": 1})
+        client = session.connect()
+        _send(client, "DLQ 1")
+        _read_batch(client)
+        _send(client, protocol.format_taken([a.id]))
+        assert _recv(client) == "LEASED 1"
+        _send(client, protocol.format_fail(a.id, "timeout"))
+        client.close()                                   # broke before DONE -> no OK
+        time.sleep(0.2)
+        assert buf.fetch_dlq(1)[0][1]["attempts"] == 2   # applied when read
+        report = session.connect()
+        _send(report, protocol.format_fail(a.id, "timeout"))
+        assert _done(report) == {"acked": 0, "failed": 0, "leased": 0, "dlq": 1, "outbox": 0}
+        assert buf.fetch_dlq(1)[0][1]["attempts"] == 2
 
     def test_a_preempted_replay_is_not_an_attempt(self, buf, session):
         a = _critical()

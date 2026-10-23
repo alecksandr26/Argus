@@ -18,8 +18,11 @@ outbox; `DLQ <k>` serves one dead letter (newest first, round-robin); a session 
 `ACK`/`FAIL` reports on rows the ESP32 took in an earlier session. After a pull the ESP32 reports
 per row, in any order: `ACK` (delivered, or nothing to send) marks it sent; `FAIL <reason>
 <body>` applies the dead-letter rules (`Buffer.apply_fail`: critical -> DLQ or archive, anything
-else -> archive); `TAKEN` leases the rows its sender task now holds for 120 s. `DONE` ends the
-session with an `OK` summary. Each served record carries `age_s` (seconds since the event,
+else -> archive; a FAIL resent for a dead letter that is no longer leased is ignored, so a resend
+never counts an attempt twice); `TAKEN` leases the rows its sender task now holds for 120 s. Each
+report line takes effect the moment it is read (`ACKED`/`LEASED` answer at once); `DONE` only
+asks for the `OK` summary, so a session that breaks before `OK` keeps every line already applied
+and the ESP32 may safely resend outcomes. Each served record carries `age_s` (seconds since the event,
 computed now, see `alerts.age_seconds`), and a dead letter its `dlq` object.
 
 `allowed_peers` (the `ESP32_BT_MAC` env var) optionally restricts every session to this truck's

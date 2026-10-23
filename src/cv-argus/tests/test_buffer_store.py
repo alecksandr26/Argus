@@ -344,3 +344,32 @@ def test_prune_sent_never_touches_the_archive(tmp_path):
     buf.prune_sent(older_than_ms=10**15)
     assert buf._conn.execute("SELECT COUNT(*) FROM archive").fetchone()[0] == 1
     buf.close()
+
+
+def test_cap_unsent_never_touches_leased_rows(tmp_path):
+    """Contract C1.6 [sync 2]: a leased row may already be delivered by the ESP32, so its later
+    ACK must still land. The cap skips it (neither deleted nor archived) and takes the next
+    oldest instead; leased rows still count towards the total."""
+    buf = open_buffer(tmp_path / "b.sqlite3")
+    leased_alert = _reading("Drowsy", True)
+    leased_keepalive = _reading("Drowsy", False)
+    rest = [_reading("Drowsy", True) for _ in range(3)]
+    for a in (leased_alert, leased_keepalive, *rest):
+        buf.enqueue(a)
+    now = 1_000_000
+    assert buf.lease([leased_alert.id, leased_keepalive.id], now_ms=now) == 2
+
+    assert buf.cap_unsent(max_rows=3, now_ms=now + 1) == 2      # 5 waiting, 2 over the cap
+    archived = [r[0] for r in buf._conn.execute("SELECT id FROM archive ORDER BY rowid")]
+    assert archived == [rest[0].id, rest[1].id]
+    still = {r[0] for r in buf._conn.execute("SELECT id FROM alerts WHERE sent = 0")}
+    assert still == {leased_alert.id, leased_keepalive.id, rest[2].id}
+    assert buf.mark_sent([leased_alert.id]) == 1                 # its ACK still lands
+
+    # Only leased rows left over the cap: the cap can't make room, and doesn't try.
+    assert buf.cap_unsent(max_rows=0, now_ms=now + 1) == 1       # rest[2] archived
+    assert buf.cap_unsent(max_rows=0, now_ms=now + 1) == 0       # the leased keepalive stays
+    assert buf.unsent_count() == 1
+    # Once the lease lapses the row is fair game again.
+    assert buf.cap_unsent(max_rows=0, now_ms=now + 10**9) == 1
+    buf.close()
