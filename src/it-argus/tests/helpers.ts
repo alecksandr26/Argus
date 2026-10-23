@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { APIRequestContext, Page } from '@playwright/test'
 
 /**
@@ -83,4 +83,157 @@ export async function restLogin(
 
 export function authHeaders(token: string): { Authorization: string } {
   return { Authorization: `Bearer ${token}` }
+}
+
+/**
+ * The device side of the final-tweaks contracts (C2, `docs/designs/final-tweaks-contracts.md`):
+ * `POST /api/devices/me/report` is the only device write, authenticated by a per-truck device
+ * API key (never a JWT). Specs act as a truck's ESP32 with these helpers: the same endpoint and
+ * body `src/simulator-argus` and the firmware post.
+ */
+export type Vigilance = 'low' | 'medium' | 'critical' | 'unknown'
+
+export interface ReportPoint {
+  age_s: number
+  lat: number
+  lon: number
+  speed: number
+  vigilance: Vigilance
+  last_known: boolean
+  location_age_s: number
+}
+
+export interface ReportPosition {
+  lat: number
+  lon: number
+  last_known: boolean
+  location_age_s: number
+}
+
+export interface ReportEvent {
+  client_event_id: string
+  episode: string
+  kind: 'alert' | 'ok'
+  severity: 'medium' | 'critical' | null
+  alert_type: string | null
+  age_s: number
+  delivery: 'live' | 'dlq'
+  queued_seconds: number
+  position: ReportPosition | null
+  speed: number | null
+  ai_metadata: {
+    model: string | null
+    scores: { not_drowsy: number; drowsy: number } | null
+  } | null
+}
+
+export interface ReportBody {
+  points: ReportPoint[]
+  event?: ReportEvent | null
+}
+
+export interface ReportResult {
+  points: {
+    stored: number
+    route: string | null
+    status: 'ok' | 'no_active_route' | 'route_finished'
+  }
+  event: {
+    status: 'created' | 'duplicate' | 'rejected'
+    reason: 'route_finished' | 'no_route' | 'too_old' | 'wrong_truck' | 'invalid' | null
+    id_alert: string | null
+  } | null
+  active_route: string | null
+}
+
+/** 32 lowercase hex chars, like a Pi record id (`client_event_id`). */
+export function newEventId(): string {
+  return randomUUID().replace(/-/g, '')
+}
+
+/** 12 lowercase hex chars, like a Pi `payload.episode`. */
+export function newEpisode(): string {
+  return randomUUID().replace(/-/g, '').slice(0, 12)
+}
+
+/** One GPS point: a live fix `age_s` seconds before the request, by default. */
+export function reportPoint(overrides: Partial<ReportPoint> = {}): ReportPoint {
+  return {
+    age_s: 1,
+    lat: 19.05,
+    lon: -98.25,
+    speed: 82,
+    vigilance: 'low',
+    last_known: false,
+    location_age_s: 0,
+    ...overrides,
+  }
+}
+
+/** A live alert event, critical `eyes_closed` by default (each call: a new id and episode). */
+export function alertEvent(overrides: Partial<ReportEvent> = {}): ReportEvent {
+  return {
+    client_event_id: newEventId(),
+    episode: newEpisode(),
+    kind: 'alert',
+    severity: 'critical',
+    alert_type: 'eyes_closed',
+    age_s: 0.5,
+    delivery: 'live',
+    queued_seconds: 0,
+    position: { lat: 19.05, lon: -98.25, last_known: false, location_age_s: 0 },
+    speed: 82,
+    ai_metadata: { model: 'parts-rules-v1', scores: { not_drowsy: 0.12, drowsy: 0.88 } },
+    ...overrides,
+  }
+}
+
+/** The driver-OK event of `episode` (it sets `driver_ok_at`; it never closes anything). */
+export function okEvent(episode: string, overrides: Partial<ReportEvent> = {}): ReportEvent {
+  return alertEvent({
+    episode,
+    kind: 'ok',
+    severity: null,
+    alert_type: null,
+    ai_metadata: null,
+    ...overrides,
+  })
+}
+
+/** Mints (or rotates) a truck's device API key with a root_admin/admin JWT; returns the
+ * plaintext key, which the backend shows only once. */
+export async function rotateDeviceKey(
+  request: APIRequestContext,
+  token: string,
+  truckId: string,
+): Promise<string> {
+  const res = await request.post(`${BACKEND_URL}/api/trucks/${truckId}/rotate-key`, {
+    headers: authHeaders(token),
+  })
+  if (!res.ok()) {
+    throw new Error(`rotateDeviceKey(${truckId}) failed: ${res.status()} ${await res.text()}`)
+  }
+  return (await res.json()).device_api_key as string
+}
+
+/** Posts one combined report as the truck that owns `deviceKey`. Returns the HTTP status and
+ * the parsed body without asserting, so a spec can check a 200 with per-part results
+ * (`rejected route_finished`, ...) and an error status alike. */
+export async function postReport(
+  request: APIRequestContext,
+  deviceKey: string,
+  body: ReportBody,
+): Promise<{ status: number; body: ReportResult }> {
+  const res = await request.post(`${BACKEND_URL}/api/devices/me/report`, {
+    headers: { 'X-Device-Api-Key': deviceKey },
+    data: body,
+  })
+  const text = await res.text()
+  let parsed: unknown = null
+  try {
+    parsed = text ? JSON.parse(text) : null
+  } catch {
+    parsed = text
+  }
+  return { status: res.status(), body: parsed as ReportResult }
 }
