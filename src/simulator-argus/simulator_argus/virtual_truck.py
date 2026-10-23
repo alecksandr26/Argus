@@ -1,7 +1,15 @@
-"""One instance per provisioned route -- the actual simulated traffic (movement + status pings +
-scenario-driven alerts), running as its own asyncio task. See CLAUDE.md's "Movement model"
-section for why the geometry is a real OSRM polyline only when opted into, and a synthetic
-straight line otherwise.
+"""One instance per provisioned route -- the actual simulated traffic, running as its own asyncio
+task. It plays both devices of a real truck:
+
+- the **Pi**: its scenario holds a severity per tick, and `EpisodeTracker` turns severity changes
+  into events (one alert per incident, at most one critical upgrade, one driver OK);
+- the **ESP32**: one GPS point per second, and one combined report per POST to
+  `/api/devices/me/report` -- sent at once when an event is pending, otherwise 5 s after the
+  previous report ended -- with the ESP32's priority, retry windows and dead-letter rules
+  (`delivery.DeliveryQueue`).
+
+See CLAUDE.md's "Movement model" section for why the geometry is a real OSRM polyline only when
+opted into, and a synthetic straight line otherwise.
 """
 from __future__ import annotations
 
@@ -9,21 +17,36 @@ import asyncio
 import logging
 import math
 import random
+import time
 from datetime import datetime, timezone
+from typing import Callable, Optional
+
+import httpx
 
 from .client import BackendClient
+from .constants import ACTIVE_ROUTE_RETRY_S, GPS_READ_INTERVAL_S, SIMULATOR_REPORT_INTERVAL_S
+from .delivery import DeliveryQueue, QueuedEvent
+from .events import EpisodeTracker, vigilance_for
 from .fleet import VirtualTruckSpec
+from .report import (
+    GpsPoint,
+    PointBuffer,
+    ReportOutcome,
+    build_report,
+    classify_response,
+    classify_transport_error,
+)
 from .scenarios import build_scenario
 
 logger = logging.getLogger(__name__)
 
-# Realistic consumer-GPS wobble, not a random teleport: +-60m per axis stays comfortably under
-# the smallest real per-tick forward progress across all route templates (~310m/tick for
-# Monterrey<->Saltillo at default settings), so the dot still has natural noise but visibly
-# advances instead of "spinning" tick to tick (each tick redraws jitter independently, so a
-# magnitude comparable to or larger than per-tick progress reads as random wandering, not GPS
-# noise on top of real movement).
-_JITTER_METERS = 60.0
+# Realistic consumer-GPS wobble, not a random teleport. Points are 1 s apart now (one per GPS
+# read) and the route view draws them as a path, so the wobble has to stay well under the
+# smallest per-second progress across all route templates (~60 m/s for Monterrey<->Saltillo at
+# default settings): each point redraws jitter independently, and a magnitude comparable to the
+# progress between points draws a zig-zag instead of a road. (It was +-60 m when only one point
+# went out every 5 s.)
+_JITTER_METERS = 8.0
 _METERS_PER_DEGREE = 111_320.0
 _JITTER_DEGREES = _JITTER_METERS / _METERS_PER_DEGREE
 _EARTH_RADIUS_METERS = 6_371_000.0
@@ -82,96 +105,193 @@ def _jitter(lat: float, lon: float) -> tuple[float, float]:
     )
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 class VirtualTruck:
     def __init__(
         self,
         client: BackendClient,
         spec: VirtualTruckSpec,
-        interval_seconds: float,
+        report_interval_seconds: float = SIMULATOR_REPORT_INTERVAL_S,
         medium_blip_probability: float = 0.1,
+        tick_seconds: float = GPS_READ_INTERVAL_S,
+        clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], datetime] = _utcnow,
     ) -> None:
         self._client = client
         self._spec = spec
-        self._interval = interval_seconds
+        self._report_interval = report_interval_seconds
+        self._tick_seconds = tick_seconds if tick_seconds > 0 else GPS_READ_INTERVAL_S
+        self._clock = clock
+        self._wall_clock = wall_clock
         total_seconds = (spec.arrival - spec.departure).total_seconds()
-        total_ticks = max(1, int(total_seconds / interval_seconds)) if interval_seconds else 1
+        total_ticks = max(1, int(total_seconds / self._tick_seconds))
         self._scenario = build_scenario(
-            spec.scenario, total_ticks, medium_blip_probability, interval_seconds
+            spec.scenario, total_ticks, medium_blip_probability, self._tick_seconds
         )
-        self._odometer = 0.0
-        self._open_alert_id: str | None = None
+        self._tracker = EpisodeTracker()
+        self._queue = DeliveryQueue()
+        self._points = PointBuffer()
+        self._last_report_end = clock()
+        # Before the first 200 the active route is *unknown*, not null (C2.3 [sync 1]): points
+        # go every report interval until a 200 says otherwise.
+        self._route_known = False
+        self._active_route: Optional[str] = None
+        self.finished = False
+
+    @property
+    def queue(self) -> DeliveryQueue:
+        return self._queue
+
+    @property
+    def active_route(self) -> Optional[str]:
+        return self._active_route
 
     async def run(self) -> None:
         tick = 0
-        while True:
+        while not self.finished:
             try:
-                await self._tick(tick)
+                await self.step(tick)
             except Exception:
                 logger.exception(
-                    "Truck %s: tick %d failed, will retry next interval",
-                    self._spec.truck_id,
-                    tick,
+                    "Truck %s: tick %d failed, will retry next tick", self._spec.truck_id, tick
                 )
             tick += 1
-            await asyncio.sleep(self._interval)
-
-    async def _tick(self, tick: int) -> None:
-        spec = self._spec
-        now = datetime.now(timezone.utc)
-        total_seconds = (spec.arrival - spec.departure).total_seconds()
-        elapsed_seconds = (now - spec.departure).total_seconds()
-        fraction = elapsed_seconds / total_seconds if total_seconds > 0 else 1.0
-
-        lat, lon = interpolate_along_polyline(spec.geometry, fraction)
-        speed = 0.0 if fraction >= 1.0 else round(random.uniform(70.0, 100.0), 1)
-        self._odometer += speed * (self._interval / 3600.0)
-        vigilance = self._scenario.vigilance(tick)
-
-        await self._client.post_status(
-            spec.device_key,
-            spec.route_id,
-            {
-                "current_coordinates": {"lat": lat, "lon": lon},
-                "current_speed": speed,
-                "odometer": round(self._odometer, 2),
-                "vigilance": vigilance,
-            },
+            if not self.finished:
+                await asyncio.sleep(self._tick_seconds)
+        logger.info(
+            "Truck %s: route %s has ended (stopped or completed); the truck stops reporting",
+            self._spec.truck_id,
+            self._spec.route_id,
         )
 
-        event = self._scenario.alert(tick)
-        if event is not None:
-            # `related_alert_id` is filled in here, not by the scenario -- the scenario only
-            # knows *that* this is an escalation (`event.is_escalation`), not the real backend
-            # id of the incident's previous alert, which only this class tracks
-            # (`_open_alert_id`, overwritten on every post -- see DrowsyEscalationScenario's
-            # docstring for why that's exactly the id an escalation needs to link back to).
-            related_alert_id = self._open_alert_id if event.is_escalation else None
-            alert = await self._client.post_alert(
-                spec.device_key,
-                {
-                    "id_route": spec.route_id,
-                    "alert_type": event.alert_type,
-                    "severity_level": event.severity_level,
-                    "source": event.source,
-                    "ai_metadata": event.ai_metadata,
-                    "grip_status": event.grip_status,
-                    "related_alert_id": related_alert_id,
-                    "coordinates": {"lat": lat, "lon": lon},
-                    "speed_at_event": speed,
-                },
-            )
-            self._open_alert_id = alert["id_alert"]
-            logger.info(
-                "Truck %s fired a %s %s alert on route %s",
-                spec.truck_id,
-                event.severity_level,
-                event.source,
-                spec.route_id,
-            )
+    async def step(self, tick: int) -> None:
+        """One GPS read: a point, the scenario's reading, maybe an event, maybe a report."""
+        now = self._clock()
+        lat, lon, speed = self._position()
+        reading = self._scenario.reading(tick)
+        self._points.add(GpsPoint(now, lat, lon, speed, vigilance_for(reading.severity)))
 
-        if self._open_alert_id and self._scenario.should_resolve(tick):
-            await self._client.resolve_alert(
-                spec.device_key, self._open_alert_id, now.isoformat()
+        position = {"lat": lat, "lon": lon, "last_known": False, "location_age_s": 0}
+        event = self._tracker.update(reading, now, position=position, speed=speed)
+        if event is not None:
+            self._queue.add_live(event, now)
+            logger.info(
+                "Truck %s: new %s event %s (episode %s)",
+                self._spec.truck_id,
+                event.priority_key,
+                event.alert_type or "driver_ok",
+                event.episode,
             )
-            logger.info("Truck %s resolved alert %s", spec.truck_id, self._open_alert_id)
-            self._open_alert_id = None
+        await self._maybe_send(now)
+
+    def _position(self) -> tuple[float, float, float]:
+        spec = self._spec
+        total_seconds = (spec.arrival - spec.departure).total_seconds()
+        elapsed_seconds = (self._wall_clock() - spec.departure).total_seconds()
+        fraction = elapsed_seconds / total_seconds if total_seconds > 0 else 1.0
+        lat, lon = interpolate_along_polyline(spec.geometry, fraction)
+        speed = 0.0 if fraction >= 1.0 else round(random.uniform(70.0, 100.0), 1)
+        return lat, lon, speed
+
+    def _points_interval(self) -> float:
+        if self._route_known and self._active_route is None:
+            return ACTIVE_ROUTE_RETRY_S
+        return self._report_interval
+
+    async def _maybe_send(self, now: float) -> None:
+        item = self._queue.next_live(now)
+        due = now - self._last_report_end >= self._points_interval()
+        if item is None and due:
+            # A dead-letter replay rides on a regular report, and only while no live event is
+            # pending (next_dlq() checks that), so a replay never delays a live event.
+            item = self._queue.next_dlq()
+        if item is None and not due:
+            return
+        await self._send(item)
+
+    async def _send(self, item: Optional[QueuedEvent]) -> ReportOutcome:
+        points = self._points.drain()  # dropped whatever the outcome (plan section 1)
+        had_event = item is not None
+        tag = "[dlq]" if had_event and item.in_dlq else "[live]"
+        if not had_event:
+            attempt = 0
+        elif item.in_dlq:
+            attempt = item.attempts + 1
+        else:
+            attempt = item.live_failures + 1
+
+        started = self._clock()
+        body = build_report(points, item.to_wire(started) if had_event else None, started)
+        try:
+            response = await self._client.post_report(self._spec.device_key, body)
+            outcome = classify_response(response.status_code, response.body, had_event)
+        except httpx.TimeoutException:
+            outcome = classify_transport_error("timeout", had_event)
+        except httpx.TransportError:
+            outcome = classify_transport_error("transport_error", had_event)
+        ended = self._clock()
+        self._last_report_end = ended
+        self._apply(item, outcome, ended)
+
+        result = outcome.event_result or ("ok" if outcome.http_status == 200 else "failed")
+        if outcome.event_reason:
+            result = f"{result}:{outcome.event_reason}"
+        log = logger.info if had_event or outcome.http_status != 200 else logger.debug
+        log(
+            "%s truck=%s event=%s attempt=%d transport=http status=%s duration=%.2fs "
+            "points=%d result=%s",
+            tag,
+            self._spec.truck_id,
+            f"{item.event.priority_key}/{item.event.alert_type or 'driver_ok'}" if had_event else "-",
+            attempt,
+            outcome.http_status if outcome.http_status is not None else "-",
+            ended - started,
+            len(points),
+            result,
+        )
+        return outcome
+
+    def _apply(self, item: Optional[QueuedEvent], outcome: ReportOutcome, now: float) -> None:
+        if outcome.route_known:
+            self._route_known = True
+            self._active_route = outcome.active_route
+        if outcome.reconfigure:
+            # A real ESP32 would re-CONFIG from the Pi; the simulator's key only changes if the
+            # truck was deleted or its key rotated, so all it can do is say so.
+            logger.warning(
+                "Truck %s: device key rejected (401); was the truck deleted or its key rotated?",
+                self._spec.truck_id,
+            )
+        if item is not None:
+            was_live = not item.in_dlq
+            if outcome.event_result == "delivered":
+                self._queue.mark_delivered(item)
+            elif outcome.event_result == "rejected":
+                finished = self._queue.mark_rejected(item, outcome.event_reason or "invalid")
+                self._log_finished(finished)
+            elif outcome.event_result == "failed":
+                finished = self._queue.mark_failed(item, outcome.event_reason or "failed", now)
+                if finished is not None:
+                    self._log_finished(finished)
+                elif was_live and item.in_dlq:
+                    logger.warning(
+                        "Truck %s: critical %s dead-lettered after its live window (%s)",
+                        self._spec.truck_id,
+                        item.event.client_event_id,
+                        item.last_error,
+                    )
+        if outcome.route_finished:
+            self.finished = True
+
+    def _log_finished(self, finished) -> None:
+        logger.warning(
+            "Truck %s: %s event %s %s (%s)",
+            self._spec.truck_id,
+            finished.item.event.priority_key,
+            finished.item.event.client_event_id,
+            finished.outcome,
+            finished.reason,
+        )

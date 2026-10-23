@@ -24,8 +24,8 @@ async def run() -> None:
             VirtualTruck(
                 client,
                 spec,
-                settings.simulator_status_interval_seconds,
-                settings.simulator_medium_blip_probability,
+                report_interval_seconds=settings.simulator_report_interval_s,
+                medium_blip_probability=settings.simulator_medium_blip_probability,
             )
             for spec in specs
         ]
