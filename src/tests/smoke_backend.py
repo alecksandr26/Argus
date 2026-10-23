@@ -17,8 +17,9 @@ Confirms, end to end against the real API:
      in progress, rotates a real device key for that truck, then uses that key (not a user
      token) on POST /api/devices/me/report, the only device write -- points plus a critical
      alert (created), the same report again (duplicate), a driver OK for the same episode, then
-     after stopping the route a report whose points and event are both refused
-     (route_finished) -- before cleaning everything back up.
+     after POST /api/routes/{id}/stop: a report whose points and event (timed now) are both
+     refused route_finished, and a late event timed *inside* the route but posted after the stop,
+     also route_finished (C2.2 rule 4 [sync 2]) -- before cleaning everything back up.
 
 Zero third-party dependencies -- stdlib only (urllib/json/hashlib), so there's nothing to
 `pip install` before running this.
@@ -225,12 +226,12 @@ def _point(age_s: float, vigilance: str = "low") -> dict:
     }
 
 
-def _event(client_event_id: str, episode: str, kind: str) -> dict:
+def _event(client_event_id: str, episode: str, kind: str, age_s: float = 0.0) -> dict:
     event = {
         "client_event_id": client_event_id,
         "episode": episode,
         "kind": kind,
-        "age_s": 0.0,
+        "age_s": age_s,
         "delivery": "live",
         "queued_seconds": 0,
         "position": {"lat": 19.4326, "lon": -99.1332, "last_known": False, "location_age_s": 0},
@@ -258,6 +259,7 @@ def _device_report_round_trip(token: str, device_key: str, route_id: str, suffix
     episode = f"smoke{suffix}"[-12:]
     alert_id = f"smoke-alert-{suffix}"
 
+    t0 = time.monotonic()  # the first report: after the route's actual_departure
     status, body = _report(device_key, [_point(2.0), _point(1.0, "critical")],
                            _event(alert_id, episode, "alert"))
     points = body.get("points") or {}
@@ -291,6 +293,17 @@ def _device_report_round_trip(token: str, device_key: str, route_id: str, suffix
          and event.get("status") == "rejected" and event.get("reason") == "route_finished",
          "report after stop: points and event refused (route_finished)",
          f"status={status} points={points} event={event}")
+
+    # A dead letter replayed after the stop: it happened during the route (occurred_at between
+    # actual_departure and the stop), and arrives late. Routed by time, its route is finished.
+    age_s = round(time.monotonic() - t0 - 0.2, 1)
+    status, body = _report(device_key, [],
+                           _event(f"smoke-replayed-{suffix}", episode, "alert", age_s=age_s))
+    event = body.get("event") or {}
+    _log(status == 200 and event.get("status") == "rejected"
+         and event.get("reason") == "route_finished",
+         "late event from inside the route, posted after the stop: route_finished",
+         f"status={status} age_s={age_s} event={event}")
 
 
 def _finish() -> int:
