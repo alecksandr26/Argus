@@ -86,24 +86,34 @@ session that's touched this repo.
   events are auto-resent once a connection is available).
 - A separate **ESP32 ("Message Sender Orchestrator")** reads that buffer and owns everything
   actuation- and safety-critical: it drives the **alarm speaker**, the **CAN Bus/AEB actuator**
-  (preventive autonomous braking), reads the **panic button**, the **geolocation module**, and
-  the **steering-wheel grip sensor**, polls the Pi's SQLite buffer over **Bluetooth** (the ESP32
-  initiates periodic pulls of unsent records — the Pi doesn't push), and is the device that talks
-  to the backend over **HTTP** — authenticated with a per-truck device API key rather than a user
+  (preventive autonomous braking), reads the **geolocation module** (every 1 s, with a last-known
+  position kept in NVS) and the **steering-wheel grip sensor**, polls the Pi's SQLite buffer over
+  **Bluetooth** (the ESP32 initiates every session — the Pi doesn't push; since the final tweaks
+  this is **protocol v2**: `PULL n` / `DLQ 1` / `CONFIG`, the Pi answers `END <dlq> <outbox>`, the
+  ESP32 reports `ACK` / `TAKEN` (a 120 s lease) / `FAIL <id> <reason> <body>` and ends with
+  `DONE` → `OK ...`; v2 is not compatible with v1, so the Pi image and the firmware deploy
+  together — see `docs/designs/final-tweaks-contracts.md` C1), and is the device that talks
+  to the backend over **HTTP** — one combined report per POST (`POST /api/devices/me/report`:
+  the GPS points since the last report plus at most one event, every 5 s or at once for an
+  event, live criticals first and dead-letter replays last), authenticated with a per-truck device API key rather than a user
   login, now that `src/backend-argus` exists (see that module's `CLAUDE.md`, "Device (ESP32)
   auth"). That key is issued from the dashboard (Fleet → "Generate device credentials"), held by
   the Pi (`argus-device.env`), and fetched by the ESP32 over Bluetooth (`CONFIG`), so no
-  per-truck value is flashed into the firmware — see `src/esp32-argus/README.md` section 1b. The grip sensor does **not** feed the Pi's AI-orchestrator decision node — it, the panic
-  button, and geolocation all wire directly to the ESP32 (see
+  per-truck value is flashed into the firmware — see `src/esp32-argus/README.md` section 1b.
+  **The panic button is gone** (removed in the final tweaks, with its NVS queue and the panic
+  SMS; the SIM800L stays for mobile data only). The grip sensor does **not** feed the Pi's
+  AI-orchestrator decision node — it and geolocation both wire directly to the ESP32 (see
   `docs/designs/semantic-design-overview.md`), independent of the camera pipeline. This makes the
   ESP32 the actual fusion point for drowsiness + grip: it **fuses** the Pi's relayed drowsiness
   classification with its own live grip reading via a documented debounce/escalation/recovery
   state machine (not a plain 1:1 relay of every drowsiness alert it pulls) — see
   `src/esp32-argus/README.md`'s fusion section for the full decision spec, and
-  `src/cv-argus/src/orchestrator/fusion_contract.py` for its typed reference contract.
+  `src/cv-argus/src/orchestrator/fusion_contract.py` for its typed reference contract. There is
+  no grip sensor on the bench yet, so the firmware's `fusion.*` is kept but unused and the Pi's
+  severity decides on its own.
 - Deliberate split: the Pi *decides* (heavy AI inference, containerizable, can be redeployed via
   OTA), the ESP32 *acts* (bare-metal/real-time, must not depend on a Linux/Docker boot cycle
-  completing). Don't move CAN-bus/alarm/panic-button logic onto the Pi — keep that boundary.
+  completing). Don't move CAN-bus/alarm logic onto the Pi — keep that boundary.
 
 **Cloud/server side (Docker Compose):**
 - A **backend API** (**FastAPI**) exposing REST resources for `users`, `trucks`, `drivers`,
@@ -111,6 +121,14 @@ session that's touched this repo.
   (an async ODM) rather than raw driver calls. **This now exists as code** — `src/backend-argus`
   — covering exactly those six resources plus login; see that module's `CLAUDE.md` for the full
   design (auth, RBAC, geo storage) and "Repository state and structure" below for status.
+  Since the final tweaks it also has **incidents** (medium/critical alerts of one route within
+  15 min of the incident's last alert form one incident; only `guardian` and `root_admin` close
+  one, and a critical needs a note), a per-route `incident_state` (critical/medium/fine, which
+  colours the map marker), `POST /api/routes/{id}/stop` (a reason is required; afterwards every
+  device write for that route is rejected), `GET /api/live` (the dashboard's single 5 s poll) and
+  `GET /api/routes/{id}/track`, and the device's one write, `POST /api/devices/me/report`. The
+  old device writes (`POST /api/alerts`, `POST /api/routes/{id}/status`, the device-key resolve)
+  still answer for old firmware and are removed in a later cleanup (contracts C2.4).
   `Report`, `Device`, and `Geofence` are in the ER diagram but stay future work (no consumer
   committed to them yet).
 - An **OSRM** (`Project-OSRM/osrm-backend`) container computing routes from a prebaked
@@ -121,8 +139,10 @@ session that's touched this repo.
   status, with panels for login, fleet management, driver/user access, route tracking, alerts,
   travel management, and reports. (The `react-leaflet` map is now implemented in `src/ui-argus`
   — Live operations screen, standard OpenStreetMap tiles, markers from the real backend's
-  `GET /api/routes/active` (the fixture data this used to read from is gone — see "Repository
-  state and structure" below); OSRM route-line rendering is still deferred. The map-library
+  `GET /api/live` (polled every 5 s, paused while the tab is hidden; the fixture data this used
+  to read from is gone — see "Repository state and structure" below), marker colour from the
+  route's `incident_state`, alert pins and the GPS path; OSRM route-line rendering is still
+  deferred. The map-library
   choice — react-leaflet over Google Maps / Amazon Location — and how backend coordinates get
   normalized are written up in `docs/designs/frontend-map-and-coordinates.md`.)
 - **Four actor roles** (grew from three — `admin` was added later as a deliberate product
@@ -131,7 +151,8 @@ session that's touched this repo.
   any role, trips, reports), **`admin`** (an operations role scheduling routes and managing the
   truck/driver roster, with one narrow, server-enforced exception to otherwise-zero
   user-management access: it may create/edit/deactivate `guardian`-role accounts only, never
-  `root_admin`/other-`admin` accounts), **`guardian`** (read-only monitoring + alert review),
+  `root_admin`/other-`admin` accounts; it can also complete or stop a route, but not close
+  incidents), **`guardian`** (monitoring + closing incidents, the only write it has),
   **`truck_driver`** (receives alerts/status) — see `src/backend-argus/CLAUDE.md`'s RBAC table
   for the full per-resource matrix and exactly how `admin`'s scoping is enforced.
 
@@ -144,32 +165,55 @@ Bluetooth rather than serial or Wi-Fi/MQTT) rather than `--privileged`. The CSI-
 Docker path is the one detail worth prototyping early, since libcamera device passthrough is
 fussier than a USB webcam.
 
-## Pending feature: "Missing alerts" — plan and groom it BEFORE building (don't forget)
+## "Missing alerts" (dead-lettered events): what the final tweaks built, and what's still open
 
-Agreed with the user (2026-10-20), deliberately not built yet, and **must be planned and groomed
-first** — don't implement it ad hoc inside another task.
+Agreed with the user on 2026-10-20 as a feature to plan before building; planned and built in the
+**final tweaks** (`docs/designs/final-tweaks-plan.md`, contracts in
+`docs/designs/final-tweaks-contracts.md`, team branches `feat/final-tweaks-t1-…` to `-t6-…` merged into
+`feat/final-tweaks`). A "missing alert" is a real event that happened while the truck couldn't
+reach the backend and arrives late.
 
-**What creates them.** The Pi ↔ ESP32 link is "live first, dead-letter on failure": the Pi hands
-each new message to the ESP32, the ESP32 tries the backend and answers *delivered* or *failed
-(reason) + the message it composed* (GPS position and the time it happened). Only failed messages
-go into the Pi's SQLite queue, which acts as a **dead-letter queue (DLQ)**. When the backend is
-reachable again, the ESP32 replays the DLQ little by little, newest live events always first. See
-`src/cv-argus/CLAUDE.md` (`buffer/`, `sender/`) and `src/esp32-argus/README.md`.
+**Built now (code + tests; no hardware run yet):**
+- **Pi (`cv-argus`, T1):** "live first, dead-letter on failure". New events go to the outbox and
+  are leased to the ESP32 (`TAKEN`, 120 s). Only a **critical** the ESP32 couldn't deliver within
+  its 60 s live window goes to the **DLQ**, together with the event body the ESP32 composed then
+  (event-time GPS position, speed, scores). Mediums and driver-OK messages are dropped after
+  30 s instead. The DLQ is replayed **one row per session, newest first, round-robin**, and only
+  when no live event is pending. Every attempt counts, including ones made with no network; after
+  **5** the row moves to a Pi `archive` table (never deleted, never resent). `route_finished`,
+  `no_route` and `too_old` rejections archive at once. Existing non-critical and `route_status`
+  DLQ rows are migrated to the archive.
+- **ESP32 (`esp32-argus`, T3):** a single sender task with a fixed priority (live critical >
+  live medium > live OK > DLQ replay). Any live event pre-empts a replay, which then goes back to
+  the DLQ without counting the attempt. A replay is sent with `delivery: "dlq"` and
+  `queued_seconds`, its original position, and an `age_s` from which the backend computes the
+  original time. Logs are tagged `[live]` / `[dlq]`.
+- **Backend (`backend-argus`, T4):** `Alert` stores `delivery` (`live` | `dlq`) and
+  `queued_seconds`. The event's route is chosen **by time**: the truck's route whose
+  departure..arrival contains `occurred_at`. An event after the route ended is rejected
+  `route_finished`, which archives it on the Pi. A late alert joins an open incident only if it
+  is within 15 min of it by `occurred_at`, and never joins a closed one. Deduplication by
+  `(id_route, client_event_id)` makes a retried POST harmless. GPS points of a failed report are
+  dropped, not replayed, so no late point can overwrite a newer "latest position".
+- **UI (`ui-argus`, T5):** a replayed alert carries a **"Recovered after lost connection"** badge,
+  on its card, on map pins and in history, and its incident is flagged `has_replayed`. It shows
+  in the incident feed with its incident; a stale incident falls into the **Old** tier (more
+  than 1 h since its last alert) instead of looking current. Guardians close it like any other
+  incident (a note is required for a critical).
+- **Simulator (`simulator-argus`, T6):** `SIMULATOR_OUTAGE_CHANCE` /
+  `SIMULATOR_OUTAGE_AROUND_CRITICAL` produce a dead-lettered critical and its replay for demos.
 
-**The gap.** Those replayed messages — alerts, route status and anything else the ESP32 sends —
-are **"missing alerts"**: real events that happened while the truck was offline, arriving late.
-Today the backend stores them like live ones (`occurred_at` is the only hint), so an old alert
-could show up in Live operations as if it were happening now.
-
-**To plan and groom (backend + UI + ESP32), at least:**
-- how the ESP32 marks a replay (a field on the existing `POST /api/alerts` /
-  `POST /api/routes/{id}/status`, or a separate endpoint), and what it carries (original time,
-  original GPS position, how long it was queued, why it failed);
-- how `backend-argus` stores them: a flag/`ingestion` field on `Alert` and `Status_Route`, and
-  that a late status must never overwrite a truck's newer "latest status";
-- how `ui-argus` shows them: in alert/route **history**, clearly labelled as recovered after a
-  lost connection — **not** in Live operations, which must only show the newest events;
-- what a guardian needs to do with them (review? acknowledge?), and how they count in reports.
+**Still open:**
+- **Nothing has run on hardware**: protocol v2 between the real Pi and the real ESP32, the GPRS
+  and HTTPS/AWS paths, and the bench HIL checks (backend down → 60 s → DLQ → 5 attempts →
+  archive, a live alert during a replay). See plan section 6.
+- **Archived criticals are invisible to the backend.** After 5 failed attempts (about 80 s
+  offline on the SIM800L) a critical stays only in the Pi's `archive` table. Retrying archived
+  rows and a "truck lost connection" alert were left out of scope on purpose.
+- **Reports** (the ER diagram's `Report`) don't count replayed alerts in any way, because there
+  are no reports yet.
+- The old device endpoints (`POST /api/alerts`, `POST /api/routes/{id}/status`, the device-key
+  resolve) still accept writes without a `delivery` tag, until the later cleanup (contracts C2.4).
 
 ## Repository state and structure
 
@@ -181,17 +225,19 @@ route guarding, and login were the first pieces wired; the rest followed in the 
 pass), plus two new screens, Access (root_admin/admin user management) and Profile
 (self-service account edit), that didn't exist as fixture-era mockups at all. `src/it-argus/`
 (below) is a fourth, newer piece: Playwright integration tests exercising `ui-argus` and
-`backend-argus` together — its own test coverage is still just the login flow (unchanged since
-it was added), even though the real connection between the two modules has grown well past
-login since. `src/simulator-argus/` (below) is a fifth: a fleet simulator that provisions its
-own demo trucks/routes against a real `backend-argus` and continuously POSTs real
-`Status_Route`/`Alert` records over HTTP (device-API-key authenticated, per truck), so `ui-argus`
+`backend-argus` together — login, users, trucks, drivers, Live operations and, since the final
+tweaks, incidents, closing with a note, stopping a route and position labels (29 specs).
+`src/simulator-argus/` (below) is a fifth: a fleet simulator that provisions its
+own demo trucks/routes against a real `backend-argus` and continuously POSTs the same combined
+report a real ESP32 sends (`POST /api/devices/me/report`, device-API-key authenticated, per
+truck), so `ui-argus`
 has moving trucks and fresh alerts to demo against without real ESP32/Pi hardware. OSRM,
 described in "Planned end-to-end system architecture", doesn't exist in this repo yet.
-`src/esp32-argus` is a sixth: real Arduino firmware now exists there too (GPS, SIM800L-SMS,
-WiFi, Bluetooth-pull from `cv-argus`, drowsy+grip fusion, HTTP relay to `backend-argus`) — see
-that module's own section below and its README.md; it has not been compiled or flashed against
-real hardware. See `docs/roadmap.md` for the full, up-to-date gap list across every module
+`src/esp32-argus` is a sixth: real Arduino firmware now exists there too (GPS, SIM800L mobile
+data, WiFi, Bluetooth protocol v2 with `cv-argus`, a priority sender task, the report to
+`backend-argus`) — see that module's own section below and its README.md. The pre-final-tweaks
+firmware was compiled, flashed and bench-tested over WiFi; the final-tweaks firmware has only
+run as host tests (`test/host/`, g++). See `docs/roadmap.md` for the full, up-to-date gap list across every module
 (including what's built but not yet merged into `main`) — read that before assuming something
 is missing or done.
 
@@ -221,7 +267,11 @@ is missing or done.
   the tiny YOLO "parts" detector + tracker + rules** (BlazeFace face box → square gray crop →
   notebook 12's 46k-parameter `tiny_yolo_w1`, int8 TFLite by default or float `.keras` → IoU
   tracker → timed rules giving a none/low/medium/critical severity with a reason, mapped onto
-  the binary `Not Drowsy`/`Drowsy` contract the ESP32 reads). This replaced the CNN+LSTM
+  the binary `Not Drowsy`/`Drowsy` contract the ESP32 reads). Since the final tweaks: no face
+  for 5 s gives one CRITICAL (no low/medium steps); one alert per incident (a MEDIUM, then at
+  most one CRITICAL upgrade) and one driver-OK message on recovery; no 60 s heartbeat; it locks
+  onto the largest face and ignores bystanders (switching after 5 s); and an inference filter
+  drops head-sized eye boxes. This replaced the CNN+LSTM
   ("fused") pipeline on 2026-10-18, by the user's decision for a simpler, explainable system;
   that pipeline lives whole on branch `archive/cnn-lstm-fused`, and its model files are no
   longer downloaded. It logs one line per frame (severity, eye/mouth/head states, inference
@@ -265,17 +315,21 @@ is missing or done.
   (the backend's mock the browser away, the frontend's mock `fetch` away). Its own fully
   self-contained `docker-compose.yml` (own Mongo, own backend/UI builds, no host ports, real
   healthchecks) rather than an overlay on the root one — see that module's `CLAUDE.md` for why.
-  Currently covers the login flow (root_admin bootstrap login, wrong-password error, an
-  unauthenticated deep link redirecting to `/login` and back after signing in, sign-out) — the
-  first real thing connecting `ui-argus` and `src/backend-argus`, and meant to grow alongside
-  future backend-connected `ui-argus` screens, not a one-off.
+  Covers the login flow (root_admin bootstrap login, wrong-password error, an
+  unauthenticated deep link redirecting to `/login` and back after signing in, sign-out), users,
+  trucks, drivers, Live operations, and since the final tweaks incidents (grouping, close with a
+  note), stopping a route (reports rejected afterwards) and position labels. The UI halves of the
+  final-tweaks specs run with `IT_FINAL_TWEAKS_UI=1`. Meant to grow alongside future
+  backend-connected `ui-argus` screens, not a one-off.
 - `src/simulator-argus/` — a fleet simulator turning `docs/roadmap.md`'s previously-undone
   "software-only simulator" idea (section 7) into real code: N virtual trucks that provision
   their own `SIM-`-prefixed drivers/trucks/routes via the admin API (not `SEED_DEMO_DATA`), mint
   a real per-truck device API key each (`POST /api/trucks/{id}/rotate-key`), and continuously
-  POST `Status_Route`/`Alert` records against `backend-argus` using that key — exactly the
+  POST combined reports (`POST /api/devices/me/report`: GPS points every 5 s, one alert per
+  incident, then a driver OK) against `backend-argus` using that key — exactly the
   auth path a real ESP32 would use, scoped server-side to each truck's own route/alert writes.
-  Three per-truck profiles (`normal`, `drowsy_escalation`, `panic`) are assigned by a weighted
+  Three per-truck profiles (`normal`, `drowsy_escalation`, `no_face`; `no_face` replaced the
+  retired `panic` profile, and an old `panic=` weight maps to it) are assigned by a weighted
   random draw (`SIMULATOR_SCENARIO_WEIGHTS`) rather than a fixed rotation, giving a demo run a
   coherent story per truck while which-truck-gets-which stays randomized; route duration
   (`SIMULATOR_ROUTE_DURATION_MINUTES`, minutes to hours) and event timing are both parametrized
@@ -292,22 +346,26 @@ is missing or done.
   device-key auth, why self-provisioned data, the scenario/movement-model/OSRM design); read that
   `CLAUDE.md` before changing anything here.
 - `src/esp32-argus/` — the ESP32 "Message Sender Orchestrator" firmware, an Arduino IDE
-  multi-tab sketch (`src/esp32_argus/esp32_argus.ino` + per-concern `.h`/`.cpp` pairs: GPS,
-  SIM800L/SMS, WiFi, the backend HTTP client, the Bluetooth client pulling from `cv-argus`, the
-  drowsy+grip fusion state machine ported 1:1 from `cv-argus`'s `fusion_contract.py`, the panic
-  button, the grip sensor). Mobile data over the SIM800L's GPRS (the modem's own HTTPS stack) is
-  the first-choice transport to `backend-argus`, with WiFi (e.g. a phone hotspot) as the
-  fallback and the only path for PUT — see its `README.md`'s network-path decision, including
+  multi-tab sketch (`src/esp32_argus/esp32_argus.ino` + per-concern `.h`/`.cpp` pairs: GPS
+  with an NVS last-known position, the SIM800L modem, WiFi, the backend report client, the
+  Bluetooth v2 client pulling from `cv-argus`, the sender task and its host-tested policy, the
+  drowsy+grip fusion state machine ported 1:1 from `cv-argus`'s `fusion_contract.py` (unused
+  until a grip sensor exists), the grip sensor). Mobile data over the SIM800L's GPRS (the
+  modem's own HTTPS stack) is the first-choice transport to `backend-argus`, with WiFi (e.g. a
+  phone hotspot) as the fallback — see its `README.md`'s network-path decision, including
   why the AWS deployment needs `https://` (CloudFront answers 403 to plain HTTP) and why the
-  SIM800L's TLS 1.0 still reaches the default `*.cloudfront.net` domain. The SIM800L also sends
-  the panic SMS, fired specifically (and only) by the panic button as a hardware-direct
-  fallback that still works if the backend is unreachable. See its own `README.md` for the full
+  SIM800L's TLS 1.0 still reaches the default `*.cloudfront.net` domain. The panic button and
+  its SMS were removed in the final tweaks. Since then the device's only backend write is
+  `POST /api/devices/me/report`. See its own `README.md` for the full
   protocol/field-mapping contracts this implements. `config.h` holds only wiring/timing and the
   Pi's Bluetooth MAC: the backend URL, device key, WiFi network and mobile-data APN all come from
   the Pi over Bluetooth (`CONFIG`, set in cv-argus's `argus-device.env` + `.env`), and the route
-  from `GET /api/devices/me/active-route`, so one firmware image fits every truck. It compiles and has been flashed to a real
-  ESP32, and `test/hil/` passed over WiFi against a bench backend (see
-  `src/esp32_argus/CLAUDE.md`); the GPRS path and the AWS/HTTPS path haven't run on hardware yet.
+  from `GET /api/devices/me/active-route` (and from each report's answer), so one firmware
+  image fits every truck. The pre-final-tweaks firmware compiled, was flashed to a real ESP32,
+  and `test/hil/` passed over WiFi against a bench backend (see `src/esp32_argus/CLAUDE.md`).
+  The final-tweaks firmware has passed its host tests only; it hasn't been compiled here (no
+  Arduino toolchain; `test/compile.sh` is for the user) or flashed. The GPRS path and the
+  AWS/HTTPS path haven't run on hardware yet.
 - `src/infra-argus/` — **AWS CDK (TypeScript) demo deployment, cheapest possible, pay-per-use**:
   `backend-argus` as its **unchanged** Docker image on Lambda (via the Lambda Web Adapter, a
   wrapper image in `docker/backend-lambda/`, no backend code changes for Lambda) behind a
