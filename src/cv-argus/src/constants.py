@@ -53,6 +53,13 @@ PARTS_CONF_THRESHOLD = 0.25         # detection score kept for tracking (= noteb
 PARTS_CLOSED_EYE_THRESHOLD = 0.40
 PARTS_HEAD_DOWN_THRESHOLD = 0.30
 PARTS_NMS_IOU = 0.5
+# Eye-box sanity filter, applied before NMS (model/parts_detector.py `decode_grid`, mirrored in
+# notebook 12's `grid_postprocess`): an eye detection is dropped when its larger side exceeds
+# PARTS_EYE_MAX_FRAC of the crop side, or its centre y (crop-normalised, 0 = top) is outside
+# PARTS_EYE_CY_RANGE. Real eyes on the square face crop are small and in the upper-middle band;
+# the head-sized "eyes" come from training on full-image eye close-ups.
+PARTS_EYE_MAX_FRAC = 0.30
+PARTS_EYE_CY_RANGE = (0.15, 0.70)
 PARTS_TFLITE_THREADS = 1            # measured fastest: 1.35 ms vs 1.69 ms at 4 threads
 
 # Tracker (model/parts_tracker.py). At SAMPLE_FPS=5 a frame is 0.2 s.

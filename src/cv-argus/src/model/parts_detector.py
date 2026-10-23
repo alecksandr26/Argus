@@ -12,6 +12,11 @@ numbers per cell: `[objectness, tx, ty, tw, th, 5 class logits]`, decoded YOLOv5
 head cells (`grid_postprocess` / `nms_per_class`). Changing them here without changing the
 notebook makes the deployed model behave differently from how it was scored.
 
+**Eye size/position filter** (in both copies): before NMS, an eye cell is dropped when its box's
+larger side is over `PARTS_EYE_MAX_FRAC` (0.30) of the crop or its centre y is outside
+`PARTS_EYE_CY_RANGE` (0.15–0.70). The model learned head-sized "eyes" from full-image eye
+close-ups; on a face crop a real eye is never that big, nor at the chin or the top edge.
+
 **Pair decision thresholds** are the one deliberate addition. The notebook takes the plain argmax
 class. Here, a cell whose argmax is an eye class is called `closed_eye` when
 p_closed / (p_open + p_closed) ≥ `PARTS_CLOSED_EYE_THRESHOLD`, and a head cell is called
@@ -124,10 +129,31 @@ def apply_pair_thresholds(cls: np.ndarray, cls_p: np.ndarray, closed_eye_thr: fl
     return cls
 
 
+def implausible_eye_mask(cls: np.ndarray, cy: np.ndarray, w: np.ndarray, h: np.ndarray,
+                         max_frac: float | None = constants.PARTS_EYE_MAX_FRAC,
+                         cy_range: tuple[float, float] | None = constants.PARTS_EYE_CY_RANGE) -> np.ndarray:
+    """True where a cell's class is an eye class and its box can't be a real eye on a face crop:
+    the larger side is over ``max_frac`` of the crop, or the centre y is outside ``cy_range``
+    (both crop-normalised). ``None`` disables that check. Mirrored in notebook 12's
+    ``grid_postprocess`` (``eye_filter``)."""
+    eye = (cls == OPEN_EYE) | (cls == CLOSED_EYE)
+    bad = np.zeros(np.shape(cls), bool)
+    if max_frac is not None:
+        bad |= np.maximum(w, h) > max_frac
+    if cy_range is not None:
+        bad |= (cy < cy_range[0]) | (cy > cy_range[1])
+    return eye & bad
+
+
 def decode_grid(raw: np.ndarray, conf_floor: float = constants.PARTS_CONF_THRESHOLD,
                 iou_thr: float = constants.PARTS_NMS_IOU, pre_nms: int = 200,
-                closed_eye_thr: float = 0.5, head_down_thr: float = 0.5) -> PartDetections:
-    """One image's raw grid (G, G, 5 + C) → detections after NMS (crop-normalised xyxy)."""
+                closed_eye_thr: float = 0.5, head_down_thr: float = 0.5,
+                eye_max_frac: float | None = constants.PARTS_EYE_MAX_FRAC,
+                eye_cy_range: tuple[float, float] | None = constants.PARTS_EYE_CY_RANGE) -> PartDetections:
+    """One image's raw grid (G, G, 5 + C) → detections after NMS (crop-normalised xyxy).
+
+    Eye cells failing the size/position filter (`implausible_eye_mask`) are dropped **before**
+    NMS, so a head-sized "eye" can't suppress a real eye box of the same class."""
     g = raw.shape[0]
     j, i = np.meshgrid(np.arange(g), np.arange(g))
     cx = (j + 2 * _sig(raw[..., 1]) - 0.5) / g
@@ -136,7 +162,7 @@ def decode_grid(raw: np.ndarray, conf_floor: float = constants.PARTS_CONF_THRESH
     cls_p = _sig(raw[..., 5:])
     cls = apply_pair_thresholds(cls_p.argmax(-1), cls_p, closed_eye_thr, head_down_thr)
     score = _sig(raw[..., 0]) * cls_p.max(-1)
-    m = score > conf_floor
+    m = (score > conf_floor) & ~implausible_eye_mask(cls, cy, w, h, eye_max_frac, eye_cy_range)
     order = np.argsort(-score[m])[:pre_nms]
     boxes = np.stack([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], -1)[m][order].clip(0, 1)
     b, s, c = nms_per_class(boxes, score[m][order], cls[m][order], iou_thr)
@@ -179,7 +205,9 @@ class PartsDetector:
     def __init__(self, backend, precision: str, conf_threshold: float = constants.PARTS_CONF_THRESHOLD,
                  closed_eye_threshold: float = constants.PARTS_CLOSED_EYE_THRESHOLD,
                  head_down_threshold: float = constants.PARTS_HEAD_DOWN_THRESHOLD,
-                 fallback=None, fallback_reason: str | None = None):
+                 fallback=None, fallback_reason: str | None = None,
+                 eye_max_frac: float | None = constants.PARTS_EYE_MAX_FRAC,
+                 eye_cy_range: tuple[float, float] | None = constants.PARTS_EYE_CY_RANGE):
         self._backend = backend
         # A zero-arg callable building the float backend, used once if `backend` raises.
         self._fallback = fallback
@@ -188,6 +216,8 @@ class PartsDetector:
         self._conf = conf_threshold
         self.closed_eye_threshold = closed_eye_threshold
         self.head_down_threshold = head_down_threshold
+        self.eye_max_frac = eye_max_frac
+        self.eye_cy_range = eye_cy_range
         self.last_phase_seconds: dict[str, float] = {}
 
     @classmethod
@@ -237,6 +267,7 @@ class PartsDetector:
             raw = self._backend(x)
         t1 = time.perf_counter()
         dets = decode_grid(raw, self._conf, closed_eye_thr=self.closed_eye_threshold,
-                           head_down_thr=self.head_down_threshold)
+                           head_down_thr=self.head_down_threshold, eye_max_frac=self.eye_max_frac,
+                           eye_cy_range=self.eye_cy_range)
         self.last_phase_seconds = {"infer": t1 - t0, "decode": time.perf_counter() - t1}
         return dets
