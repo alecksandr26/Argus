@@ -12,10 +12,11 @@
 - **Rejections** (`route_finished`, `no_route`, `too_old`, `wrong_truck`, `invalid`) end an event
   at once: archived for a critical, dropped otherwise.
 
-The one ESP32 rule the simulator does not need is pre-emption between AT steps: a simulated
-attempt is a single HTTP request inside a single asyncio task, so a new live event can never
-arrive in the middle of one. The simulator also doesn't need the Pi's `TAKEN` lease: the queue
-lives in one process.
+The one ESP32 rule the simulator does not mirror is pre-emption between AT steps: a simulated
+attempt is a single HTTP request with no steps to pre-empt between, so a live event that comes
+up while an attempt is in flight (the GPS tick runs in its own task) waits for that attempt to
+end, at most the 8 s attempt timeout; a dead-letter replay already in flight runs to its end and
+counts. The simulator also doesn't need the Pi's `TAKEN` lease: the queue lives in one process.
 """
 from __future__ import annotations
 
