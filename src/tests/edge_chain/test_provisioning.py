@@ -1,7 +1,7 @@
 """Provisioning a truck end to end: the dashboard issues a device key, the Pi holds it (its
 argus-device.env, i.e. a cv-argus DeviceConfig), the ESP32 fetches it over Bluetooth (CONFIG),
-finds its route from the key alone, and relays with it. Rotating or revoking the key in the
-dashboard locks the old one out.
+and reports with it; every report's answer names the truck's active route (C2.2), so no route id
+is configured anywhere. Rotating or revoking the key in the dashboard locks the old one out.
 
 Same real-code-at-every-hop setup as test_edge_chain.py; see this directory's README.md.
 """
@@ -9,11 +9,10 @@ from __future__ import annotations
 
 import pytest
 
-from cv_argus.alerts import route_status
 from cv_argus.buffer import open_buffer
 from cv_argus.sender import NOCONFIG_LINE, DeviceConfig, FakeListener, SenderServer
 
-from .esp32_sim import SimulatedEsp32, fetch_config, resolve_active_route
+from .esp32_sim import REPORT_PATH, SimulatedEsp32, fetch_config
 
 pytestmark = pytest.mark.asyncio
 
@@ -81,6 +80,12 @@ async def _new_truck_on_a_route(backend) -> tuple[str, str]:
     return truck["id_truck"], route["id_route"]
 
 
+async def _report(device_http, key: str):
+    """The smallest report the firmware sends: a liveness report (C2.3 [sync 2])."""
+    return await device_http.post(REPORT_PATH, json={"points": []},
+                                  headers={"X-Device-Api-Key": key})
+
+
 async def _issue_env(backend, truck_id: str) -> dict[str, str]:
     """What the Fleet screen's "Generate device credentials" downloads as argus-device.env."""
     key = (await backend.post(f"/api/trucks/{truck_id}/rotate-key")).json()["device_api_key"]
@@ -104,20 +109,17 @@ async def test_dashboard_key_reaches_the_esp32_and_authorizes_its_relay(
         "device_api_key": env["ARGUS_DEVICE_API_KEY"],
         "backend_url": BACKEND_URL,
     }
-    # No route id configured anywhere: the ESP32 finds it from the key.
-    assert await resolve_active_route(device_http, creds["device_api_key"]) == route_id
-
     dev = SimulatedEsp32(
-        listener=listener,
-        http=device_http,
-        device_key=creds["device_api_key"],
-        route_id=route_id,
-        clock=clock,
+        listener=listener, http=device_http, device_key=creds["device_api_key"], clock=clock
     )
-    buffer.enqueue(route_status("cam-0"))
-    result = await dev.poll()
-    assert (result.pulled, len(result.acked), result.protocol_ok) == (1, 1, True)
-    assert (await backend.get(f"/api/routes/{route_id}/status")).status_code == 200
+    await dev.tick()  # one GPS read, and the first report goes at once
+    assert (await dev.poll()).live.got_ok
+    [post] = dev.posts
+    assert post.status == 200
+    # No route id configured anywhere: the backend's answer names it.
+    assert post.answer["active_route"] == route_id
+    assert post.answer["points"] == {"stored": 1, "route": route_id, "status": "ok"}
+    assert dev.sender.route == "active"
 
     truck = (await backend.get(f"/api/trucks/{truck_id}")).json()
     assert truck["has_device_key"] is True
@@ -136,18 +138,16 @@ async def test_rotation_locks_out_the_old_key_until_the_pi_gets_the_new_env(
     old_env = await _issue_env(backend, truck_id)
     new_env = await _issue_env(backend, truck_id)  # operator clicks "Rotate key"
 
-    # The Pi still runs with the old file: the ESP32's lookups 401 (it would re-ask CONFIG)...
+    # The Pi still runs with the old file: the ESP32's reports 401 (it re-asks CONFIG)...
     _, old_pi = make_pi(old_env)
     stale = fetch_config(old_pi)
-    lookup = await device_http.get(
-        "/api/devices/me/active-route", headers={"X-Device-Api-Key": stale["device_api_key"]}
-    )
-    assert lookup.status_code == 401
+    assert (await _report(device_http, stale["device_api_key"])).status_code == 401
 
     # ...until the new argus-device.env is installed and the container restarted.
     _, new_pi = make_pi(new_env)
     fresh = fetch_config(new_pi)
-    assert await resolve_active_route(device_http, fresh["device_api_key"]) == route_id
+    answer = await _report(device_http, fresh["device_api_key"])
+    assert answer.status_code == 200 and answer.json()["active_route"] == route_id
 
 
 async def test_revoked_key_is_rejected(backend, device_http, make_pi):
@@ -156,8 +156,6 @@ async def test_revoked_key_is_rejected(backend, device_http, make_pi):
     _, listener = make_pi(env)
     creds = fetch_config(listener)
 
+    assert (await _report(device_http, creds["device_api_key"])).status_code == 200
     assert (await backend.delete(f"/api/trucks/{truck_id}/device-key")).status_code == 200
-    lookup = await device_http.get(
-        "/api/devices/me/active-route", headers={"X-Device-Api-Key": creds["device_api_key"]}
-    )
-    assert lookup.status_code == 401
+    assert (await _report(device_http, creds["device_api_key"])).status_code == 401
