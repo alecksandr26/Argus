@@ -21,9 +21,13 @@ Steps, in order:
    `/api/live` lists every open incident, ended routes' included: the report's
    `open_incidents_on_ended_routes` says how many of those the migration creates on
    completed/cancelled routes (the dry run counts them too). `--close-ended-routes` (off by
-   default; the user decides) closes exactly those, with `closed_by: null` and a migration
-   note, so Live operations doesn't start full of old history. Pass it on the first real run:
-   a later run has nothing left to group, so it closes nothing.
+   default; the user decides) closes exactly those, so Live operations doesn't start full of
+   old history. It only closes incidents created in the same run (no marker field records
+   which incidents a migration created), so decide before the first real run: a later run has
+   nothing left to group, so it closes nothing.
+   Every migration closure (all reviewed, or `--close-ended-routes`) is `closed_by: null` ("closed
+   by the system", C3.4 [sync 3]) plus an explanatory `close_note`; `closed_by` is otherwise
+   always a real user id.
 4. GPS points: `keep` for the first point of each route-minute (retention), and duplicates of
    the same `(id_route, timestamp)` removed (keeping the first stored). Destructive once the
    TTL index exists: MongoDB's TTL pass then deletes every point with `keep: false` older than
@@ -60,7 +64,6 @@ from app.models.incident import Incident
 from app.models.route import Route
 from app.models.status_route import StatusRoute
 
-MIGRATION_USER = "migration"
 MIGRATION_NOTE = "Closed by the final-tweaks migration: every alert was reviewed before incidents existed."
 ENDED_ROUTE_NOTE = "Closed by the final-tweaks migration: route had already ended"
 OLD_ALERT_EVENT_INDEX = "id_route_1_client_event_id_1"
@@ -149,10 +152,12 @@ async def _simulate_grouping(alerts: list[Alert]) -> list[dict]:
     return [i for incidents in by_route.values() for i in incidents if i["touched"]]
 
 
-async def _close(incident_id: str, closed_by, note: str, now: datetime) -> None:
+async def _close(incident_id: str, note: str, now: datetime) -> None:
+    """Closes an incident on the system's behalf: `closed_by` null (C3.4 [sync 3]), `note`
+    says why."""
     await Incident.get_motor_collection().update_one(
         {"_id": to_object_id(incident_id)},
-        {"$set": {"closed_at": now, "closed_by": closed_by, "close_note": note}},
+        {"$set": {"closed_at": now, "closed_by": None, "close_note": note}},
     )
     await Alert.get_motor_collection().update_many(
         {"id_incident": incident_id}, {"$set": {"closed_at": now}}
@@ -212,13 +217,13 @@ async def backfill_incidents(dry_run: bool = False, close_ended_routes: bool = F
         routes_touched.add(incident.id_route)
         members = await Alert.find(Alert.id_incident == incident_id).to_list()
         if members and all(a.reviewed_by_operator for a in members):
-            await _close(incident_id, MIGRATION_USER, MIGRATION_NOTE, now)
+            await _close(incident_id, MIGRATION_NOTE, now)
             continue
         if incident_id in already_open or incident.id_route not in ended:
             continue
         on_ended += 1
         if close_ended_routes:
-            await _close(incident_id, None, ENDED_ROUTE_NOTE, now)
+            await _close(incident_id, ENDED_ROUTE_NOTE, now)
             closed_ended += 1
     for route_id in routes_touched:
         await lower_route_state_after_close(route_id)
@@ -311,7 +316,8 @@ if __name__ == "__main__":
         help=(
             "close the incidents the migration creates on completed/cancelled routes "
             "(closed_by null, with a migration note) instead of leaving them open in Live "
-            "operations; off by default"
+            "operations; off by default. Only effective on the first real run: it closes only "
+            "the incidents created in the same run"
         ),
     )
     args = parser.parse_args()

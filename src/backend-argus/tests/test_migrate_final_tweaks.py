@@ -11,7 +11,7 @@ from app.models.common import RouteStatus
 from app.models.incident import Incident
 from app.models.route import Route
 from app.models.status_route import StatusRoute
-from scripts.migrate_final_tweaks import ENDED_ROUTE_NOTE, MIGRATION_USER, migrate
+from scripts.migrate_final_tweaks import ENDED_ROUTE_NOTE, migrate
 from scripts.migrate_final_tweaks import MIGRATION_NOTE as MIGRATION_NOTE_ALL_REVIEWED
 from tests.conftest import make_rig
 
@@ -134,7 +134,9 @@ async def test_migration(mongo_client):
     assert len(open_active) == 2
     assert all(i.closed_at is None for i in open_active)
     closed = await Incident.find_one(Incident.id_route == done.route_id)
-    assert closed.closed_by == MIGRATION_USER
+    # Closed by the system (C3.4 [sync 3]): no user id, and the note says why.
+    assert closed.closed_by is None
+    assert closed.close_note == MIGRATION_NOTE_ALL_REVIEWED
     assert route.incident_state == "critical"
     assert finished.incident_state == "fine"
     low = await Alert.find_one(Alert.severity_level == "low")
@@ -214,11 +216,11 @@ async def test_close_ended_routes_closes_them_with_a_note(mongo_client):
     ended = await Incident.find(
         {"id_route": {"$in": [completed.route_id, cancelled.route_id]}}
     ).to_list()
-    by_note = sorted((i.close_note, i.closed_by or "") for i in ended)
+    # Both migration closures look the same: closed_by null, told apart only by the note.
+    by_note = sorted((i.close_note, i.closed_by) for i in ended)
     assert by_note == sorted(
-        [(ENDED_ROUTE_NOTE, "")] * 3 + [(MIGRATION_NOTE_ALL_REVIEWED, MIGRATION_USER)]
+        [(ENDED_ROUTE_NOTE, None)] * 3 + [(MIGRATION_NOTE_ALL_REVIEWED, None)]
     )
-    assert [i.closed_by for i in ended if i.close_note == ENDED_ROUTE_NOTE] == [None] * 3
     assert all(i.closed_at is not None for i in ended)
     closed_alerts = await Alert.find(
         {"id_route": {"$in": [completed.route_id, cancelled.route_id]}}
