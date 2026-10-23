@@ -8,27 +8,27 @@
 // it to reach the Pi at all).
 
 // =====================================================
-// WiFi -- the fallback transport to backend-argus, and the only path for PUT requests. The
-// network (ARGUS_WIFI_SSID / ARGUS_WIFI_PASSWORD) comes from the Pi; a phone hotspot or a 4G
-// MiFi router in the truck works. 2.4 GHz only.
+// WiFi -- the fallback transport to backend-argus (mobile data goes first). The network
+// (ARGUS_WIFI_SSID / ARGUS_WIFI_PASSWORD) comes from the Pi; a phone hotspot or a 4G MiFi router
+// in the truck works. 2.4 GHz only.
 // =====================================================
 #define WIFI_CONNECT_TIMEOUT_MS 20000UL
 #define WIFI_RETRY_INTERVAL_MS 10000UL
 
 // =====================================================
 // backend-argus HTTP -- see src/backend-argus/CLAUDE.md's "Device (ESP32) auth" section.
-// Nothing per-truck lives here anymore: the backend URL and device API key come from the Pi
-// over Bluetooth (CONFIG -- credentials.h), which got them from the dashboard's
-// argus-device.env; the route id comes from GET /api/devices/me/active-route. One firmware
-// image fits every truck. The backend URL in argus-device.env must be reachable from THIS
-// device (a LAN IP with no APN set, or the public https:// URL, never "localhost"). The AWS
-// URL must be https://: CloudFront's /api/* is HTTPS-only and answers 403 to plain http://.
+// Nothing per-truck lives here: the backend URL and device API key come from the Pi over
+// Bluetooth (CONFIG -- credentials.h), which got them from the dashboard's argus-device.env, and
+// the active route comes back in every report's answer (`active_route`). One firmware image fits
+// every truck. The backend URL in argus-device.env must be reachable from THIS device (a LAN IP
+// with no APN set, or the public https:// URL, never "localhost"). The AWS URL must be https://:
+// CloudFront's /api/* is HTTPS-only and answers 403 to plain http://. Request timeouts are the
+// per-attempt deadlines below (ATTEMPT_TIMEOUT_*), not a fixed HTTP timeout.
 // =====================================================
-// Generous on purpose: a Lambda cold start behind CloudFront can take several seconds.
-#define BACKEND_HTTP_TIMEOUT_MS 15000
 // Points-only report cadence while the backend says this truck has no active route
 // (`active_route: null` in a 200): every 30 s instead of every REPORT_INTERVAL_MS. Events still go
 // at once. Before the first 200 the route is unknown, not null: the 5 s cadence applies (C2.3).
+// Also the cadence of the liveness report (`points: []`) sent when there is no position at all.
 #define ACTIVE_ROUTE_RETRY_MS 30000UL
 
 // =====================================================
@@ -51,6 +51,13 @@
 // Added to a mobile attempt that must first set the modem up (after power-on or a lost signal:
 // registration check + bearer).
 #define MODEM_SETUP_TIMEOUT_MS 10000UL
+// The modem's registration state (AT+CREG?) is polled again only when older than this, or right
+// after a failed mobile attempt.
+#define MODEM_REG_CACHE_MS 10000UL
+// A request whose attempt timed out after AT+HTTPACTION fired keeps the modem's HTTP session
+// until its "+HTTPACTION:" result arrives (the SIM800L gives up by itself after ~120 s). Past
+// this, the session is freed anyway.
+#define GPRS_LATE_ACTION_MAX_MS 130000UL
 // How long a live event is retried before giving up on it live: a critical then goes to the
 // Pi's DLQ (FAIL <reason> <event>), a medium or an OK is dropped (FAIL retry_window -). Measured
 // from when this device took it from the Pi.
@@ -67,10 +74,22 @@
 #define DLQ_MAX_ATTEMPTS 5
 
 // =====================================================
+// Tasks -- the Arduino loop runs the Bluetooth sessions with the Pi; gpsTask reads the NEO-6M;
+// senderTask owns the modem, WiFi and every request to the backend. Stacks in bytes (ESP-IDF).
+// =====================================================
+#define SENDER_TASK_STACK 12288  // TLS over WiFi (mbedTLS) + the report JSON
+#define GPS_TASK_STACK 4096
+// Heap (free, minimum ever, largest block) and every task's stack high-water mark on Serial.
+#define TASK_HEALTH_LOG_INTERVAL_MS 30000UL
+
+// =====================================================
 // GPS points
 // =====================================================
 // One point per GPS read (current fix, or the last known position when there's none).
 #define GPS_READ_INTERVAL_MS 1000UL
+// A fix counts as current only while TinyGPSPlus updated it this recently (it keeps the first fix
+// "valid" forever otherwise).
+#define GPS_FIX_MAX_AGE_MS 2500UL
 // The last good position is saved to NVS this often while there's a fix, and at once on losing it
 // (with the fix's GPS time, so its age is known after a reboot).
 #define GPS_LAST_KNOWN_SAVE_MS 60000UL
@@ -108,19 +127,16 @@
 // what the camera sees and what this device logs about 2 s apart.
 #define PI_BT_POLL_INTERVAL_MS 2000UL
 // At most this many records per poll (the Pi allows 50). The whole batch is held in memory before
-// any of it is handled (see bluetoothExchange), and each record is logged and possibly sent before
-// the Pi gets the report, so a small batch keeps both the heap and the Pi's 30 s wait safe. 8
-// every PI_BT_POLL_INTERVAL_MS is still well above the Pi's one keepalive per 2 s.
+// any of it is handled (bluetoothOpenSession), so a small batch keeps the heap safe. 8 every
+// PI_BT_POLL_INTERVAL_MS is still well above the Pi's one keepalive per 2 s. Nothing in a session
+// waits on the backend (the sender task does that), so the Pi's 30 s wait for the report lines
+// (cv-argus SenderServer ack_timeout) is never at risk.
 #define PI_BT_PULL_COUNT 8
-// Bytes reserved per line read from the Pi; a record is 200-400 B today, more just reallocates.
+// Bytes reserved per line read from the Pi; a record is 200-400 B today (a dead letter with its
+// stored event ~900 B), more just reallocates. A line longer than PI_BT_LINE_MAX ends the session.
 #define PI_BT_LINE_RESERVE 768
+#define PI_BT_LINE_MAX 4096
 #define PI_BT_LINE_TIMEOUT_MS 3000UL
-// The Pi (cv-argus SenderServer ack_timeout) waits this long for the report after END.
-#define PI_BT_REPORT_WAIT_MS 30000UL
-// No new record is started after this much handling time in one session; the rest stay on the Pi
-// for the next poll. Leaves room for one last backend request (seconds over the SIM800L) inside
-// PI_BT_REPORT_WAIT_MS.
-#define PI_BT_HANDLE_BUDGET_MS 10000UL
 // The Pi's dead-letter queue is replayed one row per session (`DLQ 1`, the Pi's MAX_DLQ_LIMIT),
 // only while no live event is pending (sender_policy.h). DLQ_REPLAY_BATCH is gone (C4).
 // The Bluetooth link's status line (up/down, sessions, records) on Serial.
@@ -163,10 +179,11 @@
 #define GPS_TX 33
 #define GPS_BAUD 9600
 
-// Bench testing only (src/esp32-argus/test/hil/). Indoors the NEO-6M usually has no fix, and
-// a message without a position can't be sent (it goes to the Pi's dead-letter queue as
-// no_gps), so 1 makes gps_module report a fixed position instead. GPS date/time stays real (empty with no fix), so an incident can't be resolved on
-// the bench. NEVER flash a truck with this set to 1: every alert would carry these coordinates.
+// Bench testing only (src/esp32-argus/test/hil/). Indoors the NEO-6M usually has no fix; reports
+// still go without one (an event then says "position unknown", and with no last known position
+// only empty liveness reports go), so 1 just makes gps_module report a fixed position instead,
+// for a bench that shows points and alert positions. GPS date/time stays real (none indoors).
+// NEVER flash a truck with this set to 1: every point and alert would carry these coordinates.
 #define BENCH_FAKE_GPS 0
 #define BENCH_GPS_LAT 20.6597
 #define BENCH_GPS_LON -103.3496
