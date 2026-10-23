@@ -17,6 +17,15 @@ same-session only); C2.2 `kind: ok` is routed by time like an alert; C2.3 cadenc
 `incident_state`; C3.6 UI trusts the server `tier` and drops track of routes that left the active
 set.
 
+**Sync 2 amendments** (after build round 1; marked `[sync 2]` below): section 0 three ownership
+additions; C1.2 report lines take effect when read; C1.6 preempted outbox row stays put, a repeated
+FAIL is ignored, `cap_unsent` spares leased rows, `serve_dlq`/`fetch_dlq` split; C1.7 face-lock
+matching, re-acquisition and take-over; C1.8 confirmed ESP32 readings; C2.2 rule 4 says
+`route_finished` for any event after the truck's last route ended, route status re-checked under
+the lock; C2.3 empty-points liveness report; C2.4 user `resolved_at` is a 422; C3.1 a finished
+route can't be reopened; C3.2 `clip_seconds`; C3.4 severity floor; C3.6 `since` overlap and the
+route view's path; C4 new constants.
+
 Conventions used throughout:
 - Times on the wire between devices are **relative** (`age_s`, seconds, float, >= 0). Only the
   backend turns them into absolute times, with its own clock.
@@ -41,6 +50,15 @@ Conventions used throughout:
 | T5 UI | `feat/final-tweaks-t5-ui` / `.claude/worktrees/ft-t5-ui` | `src/ui-argus/**` |
 | T6 Sim + IT | `feat/final-tweaks-t6-sim-it` / `.claude/worktrees/ft-t6-sim-it` | `src/simulator-argus/**`, `src/it-argus/**` |
 | Lead | `feat/final-tweaks` / `.claude/worktrees/final-tweaks-pi-esp32` | this file, the plan, root `CLAUDE.md`, `docs/roadmap.md`, root `docker-compose.yml` |
+
+`[sync 2]` Ownership additions (paths nobody owned):
+- **T1**: `src/cv-argus/src/main.py` and `src/cv-argus/docker-compose.yml`, **comments and
+  docstrings only** (remove the heartbeat mentions).
+- **T2**: `src/cv-argus/src/pipeline/output_stages.py` (only to add the `face_lock` fields to the
+  per-frame log line and the metrics JSONL, plus their tests), and
+  `src/notebook/14_backbone_grid_detector.ipynb` **cell 26 only** (keep `grid_postprocess`
+  verbatim with notebook 12's, eye filter included, and say so in its markdown).
+- **T3**: `src/tests/README.md` (the `smoke_backend.py` / `edge_chain` sections).
 
 `constants.py` is shared by T1 and T2 **by name prefix**: T1 adds/edits/removes only
 `RULE_*`, `ORCHESTRATOR_*`, `BUFFER_*`; T2 only `PARTS_*`, `FACE_*`. Put new constants in the
@@ -119,6 +137,10 @@ S: OK acked=.. failed=.. leased=.. dlq=.. outbox=..
   was (not leased, not sent).
 - `OK` is the Pi's last line; then it closes. `failed` counts FAIL lines applied in this session,
   `leased` rows leased in this session; `dlq`/`outbox` as in `END`, counted after the session.
+- `[sync 2]` Report lines **take effect the moment the Pi reads them** (`ACKED`/`LEASED` are sent
+  right away). `DONE` -> `OK` is only a summary: a session that breaks before `OK` keeps every line
+  already applied. The ESP32 may resend outcomes it has no `OK` for (C1.8); that is safe because
+  ACK is idempotent and a repeated FAIL is ignored (C1.6).
 
 ### C1.3 Report lines
 
@@ -270,6 +292,28 @@ the lease.
 The ESP32's live failure that dead-letters a critical is therefore attempt 1; each DLQ replay is
 one attempt; 5 failures archive.
 
+`[sync 2]` FAIL clarifications:
+- Rule 2 on a critical still in `outbox` (a live row): it **stays in `outbox`**, lease cleared,
+  `attempts`/`dlq_round` unchanged (it will be served live again). Only DLQ replays are expected
+  to be pre-empted (C1.8), but this is the defined behaviour for both states.
+- **Repeated FAIL guard (idempotency).** Rule 4 applies only to a row in `outbox` (leased or not)
+  or to a **leased** `dlq` row. A rule-4 FAIL for a **non-leased** `dlq` row is ignored: nothing
+  changes and it is not counted in `failed`. Every FAIL clears the lease, so a FAIL line resent
+  after a broken session (C1.2) can never count an attempt twice. Rules 1-3 need no guard (an
+  archived row ignores everything; rule 2 changes nothing countable). Consequence, accepted: a
+  DLQ replay whose 120 s lease lapsed before its FAIL arrived is an uncounted attempt.
+- A critical FAILed with `retry_window` (its 60 s live window ended, possibly before any attempt
+  was made) falls under rule 4: attempt 1, moved to `dlq`, body kept. Any token not named in
+  rules 1-3 (`bad_response`, `http_<n>`, `no_network`, ...) is rule 4.
+
+`[sync 2]` `cap_unsent` **skips leased rows** (`lease_until_ms > now`): they are neither deleted nor
+archived by the cap, since the ESP32 may already have delivered them.
+
+`[sync 2]` DLQ serving is split in two (internal to the Pi, nothing changes on the wire):
+`serve_dlq(limit=1)` is what a `DLQ` session uses and bumps `dlq_round` at serve time;
+`fetch_dlq()` is a read-only listing in the same order. Read "`fetch_dlq(limit=1)`" below as
+`serve_dlq`.
+
 **DLQ order (newest first, round-robin).** `fetch_dlq(limit=1)` returns the non-leased `dlq` row
 with the smallest `dlq_round`, ties broken by newest first (`rowid DESC`). Serving a row via
 `DLQ` increments its `dlq_round` by 1 (at serve time, whether or not it is later TAKEN). A row
@@ -318,6 +362,42 @@ to drop, and the switch itself never emits a transition. T2 calls it exactly onc
   switch (C1.7 never clears it); the new face then needs `RULE_RECOVERY_S` of a clear face to
   recover.
 
+`[sync 2]` Face-lock matching, re-acquisition and take-over (T2). This replaces "the lock never
+expires" from round 1, which gave a lone driver a false no-face CRITICAL when their box jumped,
+and ignored a returning driver for the rest of the trip after a switch to a passenger.
+- **Matching.** A detection *matches* a tracked box (the locked face or a bystander) when its
+  centre is within `FACE_LOCK_MAX_SHIFT_FRAC` (0.6) x the tracked box side and its side is within
+  a factor `FACE_LOCK_MAX_SCALE` (1.6) of it. A matched tracked box is updated to the detection.
+- **Bystanders.** On every frame where the locked face matches, every other detection is a
+  *bystander* (the bystander set is replaced by them). While the locked face is missing,
+  bystanders are carried forward by matching; a bystander unmatched for more than
+  `FACE_LOCK_MISS_GRACE_S` (1.0 s) is dropped (so a one-frame detector miss doesn't turn the
+  passenger into a "new" face).
+- **Locked face missing, per frame:**
+  1. Some detection matches **no** bystander (a *new* face: the driver's box jumped, or came back
+     displaced after a gap, or anyone after a stretch where no bystander was tracked) -> the lock
+     **re-acquires** the largest such detection **on this frame**: `face_found = True` with it, no
+     switch, no `reset_signals()`, the switch timer resets.
+  2. Only bystanders visible -> `face_found = False`; the switch timer runs as in `[sync 1]`
+     (switch frame flagged `face_switched`, lock moves to the largest bystander from the next
+     frame, `reset_signals()` + tracker reset).
+  3. Nothing visible -> `face_found = False`; switch timer reset.
+- **Take-over (locked face visible).** If one other detection is continuously visible with a side
+  `>= FACE_LOCK_TAKEOVER_SCALE` (1.25) x the locked face's side for `FACE_SWITCH_AFTER_S` (5 s),
+  the lock switches to it with the same switch handling (the take-over frame still reads the old
+  locked face, is flagged `face_switched`, the rules see it first, then `reset_signals()` +
+  tracker reset; the new face from the next frame). This lets the driver (nearest the camera, so
+  largest) take the lock back from a passenger, including when the passenger was the only face at
+  boot. A smaller second face is ignored as before.
+- Known limit (accepted): a face the system never saw next to the driver is indistinguishable from
+  the driver coming back, so it is re-acquired at once (rule 1).
+- Required tests (T2): a lone driver whose box jumps more than 0.6 x side has no no-face frame; a
+  lone driver who returns displaced after a 2 s gap has no-face only during the gap; driver leaves
+  and the passenger (seen together before) stays -> no-face CRITICAL at 5 s and a switch at 5 s
+  (unchanged), including with one-frame passenger misses; driver returns 1.3x larger while the
+  passenger is locked -> take-over after 5 s, held severity kept; a second face 1.1x larger is
+  ignored.
+
 ### C1.8 What the ESP32 does with records (T3, summary)
 
 - Every `PULL` record: update the latest Pi severity (for `vigilance`), then:
@@ -346,6 +426,26 @@ to drop, and the switch itself never emits a transition. T2 calls it exactly onc
   `ACK`/`FAIL` covers it whatever state the Pi has moved it to (C1.3 honours ACK/FAIL for leased or
   unleased `outbox`/`dlq` rows). A duplicate POST that slips through is harmless: the backend
   answers `duplicate` (C2.2 rule 5) and the ESP32 ACKs.
+- `[sync 2]` Confirmed ESP32 readings (T3 round-1 questions):
+  - `MIN_SEND_GAP_MS` is per event: a live event retries no sooner than 1 s after **its own**
+    failed attempt; a brand-new event goes at once. A DLQ replay waits 1 s after any failed
+    attempt.
+  - Any live event also pre-empts an in-flight **points-only** report (not counted; its points go
+    back into the track buffer, unlike a *failed* report whose points are dropped).
+  - A DLQ row held but not yet in flight when a live event arrives is released at once with
+    `FAIL <id> preempted -`.
+  - A DLQ replay uses the mobile *retry* timeout (15 s); a points-only report the first-try one.
+  - A last-known position restored from NVS after a reboot is used only once the GPS has UTC time
+    again (its `location_age_s` must be computable); until then no points, and events carry
+    `position: null`.
+  - An event without a current fix sends `speed: null`; a `last_known` point sends `speed: 0`.
+  - A Pi event record with no `payload.episode` uses the record id as `episode`.
+  - A 200 whose `event` part is missing or has an unknown `status`, when an event was sent, is a
+    failed attempt with reason `bad_response`.
+  - A 200 `rejected` whose `reason` is not one of the five C2.2 reasons is FAILed to the Pi as
+    `invalid` (so the Pi archives it rather than retrying it, C1.6 rule 3).
+  - Pending ACK/FAIL outcomes are kept until a session's `OK` line arrives and resent otherwise
+    (safe per C1.2/C1.6).
 
 ---
 
@@ -467,6 +567,15 @@ Event rules, in this order:
    `rejected route_finished` (this includes a DLQ replay of an event that happened during a route
    that has since ended: by design, see plan section 1). `[sync 1]` This applies to `kind: ok`
    exactly as to `kind: alert` (an OK after a stop is `rejected route_finished`).
+   `[sync 2]` Precisely: when **no** route contains `occurred_at`, take the truck's newest route
+   with `actual_departure <= occurred_at`; if it exists and is `completed`/`cancelled` (the
+   event happened after that route ended, e.g. an OK or alert sent after a stop) ->
+   `rejected route_finished`; if none exists -> `rejected no_route`. So `no_route` means "the
+   truck had not started any route yet when this happened". Both reasons archive on the Pi.
+   `[sync 2]` The route's status is **re-read after taking the per-route lock** (in
+   `ingest_alert`, `ingest_driver_ok` and `store_points`): if a stop/complete landed in between,
+   the event is `rejected route_finished` and the points are not stored
+   (`points.status = route_finished`, `stored = 0`).
    Rule 3 needs a lookup by `client_event_id` alone; T4 may add plain (non-unique) indexes on
    `client_event_id` in `alerts` and `driver_oks` (internal, no API change).
 5. Dedup: `(id_route, client_event_id)` exists -> `duplicate` (same `id_alert`, nothing changes).
@@ -496,6 +605,16 @@ Event rules, in this order:
 **unknown**, not `null`: points-only reports go every `REPORT_INTERVAL_MS` (5 s) until a 200 says
 `active_route: null`.
 
+`[sync 2]` **Liveness report with no position.** When the ESP32 has no point to send at all (no fix
+this boot and no usable last-known position), it still sends a points-only report with
+`points: []` every `ACTIVE_ROUTE_RETRY_MS` (30 s), so `device_last_seen_at` and the known active
+route keep updating. With points, the cadence is unchanged (5 s, or 30 s while `active_route` is
+`null`).
+
+`[sync 2]` The backend's per-route lock waits at most `ROUTE_LOCK_WAIT` (5 s, below both the 8 s
+attempt timeout and the 10 s Lambda timeout) and then answers 503 (a failed attempt, C2.3). Its
+lease `ROUTE_LOCK_LEASE` (10 s) must stay `>=` the Lambda timeout.
+
 `GET /api/devices/me/active-route` stays (unchanged) but the ESP32 no longer needs it.
 
 ### C2.4 Legacy device endpoints (T4 keeps them until every team has merged)
@@ -515,6 +634,10 @@ this work.
   finished route stays allowed.
 - A legacy `POST /api/alerts` with `severity_level: low` is stored with `id_incident: null` and
   does not touch `incident_state` or `last_not_ok_at` (only `medium`/`critical` alerts group).
+- `[sync 2]` A **user** (JWT) `PUT /api/alerts/{id}` that sends `resolved_at`, and a JWT
+  `POST /api/alerts/{id}/resolve`, are **422** (`"resolved_at is retired; close the incident with
+  POST /api/incidents/{id}/close"`). Only the device-key paths still accept `resolved_at` (as
+  `driver_ok_at`). The UI never sends it.
 
 ---
 
@@ -538,6 +661,10 @@ the per-route grouping lock.
 `PUT /api/routes/{id}` keeps "Start trip"/"Complete trip": moving to `in_progress` sets
 `actual_departure = now` if it is null; moving to `completed` sets `actual_arrival = now` if it
 is null (the UI may still send them explicitly). Event-to-route matching (C2.2) relies on this.
+
+`[sync 2]` A finished route can't be reopened: a `PUT` on a `completed`/`cancelled` route that
+changes `operative_status` is **409** ("A finished route can't be restarted; create a new
+route"). Other field edits on a finished route keep working. (The UI never reopens a route.)
 
 `[sync 1]` `POST /api/routes` (create): `RouteCreate` gains optional `actual_departure`
 (datetime). A route **created** with `operative_status` `in_progress` or `in_progress_alert` gets
@@ -567,7 +694,7 @@ Created as `completed` -> `actual_arrival = now` if null, same rule as PUT.
 | `location_is_last_known` * | bool | `true` = the position is the last known fix, not a live one |
 | `location_age_s` * | number\|null | age of that fix at the event time, seconds |
 | `speed_at_event` * | number\|null | now nullable, km/h |
-| `ai_metadata` * | object\|null | now may be `null` for `fusion` too; `scores` may be `null` |
+| `ai_metadata` * | object\|null | now may be `null` for `fusion` too; `scores` may be `null`; `[sync 2]` `clip_seconds` is optional/nullable (old rows only, absent or `null` on report alerts) |
 | `grip_status` | `good\|bad`\|null | no longer sent; `null` on new alerts |
 | `timestamp` | datetime | the event time (`occurred_at`) |
 | `received_at` | datetime | |
@@ -621,7 +748,8 @@ Grouping (on every new medium/critical alert, serialized per route with an atomi
 new incident is created. Joining updates `first_alert_at`/`last_alert_at` (min/max),
 `alert_count`, `severity` (max), `has_replayed`, `driver_ok_at`. A closed incident never gets new
 alerts. A de-escalation (`POST /api/alerts/{id}/de-escalate`, unchanged) recomputes its
-incident's `severity`.
+incident's `severity`. `[sync 2]` The incident severity never goes below `medium`: if every
+alert was de-escalated to `low`, the incident stays open with `severity: medium`.
 
 Tier at response time: `old` if `now - last_alert_at > OLD_INCIDENT_AFTER` (1 h), else its
 `severity`. Feed order: tier (`critical`, `medium`, `old`), then `last_alert_at` descending. The
@@ -643,6 +771,9 @@ header (routes ordered by their newest incident).
 - Alerts and incidents stay open when the state clears.
 - `[sync 1]` Points **never raise** `incident_state`: a `medium`/`critical` point (e.g. a medium the
   ESP32 gave up on) only updates `last_not_ok_at` and breaks `ok_since`. Only alerts raise it.
+- `[sync 2]` Late points (confirmed T4 reading): a `low` point older than the newest OK point
+  already counted is ignored for the OK run; a non-`low` point breaks the run only if it is at or
+  after `ok_since`. Legacy `POST /status` points go through the same path.
 
 ### C3.6 Endpoints
 
@@ -681,6 +812,15 @@ interface TrackPoint extends LivePosition { id_route: string }
   only track points whose `id_route` is in the latest `routes` array (a stopped/completed route's
   path disappears from Live ops; the route view uses `?route=` or `/track`). With `route=<id>` it
   keeps that route's points.
+- `[sync 2]` `server_time` is taken **before** any query, and with `since` the backend returns
+  points with `received_at > since - LIVE_SINCE_OVERLAP` (10 s), so a point whose report was
+  received just before the previous `server_time` but committed after that poll's query is not
+  lost. Overlap is harmless: the UI de-duplicates by `(id_route, t)`.
+- `[sync 2]` The **route view** draws the whole path for any route, active or ended: it seeds from
+  `GET /api/routes/{id}/track` once, then folds the `/api/live?route=<id>` track deltas in with
+  the same `(id_route, t)` de-duplication (`/api/live` without `since` only returns 15 min).
+- `[sync 2]` UI-only memory cap: at most `LIVE_TRACK_MAX_POINTS_PER_ROUTE` (10000) points per
+  route, newest kept.
 
 **`GET /api/routes/{id}/track?max_points=2000`** (`max_points` 1..10000, default
 `TRACK_MAX_POINTS` 2000): `{ id_route: string, downsampled: boolean, points: TrackPoint[] }`,
@@ -744,6 +884,10 @@ Position label: `position_unknown` -> "Position unknown"; `location_is_last_know
 | `FACE_SWITCH_AFTER_S` | 5.0 | `constants.py` (T2) | face lock switch |
 | `PARTS_EYE_MAX_FRAC` | 0.30 | `constants.py` (T2) | eye box side / crop side |
 | `PARTS_EYE_CY_RANGE` | (0.15, 0.70) | `constants.py` (T2) | eye centre y, crop-normalised |
+| `FACE_LOCK_MAX_SHIFT_FRAC` | 0.6 | `constants.py` (T2) | `[sync 2]` match: centre shift / tracked side |
+| `FACE_LOCK_MAX_SCALE` | 1.6 | `constants.py` (T2) | `[sync 2]` match: side ratio limit |
+| `FACE_LOCK_MISS_GRACE_S` | 1.0 | `constants.py` (T2) | `[sync 2]` bystander kept this long unseen |
+| `FACE_LOCK_TAKEOVER_SCALE` | 1.25 | `constants.py` (T2) | `[sync 2]` side ratio for a take-over |
 | `PI_BT_POLL_INTERVAL_MS` | 2000 | `esp32_argus/config.h` (T3) | unchanged |
 | `PI_BT_PULL_COUNT` | 8 | `config.h` (T3) | unchanged |
 | `DLQ_REPLAY_BATCH` | — | removed (T3) | always `DLQ 1` |
@@ -760,7 +904,9 @@ Position label: `position_unknown` -> "Position unknown"; `location_is_last_know
 | `LIVE_RETRY_CRITICAL_MS` | 60000 | `config.h` (T3) | then DLQ |
 | `LIVE_RETRY_MEDIUM_MS` | 30000 | `config.h` (T3) | then `FAIL retry_window` |
 | `LIVE_RETRY_OK_MS` | 30000 | `config.h` (T3) | then `FAIL retry_window` |
-| `ACTIVE_ROUTE_RETRY_MS` | 30000 | `config.h` (T3) | points-only cadence with no active route |
+| `ACTIVE_ROUTE_RETRY_MS` | 30000 | `config.h` (T3) | points-only cadence with no active route; `[sync 2]` also the empty-points liveness cadence |
+| `SENDER_LIVE_SLOTS`, `SENDER_OUTCOME_SLOTS` | 8, 16 | `config.h` (T3) | `[sync 2]` fixed sender slots (bounded string sizes) |
+| `DLQ_MAX_ATTEMPTS` | 5 | `config.h` (T3) | `[sync 2]` log line only; must equal `BUFFER_DLQ_MAX_ATTEMPTS` |
 | `PANIC_BUTTON_PIN`, `PANIC_BUTTON_DEBOUNCE_MS`, `SMS_DESTINATION_NUMBER`, `SMS_NETWORK_WAIT_MS` | — | removed (T3) | panic removed |
 | `INCIDENT_GROUP_WINDOW` | 15 min | `backend-argus/app/constants.py` (T4, new file) | |
 | `ROUTE_STATE_CLEAR_AFTER` | 1 h | `app/constants.py` (T4) | |
@@ -773,6 +919,10 @@ Position label: `position_unknown` -> "Position unknown"; `location_is_last_know
 | `CLOSE_NOTE_MAX_LEN` | 1000 | `app/constants.py` (T4) | |
 | `STOP_REASON_MAX_LEN` | 500 | `app/constants.py` (T4) | |
 | `MAX_EVENT_AGE` | 7 days | `app/schemas/ingestion.py` (T4) | unchanged; = `too_old` |
+| `ROUTE_LOCK_WAIT` | 5 s | `app/constants.py` (T4) | `[sync 2]` was 12 s; then 503 |
+| `ROUTE_LOCK_LEASE` | 10 s | `app/constants.py` (T4) | `[sync 2]` `>=` the backend Lambda timeout |
+| `LIVE_SINCE_OVERLAP` | 10 s | `app/constants.py` (T4) | `[sync 2]` `/api/live?since=` look-back |
+| `LIVE_TRACK_MAX_POINTS_PER_ROUTE` | 10000 | `ui-argus` (T5) | `[sync 2]` UI-only memory cap |
 | `UI_POLL_MS` | 5000 | `ui-argus` (T5) | `/api/live`, paused while the tab is hidden |
 | `ALERT_HISTORY_POLL_MS` | 5000 | `ui-argus` (T5) | |
 | `SIMULATOR_POLL_MS` | 10000 | `ui-argus` (T5) | |
