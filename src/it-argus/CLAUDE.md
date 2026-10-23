@@ -140,8 +140,21 @@ T5's UI is in the stack.
   state. `exact: true` keeps `Eyes closed` from matching `Head down, eyes closed`.
 - `closeDialog(page)` / `getByRole('dialog', { name: 'Stop route' })`: the named dialogs.
 - `closeConfirmation(page)`: the `role="status"` element containing `Closed HH:MM` that the UI
-  shows after a successful close. A closed incident leaves the Open list; after a reload a spec
+  shows after a successful close. A closed incident leaves the Open list and the view doesn't
+  switch tabs (the specs check the `Open` chip is still `aria-pressed`); after a reload a spec
   checks it under the `Closed` filter chip.
+- `incidentOwnText(card, text)`: a text in the incident card's own header/pill rows, never in one
+  of its alert cards. `Driver OK since` and the replayed badge exist at both levels (an alert of
+  the confirmed episode shows its own `Driver OK since`), so an unscoped `card.getByText` fails
+  strict mode. It relies on ui-argus's `data-testid="alert-card"` (not one of the pinned hooks).
+
+Create-then-list on Fleet, Drivers and Access goes through `gotoLoadedList(page, route, apiPath)`
+and `submitCreate(page, button, apiPath)`. Those screens load their list once on mount and
+prepend a created row locally (no reload), so a create landing while the first `GET` is still in
+flight can be overwritten by it. `gotoLoadedList` waits for the `GET` the new document sends (not
+an earlier mount's, which matters right after a login redirect to the same screen);
+`submitCreate` waits for the `POST` to answer 201, so a failed create fails with the backend's
+error instead of a missing row.
 
 Earlier versions of these specs used `getByText('Open', { exact: true })` (which matched the
 route view's filter chip, so it passed whether or not the incident was open) and
@@ -155,12 +168,16 @@ surfaced two real bugs (see "Docker Compose" above for the network/secure-contex
 old live-ops spec found three `getByLabel`/`getByText` substring false positives, all fixed with
 `exact: true`.
 
-**Final tweaks, verified so far**: the specs type-check under `tsc --strict`, and
-`playwright test --list` lists all of them (29 with `IT_FINAL_TWEAKS_UI=1`). The API-level specs
-were run against team T4's round-2 backend with a throwaway Mongo and passed. Not yet run: the
-browser halves (`IT_FINAL_TWEAKS_UI=1`) against T5's UI, and the new millisecond-timestamp
-positions test, which needs T4's round-3 backend (C2.1 [sync 3]). Both are the lead's
-integration step.
+**Final tweaks, verified so far** (2026-10-23): the specs type-check under `tsc --strict`, and
+`playwright test --list` lists 29 tests (the UI-gated ones skip at run time unless
+`IT_FINAL_TWEAKS_UI=1`). This module's own `docker compose up --build --abort-on-container-exit`
+with `IT_FINAL_TWEAKS_UI=1`, built from team T4's backend branch (`d780801`) and team T5's UI
+branch (`3579656`), passed all 29, browser halves and the millisecond-timestamp positions test
+included. `incidents.spec.ts` + `live-ops.spec.ts` also passed against the T5 commit before that
+one (`e1927c7`), where each alert card of a driver-OK'd episode repeated the `Driver OK since`
+pill, so the incident-pill locator holds either way. That is a run of the team branches side by
+side, not of the merged `feat/final-tweaks`; the lead's integration run is still the one that
+counts.
 
 **Still not covered**: a full round trip through the real ingestion chain (`cv-argus` → ESP32 →
 backend). The specs report as a truck over the same HTTP endpoint the ESP32 uses, but no real
