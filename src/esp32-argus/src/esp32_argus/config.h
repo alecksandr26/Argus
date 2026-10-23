@@ -62,6 +62,9 @@
 #define SENDER_LIVE_SLOTS 8
 // Reports to the Pi (ACK/FAIL of finished events) waiting for the next Bluetooth session.
 #define SENDER_OUTCOME_SLOTS 16
+// The Pi archives a dead letter after this many failed attempts (cv-argus
+// BUFFER_DLQ_MAX_ATTEMPTS; the Pi does the counting, this copy is only for the "attempt n/5" log).
+#define DLQ_MAX_ATTEMPTS 5
 
 // =====================================================
 // GPS points
