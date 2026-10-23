@@ -7,14 +7,19 @@
 
 namespace {
 unsigned long lastRetryAt = 0;
+// This module's copy of the Pi's settings, refreshed when they change (credentials.h).
+DeviceCredentials creds;
+uint32_t credsGeneration = 0;
 // The network the radio was last told to join -- compared against the Pi's settings so a new
 // SSID/password in its .env reaches this device without a reflash.
 String targetSsid;
 String targetPassword;
 
+void refreshCredentials() { credentialsCopyIfChanged(creds, credsGeneration); }
+
 void startConnect() {
-  targetSsid = credentials().wifiSsid;
-  targetPassword = credentials().wifiPassword;
+  targetSsid = creds.wifiSsid;
+  targetPassword = creds.wifiPassword;
   WiFi.disconnect();
   if (targetSsid.length() == 0) return;
   WiFi.begin(targetSsid.c_str(), targetPassword.c_str());
@@ -23,8 +28,9 @@ void startConnect() {
 
 void wifiBegin() {
   WiFi.mode(WIFI_STA);
+  refreshCredentials();
   lastRetryAt = millis();
-  if (credentials().wifiSsid.length() == 0) {
+  if (creds.wifiSsid.length() == 0) {
     Serial.println("[wifi] No WiFi configured yet -- waiting for the Pi's CONFIG");
     return;
   }
@@ -44,15 +50,16 @@ void wifiBegin() {
     Serial.print("[wifi] Connected, IP: ");
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println("[wifi] Not connected yet -- will keep retrying from the main loop");
+    Serial.println("[wifi] Not connected yet -- the sender task keeps retrying");
   }
   lastRetryAt = millis();
 }
 
 void wifiEnsureConnected() {
+  refreshCredentials();
   unsigned long now = millis();
-  if (credentials().wifiSsid != targetSsid || credentials().wifiPassword != targetPassword) {
-    Serial.println(credentials().wifiSsid.length() > 0
+  if (creds.wifiSsid != targetSsid || creds.wifiPassword != targetPassword) {
+    Serial.println(creds.wifiSsid.length() > 0
                        ? "[wifi] New WiFi settings from the Pi -- reconnecting"
                        : "[wifi] The Pi no longer configures WiFi -- disconnecting");
     startConnect();
@@ -69,3 +76,5 @@ void wifiEnsureConnected() {
 }
 
 bool wifiIsConnected() { return WiFi.status() == WL_CONNECTED; }
+
+bool wifiConfigured() { return targetSsid.length() > 0; }
