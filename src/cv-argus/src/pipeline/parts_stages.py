@@ -97,13 +97,8 @@ class PartsInferenceStage(Stage):
 
     def _on_face_switch(self) -> list:
         """After the switch frame went through the rules: reset the rule timers (never the held
-        severity) and the tracker. `reset_signals` is reached through `getattr` because it lands
-        with T1's rule-engine change (contracts section 0); without it only the tracker resets."""
-        reset_signals = getattr(self._rules, "reset_signals", None)
-        if callable(reset_signals):
-            reset_signals()
-        else:
-            logger.warning("face switch: rule engine has no reset_signals(); only the tracker was reset")
+        severity) and the tracker."""
+        self._rules.reset_signals()
         self._tracker.reset()
         logger.info("face switch: rule timers and part tracks reset for the new face")
         return self._tracker.tracks

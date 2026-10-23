@@ -88,9 +88,8 @@ def test_overlay_draws_without_error_and_changes_pixels():
 # --- face switch (contracts C1.7) ---------------------------------------------------------------
 
 class _RecordingRules(PartsRuleEngine):
-    """The real engine, recording the order of `update` / `reset_signals` calls. Its
-    `reset_signals` is a stand-in for T1's (it only records): the stage must call it exactly
-    once per switch, after the switch frame went through `update`."""
+    """The real engine, recording the order of `update` / `reset_signals` calls: the stage must
+    call `reset_signals` exactly once per switch, after the switch frame went through `update`."""
 
     def __init__(self):
         super().__init__()
@@ -102,6 +101,7 @@ class _RecordingRules(PartsRuleEngine):
 
     def reset_signals(self):
         self.calls.append(("reset", None))
+        super().reset_signals()
 
 
 def _switch_ctx(ts_ms):
@@ -125,18 +125,32 @@ def test_face_switch_resets_rule_timers_and_tracker_after_the_rules_see_the_fram
     assert [c for c, _ in rules.calls].count("reset") == 1
 
 
-def test_face_switch_without_reset_signals_still_resets_the_tracker():
-    class _OldRules:                                      # an engine predating reset_signals
+def test_face_switch_restarts_the_eye_timer_for_the_new_face():
+    # 1.4 s of closed eyes reaches low; the switch frame, then the new face with closed eyes.
+    # Without the reset the eye timer would carry on past RULE_EYES_MEDIUM_S (2.0 s) by 2.6 s;
+    # with it the new face's closure started at 1.8 s, so 0.8 s in it is still the held low.
+    stage = PartsInferenceStage(_StubDetector(pd_.CLOSED_EYE))
+    for k in range(8):                                    # 0 .. 1.4 s closed
+        ctx = stage.process_item(_ctx(k * 200))
+    assert ctx.detection.extras["severity"] == "low"
+    stage.process_item(_switch_ctx(1600))
+    for ts in range(1800, 2800, 200):                     # 1.8 .. 2.6 s, the new face closed
+        ctx = stage.process_item(_ctx(ts))
+    assert ctx.detection.extras["severity"] == "low"
+
+
+def test_face_switch_needs_a_rule_engine_with_reset_signals():
+    class _NoReset:                                       # an engine predating reset_signals
         def __init__(self):
             self._inner = PartsRuleEngine()
 
         def update(self, t, s):
             return self._inner.update(t, s)
 
-    stage = PartsInferenceStage(_StubDetector(pd_.OPEN_EYE), rules=_OldRules())
+    stage = PartsInferenceStage(_StubDetector(pd_.OPEN_EYE), rules=_NoReset())
     stage.process_item(_ctx(0))
-    ctx = stage.process_item(_switch_ctx(200))
-    assert ctx.features["parts"]["tracks"] == []
+    with pytest.raises(AttributeError):
+        stage.process_item(_switch_ctx(200))
 
 
 def test_face_switch_keeps_the_held_severity():
