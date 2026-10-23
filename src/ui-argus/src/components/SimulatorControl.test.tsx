@@ -85,6 +85,9 @@ describe('SimulatorControl', () => {
       vi.stubGlobal('fetch', fetchMock)
       render(<SimulatorControl token="tok" />)
       await screen.findByText('Starting…')
+      // The poll interval starts in a passive effect after this render; flush it before
+      // advancing the fake clock, or the first advance can run before the interval exists.
+      await act(async () => {})
       expect(SIMULATOR_POLL_MS).toBe(10000)
       const statusCalls = () =>
         fetchMock.mock.calls.filter(([url]) => /\/api\/simulator$/.test(url)).length
