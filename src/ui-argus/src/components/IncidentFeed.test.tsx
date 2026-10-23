@@ -133,8 +133,8 @@ describe('IncidentFeed', () => {
     '%s closes a critical incident through the dialog, with a required note',
     async (role) => {
       const incident = makeIncident({ id_incident: 'i-9', severity: 'critical', tier: 'critical' })
-      const fetchMock = vi.fn(async () => ({
-        ok: true,
+      const fetchMock = vi.fn(async (url: string) => ({
+        ok: url.endsWith('/api/incidents/i-9/close'),
         status: 200,
         json: async () => ({ ...incident, closed_at: at(60) }),
       }))

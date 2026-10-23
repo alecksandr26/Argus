@@ -33,7 +33,12 @@ export interface UseLiveResult {
  *   The seed and the live deltas fold together with `appendTrack` (both de-duplicate by `t`), in
  *   whichever order they arrive. A failed seed is retried on the next poll.
  */
-export function useLive(token: string, route: string | null = null): UseLiveResult {
+export function useLive(
+  token: string,
+  route: string | null = null,
+  /** `false` holds the poll (e.g. the route view before it knows its route id). */
+  enabled: boolean = true,
+): UseLiveResult {
   const [live, setLive] = useState<LiveState>(EMPTY_LIVE)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -105,7 +110,7 @@ export function useLive(token: string, route: string | null = null): UseLiveResu
     }
   }, [token, route, seedTrack])
 
-  usePolling(refresh, UI_POLL_MS, { resetKey: `${token}|${route ?? ''}` })
+  usePolling(refresh, UI_POLL_MS, { enabled, resetKey: `${token}|${route ?? ''}` })
 
   return { live, loading, error, errorStatus, refresh }
 }

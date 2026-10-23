@@ -1,70 +1,38 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import Icon from '../components/Icon'
 import FilterChips from '../components/FilterChips'
+import IncidentFeed, { IncidentCard } from '../components/IncidentFeed'
+import CloseIncidentDialog from '../components/CloseIncidentDialog'
+import RouteEndActions from '../components/RouteEndActions'
+import FleetMap, { type MapFocus } from '../components/FleetMap'
 import { useAuth } from '../context/AuthContext'
-import {
-  deescalateAlert,
-  getAlert,
-  listAlerts,
-  reviewAlert,
-  type AlertFilters,
-} from '../api/alerts'
-import { getRoute, getRouteStatus } from '../api/routes'
-import { listDrivers } from '../api/drivers'
-import { listTrucks } from '../api/trucks'
+import { useLive } from '../hooks/useLive'
+import { deescalateAlert, getAlert, reviewAlert } from '../api/alerts'
+import { listIncidents } from '../api/incidents'
 import { ApiError } from '../api/client'
 import { clock, pct, relativeTime, shortDate } from '../utils/format'
-import { severity, vigilance } from '../utils/status'
+import {
+  REPLAYED_LABEL,
+  alertTypeLabel,
+  incidentState,
+  routeStatusBadge,
+  severity,
+} from '../utils/status'
 import { toLatLng } from '../utils/geo'
-import FleetMap, { type FleetMapMarker } from '../components/FleetMap'
-import type {
-  Alert,
-  AlertSeverity,
-  AlertSource,
-  Driver,
-  GripStatus,
-  Route,
-  StatusRoute,
-  Truck,
-} from '../types'
+import { alertPins, routeMarkers, trackPath } from '../utils/mapLayers'
+import { alertPosition, pointPosition, positionSummary } from '../utils/position'
+import { canCloseIncidents } from '../utils/incidents'
+import type { Alert, AlertSeverity, AlertSource, Incident, Vigilance } from '../types'
 
+/** Where an alert came from. `panic_button` exists only on old rows (the panic button was
+ * removed); it stays so those rows still read. */
 const SOURCE_LABEL: Record<AlertSource, string> = {
-  fusion: 'Camera + grip sensor (fused)',
-  panic_button: 'Driver-activated panic button',
+  fusion: 'Driver camera',
+  panic_button: 'Panic button',
 }
-
-const GRIP_LABEL: Record<GripStatus, string> = {
-  good: 'Good',
-  bad: 'Bad',
-}
-
-const POLL_MS = 7000
-
-const toneColor = {
-  good: 'var(--good)',
-  warn: 'var(--warn)',
-  bad: 'var(--bad)',
-  neutral: 'var(--text-faint)',
-} as const
 
 const SEVERITY_RANK: Record<AlertSeverity, number> = { low: 0, medium: 1, critical: 2 }
-
-// No "Low" chip — see LiveOps.tsx's FILTERS comment: a real Alert row is never actually
-// severity_level "low" in practice.
-const SEVERITY_FILTERS: { key: AlertSeverity | 'all'; label: string }[] = [
-  { key: 'all', label: 'All' },
-  { key: 'critical', label: 'Critical' },
-  { key: 'medium', label: 'Medium' },
-]
-
-type ReviewedFilter = 'unreviewed' | 'reviewed' | 'all'
-
-const REVIEWED_FILTERS: { key: ReviewedFilter; label: string }[] = [
-  { key: 'unreviewed', label: 'Unreviewed' },
-  { key: 'reviewed', label: 'Reviewed' },
-  { key: 'all', label: 'All' },
-]
 
 type Trend = 'improving' | 'worsening' | 'steady' | 'unknown'
 
@@ -82,28 +50,37 @@ const TREND_TONE: Record<Trend, 'good' | 'bad' | 'neutral'> = {
   unknown: 'neutral',
 }
 
+type IncidentsView = 'open' | 'closed'
+
+const INCIDENT_VIEWS: { key: IncidentsView; label: string }[] = [
+  { key: 'open', label: 'Open' },
+  { key: 'closed', label: 'Closed' },
+]
+
 /**
- * "Route live view" — the unified live-tracking + alert-triage page. Mounted at two URL shapes
+ * "Route live view": live tracking + incident triage for one route. Mounted at two URL shapes
  * (see `App.tsx`): the canonical `/routes/:routeId/live` (+ optional `?alert=` focus), and the
- * legacy `/alerts/:alertId` — kept working unchanged because `src/it-argus/tests/
- * live-ops.spec.ts` navigates to and asserts that exact URL shape in three places. On the legacy
- * path, the alert's `id_route` is resolved from the fetched alert itself before anything
- * route-scoped can be polled.
+ * legacy `/alerts/:alertId`, which resolves the route from the fetched alert first.
  *
- * Was `AlertTriage.tsx` (single-alert only) — generalized rather than duplicated, per the
- * project's "one unified page" decision: a second, parallel focus/tracking implementation
- * inside `LiveOps.tsx`'s own map would just be two divergent versions of the same idea.
+ * Data: one `GET /api/live?route=<id>` poll every 5 s (`useLive`, paused while the tab is
+ * hidden) gives the route (any status), its newest position and its open incidents; the whole
+ * GPS path is seeded once from `GET /api/routes/{id}/track` and the live deltas are folded in
+ * (C3.6 `[sync 2]`). Closed incidents come from `GET /api/incidents?route_id=&status=closed`.
+ *
+ * The map shows the truck (coloured by the route's `incident_state`, hollow when it's a last
+ * known position), the path, and a pin per alert. Guardian and root_admin close incidents (a
+ * note is required for a critical one); root_admin and admin complete or stop the route.
  */
 export default function RouteLiveView() {
   const { alertId: legacyAlertId, routeId: routeIdParam } = useParams<{
     alertId?: string
     routeId?: string
   }>()
-  const [searchParams, setSearchParams] = useSearchParams()
-  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { session } = useAuth()
   const token = session!.token
-  const canReview = session!.user.role === 'root_admin' || session!.user.role === 'guardian'
+  const role = session!.user.role
+  const canReview = canCloseIncidents(role)
 
   const isLegacy = Boolean(legacyAlertId)
   const focusedAlertId = isLegacy ? legacyAlertId : (searchParams.get('alert') ?? undefined)
@@ -122,6 +99,13 @@ export default function RouteLiveView() {
   const [deescTo, setDeescTo] = useState<AlertSeverity | ''>('')
   const [deescReason, setDeescReason] = useState('')
   const [deescalating, setDeescalating] = useState(false)
+
+  /** Re-reads the focused alert (e.g. after its incident was closed) without touching the
+   * review form the operator may be editing. */
+  const reloadFocusedAlert = useCallback(
+    (id: string) => getAlert(id, token).then(setFocusedAlert),
+    [token],
+  )
 
   useEffect(() => {
     if (!focusedAlertId) {
@@ -159,114 +143,76 @@ export default function RouteLiveView() {
     }
   }, [focusedAlertId, token])
 
-  // --- route + live status + this route's alerts ---
+  // --- the route: one /api/live?route= poll, path seeded from /track ---
   const routeId = isLegacy ? (focusedAlert?.id_route ?? null) : (routeIdParam ?? null)
+  const { live, loading, error, errorStatus, refresh } = useLive(token, routeId, Boolean(routeId))
+  const route = live.routes.find((r) => r.id_route === routeId) ?? null
+  const openIncidents = live.incidents
+  const position = route?.latest_position ?? null
 
-  const [route, setRoute] = useState<Route | null>(null)
-  const [liveStatus, setLiveStatus] = useState<StatusRoute | null>(null)
-  const [routeAlerts, setRouteAlerts] = useState<Alert[]>([])
-  const [driver, setDriver] = useState<Driver | null>(null)
-  const [truck, setTruck] = useState<Truck | null>(null)
-  const [routeLoading, setRouteLoading] = useState(true)
-  const [routeNotFound, setRouteNotFound] = useState(false)
-  const [routeError, setRouteError] = useState<string | null>(null)
-  const [trend, setTrend] = useState<Trend>('unknown')
-  const prevVigilanceRef = useRef<AlertSeverity | null>(null)
-
-  const [alertsSeverity, setAlertsSeverity] = useState<AlertSeverity | 'all'>('all')
-  const [alertsReviewed, setAlertsReviewed] = useState<ReviewedFilter>('unreviewed')
-
-  const [drivers, setDrivers] = useState<Driver[]>([])
-  const [trucks, setTrucks] = useState<Truck[]>([])
-  useEffect(() => {
-    listDrivers(token).then(setDrivers).catch(() => {})
-    listTrucks(token).then(setTrucks).catch(() => {})
-  }, [token])
-
-  useEffect(() => {
-    if (!route) return
-    setDriver(drivers.find((d) => d.id_driver === route.id_driver) ?? null)
-    setTruck(trucks.find((t) => t.id_truck === route.id_truck) ?? null)
-  }, [route, drivers, trucks])
-
-  useEffect(() => {
+  // Closed incidents of this route (Incidents tab → Closed, and their pins on the map).
+  const [closedIncidents, setClosedIncidents] = useState<Incident[]>([])
+  const loadClosed = useCallback(() => {
     if (!routeId) return
-    let cancelled = false
-    const filters: AlertFilters = { route_id: routeId }
-    if (alertsSeverity !== 'all') filters.severity = alertsSeverity
-    if (alertsReviewed !== 'all') filters.reviewed = alertsReviewed === 'reviewed'
+    listIncidents(token, { route_id: routeId, status: 'closed' })
+      .then(setClosedIncidents)
+      .catch(() => {})
+  }, [routeId, token])
+  useEffect(() => {
+    setClosedIncidents([])
+    loadClosed()
+  }, [loadClosed])
 
-    const poll = () => {
-      Promise.all([
-        getRoute(routeId, token),
-        getRouteStatus(routeId, token).catch((err) => {
-          if (err instanceof ApiError && err.status === 404) return null
-          throw err
-        }),
-        listAlerts(token, filters),
-      ])
-        .then(([r, status, alerts]) => {
-          if (cancelled) return
-          setRoute(r)
-          setLiveStatus(status)
-          setRouteAlerts(alerts)
-          setRouteNotFound(false)
-          setRouteError(null)
-          const v = status?.vigilance
-          if (v === 'unknown') {
-            // No recent Pi reading: no trend can be read from it.
-            setTrend('unknown')
-            prevVigilanceRef.current = null
-          } else if (v) {
-            const prev = prevVigilanceRef.current
-            setTrend(
-              prev === null
-                ? 'unknown'
-                : SEVERITY_RANK[v] < SEVERITY_RANK[prev]
-                  ? 'improving'
-                  : SEVERITY_RANK[v] > SEVERITY_RANK[prev]
-                    ? 'worsening'
-                    : 'steady',
-            )
-            prevVigilanceRef.current = v
-          }
-        })
-        .catch((err) => {
-          if (cancelled) return
-          if (err instanceof ApiError && err.status === 404) {
-            setRouteNotFound(true)
-          } else {
-            setRouteError(err instanceof ApiError ? err.message : 'Failed to load route')
-          }
-        })
-        .finally(() => {
-          if (!cancelled) setRouteLoading(false)
-        })
+  // Trend of the newest point's vigilance between polls (unknown breaks it).
+  const [trend, setTrend] = useState<Trend>('unknown')
+  const prevVigilanceRef = useRef<Vigilance | null>(null)
+  useEffect(() => {
+    const v = position?.vigilance
+    if (!v) return
+    if (v === 'unknown') {
+      setTrend('unknown')
+      prevVigilanceRef.current = null
+      return
     }
-    poll()
-    const id = setInterval(poll, POLL_MS)
-    return () => {
-      cancelled = true
-      clearInterval(id)
+    const prev = prevVigilanceRef.current
+    if (prev !== null && prev !== 'unknown') {
+      setTrend(
+        SEVERITY_RANK[v] < SEVERITY_RANK[prev]
+          ? 'improving'
+          : SEVERITY_RANK[v] > SEVERITY_RANK[prev]
+            ? 'worsening'
+            : 'steady',
+      )
     }
-  }, [routeId, token, alertsSeverity, alertsReviewed])
+    prevVigilanceRef.current = v
+    // A new point, not a new object, is what moves the trend.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [position?.t])
 
-  // "This alert" is the default tab whenever a new alert gets focused; the operator can still
-  // switch to "Route alerts" afterwards without losing the focus/URL.
-  const [tab, setTab] = useState<'alert' | 'route'>(focusedAlertId ? 'alert' : 'route')
+  // "This alert" is the default tab whenever an alert gets focused.
+  const [tab, setTab] = useState<'alert' | 'incidents'>(focusedAlertId ? 'alert' : 'incidents')
   useEffect(() => {
     if (focusedAlertId) setTab('alert')
   }, [focusedAlertId])
+  const [incidentsView, setIncidentsView] = useState<IncidentsView>('open')
 
-  function focusAlert(id: string) {
-    if (isLegacy) {
-      navigate(`/alerts/${id}`)
-    } else {
-      const next = new URLSearchParams(searchParams)
-      next.set('alert', id)
-      setSearchParams(next)
-    }
+  const [focus, setFocus] = useState<MapFocus | null>(null)
+  const focusNonce = useRef(0)
+  function showOnMap(a: Alert) {
+    if (!a.coordinates) return
+    focusNonce.current += 1
+    setFocus({ position: toLatLng(a.coordinates), pinId: a.id_alert, nonce: focusNonce.current })
   }
+
+  const [closing, setClosing] = useState<Incident | null>(null)
+  function afterClose() {
+    void refresh()
+    loadClosed()
+    if (focusedAlertId) reloadFocusedAlert(focusedAlertId).catch(() => {})
+  }
+
+  const alertHref = (a: Alert) =>
+    isLegacy ? `/alerts/${a.id_alert}` : `/routes/${a.id_route}/live?alert=${a.id_alert}`
 
   async function save() {
     if (!focusedAlert) return
@@ -299,9 +245,9 @@ export default function RouteLiveView() {
       )
       setFocusedAlert(updated)
       setReviewed(updated.reviewed_by_operator)
-      setRouteAlerts((prev) => prev.map((a) => (a.id_alert === updated.id_alert ? updated : a)))
       setDeescTo('')
       setDeescReason('')
+      void refresh()
     } catch (err) {
       setAlertError(err instanceof ApiError ? err.message : 'Failed to de-escalate alert')
     } finally {
@@ -309,13 +255,31 @@ export default function RouteLiveView() {
     }
   }
 
+  // --- map layers ---
+  const markers = useMemo(() => (route ? routeMarkers([route]) : []), [route])
+  const track = routeId ? live.track[routeId] : undefined
+  const paths = useMemo(() => {
+    const p = routeId && track ? trackPath(routeId, track) : null
+    return p ? [p] : []
+  }, [routeId, track])
+  const pins = useMemo(
+    () =>
+      alertPins([
+        ...(focusedAlert ? [focusedAlert] : []),
+        ...openIncidents.flatMap((i) => i.alerts),
+        ...closedIncidents.flatMap((i) => i.alerts),
+      ]),
+    [focusedAlert, openIncidents, closedIncidents],
+  )
+
+  // The focused alert's incident, if it is still open (closing happens per incident).
+  const focusedIncident = focusedAlert?.id_incident
+    ? (openIncidents.find((i) => i.id_incident === focusedAlert.id_incident) ?? null)
+    : null
+
   // --- loading / not-found gates ---
   if (isLegacy && alertLoading && !focusedAlert) {
-    return (
-      <div style={{ padding: '24px 28px', color: 'var(--text-faint)', fontSize: 13 }}>
-        Loading alert…
-      </div>
-    )
+    return <Message>Loading alert…</Message>
   }
 
   if (isLegacy && alertNotFound) {
@@ -326,23 +290,14 @@ export default function RouteLiveView() {
         title="Alert not found"
         message={
           <>
-            There is no alert with the identifier{' '}
-            <span className="mono">{legacyAlertId}</span>.
+            There is no alert with the identifier <span className="mono">{legacyAlertId}</span>.
           </>
         }
       />
     )
   }
 
-  if (!routeId || (routeLoading && !route)) {
-    return (
-      <div style={{ padding: '24px 28px', color: 'var(--text-faint)', fontSize: 13 }}>
-        Loading route…
-      </div>
-    )
-  }
-
-  if (routeNotFound || !route) {
+  if (errorStatus === 404) {
     return (
       <NotFound
         backTo="/routes"
@@ -357,15 +312,20 @@ export default function RouteLiveView() {
     )
   }
 
-  const sev = focusedAlert
-    ? severity[focusedAlert.severity_level]
-    : liveStatus
-      ? vigilance[liveStatus.vigilance]
-      : { label: 'No live data', tone: 'neutral' as const }
+  if (!routeId || !route) {
+    if (routeId && !loading && error) {
+      return (
+        <div role="alert" style={{ padding: '24px 28px', color: 'var(--danger, #e5484d)', fontSize: 13 }}>
+          {error}
+        </div>
+      )
+    }
+    return <Message>Loading route…</Message>
+  }
 
-  // Binary Not Drowsy / Drowsy scheme (root CLAUDE.md's drowsiness-class migration) — the old
-  // 3-way Alert/Low vigilance/Drowsy split is retired. `ai_metadata` and its `scores` may be
-  // null (no model output for this alert) — see types.ts's doc comment.
+  const routeName = `${route.origin_name} → ${route.destination_name}`
+  const state = incidentState[route.incident_state]
+  const head = focusedAlert ? severity[focusedAlert.severity_level] : state
   const aiScores = focusedAlert?.ai_metadata?.scores ?? null
   const scores = aiScores
     ? [
@@ -373,44 +333,33 @@ export default function RouteLiveView() {
         { label: 'Drowsy', value: aiScores.drowsy, color: 'var(--bad)' },
       ]
     : []
+  const focusedPos = focusedAlert ? alertPosition(focusedAlert) : null
+  const truckPos = position ? pointPosition(position) : null
+  const statusBadge = routeStatusBadge(route)
 
-  const truckMarker: FleetMapMarker | null = liveStatus
-    ? {
-        id: routeId,
-        position: toLatLng(liveStatus.current_coordinates),
-        plate: truck ? `${truck.plate_number} · ${truck.company_number}` : '—',
-        driver: driver ? `${driver.first_name} ${driver.last_name}` : '—',
-        origin: route.origin_name,
-        destination: route.destination_name,
-        speedKmh: liveStatus.current_speed,
-        vigilanceLabel: vigilance[liveStatus.vigilance].label,
-        tone: vigilance[liveStatus.vigilance].tone,
-        timestamp: liveStatus.timestamp,
-      }
-    : null
-
-  const ctxItems = focusedAlert
-    ? [
-        { label: 'Truck', value: truck ? `${truck.plate_number} · ${truck.company_number}` : '—', mono: true },
-        { label: 'Driver', value: driver ? `${driver.first_name} ${driver.last_name}` : '—' },
-        { label: 'Route', value: `${route.origin_name} → ${route.destination_name}` },
-        {
+  const ctxItems: { label: string; value: ReactNode; mono?: boolean }[] = [
+    { label: 'Truck', value: route.truck_plate_number ?? '—', mono: true },
+    { label: 'Driver', value: route.driver_full_name ?? '—' },
+    { label: 'Route', value: routeName },
+    focusedAlert
+      ? {
           label: 'Speed at event',
           value: focusedAlert.speed_at_event == null ? '—' : `${focusedAlert.speed_at_event} km/h`,
           mono: true,
-        },
-        { label: 'Source', value: SOURCE_LABEL[focusedAlert.source] },
-      ]
-    : [
-        { label: 'Truck', value: truck ? `${truck.plate_number} · ${truck.company_number}` : '—', mono: true },
-        { label: 'Driver', value: driver ? `${driver.first_name} ${driver.last_name}` : '—' },
-        { label: 'Route', value: `${route.origin_name} → ${route.destination_name}` },
-        {
+        }
+      : {
           label: 'Current speed',
-          value: liveStatus ? `${liveStatus.current_speed} km/h` : '—',
+          value: position && !position.last_known ? `${position.speed} km/h` : '—',
           mono: true,
         },
-      ]
+    focusedAlert
+      ? { label: 'Position at event', value: positionSummary(focusedPos!), mono: true }
+      : {
+          label: 'Position',
+          value: truckPos ? positionSummary(truckPos) : 'No position yet',
+          mono: true,
+        },
+  ]
 
   return (
     <div
@@ -425,137 +374,120 @@ export default function RouteLiveView() {
     >
       <Link
         to={isLegacy ? '/' : '/routes'}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          fontSize: 12.5,
-          color: 'var(--text-faint)',
-        }}
+        style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--text-faint)' }}
       >
         <Icon name="chevron-left" size={14} />
         {isLegacy ? 'Back to Live operations' : 'Back to Routes'}
       </Link>
 
-      {(alertError || routeError) && (
+      {(alertError || error) && (
         <div role="alert" style={{ color: 'var(--danger, #e5484d)', fontSize: 13 }}>
-          {alertError ?? routeError}
+          {alertError ?? error}
         </div>
       )}
 
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'flex-start',
-          justifyContent: 'space-between',
-          gap: 16,
-        }}
-      >
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span
             style={{
               width: 38,
               height: 38,
               borderRadius: 9,
-              background: sev.tone === 'bad' ? 'var(--bad-soft)' : 'var(--surface-2)',
-              border: `1px solid ${sev.tone === 'bad' ? 'var(--bad)' : 'var(--border-soft)'}`,
+              background: head.tone === 'bad' ? 'var(--bad-soft)' : 'var(--surface-2)',
+              border: `1px solid ${head.tone === 'bad' ? 'var(--bad)' : 'var(--border-soft)'}`,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               flexShrink: 0,
-              color: sev.tone === 'bad' ? 'var(--bad)' : 'var(--text-faint)',
+              color: head.tone === 'bad' ? 'var(--bad)' : 'var(--text-faint)',
             }}
           >
-            <Icon
-              name={focusedAlert ? 'alert-triangle' : 'route'}
-              size={19}
-              strokeWidth={1.8}
-            />
+            <Icon name={focusedAlert ? 'alert-triangle' : 'route'} size={19} strokeWidth={1.8} />
           </span>
           <div>
-            <h1
-              style={{
-                fontFamily: 'var(--font-display)',
-                fontWeight: 600,
-                fontSize: 20,
-                margin: 0,
-              }}
-            >
-              {focusedAlert ? focusedAlert.alert_type : `${route.origin_name} → ${route.destination_name}`}
+            <h1 style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 20, margin: 0 }}>
+              {focusedAlert ? alertTypeLabel(focusedAlert.alert_type) : routeName}
             </h1>
-            <div
-              style={{
-                fontSize: 12.5,
-                color: 'var(--text-faint)',
-                marginTop: 2,
-              }}
-            >
+            <div style={{ fontSize: 12.5, color: 'var(--text-faint)', marginTop: 2 }}>
               {focusedAlert ? (
                 <>
                   Alert #{focusedAlert.id_alert} · {shortDate(focusedAlert.timestamp)},{' '}
                   {clock(focusedAlert.timestamp)} · {relativeTime(focusedAlert.timestamp)}
                 </>
-              ) : liveStatus ? (
-                <>Last position update {relativeTime(liveStatus.timestamp)}</>
+              ) : position ? (
+                <>Last position update {relativeTime(position.t)}</>
               ) : (
                 'No live telemetry yet for this route'
               )}
             </div>
+            {route.stop_reason && (
+              <div style={{ fontSize: 12, color: 'var(--warn)', marginTop: 4 }} data-testid="stop-reason">
+                Stopped{route.stopped_at ? ` ${clock(route.stopped_at)}` : ''}: {route.stop_reason}
+              </div>
+            )}
           </div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
           <span
-            className={sev.tone === 'neutral' ? 'pill' : `pill pill--${sev.tone}`}
+            className={head.tone === 'neutral' ? 'pill' : `pill pill--${head.tone}`}
             style={{ padding: '6px 14px', fontSize: 11.5 }}
           >
-            {sev.label.toUpperCase()}
+            {head.label.toUpperCase()}
             {focusedAlert ? ' SEVERITY' : ''}
           </span>
-          {!focusedAlert && liveStatus && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span
-              className={
-                TREND_TONE[trend] === 'neutral' ? 'pill' : `pill pill--${TREND_TONE[trend]}`
-              }
+              className={statusBadge.tone === 'neutral' ? 'pill' : `pill pill--${statusBadge.tone}`}
               style={{ fontSize: 10.5, padding: '3px 9px' }}
             >
-              {TREND_LABEL[trend]}
+              {statusBadge.label}
             </span>
-          )}
-          {focusedAlert && (
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              {focusedAlert.related_alert_id && (
-                <Link
-                  to={`/alerts/${focusedAlert.related_alert_id}`}
-                  className="pill"
-                  style={{ fontSize: 10.5, padding: '3px 9px', textDecoration: 'none' }}
-                >
-                  Escalated from #{focusedAlert.related_alert_id}
-                </Link>
-              )}
+            {!focusedAlert && position && (
               <span
-                className={focusedAlert.closed_at ? 'pill' : 'pill pill--warn'}
+                className={TREND_TONE[trend] === 'neutral' ? 'pill' : `pill pill--${TREND_TONE[trend]}`}
                 style={{ fontSize: 10.5, padding: '3px 9px' }}
               >
-                {focusedAlert.closed_at ? `Closed ${clock(focusedAlert.closed_at)}` : 'Open'}
+                {TREND_LABEL[trend]}
               </span>
-              {focusedAlert.driver_ok_at && !focusedAlert.closed_at && (
-                <span className="pill pill--good" style={{ fontSize: 10.5, padding: '3px 9px' }}>
-                  Driver OK since {clock(focusedAlert.driver_ok_at)}
+            )}
+            {focusedAlert && (
+              <>
+                {focusedAlert.related_alert_id && (
+                  <Link
+                    to={`/alerts/${focusedAlert.related_alert_id}`}
+                    className="pill"
+                    style={{ fontSize: 10.5, padding: '3px 9px', textDecoration: 'none' }}
+                  >
+                    Escalated from #{focusedAlert.related_alert_id}
+                  </Link>
+                )}
+                <span
+                  className={focusedAlert.closed_at ? 'pill' : 'pill pill--warn'}
+                  style={{ fontSize: 10.5, padding: '3px 9px' }}
+                >
+                  {focusedAlert.closed_at ? `Closed ${clock(focusedAlert.closed_at)}` : 'Open'}
                 </span>
-              )}
-            </div>
-          )}
+                {focusedAlert.driver_ok_at && (
+                  <span className="pill pill--good" style={{ fontSize: 10.5, padding: '3px 9px' }}>
+                    Driver OK since {clock(focusedAlert.driver_ok_at)}
+                  </span>
+                )}
+                {focusedAlert.delivery === 'dlq' && (
+                  <span className="pill pill--warn" style={{ fontSize: 10.5, padding: '3px 9px' }}>
+                    {REPLAYED_LABEL}
+                  </span>
+                )}
+              </>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <RouteEndActions route={route} role={role} token={token} onChanged={() => void refresh()} />
+          </div>
         </div>
       </div>
 
       {/* context strip */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: `repeat(${ctxItems.length}, minmax(0,1fr))`,
-          gap: 14,
-        }}
-      >
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${ctxItems.length}, minmax(0,1fr))`, gap: 14 }}>
         {ctxItems.map((item) => (
           <Ctx key={item.label} label={item.label}>
             {item.mono ? <span className="mono">{item.value}</span> : item.value}
@@ -565,15 +497,7 @@ export default function RouteLiveView() {
 
       <div style={{ flex: 1, display: 'flex', gap: 18, minHeight: 0 }}>
         {/* map + (when focused) model output */}
-        <div
-          style={{
-            flex: 1.3,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 14,
-            minHeight: 0,
-          }}
-        >
+        <div style={{ flex: 1.3, display: 'flex', flexDirection: 'column', gap: 14, minHeight: 0 }}>
           <div
             style={{
               background: 'oklch(0.1 0.01 258)',
@@ -584,15 +508,15 @@ export default function RouteLiveView() {
               overflow: 'hidden',
             }}
           >
-            <FleetMap markers={truckMarker ? [truckMarker] : []} maxZoom={14} follow />
+            <FleetMap markers={markers} paths={paths} pins={pins} focus={focus} maxZoom={14} follow />
           </div>
 
           {focusedAlert && (
             <div className="panel" style={{ padding: '14px 16px' }}>
-              {focusedAlert.ai_metadata ? (
+              {aiScores ? (
                 <>
                   <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>
-                    Model output ({focusedAlert.ai_metadata.model ?? 'unknown'})
+                    Model output ({focusedAlert.ai_metadata?.model ?? 'unknown'})
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {scores.map((s) => (
@@ -609,58 +533,18 @@ export default function RouteLiveView() {
                           <span>{s.label}</span>
                           <span>{pct(s.value)}</span>
                         </div>
-                        <div
-                          style={{
-                            height: 6,
-                            borderRadius: 4,
-                            background: 'var(--surface-3)',
-                            overflow: 'hidden',
-                          }}
-                        >
-                          <div
-                            style={{
-                              width: pct(s.value),
-                              height: '100%',
-                              background: s.color,
-                            }}
-                          />
+                        <div style={{ height: 6, borderRadius: 4, background: 'var(--surface-3)', overflow: 'hidden' }}>
+                          <div style={{ width: pct(s.value), height: '100%', background: s.color }} />
                         </div>
                       </div>
                     ))}
                   </div>
-                  {focusedAlert.grip_status && (
-                    <div
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        fontSize: 11.5,
-                        color: 'var(--text-soft)',
-                        marginTop: 10,
-                        paddingTop: 10,
-                        borderTop: '1px solid var(--border-soft)',
-                      }}
-                    >
-                      <span>Steering-wheel grip</span>
-                      <span
-                        className={focusedAlert.grip_status === 'bad' ? 'pill pill--bad' : 'pill'}
-                        style={{ fontSize: 10.5, padding: '3px 9px' }}
-                      >
-                        {GRIP_LABEL[focusedAlert.grip_status]}
-                      </span>
-                    </div>
-                  )}
                 </>
               ) : (
-                <>
-                  <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>
-                    Trigger source
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--text-soft)' }}>
-                    {SOURCE_LABEL[focusedAlert.source]} — no camera/grip evaluation happens for
-                    this alert type.
-                  </div>
-                </>
+                <div style={{ fontSize: 12, color: 'var(--text-soft)' }}>
+                  <span style={{ fontWeight: 600 }}>{SOURCE_LABEL[focusedAlert.source]}</span> — no
+                  model scores were recorded for this alert.
+                </div>
               )}
             </div>
           )}
@@ -685,8 +569,8 @@ export default function RouteLiveView() {
                 This alert
               </TabButton>
             )}
-            <TabButton active={tab === 'route'} onClick={() => setTab('route')}>
-              Route alerts
+            <TabButton active={tab === 'incidents'} onClick={() => setTab('incidents')}>
+              Incidents ({openIncidents.length} open)
             </TabButton>
           </div>
 
@@ -697,17 +581,61 @@ export default function RouteLiveView() {
                   <div style={{ fontSize: 12.5, color: 'var(--text-faint)' }}>Loading alert…</div>
                 )}
                 {alertNotFound && (
-                  <div style={{ fontSize: 12.5, color: 'var(--text-faint)' }}>
-                    Alert not found.
-                  </div>
+                  <div style={{ fontSize: 12.5, color: 'var(--text-faint)' }}>Alert not found.</div>
                 )}
                 {focusedAlert && (
                   <>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Where</div>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span
+                          className="mono"
+                          data-testid="focused-alert-position"
+                          style={{
+                            fontSize: 12,
+                            color: focusedPos!.kind === 'live' ? 'var(--text-soft)' : 'var(--warn)',
+                          }}
+                        >
+                          {positionSummary(focusedPos!)}
+                        </span>
+                        {focusedPos!.coordinates && (
+                          <button
+                            type="button"
+                            className="btn btn--ghost"
+                            style={{ padding: '2px 8px', fontSize: 11 }}
+                            onClick={() => showOnMap(focusedAlert)}
+                          >
+                            Show on map
+                          </button>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 11.5, color: 'var(--text-faint)', marginTop: 4 }}>
+                        Source: {SOURCE_LABEL[focusedAlert.source]}
+                      </div>
+                    </div>
+
+                    {canReview && focusedIncident && (
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Incident</div>
+                        <div style={{ fontSize: 12, color: 'var(--text-soft)', marginBottom: 8 }}>
+                          {severity[focusedIncident.severity].label} incident ·{' '}
+                          {focusedIncident.alert_count} alert
+                          {focusedIncident.alert_count === 1 ? '' : 's'}. Closing it closes all of
+                          them.
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn--accent btn--block"
+                          onClick={() => setClosing(focusedIncident)}
+                        >
+                          Close incident
+                        </button>
+                      </div>
+                    )}
+
                     {canReview && (
                       <div>
-                        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
-                          Immediate actions
-                        </div>
+                        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Immediate actions</div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                           <button className="btn btn--danger" style={{ justifyContent: 'flex-start' }}>
                             <Icon name="siren" size={16} strokeWidth={1.8} />
@@ -728,9 +656,7 @@ export default function RouteLiveView() {
                     {canReview && <div style={{ height: 1, background: 'var(--border-soft)' }} />}
 
                     <div>
-                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
-                        Operator review
-                      </div>
+                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Operator review</div>
                       {canReview ? (
                         <>
                           <label
@@ -750,17 +676,13 @@ export default function RouteLiveView() {
                                 setReviewed(e.target.checked)
                                 setSaved(false)
                               }}
-                              style={{
-                                accentColor: 'var(--accent)',
-                                width: 14,
-                                height: 14,
-                              }}
+                              style={{ accentColor: 'var(--accent)', width: 14, height: 14 }}
                             />
                             Mark alert as reviewed
                           </label>
                           <textarea
                             className="input"
-                            rows={5}
+                            rows={4}
                             placeholder="Operator notes — what was observed, what action was taken…"
                             value={notes}
                             onChange={(e) => {
@@ -768,30 +690,40 @@ export default function RouteLiveView() {
                               setSaved(false)
                             }}
                           />
+                          <button
+                            className="btn btn--block"
+                            style={{ marginTop: 8 }}
+                            onClick={save}
+                            disabled={saved || saving}
+                          >
+                            {saving ? (
+                              'Saving…'
+                            ) : saved ? (
+                              <>
+                                <Icon name="check" size={15} strokeWidth={2} /> Saved
+                              </>
+                            ) : (
+                              'Save review'
+                            )}
+                          </button>
                         </>
                       ) : (
                         <div style={{ fontSize: 12.5, color: 'var(--text-soft)' }}>
-                          <p style={{ margin: '0 0 8px' }}>
-                            {reviewed ? 'Reviewed' : 'Not yet reviewed'}
-                          </p>
+                          <p style={{ margin: '0 0 8px' }}>{reviewed ? 'Reviewed' : 'Not yet reviewed'}</p>
                           {notes && <p style={{ margin: 0, color: 'var(--text-faint)' }}>{notes}</p>}
                         </div>
                       )}
                     </div>
 
                     {focusedAlert.original_severity_level && (
-                      <div
-                        style={{ fontSize: 12, color: 'var(--text-soft)' }}
-                        data-testid="deescalation-note"
-                      >
+                      <div style={{ fontSize: 12, color: 'var(--text-soft)' }} data-testid="deescalation-note">
                         De-escalated from{' '}
                         <strong>{severity[focusedAlert.original_severity_level].label}</strong> to{' '}
                         <strong>{severity[focusedAlert.severity_level].label}</strong>
                         {focusedAlert.deescalated_at && (
                           <>
                             {' '}
-                            · {shortDate(focusedAlert.deescalated_at)}{' '}
-                            {clock(focusedAlert.deescalated_at)}
+                            · {shortDate(focusedAlert.deescalated_at)} {clock(focusedAlert.deescalated_at)}
                           </>
                         )}
                         {focusedAlert.deescalation_reason && (
@@ -802,14 +734,12 @@ export default function RouteLiveView() {
                       </div>
                     )}
 
-                    {canReview && SEVERITY_RANK[focusedAlert.severity_level] > 0 && (
+                    {canReview && SEVERITY_RANK[focusedAlert.severity_level] > 0 && !focusedAlert.closed_at && (
                       <div>
-                        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
-                          De-escalate severity
-                        </div>
+                        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>De-escalate severity</div>
                         <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 10 }}>
-                          Only after confirming with the driver. The device never lowers a
-                          severity on its own.
+                          Only after confirming with the driver. The device never lowers a severity
+                          on its own.
                         </div>
                         <select
                           className="input"
@@ -845,95 +775,67 @@ export default function RouteLiveView() {
                         </button>
                       </div>
                     )}
-
-                    {canReview && (
-                      <button
-                        className="btn btn--accent btn--block"
-                        style={{ marginTop: 'auto', padding: 12 }}
-                        onClick={save}
-                        disabled={saved || saving}
-                      >
-                        {saving ? (
-                          'Saving…'
-                        ) : saved ? (
-                          <>
-                            <Icon name="check" size={15} strokeWidth={2} /> Saved
-                          </>
-                        ) : (
-                          'Save and close alert'
-                        )}
-                      </button>
-                    )}
                   </>
                 )}
               </>
             )}
 
-            {tab === 'route' && (
+            {tab === 'incidents' && (
               <>
-                <FilterChips options={SEVERITY_FILTERS} value={alertsSeverity} onChange={setAlertsSeverity} />
-                <FilterChips options={REVIEWED_FILTERS} value={alertsReviewed} onChange={setAlertsReviewed} />
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {routeAlerts.map((a) => {
-                    const s = severity[a.severity_level]
-                    const isFocused = a.id_alert === focusedAlertId
-                    return (
-                      <button
-                        key={a.id_alert}
-                        onClick={() => focusAlert(a.id_alert)}
-                        style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: 3,
-                          padding: 10,
-                          borderRadius: 8,
-                          textAlign: 'left',
-                          cursor: 'pointer',
-                          font: 'inherit',
-                          color: 'inherit',
-                          background: isFocused ? 'var(--surface-3)' : 'var(--surface-2)',
-                          border: `1px solid ${isFocused ? 'var(--accent)' : 'var(--border-soft)'}`,
-                          opacity: a.reviewed_by_operator ? 0.6 : 1,
-                        }}
-                      >
-                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                          <span style={{ fontSize: 12, fontWeight: 600 }}>{a.alert_type}</span>
-                          <span
-                            style={{
-                              fontSize: 10.5,
-                              fontWeight: 600,
-                              color: a.reviewed_by_operator ? 'var(--text-faint)' : toneColor[s.tone],
-                            }}
-                          >
-                            {a.reviewed_by_operator ? 'REVIEWED' : s.label.toUpperCase()}
-                          </span>
-                        </div>
-                        <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>
-                          {relativeTime(a.timestamp)}
-                        </span>
-                      </button>
-                    )
-                  })}
-                  {routeAlerts.length === 0 && (
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: 'var(--text-faint)',
-                        padding: 12,
-                        textAlign: 'center',
-                      }}
-                    >
-                      No alerts match these filters.
-                    </div>
-                  )}
-                </div>
+                <FilterChips options={INCIDENT_VIEWS} value={incidentsView} onChange={setIncidentsView} />
+                {incidentsView === 'open' ? (
+                  <IncidentFeed
+                    incidents={openIncidents}
+                    role={role}
+                    token={token}
+                    onClosed={afterClose}
+                    onShowOnMap={showOnMap}
+                    focusedAlertId={focusedAlertId ?? null}
+                    routeHeaders={false}
+                    alertHref={alertHref}
+                    emptyLabel="No open incidents on this route."
+                  />
+                ) : closedIncidents.length ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {closedIncidents.map((inc) => (
+                      <IncidentCard
+                        key={inc.id_incident}
+                        incident={inc}
+                        canClose={false}
+                        onShowOnMap={showOnMap}
+                        focusedAlertId={focusedAlertId ?? null}
+                        alertHref={alertHref}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: 'var(--text-faint)', padding: 12, textAlign: 'center' }}>
+                    No closed incidents on this route.
+                  </div>
+                )}
               </>
             )}
           </div>
         </div>
       </div>
+
+      {closing && (
+        <CloseIncidentDialog
+          incident={closing}
+          token={token}
+          onCancel={() => setClosing(null)}
+          onClosed={() => {
+            setClosing(null)
+            afterClose()
+          }}
+        />
+      )}
     </div>
   )
+}
+
+function Message({ children }: { children: ReactNode }) {
+  return <div style={{ padding: '24px 28px', color: 'var(--text-faint)', fontSize: 13 }}>{children}</div>
 }
 
 function TabButton({
@@ -980,24 +882,12 @@ function NotFound({
     <div style={{ padding: '24px 28px' }}>
       <Link
         to={backTo}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          fontSize: 12.5,
-          color: 'var(--text-faint)',
-        }}
+        style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--text-faint)' }}
       >
         <Icon name="chevron-left" size={14} />
         {backLabel}
       </Link>
-      <div
-        style={{
-          marginTop: 40,
-          textAlign: 'center',
-          color: 'var(--text-soft)',
-        }}
-      >
+      <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--text-soft)' }}>
         <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 20 }}>{title}</h1>
         <p style={{ fontSize: 13, color: 'var(--text-faint)' }}>{message}</p>
       </div>

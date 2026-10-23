@@ -33,6 +33,7 @@ export default function IncidentFeed({
   focusedAlertId = null,
   routeHeaders = true,
   emptyLabel = 'No open incidents.',
+  alertHref,
 }: {
   incidents: readonly Incident[]
   role: Role
@@ -44,6 +45,8 @@ export default function IncidentFeed({
   /** Show the route header above each route's incidents (off in the single-route view). */
   routeHeaders?: boolean
   emptyLabel?: string
+  /** Where an alert's title links to (default: `/alerts/{id}`). */
+  alertHref?: (alert: Alert) => string
 }) {
   const [closing, setClosing] = useState<Incident | null>(null)
   const sections = useMemo(() => groupIncidentFeed(incidents), [incidents])
@@ -117,6 +120,7 @@ export default function IncidentFeed({
                     onClose={() => setClosing(inc)}
                     onShowOnMap={onShowOnMap}
                     focusedAlertId={focusedAlertId}
+                    alertHref={alertHref}
                   />
                 ))}
               </div>
@@ -145,12 +149,14 @@ export function IncidentCard({
   onClose,
   onShowOnMap,
   focusedAlertId = null,
+  alertHref,
 }: {
   incident: Incident
   canClose: boolean
   onClose?: () => void
   onShowOnMap?: (alert: Alert) => void
   focusedAlertId?: string | null
+  alertHref?: (alert: Alert) => string
 }) {
   const sev = severity[incident.severity]
   const alertsNewestFirst = [...incident.alerts].reverse()
@@ -225,6 +231,7 @@ export function IncidentCard({
             alert={a}
             onShowOnMap={onShowOnMap}
             focused={a.id_alert === focusedAlertId}
+            to={alertHref?.(a)}
           />
         ))}
       </div>
