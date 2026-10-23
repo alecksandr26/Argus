@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import type { APIRequestContext, Page } from '@playwright/test'
+import type { APIRequestContext, APIResponse, Page } from '@playwright/test'
 
 /**
  * Shared across every spec file — pulled out once `users.spec.ts`/`trucks.spec.ts`/
@@ -170,7 +170,11 @@ export function reportPoint(overrides: Partial<ReportPoint> = {}): ReportPoint {
   }
 }
 
-/** A live alert event, critical `eyes_closed` by default (each call: a new id and episode). */
+/** A live alert event, critical `eyes_closed` by default (each call: a new id and episode).
+ * `age_s` defaults to 0: the backend matches an event to the route whose
+ * `actual_departure..actual_arrival` contains `received_at - age_s` (C2.2 rule 4), so on a route
+ * started a moment ago any positive age could land before its departure (`rejected no_route`).
+ * Specs that need an older event create the route with `departedSecondsAgo`. */
 export function alertEvent(overrides: Partial<ReportEvent> = {}): ReportEvent {
   return {
     client_event_id: newEventId(),
@@ -178,7 +182,7 @@ export function alertEvent(overrides: Partial<ReportEvent> = {}): ReportEvent {
     kind: 'alert',
     severity: 'critical',
     alert_type: 'eyes_closed',
-    age_s: 0.5,
+    age_s: 0,
     delivery: 'live',
     queued_seconds: 0,
     position: { lat: 19.05, lon: -98.25, last_known: false, location_age_s: 0 },
@@ -236,4 +240,321 @@ export async function postReport(
     parsed = text
   }
   return { status: res.status(), body: parsed as ReportResult }
+}
+
+/** Posts a report and fails unless the backend answered 200 (the per-part results are still
+ * the caller's to check). */
+export async function postReportOk(
+  request: APIRequestContext,
+  deviceKey: string,
+  body: ReportBody,
+): Promise<ReportResult> {
+  const res = await postReport(request, deviceKey, body)
+  if (res.status !== 200) {
+    throw new Error(`postReport failed: ${res.status} ${JSON.stringify(res.body)}`)
+  }
+  return res.body
+}
+
+// --- Specs that need ui-argus's final-tweaks screens ---------------------------------------
+
+/**
+ * The incident feed, the close and stop dialogs and the position labels land in `ui-argus`
+ * with team T5's branch, which merges *after* the backend + simulator + it-argus PR. Specs (or
+ * the UI half of a spec) that assert on those screens are skipped unless the run sets
+ * `IT_FINAL_TWEAKS_UI=1`, which the integration run does once T5's UI is in the stack. The
+ * API-level checks of the same behaviour always run.
+ */
+export const FINAL_TWEAKS_UI = process.env.IT_FINAL_TWEAKS_UI === '1'
+export const NEEDS_FINAL_TWEAKS_UI =
+  "needs ui-argus's final-tweaks UI (T5: incident feed, close/stop dialogs, position labels); " +
+  'set IT_FINAL_TWEAKS_UI=1 once it is in the stack'
+
+// --- Fleet setup over REST (root_admin/admin JWT) ------------------------------------------
+
+async function expectCreated<T>(what: string, res: APIResponse): Promise<T> {
+  if (res.status() !== 201) {
+    throw new Error(`${what} failed: ${res.status()} ${await res.text()}`)
+  }
+  return (await res.json()) as T
+}
+
+export async function createTruck(request: APIRequestContext, token: string, plate: string) {
+  const res = await request.post(`${BACKEND_URL}/api/trucks`, {
+    headers: authHeaders(token),
+    data: {
+      plate_number: plate,
+      brand: 'Kenworth',
+      model: 'T680',
+      company_number: `UNIT-${plate}`,
+      operative_status: 'active',
+    },
+  })
+  return expectCreated<{ id_truck: string; plate_number: string }>(`createTruck(${plate})`, res)
+}
+
+export async function createDriver(request: APIRequestContext, token: string, license: string) {
+  const res = await request.post(`${BACKEND_URL}/api/drivers`, {
+    headers: authHeaders(token),
+    data: {
+      first_name: 'Dana',
+      last_name: 'Driver',
+      license_number: license,
+      license_expiration: '2030-01-01',
+      phone_number: '5552223333',
+      emergency_contact_name: 'Emergency Contact',
+      emergency_contact_phone: '5550001111',
+      blood_type: 'O+',
+      operative_status: 'on_route',
+    },
+  })
+  return expectCreated<{ id_driver: string; first_name: string; last_name: string }>(
+    `createDriver(${license})`,
+    res,
+  )
+}
+
+/**
+ * Creates a route already `in_progress`. `departedSecondsAgo` (default 3600) is sent as
+ * `actual_departure` (C3.1 [sync 1]), so events reported with an `age_s` up to that long are
+ * matched to this route by time (C2.2 rule 4) instead of landing before its departure.
+ */
+export async function createRouteRest(
+  request: APIRequestContext,
+  token: string,
+  opts: {
+    driverId: string
+    truckId: string
+    origin: string
+    destination: string
+    departedSecondsAgo?: number
+  },
+) {
+  const departedAt = new Date(Date.now() - (opts.departedSecondsAgo ?? 3600) * 1000)
+  const res = await request.post(`${BACKEND_URL}/api/routes`, {
+    headers: authHeaders(token),
+    data: {
+      id_driver: opts.driverId,
+      id_truck: opts.truckId,
+      origin_name: opts.origin,
+      destination_name: opts.destination,
+      destination_coordinates: { lat: 19.04, lon: -98.2 },
+      estimated_departure: departedAt.toISOString(),
+      actual_departure: departedAt.toISOString(),
+      operative_status: 'in_progress',
+    },
+  })
+  return expectCreated<Route>(`createRouteRest(${opts.origin})`, res)
+}
+
+export async function createUserRest(
+  request: APIRequestContext,
+  token: string,
+  opts: { email: string; password: string; role: 'guardian' | 'admin' },
+) {
+  const res = await request.post(`${BACKEND_URL}/api/users`, {
+    headers: authHeaders(token),
+    data: {
+      email: opts.email,
+      password: sha256Hex(opts.password),
+      role: opts.role,
+      first_name: 'Test',
+      last_name: opts.role === 'guardian' ? 'Guardian' : 'Admin',
+      phone_number: '5551110000',
+    },
+  })
+  await expectCreated<unknown>(`createUserRest(${opts.email})`, res)
+}
+
+export interface ActiveTruck {
+  plate: string
+  truckId: string
+  driverId: string
+  routeId: string
+  origin: string
+  destination: string
+  deviceKey: string
+}
+
+/** A fresh truck + driver + in-progress route + device key, all named with `suffix`. */
+export async function setupActiveTruck(
+  request: APIRequestContext,
+  token: string,
+  suffix: string,
+  opts: { departedSecondsAgo?: number; platePrefix?: string } = {},
+): Promise<ActiveTruck> {
+  const plate = `${opts.platePrefix ?? 'IT'}-${suffix}`
+  const origin = `Origin-${suffix}`
+  const destination = `Dest-${suffix}`
+  const truck = await createTruck(request, token, plate)
+  const driver = await createDriver(request, token, `LIC-${suffix}`)
+  const route = await createRouteRest(request, token, {
+    driverId: driver.id_driver,
+    truckId: truck.id_truck,
+    origin,
+    destination,
+    departedSecondsAgo: opts.departedSecondsAgo,
+  })
+  const deviceKey = await rotateDeviceKey(request, token, truck.id_truck)
+  return {
+    plate,
+    truckId: truck.id_truck,
+    driverId: driver.id_driver,
+    routeId: route.id_route,
+    origin,
+    destination,
+    deviceKey,
+  }
+}
+
+/** A user with `role`, logged in over REST; returns its credentials and JWT. */
+export async function createUserAndLogin(
+  request: APIRequestContext,
+  rootToken: string,
+  role: 'guardian' | 'admin',
+  suffix: string,
+) {
+  const email = `${role}-${suffix}@argus.dev`
+  const password = `${role}-pass-123`
+  await createUserRest(request, rootToken, { email, password, role })
+  return { email, password, token: await restLogin(request, email, password) }
+}
+
+// --- Backend -> UI shapes (contracts C3), only the fields the specs read --------------------
+
+export interface Coordinates {
+  lat: number
+  lon: number
+}
+
+export interface Alert {
+  id_alert: string
+  id_route: string
+  alert_type: string
+  source: string
+  severity_level: 'low' | 'medium' | 'critical'
+  episode: string | null
+  id_incident: string | null
+  delivery: 'live' | 'dlq'
+  queued_seconds: number
+  driver_ok_at: string | null
+  closed_at: string | null
+  coordinates: Coordinates | null
+  position_unknown: boolean
+  location_is_last_known: boolean
+  location_age_s: number | null
+  speed_at_event: number | null
+  client_event_id: string | null
+  related_alert_id: string | null
+  reviewed_by_operator: boolean
+  timestamp: string
+}
+
+export interface Incident {
+  id_incident: string
+  id_route: string
+  severity: 'medium' | 'critical'
+  tier: 'critical' | 'medium' | 'old'
+  first_alert_at: string
+  last_alert_at: string
+  alert_count: number
+  driver_ok_at: string | null
+  has_replayed: boolean
+  closed_at: string | null
+  closed_by: string | null
+  close_note: string
+  route_ended: boolean
+  truck_plate_number: string | null
+  alerts: Alert[]
+}
+
+export interface Route {
+  id_route: string
+  operative_status: string
+  incident_state: 'fine' | 'medium' | 'critical'
+  stop_reason: string | null
+  stopped_by: string | null
+  stopped_at: string | null
+  actual_departure: string | null
+  actual_arrival: string | null
+}
+
+export interface LivePosition {
+  t: string
+  lat: number
+  lon: number
+  speed: number
+  vigilance: Vigilance
+  last_known: boolean
+  location_age_s: number | null
+}
+
+export interface LiveResponse {
+  server_time: string
+  routes: (Route & { truck_plate_number: string | null; latest_position: LivePosition | null })[]
+  incidents: Incident[]
+  track: (LivePosition & { id_route: string })[]
+}
+
+async function getJson<T>(request: APIRequestContext, token: string, path: string): Promise<T> {
+  const res = await request.get(`${BACKEND_URL}${path}`, { headers: authHeaders(token) })
+  if (!res.ok()) {
+    throw new Error(`GET ${path} failed: ${res.status()} ${await res.text()}`)
+  }
+  return (await res.json()) as T
+}
+
+export function getRoute(request: APIRequestContext, token: string, routeId: string) {
+  return getJson<Route>(request, token, `/api/routes/${routeId}`)
+}
+
+export function getAlert(request: APIRequestContext, token: string, alertId: string) {
+  return getJson<Alert>(request, token, `/api/alerts/${alertId}`)
+}
+
+/** `GET /api/incidents?route_id=` (newest `last_alert_at` first). */
+export function listIncidents(
+  request: APIRequestContext,
+  token: string,
+  routeId: string,
+  status: 'open' | 'closed' | 'all' = 'all',
+) {
+  return getJson<Incident[]>(
+    request,
+    token,
+    `/api/incidents?route_id=${encodeURIComponent(routeId)}&status=${status}`,
+  )
+}
+
+/** `GET /api/live?route=` (the one route, its open incidents in feed order, its track). */
+export function getLive(request: APIRequestContext, token: string, routeId: string) {
+  return getJson<LiveResponse>(request, token, `/api/live?route=${encodeURIComponent(routeId)}`)
+}
+
+/** `POST /api/incidents/{id}/close`; returns the status and body without asserting. */
+export async function closeIncident(
+  request: APIRequestContext,
+  token: string,
+  incidentId: string,
+  note: string,
+): Promise<{ status: number; body: any }> {
+  const res = await request.post(`${BACKEND_URL}/api/incidents/${incidentId}/close`, {
+    headers: authHeaders(token),
+    data: { note },
+  })
+  return { status: res.status(), body: await res.json().catch(() => null) }
+}
+
+/** `POST /api/routes/{id}/stop`; returns the status and body without asserting. */
+export async function stopRoute(
+  request: APIRequestContext,
+  token: string,
+  routeId: string,
+  reason: string,
+): Promise<{ status: number; body: any }> {
+  const res = await request.post(`${BACKEND_URL}/api/routes/${routeId}/stop`, {
+    headers: authHeaders(token),
+    data: { reason },
+  })
+  return { status: res.status(), body: await res.json().catch(() => null) }
 }
