@@ -38,6 +38,32 @@ static void failedRetryExtendsHoldOff() {
   CHECK(t.pick(70000) == Transport::Wifi);
 }
 
+static void holdOffNeedsWifiActuallyUp() {
+  // A truck with mobile data only: a GPRS failure must not park it on a WiFi it doesn't have.
+  TransportSelector t(60000);
+  t.report(Transport::Gprs, false, 1000);
+  CHECK(t.pick(2000, /*wifiUp=*/false) == Transport::Gprs);
+  CHECK(t.pick(2000, /*wifiUp=*/true) == Transport::Wifi);
+  CHECK(t.inHoldOff(2000));
+  CHECK(!t.inHoldOff(61001));
+}
+
+static void deadlineCapsEachStep() {
+  Deadline d(1000, 8000);
+  CHECK(!d.expired(1000));
+  CHECK(d.remaining(1000) == 8000);
+  CHECK(d.cap(1000, 2000) == 2000);  // the step's own timeout
+  CHECK(d.cap(8000, 2000) == 1000);  // never past the deadline
+  CHECK(d.remaining(8999) == 1);
+  CHECK(d.expired(9000));
+  CHECK(d.remaining(9000) == 0);
+  CHECK(d.cap(12000, 2000) == 0);
+  Deadline w(0xFFFFF000u, 8000);  // across the millis() wrap
+  CHECK(!w.expired(0x00000F00u));
+  CHECK(w.remaining(0x00000F00u) == 8000 - 0x1F00u);
+  CHECK(w.expired(0x00001000u + 4000u));
+}
+
 static void holdOffSurvivesMillisWrap() {
   TransportSelector t(60000);
   t.report(Transport::Gprs, false, 0xFFFFF000u);
@@ -65,5 +91,7 @@ int main() {
   RUN(gprsRetriedOnlyAfterHoldOff);
   RUN(failedRetryExtendsHoldOff);
   RUN(holdOffSurvivesMillisWrap);
+  RUN(holdOffNeedsWifiActuallyUp);
+  RUN(deadlineCapsEachStep);
   return report("transport_policy_host_test");
 }
