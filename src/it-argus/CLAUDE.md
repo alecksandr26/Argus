@@ -100,32 +100,70 @@ from *external* load (another `docker compose up` stack — the repo-root one, o
 own — genuinely competing for the same host's CPU/memory) — that's environmental, not a bug in
 this suite, and reran clean once that contention wasn't present.
 
+## Final-tweaks specs and `IT_FINAL_TWEAKS_UI`
+
+Since the final tweaks (`docs/designs/final-tweaks-plan.md`, contracts in
+`final-tweaks-contracts.md`), every alert and GPS point a spec needs is reported **the way a truck
+reports it**: `POST /api/devices/me/report` with that truck's own device API key
+(`helpers.ts`'s `rotateDeviceKey`, `postReport`/`postReportOk`, `reportPoint`, `alertEvent`,
+`okEvent`). That's the only device write left; the old `POST /api/routes/{id}/status` /
+`POST /api/alerts` paths, the panic button, the grip sensor and the per-alert review/AlertTriage
+flow are gone, and so are the specs for them. Fleet setup (trucks, drivers, an `in_progress`
+route with its `actual_departure` set in the past, users of each role) goes over REST through
+`setupActiveTruck`/`createUserAndLogin`, so each spec's UI half starts from known data.
+
+| Spec | Covers |
+|---|---|
+| `auth.spec.ts` | root_admin bootstrap login, wrong password, deep link to `/login` and back, sign-out |
+| `users.spec.ts` | Access screen: root_admin creates an admin, the admin creates a guardian only (also enforced over REST) |
+| `trucks.spec.ts`, `drivers.spec.ts` | create through Fleet/Drivers; a guardian sees both read-only |
+| `live-ops.spec.ts` | a route created through the Routes screen whose reported critical shows on the map and in the feed; a no-face critical (`scores: null`) closed by a guardian with a note; an admin refused the close (403); a guardian de-escalating an alert; a DLQ replay labelled "Recovered after lost connection" |
+| `incidents.spec.ts` | grouping (15 min window by event time, escalation joins its medium, duplicates, a late alert joining the right incident), the driver OK never closing anything, the tier-ordered `/api/live` feed, closing (note required for a critical, guardian/root_admin only, route state dropping with each close, 409 on a second close), a late alert never joining a closed incident, and the UI tiers + close dialog |
+| `route-stop.spec.ts` | Stop route (reason required with the pinned 422 text, root_admin/admin only), every later report rejected `route_finished` (points, event, driver OK, DLQ replay); Complete trip the same; `no_route` before any route started; the Stop route dialog |
+| `positions.spec.ts` | alert positions (live, last known with its age, unknown), last-known GPS points in the path, points less than a second apart both stored with ms timestamps (C2.1 [sync 3]), and the UI position labels |
+
+**`IT_FINAL_TWEAKS_UI`** (`docker-compose.yml` passes it through, default `0`). The final-tweaks
+merge order puts the backend, simulator and this module before `ui-argus`'s new screens, so the
+specs and spec halves that assert on the incident feed, the close/stop dialogs and the position
+labels are skipped unless the run sets `IT_FINAL_TWEAKS_UI=1`. The API-level checks of the same
+behaviour always run. The lead's integration step runs the full browser suite with it set once
+T5's UI is in the stack.
+
+**Selectors use only the UI test hooks pinned in C3.7 [sync 3]**, wrapped in `helpers.ts`:
+
+- `tierRegion(page, 'Critical' | 'Medium' | 'Older than 1 h')`: the tier section by its region
+  name (`Critical incidents`, ...), never the header text, which adds a count (`Older than 1 h ·
+  1`).
+- `incidentCard(scope, label)`: the incident card (`<article>`) holding an alert with that exact
+  alert-type label. A spec acts on the right incident's own `Close incident` button, whatever order
+  the cards come in, and never mistakes the route view's `Open`/`Closed` filter chips for incident
+  state. `exact: true` keeps `Eyes closed` from matching `Head down, eyes closed`.
+- `closeDialog(page)` / `getByRole('dialog', { name: 'Stop route' })`: the named dialogs.
+- `closeConfirmation(page)`: the `role="status"` element containing `Closed HH:MM` that the UI
+  shows after a successful close. A closed incident leaves the Open list; after a reload a spec
+  checks it under the `Closed` filter chip.
+
+Earlier versions of these specs used `getByText('Open', { exact: true })` (which matched the
+route view's filter chip, so it passed whether or not the incident was open) and
+`.first()` on `Close incident` (which assumed the critical card came first). Both are gone.
+
 ## Current status
 
-**Run for real, not just written**: `docker compose up --build --abort-on-container-exit` boots
-the full stack (its own Mongo, `backend-argus`, `ui-argus`) and every spec passes — `auth.spec.ts`
-(root-admin bootstrap login, wrong-password error, an unauthenticated deep link redirecting to
-`/login` and back after signing in, sign-out re-protecting a route), `users.spec.ts` (root_admin
-creates an admin who can log in and is scoped to guardians only; that admin creates a guardian
-who is bounced off `/access`; a direct REST call proving the guardian-only scope is enforced
-server-side, not just by the UI's disabled role picker), `trucks.spec.ts` and `drivers.spec.ts`
-(create via the real Fleet/Drivers screens, plus a guardian seeing both read-only — no create
-button, disabled fields, no Save button), and `live-ops.spec.ts` (creating a route via the real
-Routes screen and promoting it to `in_progress`; a fused critical alert showing as a live map
-marker and feed entry with working severity filtering; full triage-detail rendering for both
-`fusion` — AI scores, grip status — and `panic_button` — no scores, since no camera/grip
-evaluation happens — alerts; a guardian reviewing an alert and that review surviving a page
-reload; an admin seeing triage entirely read-only). Getting the original auth suite running
-surfaced two real bugs this module's own existence was the point of catching (see "Docker
-Compose" above for the network/secure-context one) — proof this harness earns its cost, not just
-a plan for one; `live-ops.spec.ts` found three more of its own (`getByLabel`/`getByText`
-substring-matching false positives — "Name" matching "First name(s)", a severity pill's own text
-accidentally appearing inside a test's `alert_type` string, "Driver-activated panic button"
-matching a longer sentence starting with the same words — all fixed with `exact: true`).
+**Run for real before the final tweaks**: `docker compose up --build --abort-on-container-exit`
+booted the full stack and every spec of that time passed. Getting the original auth suite running
+surfaced two real bugs (see "Docker Compose" above for the network/secure-context one), and the
+old live-ops spec found three `getByLabel`/`getByText` substring false positives, all fixed with
+`exact: true`.
 
-**Still not covered**: no full round-trip through the actual ingestion chain
-(`cv-argus`→ESP32→backend) — `live-ops.spec.ts` proves `LiveOps`/`AlertTriage` render correctly
-given real `Status_Route`/`Alert` rows, using the same JWT-fallback ingestion path
-`src/simulator-argus` and `scripts/seed_dev_data.py` use, not a real device. See section 7 of
-`docs/roadmap.md` for that broader edge-to-cloud gap, which is unrelated to `it-argus`'s own
-scope (the `ui-argus`↔`backend-argus` seam only).
+**Final tweaks, verified so far**: the specs type-check under `tsc --strict`, and
+`playwright test --list` lists all of them (29 with `IT_FINAL_TWEAKS_UI=1`). The API-level specs
+were run against team T4's round-2 backend with a throwaway Mongo and passed. Not yet run: the
+browser halves (`IT_FINAL_TWEAKS_UI=1`) against T5's UI, and the new millisecond-timestamp
+positions test, which needs T4's round-3 backend (C2.1 [sync 3]). Both are the lead's
+integration step.
+
+**Still not covered**: a full round trip through the real ingestion chain (`cv-argus` → ESP32 →
+backend). The specs report as a truck over the same HTTP endpoint the ESP32 uses, but no real
+device is involved; `src/tests/edge_chain` covers the Pi↔ESP32 side. See `docs/roadmap.md`
+section 7 for the broader edge-to-cloud gap, which is outside this module's scope (the
+`ui-argus`↔`backend-argus` seam only).

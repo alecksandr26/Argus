@@ -74,16 +74,19 @@ with `npx playwright show-trace test-results/<test-name>/trace.zip`.
 - `tests/route-stop.spec.ts` — "Stop route" (reason required, root_admin/admin only), then every
   report for that route rejected `route_finished` (points, a new event, the driver OK, a
   dead-letter replay); "Complete trip" the same; `no_route` before any route started.
-- `tests/positions.spec.ts` — alert positions (live, last known with its age, unknown) and
-  last-known GPS points in the path.
+- `tests/positions.spec.ts` — alert positions (live, last known with its age, unknown),
+  last-known GPS points in the path, and points less than a second apart keeping millisecond
+  timestamps (both stored, C2.1 [sync 3]).
 
 **`IT_FINAL_TWEAKS_UI`.** The incident feed, the close/stop dialogs and the position labels land
 in `ui-argus` after the backend does (final-tweaks merge order: backend + simulator + this module
 first, the UI last). Specs, or spec halves, that assert on those screens are skipped unless the
 run sets `IT_FINAL_TWEAKS_UI=1` (`IT_FINAL_TWEAKS_UI=1 docker compose up --build
 --abort-on-container-exit`); the API-level checks of the same behaviour always run. Their
-selectors are written from the UI strings agreed in the contracts (`docs/designs/
-final-tweaks-contracts.md`, C3.7) and may need adjusting to the merged UI's exact DOM.
+selectors use the UI test hooks pinned in the contracts (`docs/designs/
+final-tweaks-contracts.md`, C3.7 [sync 3]) through `tests/helpers.ts`: tier regions by name,
+incident cards scoped by alert-type label, the named Close/Stop dialogs, and the `role="status"`
+`Closed HH:MM` confirmation after a close.
 
 Every spec generates its own test data (unique emails/plate numbers/license numbers per run —
 see `tests/helpers.ts`'s `uniqueSuffix()`) rather than hardcoding fixed values, since this
