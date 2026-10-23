@@ -3,13 +3,18 @@
 #include <Arduino.h>
 
 #include <string>
+#include <vector>
 
 #include "device_config.h"
-#include "pi_record.h"
+#include "pi_protocol.h"
 
-// The Bluetooth link to the Pi: src/cv-argus/src/sender/protocol.py's grammar, with this device
-// as the client (see src/esp32-argus/README.md section 1). The Pi never pushes; this module
-// always initiates, with a fresh RFCOMM connection per exchange.
+// The Bluetooth link to the Pi: protocol v2 (docs/designs/final-tweaks-contracts.md C1), with
+// this device as the client and a fresh RFCOMM connection per session. The Pi never pushes. This
+// module only does the I/O: what to do with each record and which report lines to send is decided
+// by the pure modules (pull_session.h, pi_protocol.h) in the sketch, in between
+// bluetoothOpenSession() and bluetoothCloseSession(). Nothing here talks to the backend: a session
+// takes well under a second, far inside the Pi's 30 s wait for the report lines. Only the loop
+// task calls into this module.
 
 void bluetoothClientBegin();
 
@@ -18,29 +23,27 @@ void bluetoothClientBegin();
 bool bluetoothLinkUp();
 
 // One Serial line on the link: up/down, sessions and records since boot, how long since the Pi
-// last answered.
+// last answered, free heap.
 void bluetoothLogStatus();
 
-// What happened to one record, reported back to the Pi after the batch:
-// - Ack: delivered to the backend, or nothing to send (a keepalive) -> the Pi marks it sent;
-// - Fail: couldn't be delivered -> the Pi keeps it in its dead-letter queue with `reason` (one
-//   token: no_credentials, no_network, no_route, no_gps, http_503...) and `body`, the backend
-//   message composed here (with the position and time of the event);
-// - Skip: not tried this time (a replay stopped at an earlier failure) -> left as it was.
-enum class ReportKind : uint8_t { Ack, Fail, Skip };
-struct RecordReport {
-  ReportKind kind = ReportKind::Ack;
-  std::string reason;
-  std::string body;
-};
+// Connects, sends `request` (pullRequest(n) or dlqRequest()) and reads every record line up to
+// `END <dlq> <outbox>`. The whole batch is read before any of it is handled: BluetoothSerial's
+// receive queue is 512 bytes and silently drops what doesn't fit, so handling records while the
+// Pi still streams loses bytes. False on no link, a timeout, a malformed END or running out of
+// memory: then the connection is closed and nothing was reported (the Pi keeps every row as it
+// was and serves it again).
+bool bluetoothOpenSession(const std::string& request, std::vector<std::string>& lines,
+                          EndLine& end);
 
-// Connects, sends `request` ("PULL <n>" for the live outbox, "DLQ <k>" for dead letters), calls
-// `onRecord` for each record (an unreadable one with a known id is ACKed away without calling
-// it), reports back (FAIL lines, ACK, DONE) and disconnects. `*dlqWaiting` gets how many dead
-// letters the Pi holds. Returns the number of records received (0 is normal), or -1 on a
-// connection/protocol failure (then nothing was reported, and the Pi keeps everything as it was).
-int bluetoothExchange(const char* request, RecordReport (*onRecord)(const PiRecord& record),
-                      int* dlqWaiting);
+// Writes the report lines (buildReportScript()) and reads each reply (ACKED / LEASED, then OK),
+// then disconnects. True when the Pi's closing OK arrived (`summary` filled). Lines written
+// before a failure took effect on the Pi already (C1.2 [sync 2]); the caller keeps its outcomes
+// until an OK and resends them, which is safe.
+bool bluetoothCloseSession(const std::vector<ScriptLine>& script, SessionSummary& summary);
+
+// Drops an open session without reporting (e.g. the sketch ran out of memory handling it): the Pi
+// leaves every unreported row where it was.
+void bluetoothDisconnect();
 
 // Connects to the Pi, asks for this truck's backend credentials (`CONFIG`, see
 // device_config.h), and disconnects. Returns the parsed outcome; a connection failure or a

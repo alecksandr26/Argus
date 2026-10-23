@@ -2,8 +2,7 @@
 
 #include <BluetoothSerial.h>
 
-#include <utility>
-#include <vector>
+#include <new>
 
 #include "config.h"
 
@@ -28,7 +27,7 @@ void printPiAddress() {
   Serial.print(PI_BT_CHANNEL);
 }
 
-// One connection attempt per poll. Logs only the up/down transitions, so a steady link stays
+// One connection attempt per session. Logs only the up/down transitions, so a steady link stays
 // quiet and a lost one says so once.
 bool connectToPi() {
   bool ok = SerialBT.connect(piMac, PI_BT_CHANNEL);
@@ -50,30 +49,56 @@ bool connectToPi() {
   return ok;
 }
 
-// Reads one newline-delimited line, with an *idle* timeout (resets every time a byte
-// arrives) rather than a flat deadline -- a slow-but-still-streaming response shouldn't
-// time out mid-line. Returns false (line left however-far it got) if nothing arrives for
-// timeoutMs.
-bool readLine(String& out, unsigned long timeoutMs) {
-  out = "";
-  // One allocation per line up front. Growing a String one char at a time reallocates on almost
-  // every byte, which fragments the heap the Bluetooth stack already crowds, until an allocation
-  // fails (see bluetoothExchange).
-  out.reserve(PI_BT_LINE_RESERVE);
-  // Elapsed-since-last-byte via unsigned subtraction, not an absolute deadline -- the
-  // same millis()-rollover-safe pattern used throughout this firmware (see
-  // wifi_client.cpp). An absolute `millis() + timeoutMs` deadline breaks
-  // once every ~49 days when millis() wraps.
-  unsigned long lastByteAt = millis();
-  while (millis() - lastByteAt < timeoutMs) {
-    while (SerialBT.available()) {
-      char c = SerialBT.read();
-      if (c == '\n') return true;
-      if (c != '\r') out += c;
-      lastByteAt = millis();
+void writeLine(const std::string& line) {
+  SerialBT.write((const uint8_t*)line.data(), line.size());
+  SerialBT.write((const uint8_t*)"\n", 1);
+}
+
+// Reads one newline-delimited line, with an *idle* timeout (resets every time a byte arrives)
+// rather than a flat deadline -- a slow-but-still-streaming response shouldn't time out
+// mid-line. False if nothing arrives for timeoutMs, or if the line can't be stored (out of
+// memory, or longer than PI_BT_LINE_MAX: `oom` set). An allocation that fails throws
+// std::bad_alloc (the core builds with -fexceptions); it is caught here, so a full heap ends the
+// session instead of aborting -- the reboot loop of 2026-10-21 (commit f4da937).
+bool readLine(std::string& out, unsigned long timeoutMs, bool* oom = nullptr) {
+  try {
+    out.clear();
+    // One allocation per line up front: growing one char at a time reallocates on almost every
+    // byte and fragments the heap the Bluetooth stack already crowds.
+    out.reserve(PI_BT_LINE_RESERVE);
+    unsigned long lastByteAt = millis();
+    while (millis() - lastByteAt < timeoutMs) {
+      if (!SerialBT.available()) {
+        vTaskDelay(1);  // nothing yet: let the sender and GPS tasks run
+        continue;
+      }
+      while (SerialBT.available()) {
+        char c = SerialBT.read();
+        if (c == '\n') return true;
+        if (c == '\r') continue;
+        if (out.size() >= PI_BT_LINE_MAX) {  // a runaway line: never let it eat the heap
+          if (oom) *oom = true;
+          return false;
+        }
+        out += c;
+        lastByteAt = millis();
+      }
     }
+    return false;
+  } catch (const std::bad_alloc&) {
+    out.clear();
+    out.shrink_to_fit();
+    if (oom) *oom = true;
+    return false;
   }
-  return false;
+}
+
+void logOutOfMemory() {
+  Serial.print("[bt] Out of memory reading the Pi's batch (free heap ");
+  Serial.print(ESP.getFreeHeap());
+  Serial.print(" B, largest block ");
+  Serial.print(ESP.getMaxAllocHeap());
+  Serial.println(" B) -- the Pi will serve it again");
 }
 
 }  // namespace
@@ -95,14 +120,12 @@ ConfigLineResult bluetoothFetchConfig(DeviceCredentials& out) {
   // The Pi only accepts a paired, encrypted link (cv-argus BLUETOOTH_SECURITY=medium), since
   // this reply carries the device key. Pairing is SSP "Just Works": automatic on this side, and
   // on the Pi cv-argus's agent accepts only ESP32_BT_MAC (sender/bluez_profile.py).
-  if (!connectToPi()) {
-    return ConfigLineResult::Malformed;
-  }
-  SerialBT.print("CONFIG\n");
-  String line;
+  if (!connectToPi()) return ConfigLineResult::Malformed;
+  writeLine("CONFIG");
+  std::string line;
   ConfigLineResult result = ConfigLineResult::Malformed;
   if (readLine(line, PI_BT_LINE_TIMEOUT_MS)) {
-    result = parseConfigLine(line, out);
+    result = parseConfigLine(String(line.c_str()), out);
     if (result == ConfigLineResult::Malformed) {
       Serial.println("[bt] CONFIG: malformed reply from the Pi");
     }
@@ -113,143 +136,90 @@ ConfigLineResult bluetoothFetchConfig(DeviceCredentials& out) {
   return result;
 }
 
-namespace {
+bool bluetoothOpenSession(const std::string& request, std::vector<std::string>& lines,
+                          EndLine& end) {
+  lines.clear();
+  end = EndLine();
+  if (!connectToPi()) return false;
+  writeLine(request);
 
-// "END" or "END <n>": true, with *n set (0 when the Pi sent no count).
-bool parseEnd(const String& line, int* n) {
-  if (line == "END") {
-    *n = 0;
-    return true;
+  try {
+    lines.reserve(PI_BT_PULL_COUNT);
+  } catch (const std::bad_alloc&) {
+    logOutOfMemory();
+    SerialBT.disconnect();
+    return false;
   }
-  if (!line.startsWith("END ")) return false;
-  *n = line.substring(4).toInt();
-  return true;
+  while (true) {
+    std::string line;
+    bool oom = false;
+    if (!readLine(line, PI_BT_LINE_TIMEOUT_MS, &oom)) {
+      if (oom) {
+        logOutOfMemory();
+      } else {
+        Serial.println("[bt] Timed out waiting for a line from the Pi");
+      }
+      break;
+    }
+    if (line.compare(0, 3, "END") == 0) {
+      if (parseEndLine(line, end)) return true;
+      Serial.print("[bt] Malformed END from the Pi: ");
+      Serial.println(line.c_str());
+      break;
+    }
+    if (lines.size() >= (size_t)PI_BT_PULL_COUNT) {
+      Serial.println("[bt] The Pi sent more records than asked for -- ending the session");
+      break;
+    }
+    recordsPulled++;
+    try {
+      lines.push_back(std::move(line));
+    } catch (const std::bad_alloc&) {
+      logOutOfMemory();
+      break;
+    }
+  }
+  SerialBT.disconnect();
+  lines.clear();
+  return false;
 }
 
-}  // namespace
-
-int bluetoothExchange(const char* request, RecordReport (*onRecord)(const PiRecord& record),
-                      int* dlqWaiting) {
-  *dlqWaiting = 0;
-  if (!connectToPi()) {
-    return -1;
-  }
-
-  SerialBT.print(request);
-  SerialBT.print("\n");
-
-  // Read the whole batch before handling any of it. BluetoothSerial's receive queue is 512 bytes
-  // (core 3.3.12) and silently drops what doesn't fit, and one record is several hundred bytes:
-  // handling each record (logs, GPS, a backend request) while the Pi was still streaming the rest
-  // lost bytes, so later lines arrived cut ("Unreadable record with no id") or never ended
-  // (timeouts). A batch cut short is now not handled at all: the Pi serves it again.
-  std::vector<String> lines;
-  lines.reserve(PI_BT_PULL_COUNT + 1);
-  bool protocolOk = true;
-  while (true) {
-    String line;
-    if (!readLine(line, PI_BT_LINE_TIMEOUT_MS)) {
-      Serial.println("[bt] Timed out waiting for a line from the Pi");
-      protocolOk = false;
+bool bluetoothCloseSession(const std::vector<ScriptLine>& script, SessionSummary& summary) {
+  summary = SessionSummary();
+  bool gotOk = false;
+  for (const ScriptLine& s : script) {
+    writeLine(s.line);
+    if (s.expectReply.empty()) continue;  // FAIL: no reply
+    std::string reply;
+    if (!readLine(reply, PI_BT_LINE_TIMEOUT_MS)) {
+      Serial.print("[bt] No reply to \"");
+      Serial.print(s.line.substr(0, 40).c_str());
+      Serial.println("\" -- lines already sent stand; the rest goes next session");
       break;
     }
-    // A String whose allocation failed is "invalid": c_str() is NULL, and turning that into a
-    // std::string throws and aborts -- the reboot loop of 2026-10-21. End the session instead; the
-    // Pi serves the same batch again.
-    if (line.c_str() == nullptr) {
-      Serial.print("[bt] Out of memory reading the Pi's batch (free heap ");
-      Serial.print(ESP.getFreeHeap());
-      Serial.print(" B, largest block ");
-      Serial.print(ESP.getMaxAllocHeap());
-      Serial.println(" B) -- the Pi will serve it again");
-      protocolOk = false;
+    int n = 0;
+    if (s.expectReply == "OK") {
+      gotOk = parseOkLine(reply, summary);
+      if (!gotOk) {
+        Serial.print("[bt] Expected OK, got: ");
+        Serial.println(reply.c_str());
+      }
+      break;  // DONE is always last
+    }
+    if (!parseCountReply(reply, s.expectReply.c_str(), n)) {
+      Serial.print("[bt] Expected ");
+      Serial.print(s.expectReply.c_str());
+      Serial.print(", got: ");
+      Serial.println(reply.c_str());
       break;
     }
-    if (parseEnd(line, dlqWaiting)) break;
-    lines.push_back(std::move(line));
   }
-
-  std::vector<std::string> acks;
-  std::vector<std::string> failLines;
-  int received = 0;
-  // The Pi waits PI_BT_REPORT_WAIT_MS for the report after END, and each backend request over the
-  // SIM800L takes seconds. Five replays took ~60 s on the real device, the Pi gave up first, and
-  // the same five were replayed forever. So stop starting new records after the budget: the rest
-  // are left on the Pi as they were (not reported) and come back on the next poll.
-  unsigned long handlingStartedAt = millis();
-  int leftForLater = 0;
-
-  for (const String& line : lines) {
-    if (!protocolOk) break;
-    received++;
-    recordsPulled++;
-    if (millis() - handlingStartedAt >= PI_BT_HANDLE_BUDGET_MS) {
-      leftForLater++;
-      continue;
-    }
-    PiRecord record;
-    if (parsePiRecord(line.c_str(), record) == ParseOutcome::Drop) {
-      if (record.id.empty()) {
-        Serial.println("[bt] Unreadable record with no id -- left on the Pi");
-      } else {
-        Serial.print("[bt] Unreadable record ");
-        Serial.print(record.id.c_str());
-        Serial.println(" -- ACKed away so it can't block the Pi's queue");
-        acks.push_back(record.id);
-      }
-      continue;
-    }
-    RecordReport report = onRecord(record);
-    if (report.kind == ReportKind::Ack) {
-      acks.push_back(record.id);
-    } else if (report.kind == ReportKind::Fail) {
-      std::string fail = "FAIL " + record.id + " " + report.reason + " ";
-      fail += report.body.empty() ? "-" : report.body;
-      failLines.push_back(fail);
-    }
-    // Skip: not reported, the Pi keeps it as it was.
-  }
-  if (leftForLater > 0) {
-    Serial.print("[bt] ");
-    Serial.print(leftForLater);
-    Serial.println(" record(s) left on the Pi for the next poll (time budget, so the Pi gets the "
-                   "report before it stops waiting)");
-  }
-
-  if (protocolOk && received > 0) {
-    for (const std::string& fail : failLines) {
-      SerialBT.print(fail.c_str());
-      SerialBT.print("\n");
-    }
-    if (!acks.empty()) {
-      SerialBT.print("ACK ");
-      for (size_t i = 0; i < acks.size(); i++) {
-        if (i > 0) SerialBT.print(",");
-        SerialBT.print(acks[i].c_str());
-      }
-      SerialBT.print("\n");
-      String acked;
-      if (!readLine(acked, PI_BT_LINE_TIMEOUT_MS) || !acked.startsWith("ACKED")) {
-        Serial.println("[bt] Did not get a well-formed ACKED response");
-        protocolOk = false;
-      }
-    }
-    if (protocolOk) {
-      SerialBT.print("DONE\n");
-      String result;
-      if (readLine(result, PI_BT_LINE_TIMEOUT_MS) && result.startsWith("OK")) {
-        if (!failLines.empty()) {
-          Serial.print("[bt] Pi: ");
-          Serial.println(result);  // e.g. "OK acked=3 failed=1 dlq=7"
-        }
-      } else {
-        Serial.println("[bt] The Pi didn't confirm the report (older cv-argus?)");
-      }
-    }
-  }
-
   SerialBT.disconnect();
-  return protocolOk ? received : -1;
+  return gotOk;
+}
+
+void bluetoothDisconnect() {
+  if (SerialBT.connected()) SerialBT.disconnect();
 }
 
 bool bluetoothLinkUp() { return linkUp; }
