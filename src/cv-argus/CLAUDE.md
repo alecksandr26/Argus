@@ -173,7 +173,7 @@ overridable by env var):
   (`_eyes`, `_head`, `_mouth`, `_noface`), the yawn history and the recovery timer. It never
   touches the held severity, its reason, `_trigger` or `_seen_face`. So a held CRITICAL stays
   held through a switch and needs 2 s of a clear new face to drop, and the switch itself never
-  emits a transition. Keep the signature: T2 calls it through `getattr`.
+  emits a transition. Keep the signature: `PartsInferenceStage._on_face_switch` (`pipeline/parts_stages.py`) calls it directly.
 
 Escalation is immediate; recovery takes 2 s clear. A gap of no more than 0.4 s (1.0 s for the
 head timer) doesn't reset a timer. This needs an epsilon: a one-frame gap at 5 fps is
@@ -1018,8 +1018,8 @@ drive.
 
 `tests/` is a `pytest` suite mirroring `src/` (`test_model_*`, `test_pipeline_*`,
 `test_alerts_*`, `test_buffer_*`, `test_orchestrator_*`, `test_sender_*`, `test_main.py`,
-`test_constants.py`) — roughly 600 tests once the final-tweaks branches are merged (the face
-lock and eye-box filter added about 55 of them); `pytest` prints the current count. One skips
+`test_constants.py`) — roughly 600 tests; `pytest` prints the exact count (the face lock and
+eye-box filter added about 55 of them). One skips
 when `src/esp32-argus/test/vectors/event_vectors.json` isn't in the checkout, and the Docker
 build test is deselected by default (below). Run it with `pytest` from
 `src/cv-argus/` after `pip install -e .`. Config lives in `pyproject.toml`'s

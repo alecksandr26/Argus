@@ -3,12 +3,10 @@
 Design rationale (see the draw.io system diagram and `src/cv-argus/CLAUDE.md`'s "Planned module
 layout"): the diagram shows a single "Alert/RouteStatus Model" box feeding a single "Queue
 Message Local Buffer (SQLite)" box — one shared record shape, not two independently-serialized
-classes. Alert payloads are also expected to vary by type (a drowsiness alert and a route-status
-heartbeat don't share a rigid shape, and a future panic alert wouldn't either) — MongoDB was
-chosen backend-side partly for this reason (see
-`docs/document/borrador-proyecto-modular-argus.md`'s Parte 5). So this module defines one
-envelope dataclass, `Alert`, with a `kind` discriminator and a flexible `payload` dict, rather
-than a rigid dataclass per alert type.
+classes. Alert payloads were expected to vary by type — MongoDB was chosen backend-side partly
+for this reason (see `docs/document/borrador-proyecto-modular-argus.md`'s Parte 5). So this
+module defines one envelope dataclass, `Alert`, with a `kind` discriminator and a flexible
+`payload` dict, rather than a rigid dataclass per alert type.
 
 Since the final tweaks (Bluetooth protocol v2, contract C1.4) the only kind is `drowsiness`: the
 60 s `route_status` heartbeat and its `route_status()` factory are gone (the ESP32 sends a GPS
