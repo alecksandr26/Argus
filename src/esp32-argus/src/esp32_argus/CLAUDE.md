@@ -33,7 +33,7 @@ indoors. Set it back to `0` for a real truck.
    | `ArduinoJson` | Benoit Blanchon | `backend_api.cpp`, `bluetooth_client.cpp` | **v7+** required: the code uses v7's `JsonDocument` API |
    | `TinyGPSPlus` | Mikal Hart | `gps_module.cpp` | Not the older `TinyGPS` |
 
-   No `TinyGSM`: `sms_module.cpp` drives the SIM800L with raw AT commands (only the separate
+   No `TinyGSM`: `modem.cpp` drives the SIM800L with raw AT commands (only the separate
    `../Codigo_SMS_GPS/` bring-up sketch still needs it). `WiFi`, `HTTPClient` and
    `BluetoothSerial` ship with the ESP32 board package. Don't install
    them separately.

@@ -102,13 +102,13 @@
 // Hardware pins
 // =====================================================
 
-// SIM800L -- panic SMS (sms_module.h) and mobile data (gprs_http.h). Pins as originally wired.
+// SIM800L -- mobile data only (gprs_http.h); the panic SMS is gone with the panic button. Pins as
+// originally wired.
 #define MODEM_RST 5
 #define MODEM_PWKEY 4
 #define MODEM_POWER_ON 23
 #define MODEM_TX 27
 #define MODEM_RX 26
-#define SMS_NETWORK_WAIT_MS 240000UL // 4 minutes, matches the original prototype
 
 // NEO-6M GPS, as originally wired.
 #define GPS_RX 32
@@ -124,18 +124,8 @@
 #define BENCH_GPS_LON -103.3496
 #define GPS_LOG_INTERVAL_MS 10000UL // gpsLogStatus() cadence on Serial
 
-// Panic button + grip sensor -- GPIO mapping not finalized against real hardware yet
-// (src/esp32-argus/README.md section 4 says so explicitly: "none of them have a defined
-// GPIO pin mapping ... yet"). Wired here as active-low digital inputs with an internal
-// pull-up so both modules are runnable/testable today with just a button/switch to GND --
-// move these pins if the real hardware harness ends up wired differently.
-//
-// Deliberately NOT using GPIO 34-39: those ESP32 pins are input-only and have no internal
-// pull-up/pull-down transistor at all, so `pinMode(..., INPUT_PULLUP)` silently does
-// nothing on them -- a real hardware gotcha, not a style choice.
-#define PANIC_BUTTON_PIN 18
-#define PANIC_BUTTON_DEBOUNCE_MS 50UL
+// Grip sensor -- GPIO mapping not finalized against real hardware yet (src/esp32-argus/README.md
+// section 4). Wired as an active-low digital input with an internal pull-up. Not GPIO 34-39: those
+// pins are input-only and have no internal pull-up, so INPUT_PULLUP silently does nothing on them.
+// (The panic button and its SMS were removed: final-tweaks plan, section 1.)
 #define GRIP_SENSOR_PIN 19
-
-// Panic SMS destination -- carried over from the original prototype.
-#define SMS_DESTINATION_NUMBER "+523314033063"

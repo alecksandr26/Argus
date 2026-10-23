@@ -104,8 +104,6 @@ String modemOneLine(const String& response) {
 
 void modemWrite(const String& data) { modemSerial.print(data); }
 
-void modemWriteByte(uint8_t b) { modemSerial.write(b); }
-
 String modemReadBytes(size_t n, unsigned long timeoutMs) {
   String buf;
   buf.reserve(n);

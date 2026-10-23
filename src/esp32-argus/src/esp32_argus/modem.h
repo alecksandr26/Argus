@@ -2,11 +2,11 @@
 
 #include <Arduino.h>
 
-// The SIM800L's UART and raw AT-command helpers, shared by sms_module (panic SMS) and
-// gprs_http (mobile-data HTTP to backend-argus). Raw AT commands, not TinyGsm -- see
-// sms_module.cpp for why. Everything runs from loop(), so the two users never interleave.
+// The SIM800L's UART and raw AT-command helpers for gprs_http (mobile-data HTTP to
+// backend-argus). Raw AT commands, not TinyGsm: the firmware needs a handful of commands, and
+// TinyGsm's general TCP/GPRS layer was mostly flash-size overhead.
 
-// Powers the modem on and opens its UART. Call once from setup(), before smsBegin().
+// Powers the modem on and opens its UART. Call once from setup().
 void modemBegin();
 
 // Drains anything already waiting on the modem UART (stray boot banners, unsolicited
@@ -31,10 +31,8 @@ bool modemSendATWithin(const String& cmd, const char* expect, unsigned long tota
 // A modem reply on one line for logs: CR/LF runs become " | ", ends trimmed.
 String modemOneLine(const String& response);
 
-// Raw write, for payloads the modem asked for (an SMS body after '>', HTTP data after
-// "DOWNLOAD").
+// Raw write, for payloads the modem asked for (HTTP data after "DOWNLOAD").
 void modemWrite(const String& data);
-void modemWriteByte(uint8_t b);
 
 // Reads exactly n bytes (idle timeout, like modemReadUntil). For length-prefixed payloads such
 // as +HTTPREAD, where the body itself may contain "OK"/"ERROR" and must not end the read.

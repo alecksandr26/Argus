@@ -104,14 +104,6 @@ void gpsLogStatus() {
   Serial.println();
 }
 
-String gpsMapsLink() {
-  String link = "https://www.google.com/maps?q=";
-  link += String(gpsLatitude(), 6);
-  link += ",";
-  link += String(gpsLongitude(), 6);
-  return link;
-}
-
 String gpsUtcIso8601() {
   if (!gps.date.isValid() || !gps.time.isValid()) return String();
   // A stale reading (GPS signal lost minutes ago) or a week-number-rollover date (1999/2006)

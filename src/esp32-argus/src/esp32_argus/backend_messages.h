@@ -34,11 +34,6 @@ struct AlertFields {
 // placeholder until the grip sensor exists (the backend requires one for a camera alert).
 std::string composeAlertBody(const AlertFields& alert, const GpsSnapshot& gps);
 
-// The panic button's POST /api/alerts: an unconditional critical with no camera or grip data
-// (source "panic_button" must come without ai_metadata/grip_status).
-std::string composePanicAlertBody(const std::string& clientEventId, const std::string& occurredAt,
-                                  const GpsSnapshot& gps);
-
 // POST /api/routes/{id}/status. odometer is always 0: no sensor for it on this device.
 std::string composeStatusBody(const std::string& clientEventId, const std::string& vigilance,
                               const std::string& occurredAt, const GpsSnapshot& gps);

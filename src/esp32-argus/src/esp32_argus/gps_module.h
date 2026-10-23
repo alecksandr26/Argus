@@ -25,8 +25,6 @@ uint32_t gpsSatellites();  // used in the fix (GGA): always 0 while there's no f
 // (rising after boot = the module keeps resetting), fix, position. For bench debugging.
 void gpsLogStatus();
 
-String gpsMapsLink();  // "https://www.google.com/maps?q=<lat>,<lon>" for the panic SMS
-
 // UTC date/time from the GPS fix itself, formatted as "YYYY-MM-DDTHH:MM:SSZ" -- used for
 // Alert.resolved_at (see backend_api.h) so this device doesn't need an NTP-synced clock
 // just to say "now" in UTC. Returns "" if the GPS has no valid date/time yet, if the last

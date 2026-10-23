@@ -62,7 +62,7 @@ bool readLine(String& out, unsigned long timeoutMs) {
   out.reserve(PI_BT_LINE_RESERVE);
   // Elapsed-since-last-byte via unsigned subtraction, not an absolute deadline -- the
   // same millis()-rollover-safe pattern used throughout this firmware (see
-  // wifi_client.cpp/panic_button.cpp). An absolute `millis() + timeoutMs` deadline breaks
+  // wifi_client.cpp). An absolute `millis() + timeoutMs` deadline breaks
   // once every ~49 days when millis() wraps.
   unsigned long lastByteAt = millis();
   while (millis() - lastByteAt < timeoutMs) {

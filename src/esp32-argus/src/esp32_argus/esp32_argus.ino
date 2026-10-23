@@ -16,10 +16,6 @@
 //   - Live first, dead-letter on failure: each record is reported back to the Pi as delivered
 //     (ACK) or not (FAIL <reason> <the composed message>). Only failed ones stay in the Pi's
 //     SQLite queue; they're replayed DLQ_REPLAY_BATCH at a time once the backend is reachable.
-//   - Handles the panic button (panic_button.*) completely outside that loop: unconditional
-//     `critical`, an SMS through the SIM800L (works even with no backend), and POST /api/alerts.
-//     A press is latched by an interrupt and queued in NVS (panic_latch.*), retried until the
-//     backend confirms it, so neither a busy loop nor a reboot loses it.
 //   - Keeps the backend alert id of each open episode in NVS too, so a reboot mid-incident can
 //     still resolve it.
 
@@ -34,16 +30,13 @@
 #include "config.h"
 #include "credentials.h"
 #include "gps_module.h"
-#include "panic_button.h"
-#include "panic_latch.h"
+#include "modem.h"
 #include "pi_event_policy.h"
-#include "sms_module.h"
 #include "wifi_client.h"
 
 namespace {
 Preferences state;                // NVS: survives a reboot
 EpisodeAlerts episodes;           // backend alert id per open episode (also in NVS)
-PanicQueue panics;                // pressed panics the backend hasn't confirmed (also in NVS)
 PiSeverity liveSeverity = PiSeverity::Unknown;  // the Pi's latest severity (status vigilance)
 bool replayStopped = false;       // a replay batch stops at its first failure
 unsigned long lastBtPollAt = 0;
@@ -142,7 +135,6 @@ void bannerOnCritical(const PiRecord& r) {
 }
 
 void saveEpisodes() { state.putString("episodes", episodes.serialize().c_str()); }
-void savePanics() { state.putString("panics", panics.serialize().c_str()); }
 
 RecordReport fail(const char* reason, const std::string& body) {
   RecordReport report;
@@ -292,59 +284,6 @@ void refreshCredentialsIfStale() {
       break;  // still stale: retried on the next poll
   }
 }
-
-// Sends the queued panics, oldest first, while the backend takes them. Each keeps the position
-// and time of its press; one without a fix gets the current position, if there is one now.
-void flushPanics() {
-  while (panics.size() > 0) {
-    if (backendReadiness() != BackendBlock::Ready) return;  // retried on a later poll
-    const PanicEvent& e = panics.front();
-    GpsSnapshot at;
-    at.hasFix = e.hasFix;
-    at.lat = e.lat;
-    at.lon = e.lon;
-    std::string body = composePanicAlertBody(e.clientEventId, e.occurredAt, at);
-    SendTimeFill f;
-    f.routeId = backendActiveRouteId().c_str();
-    f.gps = currentGps();
-    if (!completeBody(body, f, /*isAlert=*/true, nullptr)) {
-      Serial.println("[main] Panic alert waiting for a GPS position");
-      return;
-    }
-    BackendResult res = backendPost("/api/alerts", body.c_str());
-    backendNoteStatus(res.status, /*routeScoped=*/true);
-    RelayAction action = relayActionFor(res.status, true);
-    if (action != RelayAction::Ack && action != RelayAction::AckAndDrop) return;
-    panics.markFrontPosted();
-    savePanics();
-  }
-}
-
-void handlePanicButton() {
-  Serial.println("[main] PANIC BUTTON pressed");
-  GpsSnapshot gps = currentGps();
-
-  // Hardware-direct fallback -- fires even with no backend. Never gated on the checks below;
-  // this is the point of keeping the SIM800L's SMS at all.
-  smsSendPanicAlert(gps.hasFix, gps.lat, gps.lon);
-
-  PanicEvent e;
-  e.atMs = millis();
-  e.hasFix = gps.hasFix;
-  e.lat = gps.lat;
-  e.lon = gps.lon;
-  e.occurredAt = gpsUtcIso8601().c_str();
-  char id[40];
-  snprintf(id, sizeof(id), "panic-%08lx-%08lx", (unsigned long)esp_random(),
-           (unsigned long)millis());
-  e.clientEventId = id;
-  panics.push(e);
-  savePanics();
-  Serial.print("[main] Panic queued for the backend (");
-  Serial.print(panics.size());
-  Serial.println(" waiting)");
-  flushPanics();
-}
 }  // namespace
 
 void setup() {
@@ -360,15 +299,9 @@ void setup() {
   if (episodes.deserialize(state.getString("episodes", "").c_str())) {
     Serial.println("[main] Restored the open episodes' alert ids from NVS");
   }
-  if (panics.deserialize(state.getString("panics", "").c_str()) && panics.size() > 0) {
-    Serial.print("[main] ");
-    Serial.print(panics.size());
-    Serial.println(" panic alert(s) from before the reboot still to send");
-  }
 
   gpsBegin();
-  panicButtonBegin();
-  smsBegin();
+  modemBegin();  // the SIM800L carries mobile data only (no panic SMS any more)
   credentialsBegin();  // before wifiBegin(): the WiFi to join is in the NVS cache
   wifiBegin();
   bluetoothClientBegin();
@@ -376,10 +309,6 @@ void setup() {
 
 void loop() {
   gpsPoll();
-
-  if (panicButtonPressed()) {
-    handlePanicButton();
-  }
 
   wifiEnsureConnected();
 
@@ -403,8 +332,6 @@ void loop() {
   char request[16];
   snprintf(request, sizeof(request), "PULL %d", PI_BT_PULL_COUNT);
   if (bluetoothExchange(request, handleLive, &dlqWaiting) < 0) return;
-
-  if (panics.size() > 0) flushPanics();
 
   // Then a few dead letters, only when they can actually be delivered now.
   if (dlqWaiting > 0 && backendReadiness() == BackendBlock::Ready) {

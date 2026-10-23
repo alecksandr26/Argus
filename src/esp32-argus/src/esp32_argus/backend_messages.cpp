@@ -43,23 +43,6 @@ std::string composeAlertBody(const AlertFields& a, const GpsSnapshot& gps) {
   return serialize(doc);
 }
 
-std::string composePanicAlertBody(const std::string& clientEventId, const std::string& occurredAt,
-                                  const GpsSnapshot& gps) {
-  JsonDocument doc;
-  doc["alert_type"] = "panic_button";
-  doc["severity_level"] = "critical";
-  doc["source"] = "panic_button";
-  if (gps.hasFix) {
-    JsonObject c = doc["coordinates"].to<JsonObject>();
-    c["lat"] = gps.lat;
-    c["lon"] = gps.lon;
-    doc["speed_at_event"] = gps.speedKmh;
-  }
-  if (!clientEventId.empty()) doc["client_event_id"] = clientEventId;
-  putOccurredAt(doc, occurredAt);
-  return serialize(doc);
-}
-
 std::string composeStatusBody(const std::string& clientEventId, const std::string& vigilance,
                               const std::string& occurredAt, const GpsSnapshot& gps) {
   JsonDocument doc;

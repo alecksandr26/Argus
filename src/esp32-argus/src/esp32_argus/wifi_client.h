@@ -13,7 +13,7 @@ void wifiBegin();
 
 // Call periodically (once per loop() is fine) -- reconnects if the link drops, and switches
 // networks when the Pi hands over new WiFi settings, without ever blocking: a disconnected
-// WiFi radio must not stall GPS polling or the panic button. Retries are rate-limited to
+// WiFi radio must not stall GPS polling. Retries are rate-limited to
 // WIFI_RETRY_INTERVAL_MS.
 void wifiEnsureConnected();
 
