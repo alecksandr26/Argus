@@ -1,6 +1,6 @@
 import { apiFetch } from './client'
 import { normalizeCoordinates } from '../utils/geo'
-import type { Route, RouteTrack, RouteWithStatus, StatusRoute } from '../types'
+import type { Route, RouteTrack } from '../types'
 
 /** What a create/edit sends. The C3.1 fields are server-owned: `incident_state`/
  * `last_not_ok_at` come from ingest, `stop_*` only from `stopRoute()`. */
@@ -25,43 +25,18 @@ function normalizeRoute(r: Route): Route {
   return { ...r, destination_coordinates: normalizeCoordinates(r.destination_coordinates) }
 }
 
-function normalizeStatus(s: StatusRoute): StatusRoute {
-  return { ...s, current_coordinates: normalizeCoordinates(s.current_coordinates) }
-}
-
-function normalizeRouteWithStatus(r: RouteWithStatus): RouteWithStatus {
-  return {
-    ...normalizeRoute(r),
-    latest_status: r.latest_status ? normalizeStatus(r.latest_status) : null,
-    truck_plate_number: r.truck_plate_number,
-    driver_full_name: r.driver_full_name,
-  }
-}
-
 export function listRoutes(token: string, status?: Route['operative_status']): Promise<Route[]> {
   const qs = status ? `?status=${status}` : ''
   return apiFetch<Route[]>(`/api/routes${qs}`, { token }).then((rs) => rs.map(normalizeRoute))
 }
 
-/** `GET /api/routes/active` — in-progress routes embedding their newest status snapshot,
- * built specifically for `LiveOps.tsx`. */
-export function listActiveRoutes(token: string): Promise<RouteWithStatus[]> {
-  return apiFetch<RouteWithStatus[]>('/api/routes/active', { token }).then((rs) =>
-    rs.map(normalizeRouteWithStatus),
-  )
-}
+// `GET /api/routes/active` and `GET /api/routes/{id}/status` are no longer called: Live
+// operations and the route view read `GET /api/live` (`api/live.ts`) instead (C3.6).
 
 export function getRoute(id: string, token: string): Promise<Route> {
   return apiFetch<Route>(`/api/routes/${id}`, { token }).then(normalizeRoute)
 }
 
-/** `GET /api/routes/:id/status` — one route's newest telemetry snapshot, for `RouteLiveView`'s
- * polling. Distinct from `listActiveRoutes()`, which embeds this for *every* active route but
- * has no by-id lookup. Throws `ApiError` (404) if no status has been posted for the route
- * yet — callers should treat that as "no live telemetry yet", not a hard failure. */
-export function getRouteStatus(routeId: string, token: string): Promise<StatusRoute> {
-  return apiFetch<StatusRoute>(`/api/routes/${routeId}/status`, { token }).then(normalizeStatus)
-}
 
 export function createRoute(input: RouteInput, token: string): Promise<Route> {
   return apiFetch<Route>('/api/routes', { method: 'POST', body: input, token }).then(

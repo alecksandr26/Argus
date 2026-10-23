@@ -172,17 +172,6 @@ export interface StatusRoute {
   location_accuracy_m: number | null
 }
 
-/**
- * `GET /api/routes/active`'s response shape — a `Route` embedding its newest `Status_Route`
- * snapshot plus light truck/driver refs. Kept by the backend, but the UI is moving to
- * `GET /api/live` (`LiveResponse`) for Live operations and the route view.
- */
-export interface RouteWithStatus extends Route {
-  latest_status: StatusRoute | null
-  truck_plate_number: string | null
-  driver_full_name: string | null
-}
-
 /** A GPS point as `GET /api/live` / `GET /api/routes/{id}/track` return it (C3.6). */
 export interface LivePosition {
   /** The point's time (ISO). */
