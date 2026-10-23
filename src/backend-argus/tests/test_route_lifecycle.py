@@ -68,6 +68,9 @@ async def test_stop_needs_a_reason(api_client, root_admin, rig_a, reason):
         f"/api/routes/{rig_a.route_id}/stop", json={"reason": reason}, headers=auth_headers(root_admin)
     )
     assert resp.status_code == 422
+    if reason.strip() == "":
+        # Pinned text (C3.6 [sync 3]): the UI and it-argus match on it.
+        assert "A reason is required to stop a route" in resp.text
     assert (await Route.get(rig_a.route_id)).operative_status == RouteStatus.IN_PROGRESS
 
 

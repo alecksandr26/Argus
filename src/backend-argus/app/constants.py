@@ -42,6 +42,8 @@ STOP_REASON_MAX_LEN = 500
 
 # Per-route lock (app/incidents.py `route_lock`, C2.3 [sync 2]). A request waits at most
 # ROUTE_LOCK_WAIT for it, then answers 503 (the device counts a failed attempt and retries).
+# The wait is per request, not per acquisition (C2.3 [sync 3]): a report that takes the lock
+# twice (points, then its event) shares one deadline, received_at + ROUTE_LOCK_WAIT.
 # A holder keeps it at most ROUTE_LOCK_LEASE; a crashed (or Lambda-killed) holder frees it then.
 #
 # Coupled to the deployment, keep these true when changing either side:

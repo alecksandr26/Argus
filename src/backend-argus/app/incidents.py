@@ -9,7 +9,6 @@ undo them (and they can't undo it).
 from __future__ import annotations
 
 import asyncio
-import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -61,18 +60,29 @@ def as_utc(value: Optional[datetime]) -> Optional[datetime]:
 
 
 @asynccontextmanager
-async def route_lock(route_id: str) -> AsyncIterator[None]:
+async def route_lock(
+    route_id: str, *, deadline: Optional[datetime] = None
+) -> AsyncIterator[None]:
     """Serializes grouping/route-state work on one route. Taken with an atomic
     findOneAndUpdate on the Route document (C3.4), held at most `ROUTE_LOCK_LEASE` (a crashed
-    holder frees it then). Waits up to `ROUTE_LOCK_WAIT`, then answers 503 so the device retries.
-    A route id that doesn't exist (or is malformed) gets no lock: there's nothing to protect."""
+    holder frees it then). Waits until `deadline`, then answers 503 so the device retries.
+    A route id that doesn't exist (or is malformed) gets no lock: there's nothing to protect.
+
+    `deadline` is per request, not per acquisition (C2.3 [sync 3]): a request that takes the
+    lock more than once (a report: points, then its event) computes `received_at +
+    ROUTE_LOCK_WAIT` once and passes it to every acquisition, so its total wait stays within
+    `ROUTE_LOCK_WAIT`. Without it, the wait is `ROUTE_LOCK_WAIT` from now (a request that takes
+    the lock once). The lock is always tried at least once, even past the deadline: an
+    uncontended lock never answers 503."""
     oid = to_object_id(route_id)
     collection = Route.get_motor_collection()
     if oid is None or await collection.count_documents({"_id": oid}, limit=1) == 0:
         yield
         return
     token = uuid.uuid4().hex
-    deadline = time.monotonic() + ROUTE_LOCK_WAIT.total_seconds()
+    if deadline is None:
+        deadline = utcnow() + ROUTE_LOCK_WAIT
+    deadline = as_utc(deadline)
     delay = 0.01
     while True:
         now = utcnow()
@@ -82,7 +92,7 @@ async def route_lock(route_id: str) -> AsyncIterator[None]:
         )
         if taken is not None:
             break
-        if time.monotonic() > deadline:
+        if utcnow() >= deadline:
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Route is busy, try again")
         await asyncio.sleep(delay)
         delay = min(delay * 2, 0.2)
@@ -265,7 +275,9 @@ async def lower_route_state_after_close(route_id: str) -> None:
 # --- Ingest helpers shared by the report endpoint and the legacy endpoints -------------------
 
 
-async def ingest_alert(alert: Alert, *, reject_finished: bool = True) -> tuple[Alert, bool]:
+async def ingest_alert(
+    alert: Alert, *, reject_finished: bool = True, deadline: Optional[datetime] = None
+) -> tuple[Alert, bool]:
     """Stores `alert` (not yet inserted) and runs grouping + route state. Returns
     `(stored_alert, created)`; `created` is False when an alert with the same
     `(id_route, client_event_id)` already exists (that one is returned, nothing changes).
@@ -274,8 +286,9 @@ async def ingest_alert(alert: Alert, *, reject_finished: bool = True) -> tuple[A
 
     With `reject_finished` (every device write), the route's status is re-read under the lock
     and `RouteFinishedError` is raised if it has ended since the caller looked it up. A user's
-    manual write to a finished route passes `reject_finished=False`."""
-    async with route_lock(alert.id_route):
+    manual write to a finished route passes `reject_finished=False`. `deadline`: the request's
+    lock deadline (`route_lock`)."""
+    async with route_lock(alert.id_route, deadline=deadline):
         if reject_finished:
             await ensure_route_open(alert.id_route)
         if alert.client_event_id:
@@ -335,13 +348,13 @@ async def newest_alert_of_episode(route_id: str, episode: str) -> Optional[Alert
     )
 
 
-async def ingest_driver_ok(driver_ok: DriverOk) -> bool:
+async def ingest_driver_ok(driver_ok: DriverOk, *, deadline: Optional[datetime] = None) -> bool:
     """Stores a driver-OK (not yet inserted) and sets `driver_ok_at` on every alert of its
     `(id_route, episode)` that has none (C2.2 rule 7). Never closes anything and never changes
     `incident_state`. Returns False for a duplicate `(id_route, client_event_id)`. Raises
     `RouteFinishedError` if the route ended before the lock was taken (only devices send
-    driver-OKs)."""
-    async with route_lock(driver_ok.id_route):
+    driver-OKs). `deadline`: the request's lock deadline (`route_lock`)."""
+    async with route_lock(driver_ok.id_route, deadline=deadline):
         await ensure_route_open(driver_ok.id_route)
         existing = await DriverOk.find_one(
             DriverOk.id_route == driver_ok.id_route,

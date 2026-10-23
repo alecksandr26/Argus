@@ -7,13 +7,14 @@ that started after it.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from beanie import PydanticObjectId
 from pydantic import ValidationError
 from pymongo.errors import BulkWriteError
 
+from app.constants import ROUTE_LOCK_WAIT
 from app.geo import GeoJSONPoint
 from app.ids import get_by_id
 from app.incidents import (
@@ -26,6 +27,7 @@ from app.incidents import (
     ingest_driver_ok,
     newest_alert_of_episode,
     route_lock,
+    utcnow,
 )
 from app.models.alert import Alert, AlertAiMetadata
 from app.models.common import AlertSource, Delivery, RouteStatus, Severity, Vigilance
@@ -76,8 +78,10 @@ async def _points_status_without_route(truck_id: str) -> str:
     return "no_active_route"
 
 
-def _round_to_second(value: datetime) -> datetime:
-    return (value + timedelta(milliseconds=500)).replace(microsecond=0)
+def _to_ms(value: datetime) -> datetime:
+    """Truncated to milliseconds, the resolution Mongo stores (so what we compare in memory is
+    what gets stored)."""
+    return value.replace(microsecond=value.microsecond // 1000 * 1000)
 
 
 async def _keep_minutes(route_id: str, timestamps: list[datetime]) -> set[datetime]:
@@ -94,7 +98,11 @@ async def _keep_minutes(route_id: str, timestamps: list[datetime]) -> set[dateti
 
 
 async def store_points(
-    route_id: str, docs: list[StatusRoute], *, reject_finished: bool = True
+    route_id: str,
+    docs: list[StatusRoute],
+    *,
+    reject_finished: bool = True,
+    deadline: Optional[datetime] = None,
 ) -> list[StatusRoute]:
     """Inserts GPS points of one route, skipping the ones whose `(id_route, timestamp)` is
     already stored (unique index, `insert_many(ordered=False)`). Marks the first stored point of
@@ -103,7 +111,8 @@ async def store_points(
 
     With `reject_finished` (every device write), the route's status is re-read under the lock
     and `RouteFinishedError` is raised, nothing stored, if it ended since the caller picked it
-    (C2.2). A user's manual write to a finished route passes `reject_finished=False`."""
+    (C2.2). A user's manual write to a finished route passes `reject_finished=False`.
+    `deadline`: the request's lock deadline (`route_lock`, C2.3 [sync 3])."""
     if not docs:
         return []
     by_time: dict[datetime, StatusRoute] = {}
@@ -111,7 +120,7 @@ async def store_points(
         by_time.setdefault(as_utc(doc.timestamp), doc)
     docs = list(by_time.values())
 
-    async with route_lock(route_id):
+    async with route_lock(route_id, deadline=deadline):
         if reject_finished:
             await ensure_route_open(route_id)
         kept_minutes = await _keep_minutes(route_id, list(by_time))
@@ -145,14 +154,22 @@ def _point_doc(route_id: str, point: ReportPoint, received_at: datetime) -> Stat
         vigilance=Vigilance(point.vigilance),
         location_is_last_known=point.last_known,
         location_age_s=point.location_age_s,
-        timestamp=_round_to_second(received_at - timedelta(seconds=point.age_s)),
+        # Millisecond precision, never rounded to the second (C2.1 [sync 3]): rounding made the
+        # unique (id_route, timestamp) index drop distinct points whenever the request latency
+        # differed by about a second between two reports. The index now only skips exact
+        # duplicates.
+        timestamp=_to_ms(received_at - timedelta(seconds=point.age_s)),
         received_at=received_at,
         time_source="relative",
     )
 
 
 async def _process_points(
-    truck: Truck, raw_points: list[Any], received_at: datetime, active: Optional[Route]
+    truck: Truck,
+    raw_points: list[Any],
+    received_at: datetime,
+    active: Optional[Route],
+    deadline: datetime,
 ) -> PointsResult:
     if active is None:
         return PointsResult(
@@ -167,7 +184,7 @@ async def _process_points(
             continue  # an invalid point is skipped, never a 422 (C2.1)
         docs.append(_point_doc(route_id, point, received_at))
     try:
-        stored = await store_points(route_id, docs)
+        stored = await store_points(route_id, docs, deadline=deadline)
     except RouteFinishedError:
         # Stopped/completed between `active_route_for` and the lock (C2.2).
         return PointsResult(stored=0, route=None, status="route_finished")
@@ -249,7 +266,7 @@ def _alert_from_event(route_id: str, event: ReportEvent, occurred_at: datetime, 
 
 
 async def _process_event(
-    truck: Truck, raw_event: dict[str, Any], received_at: datetime
+    truck: Truck, raw_event: dict[str, Any], received_at: datetime, deadline: datetime
 ) -> EventResult:
     try:
         event = ReportEvent.model_validate(raw_event)
@@ -257,9 +274,7 @@ async def _process_event(
         return _rejected("invalid")
     if event.age_s > MAX_AGE_S:
         return _rejected("too_old")
-    # Millisecond precision, the resolution Mongo stores.
-    occurred_at = received_at - timedelta(seconds=event.age_s)
-    occurred_at = occurred_at.replace(microsecond=occurred_at.microsecond // 1000 * 1000)
+    occurred_at = _to_ms(received_at - timedelta(seconds=event.age_s))
     truck_id = str(truck.id)
     if await _belongs_to_other_truck(truck_id, event.client_event_id):
         return _rejected("wrong_truck")
@@ -273,7 +288,7 @@ async def _process_event(
     try:
         if event.kind == "alert":
             alert, created = await ingest_alert(
-                _alert_from_event(route_id, event, occurred_at, received_at)
+                _alert_from_event(route_id, event, occurred_at, received_at), deadline=deadline
             )
             return EventResult(
                 status="created" if created else "duplicate", id_alert=str(alert.id)
@@ -287,7 +302,8 @@ async def _process_event(
                 received_at=received_at,
                 delivery=event.delivery,
                 queued_seconds=event.queued_seconds,
-            )
+            ),
+            deadline=deadline,
         )
     except RouteFinishedError:
         # Stopped/completed between `route_at` and the lock (C2.2).
@@ -300,11 +316,15 @@ async def _process_event(
 
 
 async def process_report(truck: Truck, envelope: ReportEnvelope) -> ReportResponse:
-    received_at = datetime.now(timezone.utc)
+    received_at = utcnow()
+    # One lock deadline for the whole request (C2.3 [sync 3]): the points and the event may each
+    # take the route lock, and together they still wait at most ROUTE_LOCK_WAIT before the 503,
+    # inside the ESP32's 8 s attempt timeout and the 10 s Lambda timeout.
+    deadline = received_at + ROUTE_LOCK_WAIT
     active = await active_route_for(str(truck.id))
-    points = await _process_points(truck, envelope.points, received_at, active)
+    points = await _process_points(truck, envelope.points, received_at, active, deadline)
     event = (
-        await _process_event(truck, envelope.event, received_at)
+        await _process_event(truck, envelope.event, received_at, deadline)
         if envelope.event is not None
         else None
     )

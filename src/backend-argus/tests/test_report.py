@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import app.report as report_module
 from app.models.alert import Alert
 from app.models.common import RouteStatus
 from app.models.incident import DriverOk
@@ -133,7 +134,8 @@ async def test_point_fields_are_stored(api_client, rig_a):
     assert point.location_is_last_known is True
     assert point.location_age_s == 42
     assert point.time_source == "relative"
-    assert point.timestamp.microsecond == 0  # rounded to the second
+    # Millisecond precision, not rounded to the second (C2.1 [sync 3]).
+    assert point.timestamp.microsecond % 1000 == 0
 
 
 async def test_point_timestamp_is_received_at_minus_age(api_client, rig_a):
@@ -144,10 +146,65 @@ async def test_point_timestamp_is_received_at_minus_age(api_client, rig_a):
     assert before - timedelta(seconds=32) <= stamped <= before - timedelta(seconds=28)
 
 
-async def test_points_at_the_same_second_are_stored_once(api_client, rig_a):
+async def test_points_with_the_same_timestamp_are_stored_once(api_client, rig_a):
+    """Same request, same `age_s` -> the exact same timestamp: an exact duplicate, stored once."""
     resp = await post_report(api_client, rig_a, points=[report_point(age_s=2), report_point(age_s=2)])
     assert resp.json()["points"]["stored"] == 1
     assert await StatusRoute.find(StatusRoute.id_route == rig_a.route_id).count() == 1
+
+
+async def test_points_keep_milliseconds(api_client, rig_a, monkeypatch):
+    received_at = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(seconds=30)
+    monkeypatch.setattr(report_module, "utcnow", lambda: received_at)
+    await post_report(api_client, rig_a, points=[report_point(age_s=1.2345), report_point(age_s=0.4)])
+    stamps = sorted(
+        p.timestamp.replace(tzinfo=timezone.utc)
+        for p in await StatusRoute.find(StatusRoute.id_route == rig_a.route_id).to_list()
+    )
+    # received_at - age_s, truncated (not rounded) to the millisecond: -1.2345 s lands on
+    # .7655 of the second before last, stored as .765.
+    assert stamps == [
+        received_at - timedelta(milliseconds=1235),
+        received_at - timedelta(milliseconds=400),
+    ]
+
+
+async def test_reports_whose_latency_differs_by_a_second_keep_every_point(
+    api_client, rig_a, monkeypatch
+):
+    """C2.1 [sync 3]: GPS reads 1 s apart, sent in two consecutive reports whose request latency
+    differs by about a second (normal on GPRS). Rounding to the second gave two different reads
+    the same timestamp, and the unique (id_route, timestamp) index silently dropped the second
+    one. With millisecond timestamps every distinct point is stored."""
+    base = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=2)
+    # Report 1: reads at base+0.0 .. base+4.0 s, received at base+4.6 s.
+    first_at = base + timedelta(milliseconds=4600)
+    monkeypatch.setattr(report_module, "utcnow", lambda: first_at)
+    first = await post_report(
+        api_client, rig_a, points=[report_point(age_s=4.6 - i) for i in range(5)]
+    )
+    # Report 2: reads at base+5.0 .. base+9.0 s, but 1.1 s slower in transit, so each age is
+    # measured 1.1 s short: the backend places them 1.1 s earlier, overlapping report 1's second.
+    second_at = base + timedelta(milliseconds=9500)
+    monkeypatch.setattr(report_module, "utcnow", lambda: second_at)
+    second = await post_report(
+        api_client, rig_a, points=[report_point(age_s=4.5 + 1.1 - i) for i in range(5)]
+    )
+    assert first.json()["points"]["stored"] == 5
+    assert second.json()["points"]["stored"] == 5
+    assert await StatusRoute.find(StatusRoute.id_route == rig_a.route_id).count() == 10
+
+
+async def test_a_report_resent_with_the_same_received_at_skips_exact_duplicates(
+    api_client, rig_a, monkeypatch
+):
+    """The unique index still skips exact duplicates (same route, same millisecond)."""
+    received_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+    monkeypatch.setattr(report_module, "utcnow", lambda: received_at)
+    points = [report_point(age_s=3.25), report_point(age_s=1.5)]
+    assert (await post_report(api_client, rig_a, points=points)).json()["points"]["stored"] == 2
+    assert (await post_report(api_client, rig_a, points=points)).json()["points"]["stored"] == 0
+    assert await StatusRoute.find(StatusRoute.id_route == rig_a.route_id).count() == 2
 
 
 async def test_no_active_route_stores_nothing(api_client, mongo_client):
