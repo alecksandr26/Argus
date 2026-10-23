@@ -21,7 +21,7 @@ import logging
 import random
 from typing import Optional
 
-from .constants import GPS_READ_INTERVAL_S, SIMULATOR_REPORT_INTERVAL_S
+from .constants import GPS_READ_INTERVAL_S, NORMAL_BLIP_CHANCE
 from .events import Reading
 
 logger = logging.getLogger(__name__)
@@ -29,60 +29,60 @@ logger = logging.getLogger(__name__)
 _OK = Reading("low", "ok")
 
 
-def per_tick_probability(per_interval: float, tick_seconds: float) -> float:
-    """`medium_blip_probability` is a chance per report interval (5 s, the old status-ping
-    cadence it was tuned for); the scenario ticks once per GPS read, so it is rescaled to keep
-    the same blip rate per minute."""
-    p = min(1.0, max(0.0, per_interval))
-    if p in (0.0, 1.0):
-        return p
-    return 1.0 - (1.0 - p) ** (tick_seconds / SIMULATOR_REPORT_INTERVAL_S)
-
-
 class Scenario:
-    """`normal`: the driver stays fine (`low`) with occasional `medium` blips -- a glance down
-    (`head_down`) that holds for a randomized 30 s-2 min dwell, then recovers. Each blip is one
-    incident: one medium alert when it starts, one driver OK when it ends. After a blip the
-    driver stays fine for at least `_QUIET_AFTER_SECONDS`, so two blips never read as one
-    flickering incident."""
+    """`normal`: the driver stays fine (`low`) for the whole route, except for **at most one**
+    `medium` blip: a glance down (`head_down`) that holds for a randomized 30 s-2 min dwell, then
+    recovers. Whether the route gets its blip is a single draw with probability `blip_chance`
+    (`SIMULATOR_NORMAL_BLIP_CHANCE`, 0.5 by default), and when it starts is uniform over the
+    route (it always ends before the route does). The blip is one incident: one medium alert
+    when it starts, one driver OK when it ends.
+
+    Why a per-route budget and not a rate: a medium alert keeps the route's map colour until a
+    guardian closes the incident or an hour of OK points passes (contracts C3.5), so any steady
+    blip rate eventually turns every route medium. With one blip at most, about half of the
+    normal routes stay fine from start to end."""
 
     name = "normal"
 
     _MEDIUM_DWELL_SECONDS_MIN = 30.0
     _MEDIUM_DWELL_SECONDS_MAX = 120.0
-    _QUIET_AFTER_SECONDS = 60.0
     _BLIP = Reading("medium", "head_down", drowsy_score=0.31)
 
     def __init__(
         self,
         total_ticks: int,
-        medium_blip_probability: float = 0.1,
+        blip_chance: float = NORMAL_BLIP_CHANCE,
         tick_seconds: float = GPS_READ_INTERVAL_S,
     ) -> None:
         self._total_ticks = max(total_ticks, 1)
         self._tick_seconds = tick_seconds if tick_seconds and tick_seconds > 0 else 1.0
-        self._blip_probability = per_tick_probability(medium_blip_probability, self._tick_seconds)
-        self._blip_until: Optional[int] = None
-        self._quiet_until = 0
+        self._blip: Optional[tuple[int, int]] = self._plan_blip(blip_chance)
+
+    @property
+    def blip_window(self) -> Optional[tuple[int, int]]:
+        """`(first tick, first tick after)` of the route's one blip, or `None`."""
+        return self._blip
 
     def _ticks(self, seconds: float) -> int:
         return max(1, round(seconds / self._tick_seconds))
 
-    def _blip_reading(self, tick: int) -> Reading:
-        if self._blip_until is not None:
-            if tick < self._blip_until:
-                return self._BLIP
-            self._blip_until = None
-            self._quiet_until = tick + self._ticks(self._QUIET_AFTER_SECONDS)
-            return _OK
-        if tick >= self._quiet_until and random.random() < self._blip_probability:
-            dwell = random.uniform(self._MEDIUM_DWELL_SECONDS_MIN, self._MEDIUM_DWELL_SECONDS_MAX)
-            self._blip_until = tick + self._ticks(dwell)
-            return self._BLIP
-        return _OK
+    def _plan_blip(self, chance: float) -> Optional[tuple[int, int]]:
+        chance = min(1.0, max(0.0, chance))
+        if chance <= 0.0 or random.random() >= chance:
+            return None
+        dwell = self._ticks(
+            random.uniform(self._MEDIUM_DWELL_SECONDS_MIN, self._MEDIUM_DWELL_SECONDS_MAX)
+        )
+        # Keep a tick of fine driving on both sides, so the alert and its driver OK both happen
+        # while the route is still running, even on a very short demo route.
+        dwell = max(1, min(dwell, self._total_ticks - 2))
+        start = random.randint(1, max(1, self._total_ticks - dwell - 1))
+        return start, start + dwell
 
     def reading(self, tick: int) -> Reading:
-        return self._blip_reading(tick)
+        if self._blip is not None and self._blip[0] <= tick < self._blip[1]:
+            return self._BLIP
+        return _OK
 
 
 class DrowsyEscalationScenario(Scenario):
@@ -106,10 +106,11 @@ class DrowsyEscalationScenario(Scenario):
     def __init__(
         self,
         total_ticks: int,
-        medium_blip_probability: float = 0.1,
+        blip_chance: float = NORMAL_BLIP_CHANCE,
         tick_seconds: float = GPS_READ_INTERVAL_S,
     ) -> None:
-        super().__init__(total_ticks, medium_blip_probability, tick_seconds)
+        # Its own cycle is the story; `normal`'s blip doesn't apply.
+        super().__init__(total_ticks, 0.0, tick_seconds)
         cycle = max(self._MIN_CYCLE_TICKS, self._total_ticks // 2)
         self._escalate_at = max(1, round(cycle * self._ESCALATE_FRACTION))
         self._peak_at = max(self._escalate_at + 1, round(cycle * self._PEAK_FRACTION))
@@ -131,9 +132,10 @@ class NoFaceScenario(Scenario):
     """The driver leaves the camera's view once, at a random moment in the first third of the
     route, for a randomized 30-90 s: the Pi's no-face rule goes straight to `critical` with no
     medium step before it (`RULE_NO_FACE_CRITICAL_S`), and its scores are unknown (no face, no
-    model output). Then the driver is back and recovers (one driver OK). Outside that window it
-    behaves like `normal`, blips included. (Replaces the retired `panic` profile: the panic
-    button is gone from the hardware.)"""
+    model output). Then the driver is back and recovers (one driver OK). That one incident is the
+    whole story: the rest of the route is fine, with no `normal` blip on top (a medium after the
+    critical would only re-colour a route that is already critical). Replaces the retired
+    `panic` profile: the panic button is gone from the hardware."""
 
     name = "no_face"
 
@@ -144,10 +146,10 @@ class NoFaceScenario(Scenario):
     def __init__(
         self,
         total_ticks: int,
-        medium_blip_probability: float = 0.1,
+        blip_chance: float = NORMAL_BLIP_CHANCE,
         tick_seconds: float = GPS_READ_INTERVAL_S,
     ) -> None:
-        super().__init__(total_ticks, medium_blip_probability, tick_seconds)
+        super().__init__(total_ticks, 0.0, tick_seconds)
         window = max(2, self._total_ticks // 3)
         self._away_from = random.randint(1, window)
         away = random.uniform(self._AWAY_SECONDS_MIN, self._AWAY_SECONDS_MAX)
@@ -155,12 +157,8 @@ class NoFaceScenario(Scenario):
 
     def reading(self, tick: int) -> Reading:
         if self._away_from <= tick < self._away_until:
-            self._blip_until = None  # a blip in progress is swallowed by the critical
             return self._AWAY
-        if tick == self._away_until:
-            self._quiet_until = tick + self._ticks(self._QUIET_AFTER_SECONDS)
-            return _OK
-        return self._blip_reading(tick)
+        return _OK
 
 
 SCENARIOS: dict[str, type[Scenario]] = {
@@ -213,7 +211,7 @@ def choose_scenario_name(weights: dict[str, float]) -> str:
 def build_scenario(
     name: str,
     total_ticks: int,
-    medium_blip_probability: float = 0.1,
+    blip_chance: float = NORMAL_BLIP_CHANCE,
     tick_seconds: float = GPS_READ_INTERVAL_S,
 ) -> Scenario:
-    return SCENARIOS[name](total_ticks, medium_blip_probability, tick_seconds)
+    return SCENARIOS[name](total_ticks, blip_chance, tick_seconds)

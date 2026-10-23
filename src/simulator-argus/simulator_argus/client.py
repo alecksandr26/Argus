@@ -12,6 +12,8 @@ from typing import Any, Optional
 
 import httpx
 
+from .constants import ATTEMPT_TIMEOUT_S
+
 
 def sha256_hex(raw_password: str) -> str:
     """backend-argus's `Sha256HexDigest` contract: every password field on its API boundary is
@@ -118,9 +120,17 @@ class BackendClient:
         """`POST /api/devices/me/report` (contracts C2), the only device write. Unlike the
         provisioning calls above this never raises on an HTTP status: every status (200, 401,
         422, 429, 5xx) means something specific to the sender (`report.classify_response`).
-        Transport errors (connection refused, timeout) still raise `httpx.TransportError`."""
+        Transport errors (connection refused, timeout) still raise `httpx.TransportError`.
+
+        One attempt gives up after `ATTEMPT_TIMEOUT_S` (8 s, the ESP32's
+        `ATTEMPT_TIMEOUT_WIFI_MS`), not the client's 10 s default for provisioning calls. That is
+        above the backend's 5 s route-lock wait, so its 503 for a busy lock still arrives within
+        the attempt (contracts C2.3)."""
         resp = await self._client.post(
-            "/api/devices/me/report", json=body, headers=self._device(device_key)
+            "/api/devices/me/report",
+            json=body,
+            headers=self._device(device_key),
+            timeout=ATTEMPT_TIMEOUT_S,
         )
         try:
             payload = resp.json()

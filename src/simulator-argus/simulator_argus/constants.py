@@ -15,6 +15,10 @@ SIMULATOR_REPORT_INTERVAL_S = 5.0
 # `GPS_READ_INTERVAL_MS` = 1000: one GPS point per second, which is also the simulator's tick.
 GPS_READ_INTERVAL_S = 1.0
 
+# `ATTEMPT_TIMEOUT_WIFI_MS` = 8000: one report attempt gives up after this long (the simulator
+# has no modem, so it mirrors the WiFi path; the mobile path's longer retry timeout doesn't apply).
+ATTEMPT_TIMEOUT_S = 8.0
+
 # `MIN_SEND_GAP_MS` = 1000: a pending live event is retried at most once per second.
 MIN_SEND_GAP_S = 1.0
 
@@ -40,3 +44,10 @@ MAX_POINT_AGE_S = 604_800.0
 # The model name the simulator writes into `event.ai_metadata.model`, so a simulated alert is
 # never mistaken for one the real Pi pipeline (`parts-rules-v1`) produced.
 SIMULATOR_MODEL_NAME = "simulator"
+
+# Chance that a `normal` route gets its one `head_down` medium blip (at a uniformly random time in
+# the route). A medium alert keeps the route's map colour until a guardian closes the incident or
+# an hour of OK points passes (contracts C3.5), so `normal` gets at most one blip per route and
+# about half of the normal routes stay fine from start to end. Overridable through settings
+# (`SIMULATOR_NORMAL_BLIP_CHANCE`).
+NORMAL_BLIP_CHANCE = 0.5

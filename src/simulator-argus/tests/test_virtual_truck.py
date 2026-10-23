@@ -3,7 +3,10 @@ OSRM fallback, and the virtual truck's combined reports (cadence, events, retrie
 letters, route end) against a mocked backend -- no real backend, Docker, or network needed."""
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import random
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -20,7 +23,6 @@ from simulator_argus.scenarios import (
     build_scenario,
     choose_scenario_name,
     parse_scenario_weights,
-    per_tick_probability,
 )
 from simulator_argus.virtual_truck import VirtualTruck, interpolate_along_polyline
 
@@ -86,55 +88,60 @@ def _events(scenario, ticks: int):
     return fired
 
 
-def test_normal_scenario_fires_nothing_when_no_blip_ever_triggers():
-    scenario = Scenario(total_ticks=500, medium_blip_probability=0.0)
+def test_normal_scenario_fires_nothing_when_its_blip_chance_is_0():
+    scenario = Scenario(total_ticks=500, blip_chance=0.0)
+    assert scenario.blip_window is None
     assert {scenario.reading(t) for t in range(500)} == {Reading("low", "ok")}
-    assert _events(Scenario(total_ticks=500, medium_blip_probability=0.0), 500) == []
+    assert _events(Scenario(total_ticks=500, blip_chance=0.0), 500) == []
 
 
 def test_normal_scenario_blip_is_one_medium_alert_then_one_ok():
-    scenario = Scenario(total_ticks=1000, medium_blip_probability=1.0, tick_seconds=1.0)
-    # probability 1.0 starts a blip at tick 0; stop new ones after it so the run holds one.
-    first = scenario.reading(0)
-    assert (first.severity, first.reason) == ("medium", "head_down")
-    end = scenario._blip_until
-    scenario._blip_probability = 0.0
+    scenario = Scenario(total_ticks=1000, blip_chance=1.0, tick_seconds=1.0)
+    start, end = scenario.blip_window
+    fired = _events(scenario, 1000)
 
-    tracker = EpisodeTracker()
-    fired = [tracker.update(first, 0.0)]
-    fired += [tracker.update(scenario.reading(t), float(t)) for t in range(1, end + 5)]
-    fired = [e for e in fired if e is not None]
-
-    assert [(e.kind, e.severity, e.alert_type) for e in fired] == [
+    assert [(e.kind, e.severity, e.alert_type) for _, e in fired] == [
         ("alert", "medium", "head_down"),
         ("ok", None, None),
     ]
-    assert fired[0].episode == fired[1].episode
-    assert fired[1].occurred_at == float(end)
+    assert [tick for tick, _ in fired] == [start, end]
+    assert fired[0][1].episode == fired[1][1].episode
 
 
-def test_normal_scenario_medium_blip_holds_for_the_minimum_dwell():
-    # The minimum dwell is 30 s, i.e. 30 one-second ticks, whatever the random draw.
-    scenario = Scenario(total_ticks=500, medium_blip_probability=1.0, tick_seconds=1.0)
-    assert [scenario.reading(t).severity for t in range(30)] == ["medium"] * 30
+@pytest.mark.parametrize("total_ticks", [10, 60, 600, 1200, 14400])
+def test_normal_scenario_blip_holds_30_s_to_2_min_and_ends_inside_the_route(total_ticks):
+    for _ in range(50):
+        scenario = Scenario(total_ticks=total_ticks, blip_chance=1.0, tick_seconds=1.0)
+        start, end = scenario.blip_window
+        assert 1 <= start < end <= total_ticks - 1  # the alert and its OK both happen en route
+        if total_ticks >= 122:  # room for the full dwell
+            assert 30 <= end - start <= 120
+        assert [scenario.reading(t).severity for t in range(start, end)] == ["medium"] * (
+            end - start
+        )
 
 
-def test_normal_scenario_stays_quiet_for_a_minute_after_a_blip():
-    scenario = Scenario(total_ticks=1000, medium_blip_probability=1.0, tick_seconds=1.0)
-    scenario.reading(0)
-    end = scenario._blip_until
-    for t in range(1, end):
-        scenario.reading(t)
-    quiet = [scenario.reading(t).severity for t in range(end, end + 60)]
-    assert quiet == ["low"] * 60
-    assert scenario.reading(end + 60).severity == "medium"
+@pytest.mark.parametrize("total_ticks", [600, 1200])  # the 10 min AWS session, the 20 min default
+def test_normal_routes_get_at_most_one_blip_and_about_half_stay_fine(total_ticks):
+    random.seed(1234)
+    blips_per_route = []
+    for _ in range(400):
+        scenario = Scenario(total_ticks=total_ticks)  # the default blip chance (0.5)
+        alerts = [e for _, e in _events(scenario, total_ticks) if e.kind == "alert"]
+        assert all(e.severity == "medium" for e in alerts)
+        blips_per_route.append(len(alerts))
+
+    assert max(blips_per_route) <= 1
+    quiet_share = blips_per_route.count(0) / len(blips_per_route)
+    assert 0.40 <= quiet_share <= 0.60
 
 
-def test_blip_probability_is_rescaled_from_per_5_s_to_per_tick():
-    assert per_tick_probability(0.0, 1.0) == 0.0
-    assert per_tick_probability(1.0, 1.0) == 1.0
-    per_tick = per_tick_probability(0.1, 1.0)
-    assert 1 - (1 - per_tick) ** 5 == pytest.approx(0.1)
+def test_normal_blip_start_is_spread_over_the_whole_route():
+    random.seed(99)
+    starts = [Scenario(total_ticks=1200, blip_chance=1.0).blip_window[0] for _ in range(400)]
+    early = sum(1 for s in starts if s < 600)
+    assert 120 <= early <= 280  # uniform: about half in each half of the route
+    assert min(starts) < 120 and max(starts) > 1000
 
 
 def test_drowsy_escalation_is_one_medium_one_critical_upgrade_and_one_ok_per_cycle():
@@ -171,7 +178,7 @@ def test_drowsy_escalation_timing_scales_with_total_ticks(total_ticks):
 
 
 def test_no_face_scenario_is_one_critical_without_a_medium_step_then_one_ok():
-    scenario = NoFaceScenario(total_ticks=1200, medium_blip_probability=0.0)
+    scenario = NoFaceScenario(total_ticks=1200)
     fired = _events(scenario, 1200)
 
     assert [(e.kind, e.severity, e.alert_type) for _, e in fired] == [
@@ -185,16 +192,20 @@ def test_no_face_scenario_is_one_critical_without_a_medium_step_then_one_ok():
     assert fired[0][1].ai_metadata == {"model": "simulator", "scores": None}
 
 
-def test_no_face_scenario_swallows_a_blip_in_progress():
-    scenario = NoFaceScenario(total_ticks=1200, medium_blip_probability=1.0)
-    scenario._away_from = 10
-    scenario._away_until = 50
-    fired = _events(scenario, 52)
-    kinds = [(e.kind, e.severity) for _, e in fired]
-    # A medium blip from tick 0, upgraded to critical when the driver leaves (same episode),
-    # then one OK when the driver is back.
-    assert kinds == [("alert", "medium"), ("alert", "critical"), ("ok", None)]
-    assert len({e.episode for _, e in fired}) == 1
+@pytest.mark.parametrize("cls", [NoFaceScenario, DrowsyEscalationScenario])
+def test_only_normal_takes_a_blip(cls):
+    # no_face and drowsy_escalation tell their own story; normal's blip never rides on top.
+    for _ in range(20):
+        scenario = cls(total_ticks=1200, blip_chance=1.0)
+        assert scenario.blip_window is None
+        assert "head_down" not in {e.alert_type for _, e in _events(scenario, 1200)}
+
+
+def test_no_face_scenario_has_one_incident_per_route():
+    for _ in range(50):
+        scenario = NoFaceScenario(total_ticks=1200, blip_chance=1.0)
+        kinds = [(e.kind, e.severity) for _, e in _events(scenario, 1200)]
+        assert kinds == [("alert", "critical"), ("ok", None)]
 
 
 def test_build_scenario_returns_matching_profile():
@@ -325,6 +336,22 @@ class _Backend:
                     "event": None if "event" not in body else
                     {"status": "rejected", "reason": "no_route", "id_alert": None},
                     "active_route": None,
+                },
+            )
+        if behaviour in ("old_event", "finished_no_route"):
+            # The event is rejected route_finished; "old_event": the truck's current route is
+            # active (a stale event), "finished_no_route": the truck has no active route left.
+            active = "r1" if behaviour == "old_event" else None
+            return httpx.Response(
+                200,
+                json={
+                    "points": {
+                        "stored": len(body["points"]) if active else 0,
+                        "route": active,
+                        "status": "ok" if active else "no_active_route",
+                    },
+                    "event": {"status": "rejected", "reason": "route_finished", "id_alert": None},
+                    "active_route": active,
                 },
             )
         finished = behaviour == "finished"
@@ -511,18 +538,150 @@ async def test_a_stopped_route_ends_the_truck():
 
 
 async def test_run_returns_once_the_route_has_ended(monkeypatch):
+    # "finished" answers points.status route_finished, active_route null, and rejects the event
+    # route_finished: what the backend says once the route was stopped or completed.
     backend = _Backend(["finished"])
     truck, clock, client = _truck(backend, {0: _MEDIUM})
+    real_sleep = asyncio.sleep
 
-    async def no_sleep(_seconds):
+    async def fast_sleep(_seconds):
         clock.t += 1.0
+        await real_sleep(0)  # still yield, so the sender task gets to run
 
-    monkeypatch.setattr("simulator_argus.virtual_truck.asyncio.sleep", no_sleep)
-    await truck.run()  # would loop forever if route_finished didn't stop it
+    monkeypatch.setattr("simulator_argus.virtual_truck.asyncio.sleep", fast_sleep)
+    await asyncio.wait_for(truck.run(), timeout=5)  # would loop forever if it didn't stop
     await client.aclose()
     assert truck.finished
     assert backend.bodies[0]["event"]["severity"] == "medium"
+    assert backend.bodies[0]["points"]  # the GPS read of tick 0 went with it
     assert truck.queue.finished[0].reason == "route_finished"
+
+
+async def test_an_event_rejected_route_finished_while_a_route_is_active_doesnt_end_the_truck():
+    # E.g. a dead-letter replay of an event from an earlier, ended route: that one event is
+    # archived, but the truck's current route is live (points ok, active_route set).
+    backend = _Backend(["old_event"])
+    truck, clock, client = _truck(backend, {1: _CRITICAL})
+    await _run(truck, clock, range(0, 2))
+    await client.aclose()
+
+    assert not truck.finished
+    assert truck.active_route == "r1"
+    finished = truck.queue.finished[0]
+    assert (finished.outcome, finished.reason) == ("archived", "route_finished")
+
+
+async def test_an_event_rejected_route_finished_with_no_active_route_ends_the_truck():
+    backend = _Backend(["finished_no_route"])
+    truck, clock, client = _truck(backend, {1: _MEDIUM})
+    await _run(truck, clock, range(0, 2))
+    await client.aclose()
+
+    assert truck.finished
+    assert truck.queue.finished[0].outcome == "dropped"
+
+
+async def test_a_medium_dropped_by_its_retry_window_is_logged(caplog):
+    backend = _Backend(["down"] * 100)
+    truck, clock, client = _truck(backend, {t: _MEDIUM for t in range(1, 40)})
+    with caplog.at_level(logging.WARNING, logger="simulator_argus.virtual_truck"):
+        await _run(truck, clock, range(0, 32))
+    await client.aclose()
+
+    # Failed at t=1..30, then t=31 is past the 30 s window: expire() drops it, not a failure.
+    lines = [r.getMessage() for r in caplog.records if "result=dropped" in r.getMessage()]
+    assert lines == [
+        "[live] truck=t1 event=medium/eyes_closed attempt=30 transport=- status=- "
+        "duration=0.00s points=0 result=dropped:retry_window"
+    ]
+    assert not truck.queue.live and not truck.queue.dlq
+
+
+async def test_a_critical_moved_to_the_dlq_by_its_live_window_is_logged(caplog):
+    backend = _Backend(["down"] * 100)
+    truck, clock, client = _truck(backend, {t: _CRITICAL for t in range(1, 200)})
+    with caplog.at_level(logging.WARNING, logger="simulator_argus.virtual_truck"):
+        await _run(truck, clock, range(0, 62))
+    await client.aclose()
+
+    lines = [r.getMessage() for r in caplog.records if "dead_lettered" in r.getMessage()]
+    assert lines == [
+        "[live] truck=t1 event=critical/eyes_closed attempt=60 transport=- status=- "
+        "duration=0.00s points=0 result=dead_lettered:http_503"
+    ]
+    assert len(truck.queue.dlq) == 1
+
+
+async def test_a_dead_letter_archived_after_5_attempts_is_logged(caplog):
+    backend = _Backend(["down"] * 1000)
+    truck, clock, client = _truck(backend, {t: _CRITICAL for t in range(1, 62)})
+    with caplog.at_level(logging.WARNING, logger="simulator_argus.virtual_truck"):
+        # Dead-lettered at t=61 (attempt 1). The driver OK of t=62 then holds the DLQ back for
+        # its own 30 s window; after that, one replay per regular report: 4 more failures.
+        await _run(truck, clock, range(0, 140))
+    await client.aclose()
+
+    lines = [r.getMessage() for r in caplog.records if "archived" in r.getMessage()]
+    assert lines == [
+        "[dlq] truck=t1 event=critical/eyes_closed attempt=5 transport=- status=- "
+        "duration=0.00s points=0 result=archived:max_attempts"
+    ]
+    assert not truck.queue.dlq
+
+
+async def test_gps_keeps_reading_every_tick_while_a_report_hangs():
+    # run() keeps the GPS tick and the sender in separate tasks, like the ESP32's GPS loop and
+    # its sender task: a slow attempt doesn't stop the points.
+    gate = asyncio.Event()
+    bodies: list[dict] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        if len(bodies) == 1:
+            await gate.wait()  # the first report hangs until the test lets it go
+            return httpx.Response(
+                200,
+                json={
+                    "points": {"stored": 1, "route": "r1", "status": "ok"},
+                    "event": {"status": "created", "reason": None, "id_alert": "a1"},
+                    "active_route": "r1",
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "points": {"stored": 0, "route": None, "status": "route_finished"},
+                "event": None,
+                "active_route": None,
+            },
+        )
+
+    now = datetime.now(timezone.utc)
+    spec = VirtualTruckSpec(
+        route_id="r1",
+        truck_id="t1",
+        device_key="device-key",
+        geometry=[(25.6866, -100.3161), (25.4260, -100.9959)],
+        departure=now,
+        arrival=now + timedelta(minutes=20),
+        scenario="normal",
+    )
+    client = BackendClient("http://backend", transport=httpx.MockTransport(handler))
+    truck = VirtualTruck(client, spec, report_interval_seconds=0.05, tick_seconds=0.01)
+    truck._scenario = _Script({0: _MEDIUM})
+
+    task = asyncio.create_task(truck.run())
+    await asyncio.sleep(0.2)
+    assert len(bodies) == 1  # the medium's report is still in flight...
+    assert len(truck._points) >= 5  # ...and the GPS kept reading meanwhile
+
+    gate.set()
+    await asyncio.wait_for(task, timeout=5)
+    await client.aclose()
+    assert truck.finished
+    assert len(bodies) == 2
+    assert len(bodies[1]["points"]) >= 5  # the points read during the hang went next
 
 
 async def test_no_active_route_slows_points_only_reports_to_30_s():

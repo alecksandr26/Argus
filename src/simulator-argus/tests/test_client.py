@@ -134,6 +134,23 @@ async def test_post_report_lets_transport_errors_raise():
     await client.aclose()
 
 
+async def test_post_report_gives_up_after_8_s_like_the_esp32_on_wifi():
+    # ATTEMPT_TIMEOUT_WIFI_MS = 8000 (contracts C4), not the client's 10 s default.
+    captured: list[httpx.Request] = []
+    transport = _mock_transport(captured, {"points": {}, "event": None, "active_route": None})
+    client = BackendClient("http://backend", transport=transport)
+
+    await client.post_report("device-key", _REPORT_BODY)
+    await client.aclose()
+
+    assert captured[0].extensions["timeout"] == {
+        "connect": 8.0,
+        "read": 8.0,
+        "write": 8.0,
+        "pool": 8.0,
+    }
+
+
 def test_legacy_device_writes_are_gone():
     # The report endpoint is the only device write (C2): no status ping, no alert create, no
     # device resolve (the driver OK is an event in the report now).

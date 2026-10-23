@@ -8,6 +8,15 @@ task. It plays both devices of a real truck:
   previous report ended -- with the ESP32's priority, retry windows and dead-letter rules
   (`delivery.DeliveryQueue`).
 
+`run()` keeps the two halves in two asyncio tasks, like the ESP32's GPS loop and its
+`senderTask`: the GPS/scenario tick reads a point every second while a report is in flight (an
+attempt can take up to 8 s), so a slow or hanging backend doesn't stretch the scenario's timing
+or leave extra holes in the path. `step()` runs one tick and then the sender inline, for tests.
+
+Every attempt logs one line tagged `[live]` or `[dlq]` (attempt, transport, status, duration,
+result), and so does every event the device gives up on (dropped, dead-lettered, archived),
+whichever path gave up on it.
+
 See CLAUDE.md's "Movement model" section for why the geometry is a real OSRM polyline only when
 opted into, and a synthetic straight line otherwise.
 """
@@ -24,8 +33,13 @@ from typing import Callable, Optional
 import httpx
 
 from .client import BackendClient
-from .constants import ACTIVE_ROUTE_RETRY_S, GPS_READ_INTERVAL_S, SIMULATOR_REPORT_INTERVAL_S
-from .delivery import DeliveryQueue, QueuedEvent
+from .constants import (
+    ACTIVE_ROUTE_RETRY_S,
+    GPS_READ_INTERVAL_S,
+    NORMAL_BLIP_CHANCE,
+    SIMULATOR_REPORT_INTERVAL_S,
+)
+from .delivery import DeliveryQueue, Finished, QueuedEvent
 from .events import EpisodeTracker, vigilance_for
 from .fleet import VirtualTruckSpec
 from .report import (
@@ -115,7 +129,7 @@ class VirtualTruck:
         client: BackendClient,
         spec: VirtualTruckSpec,
         report_interval_seconds: float = SIMULATOR_REPORT_INTERVAL_S,
-        medium_blip_probability: float = 0.1,
+        blip_chance: float = NORMAL_BLIP_CHANCE,
         tick_seconds: float = GPS_READ_INTERVAL_S,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], datetime] = _utcnow,
@@ -129,7 +143,7 @@ class VirtualTruck:
         total_seconds = (spec.arrival - spec.departure).total_seconds()
         total_ticks = max(1, int(total_seconds / self._tick_seconds))
         self._scenario = build_scenario(
-            spec.scenario, total_ticks, medium_blip_probability, self._tick_seconds
+            spec.scenario, total_ticks, blip_chance, self._tick_seconds
         )
         self._tracker = EpisodeTracker()
         self._queue = DeliveryQueue()
@@ -150,25 +164,54 @@ class VirtualTruck:
         return self._active_route
 
     async def run(self) -> None:
-        tick = 0
-        while not self.finished:
-            try:
-                await self.step(tick)
-            except Exception:
-                logger.exception(
-                    "Truck %s: tick %d failed, will retry next tick", self._spec.truck_id, tick
-                )
-            tick += 1
-            if not self.finished:
+        """Ticks once per GPS read until the route ends, with the sender in its own task."""
+        self._wake = asyncio.Event()
+        sender = asyncio.create_task(self._sender_loop())
+        try:
+            tick = 0
+            while not self.finished:
+                try:
+                    self._read(tick)
+                except Exception:
+                    logger.exception(
+                        "Truck %s: tick %d failed, will retry next tick", self._spec.truck_id, tick
+                    )
+                self._wake.set()
+                tick += 1
                 await asyncio.sleep(self._tick_seconds)
+        finally:
+            if self.finished:
+                self._wake.set()
+                await sender
+            else:  # cancelled (shutdown): don't leave the sender behind
+                sender.cancel()
+                await asyncio.gather(sender, return_exceptions=True)
         logger.info(
             "Truck %s: route %s has ended (stopped or completed); the truck stops reporting",
             self._spec.truck_id,
             self._spec.route_id,
         )
 
+    async def _sender_loop(self) -> None:
+        """Wakes on every GPS tick (or at once, when the previous report outlasted a tick) and
+        sends whatever is due."""
+        while not self.finished:
+            await self._wake.wait()
+            self._wake.clear()
+            if self.finished:
+                break
+            try:
+                await self._maybe_send(self._clock())
+            except Exception:
+                logger.exception("Truck %s: sending failed, will retry", self._spec.truck_id)
+
     async def step(self, tick: int) -> None:
-        """One GPS read: a point, the scenario's reading, maybe an event, maybe a report."""
+        """One GPS read and then the sender, inline (what `run()` does in two tasks)."""
+        now = self._read(tick)
+        await self._maybe_send(now)
+
+    def _read(self, tick: int) -> float:
+        """One GPS read: a point, the scenario's reading, maybe a new live event."""
         now = self._clock()
         lat, lon, speed = self._position()
         reading = self._scenario.reading(tick)
@@ -185,7 +228,7 @@ class VirtualTruck:
                 event.alert_type or "driver_ok",
                 event.episode,
             )
-        await self._maybe_send(now)
+        return now
 
     def _position(self) -> tuple[float, float, float]:
         spec = self._spec
@@ -203,6 +246,7 @@ class VirtualTruck:
 
     async def _maybe_send(self, now: float) -> None:
         item = self._queue.next_live(now)
+        self._log_notices()  # what expiring the live windows just gave up on
         due = now - self._last_report_end >= self._points_interval()
         if item is None and due:
             # A dead-letter replay rides on a regular report, and only while no live event is
@@ -266,32 +310,35 @@ class VirtualTruck:
                 self._spec.truck_id,
             )
         if item is not None:
-            was_live = not item.in_dlq
             if outcome.event_result == "delivered":
                 self._queue.mark_delivered(item)
             elif outcome.event_result == "rejected":
-                finished = self._queue.mark_rejected(item, outcome.event_reason or "invalid")
-                self._log_finished(finished)
+                self._queue.mark_rejected(item, outcome.event_reason or "invalid")
             elif outcome.event_result == "failed":
-                finished = self._queue.mark_failed(item, outcome.event_reason or "failed", now)
-                if finished is not None:
-                    self._log_finished(finished)
-                elif was_live and item.in_dlq:
-                    logger.warning(
-                        "Truck %s: critical %s dead-lettered after its live window (%s)",
-                        self._spec.truck_id,
-                        item.event.client_event_id,
-                        item.last_error,
-                    )
+                self._queue.mark_failed(item, outcome.event_reason or "failed", now)
+        self._log_notices()
         if outcome.route_finished:
             self.finished = True
 
-    def _log_finished(self, finished) -> None:
+    def _log_notices(self) -> None:
+        for notice in self._queue.drain_notices():
+            self._log_notice(notice)
+
+    def _log_notice(self, notice: Finished) -> None:
+        """One line per event the device gave up on, in the attempt line's format with no
+        transport/status: `result=<outcome>:<reason>` (`dropped:retry_window`,
+        `dead_lettered:http_503`, `archived:max_attempts`, `archived:route_finished`, ...)."""
+        item = notice.item
+        # A live event ends in the live log (dropped, dead-lettered, rejected while live); one
+        # that had already reached the DLQ ends in the DLQ log.
+        in_dlq = item.in_dlq and notice.outcome != "dead_lettered"
         logger.warning(
-            "Truck %s: %s event %s %s (%s)",
+            "%s truck=%s event=%s attempt=%d transport=- status=- duration=0.00s points=0 "
+            "result=%s:%s",
+            "[dlq]" if in_dlq else "[live]",
             self._spec.truck_id,
-            finished.item.event.priority_key,
-            finished.item.event.client_event_id,
-            finished.outcome,
-            finished.reason,
+            f"{item.event.priority_key}/{item.event.alert_type or 'driver_ok'}",
+            item.attempts if in_dlq else item.live_failures,
+            notice.outcome,
+            notice.reason,
         )

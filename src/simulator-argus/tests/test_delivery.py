@@ -112,12 +112,66 @@ def test_a_critical_retries_for_60_s_then_dead_letters_as_attempt_1():
     for t in range(0, 59):
         assert queue.mark_failed(item, "no_network", float(t)) is None
         assert not item.in_dlq
-    assert queue.mark_failed(item, "no_network", 60.0) is None
+    notice = queue.mark_failed(item, "no_network", 60.0)
+    assert (notice.item, notice.outcome, notice.reason) == (item, "dead_lettered", "no_network")
     assert item.in_dlq
     assert item.attempts == 1
     assert item.dlq_since == 60.0
     assert item.last_error == "no_network"
     assert queue.dlq == [item] and not queue.live
+    assert not queue.finished  # still in the queue (the DLQ), not given up for good
+    assert queue.drain_notices() == [notice]
+
+
+# --- nothing is given up silently: expire()/next_live() surface what they drop -----------
+
+
+def test_expire_returns_a_medium_dropped_by_its_window_and_queues_a_notice():
+    queue = DeliveryQueue()
+    medium = queue.add_live(_event(severity="medium"), 0.0)
+    queue.mark_failed(medium, "timeout", 1.0)
+
+    assert queue.expire(29.9) == []
+    expired = queue.expire(30.0)
+    assert [(f.item, f.outcome, f.reason) for f in expired] == [(medium, "dropped", "retry_window")]
+    assert queue.drain_notices() == expired
+    assert queue.drain_notices() == []  # drained once
+
+
+def test_next_live_surfaces_a_critical_it_dead_letters_through_the_notices():
+    queue = DeliveryQueue()
+    critical = queue.add_live(_event(), 0.0)
+    queue.mark_failed(critical, "http_503", 59.5)
+
+    assert queue.next_live(60.0) is None  # expired on the way: nothing live left to send
+    [notice] = queue.drain_notices()
+    assert (notice.item, notice.outcome, notice.reason) == (critical, "dead_lettered", "http_503")
+    assert critical.in_dlq and critical.attempts == 1
+
+
+def test_a_critical_never_attempted_is_dead_lettered_with_reason_retry_window():
+    queue = DeliveryQueue()
+    critical = queue.add_live(_event(), 0.0)
+    [notice] = queue.expire(60.0)
+    assert (notice.outcome, notice.reason) == ("dead_lettered", "retry_window")
+
+
+def test_rejections_and_max_attempts_are_notices_too():
+    queue = DeliveryQueue()
+    medium = queue.add_live(_event(severity="medium"), 0.0)
+    rejected = queue.mark_rejected(medium, "route_finished")
+    assert queue.drain_notices() == [rejected]
+    dead = _dead_letter(queue, 0.0)
+    queue.drain_notices()  # its dead-lettering
+    dead.attempts = 4
+    archived = queue.mark_failed(dead, "no_network", 200.0)
+
+    assert (rejected.outcome, archived.outcome, archived.reason) == (
+        "dropped",
+        "archived",
+        "max_attempts",
+    )
+    assert queue.drain_notices() == [archived]
 
 
 def test_a_critical_that_never_got_an_attempt_enters_the_dlq_with_0_attempts():

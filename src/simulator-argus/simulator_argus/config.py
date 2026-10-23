@@ -5,10 +5,12 @@ so the simulator runs against a fresh backend with zero required configuration.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .constants import SIMULATOR_REPORT_INTERVAL_S
+from .constants import NORMAL_BLIP_CHANCE, SIMULATOR_REPORT_INTERVAL_S
 
 
 class Settings(BaseSettings):
@@ -53,10 +55,17 @@ class Settings(BaseSettings):
     # incidents -- see CLAUDE.md's "Scenario design" section.
     simulator_scenario_weights: str = "normal=0.45,drowsy_escalation=0.35,no_face=0.20"
 
-    # Chance of a "medium" blip starting in any 5 s of otherwise-quiet driving (the `normal`
-    # profile, and the calm stretches of `no_face`); rescaled to the 1 s tick -- see
-    # scenarios.py's `per_tick_probability`.
-    simulator_medium_blip_probability: float = 0.1
+    # Chance (0..1) that a `normal` route gets its one `head_down` medium blip, at a uniformly
+    # random time in the route. A medium alert keeps the route's map colour until a guardian
+    # closes its incident or an hour of OK points passes (contracts C3.5), so `normal` has a
+    # budget of at most one blip per route: at 0.5 about half of the normal routes stay fine
+    # from start to end. 0 = `normal` never alerts.
+    simulator_normal_blip_chance: float = Field(default=NORMAL_BLIP_CHANCE, ge=0.0, le=1.0)
+
+    # Retired: the old per-5-s blip rate. Under the sticky route state it turned every route
+    # medium within a minute, and a per-interval rate has no per-route equivalent, so it is
+    # read only to warn that it's ignored (see __main__.py). Use SIMULATOR_NORMAL_BLIP_CHANCE.
+    simulator_medium_blip_probability: Optional[float] = None
 
     # Deletes any SIM-* trucks/drivers/routes/alerts left over from a previous run before
     # provisioning fresh ones, so repeated `docker compose up`s during dev stay idempotent
