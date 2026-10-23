@@ -5,6 +5,12 @@
 
 namespace {
 
+// C2.2's five rejection reasons: the ones the Pi archives at once (BUFFER_ARCHIVE_NOW_REASONS).
+bool isBackendRejectionReason(const std::string& reason) {
+  return reason == "route_finished" || reason == "no_route" || reason == "too_old" ||
+         reason == "wrong_truck" || reason == "invalid";
+}
+
 ReportReaction failed(bool sentEvent, const std::string& reason) {
   ReportReaction r;
   r.event = sentEvent ? EventOutcome::AttemptFailed : EventOutcome::NoEvent;
@@ -51,7 +57,9 @@ ReportReaction reactToReport(int httpStatus, const std::string& body, bool sentE
       break;
     case EventStatus::Rejected:
       r.event = EventOutcome::Rejected;
-      r.reason = isReasonToken(resp.eventReason) ? resp.eventReason : "invalid";
+      // Any other reason, malformed or one a newer backend added, is FAILed as `invalid`, so the
+      // Pi archives it (C1.6 rule 3) instead of counting a retryable attempt (C1.8 [sync 2]).
+      r.reason = isBackendRejectionReason(resp.eventReason) ? resp.eventReason : "invalid";
       break;
     case EventStatus::Absent:
     case EventStatus::Unknown:

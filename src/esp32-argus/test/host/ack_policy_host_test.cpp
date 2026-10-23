@@ -46,6 +46,22 @@ static void aMalformedRejectionReasonBecomesInvalid() {
   CHECK(r.reason == "invalid");
 }
 
+static void anUnknownButWellFormedReasonBecomesInvalid() {
+  // C1.8 [sync 2]: a reason outside C2.2's five would make the Pi count a retryable attempt
+  // (C1.6 rule 4) for an event the backend refused for good.
+  for (const char* reason : {"route_gone", "http_503", "preempted", "retry_window", ""}) {
+    std::string body = std::string(R"({"points":{},"event":{"status":"rejected","reason":")") +
+                       reason + R"("},"active_route":null})";
+    ReportReaction r = reactToReport(200, body, true, nullptr);
+    CHECK(r.event == EventOutcome::Rejected);
+    CHECK(r.reason == "invalid");
+  }
+  ReportReaction r = reactToReport(
+      200, R"({"points":{},"event":{"status":"rejected","reason":null},"active_route":null})",
+      true, nullptr);
+  CHECK(r.reason == "invalid");
+}
+
 static void pointsOnlyReportsJustLearnTheRoute() {
   ReportReaction r = reactToReport(
       200, R"({"points":{"stored":0,"route":null,"status":"no_active_route"},"event":null,"active_route":null})",
@@ -110,6 +126,7 @@ int main() {
   RUN(createdAndDuplicateAreDelivered);
   RUN(rejectionsStopRetryingWithTheBackendsReason);
   RUN(aMalformedRejectionReasonBecomesInvalid);
+  RUN(anUnknownButWellFormedReasonBecomesInvalid);
   RUN(pointsOnlyReportsJustLearnTheRoute);
   RUN(aTwoHundredThatForgetsTheEventIsAFailedAttempt);
   RUN(unreadableTwoHundredIsAFailedAttempt);
