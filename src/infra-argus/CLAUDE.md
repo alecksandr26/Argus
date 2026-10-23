@@ -84,6 +84,9 @@ network namespace, so the simulator reaches OSRM on `localhost`:
    python -m simulator_argus'`. The minutes come from the backend's override but are clamped to
    the session cap in the shell too, so no override can lengthen a session. `"$m"m` rather
    than `"${m}m"`: CloudFormation's validator flags `${m}` as an unresolved parameter.
+   Its behaviour settings (report cadence 5 s, scenario weights, blip chance, disruptions off)
+   are passed explicitly as `SIMULATOR_TASK_SETTINGS`, not left to the image's defaults: the
+   5 s cadence is a cost input (`DEMO_LOAD_PER_HOUR`), and a test pins it (README, R8).
 
 The backend tells the task where to post (`BACKEND_BASE_URL`) from its own request URL. Wiring
 the Function URL into the task definition would make `ArgusSimulator` and `ArgusApp` depend on

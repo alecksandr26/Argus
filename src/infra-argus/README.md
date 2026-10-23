@@ -56,6 +56,19 @@ every 5 s and the simulator panel every 10 s.
 a runaway loop trips it. A test asserts the busy hour stays under half the threshold; if you
 change a cadence (`REPORT_INTERVAL_MS` on the ESP32, the simulator's `SIMULATOR_REPORT_INTERVAL_S`,
 the UI's `UI_POLL_MS`/`ALERT_HISTORY_POLL_MS`/`SIMULATOR_POLL_MS`), update `DEMO_LOAD_PER_HOUR` and re-check it.
+Up to 10 simulator trucks (the UI's maximum) still leave 2x headroom; a test checks that too.
+
+**Simulator task settings.** The Fargate task doesn't rely on the simulator image's built-in
+defaults: `SIMULATOR_TASK_SETTINGS` (`lib/simulator-stack.ts`) passes them explicitly, matching
+`src/simulator-argus`'s `.env.example` and the root `docker-compose.yml`:
+`SIMULATOR_REPORT_INTERVAL_S=5` (the cadence `DEMO_LOAD_PER_HOUR` assumes; `npm test` pins it),
+`SIMULATOR_SCENARIO_WEIGHTS=normal=0.45,drowsy_escalation=0.35,no_face=0.20`,
+`SIMULATOR_NORMAL_BLIP_CHANCE=0.5`, and the demo disruptions off (`SIMULATOR_OUTAGE_CHANCE=0`,
+`SIMULATOR_GPS_LOSS_CHANCE=0`, `SIMULATOR_OUTAGE_AROUND_CRITICAL=false`). For a dead-letter replay
+demo, set `SIMULATOR_OUTAGE_CHANCE` > 0 and `SIMULATOR_OUTAGE_AROUND_CRITICAL=true` there and
+redeploy; an outage sends nothing, so it can only lower the request count. The backend's
+`run_task` override adds the per-session values (`SIMULATOR_SESSION_MINUTES`, `SIMULATOR_TRUCK_COUNT`,
+`SIMULATOR_ROUTE_DURATION_MINUTES`, `BACKEND_BASE_URL`).
 
 **Lambda timeout ↔ route lock.** `backend-argus` serializes the writes of one route with a lock
 stored on the route document (`app/incidents.py` `route_lock`). A request waits at most
