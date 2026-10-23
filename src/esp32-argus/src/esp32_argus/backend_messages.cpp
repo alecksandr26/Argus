@@ -12,16 +12,16 @@ std::string str(JsonVariantConst v) { return v.is<const char*>() ? v.as<const ch
 
 void putEvent(JsonObject e, const ReportEvent& ev, float ageS, EventDelivery delivery,
               float queuedSeconds) {
-  e["client_event_id"] = ev.clientEventId;
-  e["episode"] = ev.episode;
+  e["client_event_id"] = ev.clientEventId.c_str();
+  e["episode"] = ev.episode.c_str();
   if (ev.isOk) {
     e["kind"] = "ok";
     e["severity"] = nullptr;
     e["alert_type"] = nullptr;
   } else {
     e["kind"] = "alert";
-    e["severity"] = ev.severity;
-    e["alert_type"] = ev.alertType;
+    e["severity"] = ev.severity.c_str();
+    e["alert_type"] = ev.alertType.c_str();
   }
   e["age_s"] = roundAge(ageS);
   e["delivery"] = delivery == EventDelivery::Dlq ? "dlq" : "live";
@@ -47,7 +47,7 @@ void putEvent(JsonObject e, const ReportEvent& ev, float ageS, EventDelivery del
     if (ev.model.empty()) {
       meta["model"] = nullptr;
     } else {
-      meta["model"] = ev.model;
+      meta["model"] = ev.model.c_str();
     }
     if (ev.hasScores) {
       JsonObject scores = meta["scores"].to<JsonObject>();
@@ -93,11 +93,18 @@ ReportEvent eventFromRecord(const PiRecord& record, PiEventKind kind,
   ev.position = position;
   ev.hasSpeed = hasSpeed;
   ev.speedKmh = speedKmh;
-  ev.model = record.model;
+  ev.model.assignTruncated(record.model);
   ev.hasScores = record.hasProbabilities;
   ev.pNotDrowsy = record.pNotDrowsy;
   ev.pDrowsy = record.pDrowsy;
   return ev;
+}
+
+bool recordFitsEvent(const PiRecord& record) {
+  const std::string& alertType = record.reason.empty() ? record.className : record.reason;
+  return !record.id.empty() && record.id.size() <= IdString::kMaxLength &&
+         record.episode.size() <= IdString::kMaxLength &&
+         alertType.size() <= AlertTypeString::kMaxLength;
 }
 
 bool eventFromStoredJson(const std::string& json, ReportEvent& out) {
@@ -135,7 +142,7 @@ bool eventFromStoredJson(const std::string& json, ReportEvent& out) {
   }
   JsonObjectConst meta = doc["ai_metadata"];
   if (!meta.isNull()) {
-    out.model = str(meta["model"]);
+    out.model.assignTruncated(str(meta["model"]));
     JsonObjectConst scores = meta["scores"];
     if (!scores.isNull() && scores["not_drowsy"].is<float>() && scores["drowsy"].is<float>()) {
       out.hasScores = true;

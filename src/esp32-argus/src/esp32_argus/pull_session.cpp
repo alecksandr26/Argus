@@ -34,6 +34,10 @@ RecordDecision decidePulledRecord(ParseOutcome parsed, const PiRecord& record, b
     d.action = RecordAction::FailTooOld;  // the Pi archives it
     return d;
   }
+  if (!recordFitsEvent(record)) {
+    d.action = RecordAction::FailInvalid;  // the backend would reject it; the Pi archives it
+    return d;
+  }
 
   if (!dlqSession) {
     ReportEvent ev = eventFromRecord(record, d.kind, here.position, here.hasSpeed, here.speedKmh);
@@ -62,7 +66,14 @@ void addRecordDecision(SessionReport& report, const std::string& id, const Recor
     case RecordAction::Ack: report.acks.push_back(id); break;
     case RecordAction::Take: report.taken.push_back(id); break;
     case RecordAction::FailTooOld: report.fails.push_back({id, "too_old", ""}); break;
-    case RecordAction::Leave: break;
+    case RecordAction::FailInvalid: report.fails.push_back({id, "invalid", ""}); break;
+    case RecordAction::Leave:
+      if (d.kind != PiEventKind::None && d.take == TakeResult::Full) {
+        report.leftFull++;
+      } else {
+        report.leftOther++;
+      }
+      break;
   }
 }
 
@@ -70,10 +81,11 @@ void addPendingOutcomes(SessionReport& report, const SenderPolicy& sender) {
   for (int i = 0; i < sender.outcomeCount(); i++) {
     const PiOutcome& o = sender.outcome(i);
     if (o.ack) {
-      report.acks.push_back(o.recordId);
+      report.acks.push_back(o.recordId.str());
     } else {
-      report.fails.push_back({o.recordId, o.reason, o.body});
+      report.fails.push_back({o.recordId.str(), o.reason.str(), o.body.str()});
     }
   }
   report.outcomesIncluded = sender.outcomeCount();
+  report.outcomeSeqEnd = sender.outcomeSeqEnd();
 }

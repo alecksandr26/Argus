@@ -45,7 +45,6 @@ static SendPlan attempt(SenderPolicy& s, uint32_t now, AttemptEnd end, const cha
 
 static void firstPointsOnlyReportGoesAtOnceThenEveryFiveSeconds() {
   SenderPolicy s;
-  CHECK(s.plan(1000, false).kind == PlanKind::Idle);  // nothing to send
   SendPlan p = s.plan(1000, true);
   CHECK(p.kind == PlanKind::PointsOnly);
   s.beginAttempt(p, 1000);
@@ -66,6 +65,34 @@ static void noActiveRouteSlowsPointsOnlyReportsButNotEvents() {
   CHECK(s.plan(30000, true).kind == PlanKind::PointsOnly);
   takeCritical(s, "c1", 6000);
   CHECK(s.plan(6000, true).kind == PlanKind::LiveEvent);  // events still go at once
+}
+
+static void aLivenessReportGoesEveryThirtySecondsWithNoPosition() {
+  // C2.3 [sync 2]: no fix this boot and no usable last-known position -> `points: []` every
+  // ACTIVE_ROUTE_RETRY_MS, so device_last_seen_at and the active route keep updating.
+  SenderPolicy s;
+  SendPlan p = s.plan(1000, false);
+  CHECK(p.kind == PlanKind::PointsOnly);  // the first one at once
+  s.beginAttempt(p, 1000);
+  s.endAttempt(AttemptEnd::Delivered, "", 1500);
+  s.noteActiveRoute(true);  // the route is known: still the slow cadence with no points
+  p = s.plan(6500, false);
+  CHECK(p.kind == PlanKind::Wait);
+  CHECK(p.waitMs == 25000);
+  CHECK(s.plan(31499, false).kind == PlanKind::Wait);
+  CHECK(s.plan(31500, false).kind == PlanKind::PointsOnly);
+  // Once points exist the usual 5 s cadence is back.
+  CHECK(s.plan(6500, true).kind == PlanKind::PointsOnly);
+  // Nothing is in flight twice, and an event still goes at once.
+  takeCritical(s, "c1", 7000);
+  CHECK(s.plan(7000, false).kind == PlanKind::LiveEvent);
+}
+
+static void aFailedLivenessReportWaitsThirtySecondsToo() {
+  SenderPolicy s;
+  attempt(s, 0, AttemptEnd::Failed, "no_network", 100, /*havePoints=*/false);
+  CHECK(s.plan(5100, false).kind == PlanKind::Wait);
+  CHECK(s.plan(30100, false).kind == PlanKind::PointsOnly);
 }
 
 static void unknownRouteKeepsTheFiveSecondCadence() {
@@ -169,7 +196,7 @@ static void criticalDeadLettersAfterSixtySecondsWithItsEvent() {
   CHECK(!o.ack);
   CHECK(o.reason == "http_503");  // the last transport failure
   JsonDocument d;
-  CHECK(deserializeJson(d, o.body) == DeserializationError::Ok);  // the C2 event, for the DLQ
+  CHECK(deserializeJson(d, o.body.c_str()) == DeserializationError::Ok);  // the C2 event (DLQ)
   CHECK(d["client_event_id"] == "c1");
   CHECK(d["severity"] == "critical");
   CHECK(d["delivery"] == "live");
@@ -419,6 +446,54 @@ static void outcomesOverflowDropsTheOldest() {
   CHECK(s.outcomeCount() == 0);
 }
 
+static void aSessionDropsOnlyTheOutcomesItCarried() {
+  SenderPolicy s;
+  takeCritical(s, "c1", 0);
+  attempt(s, 0, AttemptEnd::Delivered);
+  uint32_t seqEnd = s.outcomeSeqEnd();  // a session copies c1's ACK
+  takeCritical(s, "c2", 10);
+  attempt(s, 10, AttemptEnd::Delivered);  // finished while that session ran
+  s.dropOutcomesBefore(seqEnd);           // the Pi answered OK
+  CHECK(s.outcomeCount() == 1);
+  CHECK(s.outcome(0).recordId == "c2");
+  s.dropOutcomesBefore(seqEnd);  // a second drop for the same session changes nothing
+  CHECK(s.outcomeCount() == 1);
+}
+
+static void aSessionDropIsRightEvenAfterTheRingOverflowed() {
+  SenderPolicy s;
+  takeCritical(s, "first", 0);
+  attempt(s, 0, AttemptEnd::Delivered);
+  uint32_t seqEnd = s.outcomeSeqEnd();  // the session carries "first" only
+  for (int i = 0; i < SenderPolicy::kOutcomeSlots; i++) {
+    std::string id = "c" + std::to_string(i);
+    takeCritical(s, id.c_str(), 10 + i);
+    attempt(s, 10 + i, AttemptEnd::Delivered);
+  }
+  CHECK(s.outcomesLost() == 1);  // "first" fell off the ring meanwhile
+  s.dropOutcomesBefore(seqEnd);  // must not drop any of the newer ones
+  CHECK(s.outcomeCount() == SenderPolicy::kOutcomeSlots);
+  CHECK(s.outcome(0).recordId == "c0");
+}
+
+static void slotsAreStaticAndBounded() {
+  SenderPolicy s;
+  // An id longer than C2.1's 64 chars never gets a slot (pull_session FAILs it invalid first).
+  std::string longId(65, 'a');
+  CHECK(s.takeLive(longId, ev("x"), EventTier::Critical, 0, 0) == TakeResult::Full);
+  CHECK(s.takeDlq(longId, ev("x"), 0, 0, 0, 0) == TakeResult::Full);
+  std::string maxId(64, 'b');
+  CHECK(s.takeLive(maxId, ev("y"), EventTier::Critical, 0, 0) == TakeResult::Queued);
+  CHECK(s.liveSlot(0).recordId == maxId);
+  // A failure reason longer than its slot is cut, never lost.
+  attempt(s, 0, AttemptEnd::Failed, std::string(60, 'r').c_str());
+  CHECK(s.liveSlot(0).lastError.size() == ReasonString::kMaxLength);
+  s.expire(60000);
+  CHECK(s.outcome(0).reason.size() == ReasonString::kMaxLength);
+  CHECK(!s.outcome(0).body.empty());  // a normal event JSON fits its slot
+  CHECK(s.bodiesDropped() == 0);
+}
+
 static void survivesMillisWrap() {
   SenderPolicy s;
   uint32_t t0 = 0xFFFFF000u;
@@ -456,6 +531,8 @@ static void logLines() {
 int main() {
   RUN(firstPointsOnlyReportGoesAtOnceThenEveryFiveSeconds);
   RUN(noActiveRouteSlowsPointsOnlyReportsButNotEvents);
+  RUN(aLivenessReportGoesEveryThirtySecondsWithNoPosition);
+  RUN(aFailedLivenessReportWaitsThirtySecondsToo);
   RUN(unknownRouteKeepsTheFiveSecondCadence);
   RUN(criticalBeforeMediumBeforeOkBeforeDlq);
   RUN(sameTierGoesOldestFirst);
@@ -482,6 +559,9 @@ int main() {
   RUN(aRowWhoseOutcomeWaitsIsNotTakenAgain);
   RUN(fullSlotsLeaveTheRowOnThePi);
   RUN(outcomesOverflowDropsTheOldest);
+  RUN(aSessionDropsOnlyTheOutcomesItCarried);
+  RUN(aSessionDropIsRightEvenAfterTheRingOverflowed);
+  RUN(slotsAreStaticAndBounded);
   RUN(survivesMillisWrap);
   RUN(beginAttemptIgnoresPlansWithNothingToSend);
   RUN(logLines);

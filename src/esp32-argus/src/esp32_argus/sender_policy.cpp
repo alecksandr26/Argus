@@ -60,6 +60,7 @@ TakeResult SenderPolicy::takeLive(const std::string& id, const ReportEvent& even
                                   float ageS, uint32_t nowMs) {
   if (holds(id)) return TakeResult::AlreadyHeld;
   if (outcomePendingFor(id)) return TakeResult::AlreadyFinished;
+  if (id.empty() || id.size() > IdString::kMaxLength) return TakeResult::Full;  // see recordFitsEvent
   int free = -1;
   for (int i = 0; i < kLiveSlots; i++) {
     if (!live_[i].used) {
@@ -92,6 +93,7 @@ TakeResult SenderPolicy::takeDlq(const std::string& id, const ReportEvent& event
   if (holds(id)) return TakeResult::AlreadyHeld;
   if (outcomePendingFor(id)) return TakeResult::AlreadyFinished;
   if (dlq_.used) return TakeResult::Full;
+  if (id.empty() || id.size() > IdString::kMaxLength) return TakeResult::Full;
   dlq_ = HeldEvent();
   dlq_.used = true;
   dlq_.dlq = true;
@@ -120,7 +122,7 @@ void SenderPolicy::expire(uint32_t nowMs) {
     if (e.tier == EventTier::Critical) {
       // Dead-letter it with the event as composed (its position at the event): attempt 1 on the
       // Pi. The reason is the last failure; "retry_window" if it never got an attempt.
-      std::string reason = e.lastError.empty() ? "retry_window" : e.lastError;
+      std::string reason = e.lastError.empty() ? std::string("retry_window") : e.lastError.str();
       finish(e, false, reason, composeEventJson(e.event, e.ageS(nowMs), EventDelivery::Live, 0));
     } else {
       finish(e, false, "retry_window", "");
@@ -178,13 +180,14 @@ SendPlan SenderPolicy::plan(uint32_t nowMs, bool havePoints) const {
     return p;
   }
 
-  if (!havePoints) return p;  // Idle
+  // Points-only. With no point at all it is a liveness report (`points: []`, C2.3 [sync 2]): it
+  // keeps device_last_seen_at and the known active route fresh, at the slow cadence.
   if (!everReported_) {
     p.kind = PlanKind::PointsOnly;
     return p;
   }
-  uint32_t interval =
-      route_ == RouteKnowledge::None ? timing_.activeRouteRetryMs : timing_.reportIntervalMs;
+  uint32_t interval = !havePoints || route_ == RouteKnowledge::None ? timing_.activeRouteRetryMs
+                                                                    : timing_.reportIntervalMs;
   uint32_t due = lastReportEndMs_ + interval;
   if (reached(nowMs, due)) {
     p.kind = PlanKind::PointsOnly;
@@ -248,7 +251,7 @@ void SenderPolicy::endAttempt(AttemptEnd end, const std::string& reason, uint32_
       case AttemptEnd::Rejected: finish(e, false, reason.empty() ? "invalid" : reason, ""); break;
       case AttemptEnd::Failed:
         e.attempts++;
-        e.lastError = reason.empty() ? "transport_error" : reason;
+        e.lastError.assignTruncated(reason.empty() ? std::string("transport_error") : reason);
         e.lastAttemptEndMs = nowMs;
         break;
       case AttemptEnd::Preempted: break;  // not counted; it waits for its turn again
@@ -272,8 +275,8 @@ void SenderPolicy::finish(HeldEvent& e, bool ack, const std::string& reason,
   PiOutcome o;
   o.recordId = e.recordId;
   o.ack = ack;
-  o.reason = reason;
-  o.body = body;
+  o.reason.assignTruncated(reason);
+  if (!o.body.assign(body)) bodiesDropped_++;  // too long: "-" (the Pi replays with no position)
   pushOutcome(o);
   e = HeldEvent();
 }
@@ -288,6 +291,7 @@ void SenderPolicy::pushOutcome(const PiOutcome& outcome) {
   }
   outcomes_[(outcomeHead_ + outcomeCount_) % kOutcomeSlots] = outcome;
   outcomeCount_++;
+  outcomesPushed_++;
 }
 
 const PiOutcome& SenderPolicy::outcome(int i) const {
@@ -299,6 +303,12 @@ void SenderPolicy::dropOutcomes(int n) {
   for (int i = 0; i < n; i++) outcomes_[(outcomeHead_ + i) % kOutcomeSlots] = PiOutcome();
   outcomeHead_ = (outcomeHead_ + n) % kOutcomeSlots;
   outcomeCount_ -= n;
+}
+
+void SenderPolicy::dropOutcomesBefore(uint32_t seqEnd) {
+  uint32_t firstSeq = outcomesPushed_ - (uint32_t)outcomeCount_;
+  int32_t n = (int32_t)(seqEnd - firstSeq);  // wrap-safe
+  if (n > 0) dropOutcomes(n);
 }
 
 bool SenderPolicy::outcomePendingFor(const std::string& id) const {

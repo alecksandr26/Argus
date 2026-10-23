@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <string>
 
+#include "bounded_string.h"
 #include "pi_event_policy.h"
 #include "pi_record.h"
 
@@ -49,16 +50,17 @@ enum class EventDelivery : uint8_t { Live, Dlq };
 
 // The C2.1 `event` object, minus the fields that change with every attempt (age_s, delivery,
 // queued_seconds: passed to composeReportBody / composeEventJson).
+// Text fields are fixed-capacity (bounded_string.h): a held event is a static sender slot.
 struct ReportEvent {
-  std::string clientEventId;  // the Pi record id
-  std::string episode;        // the Pi payload.episode
+  IdString clientEventId;     // the Pi record id
+  IdString episode;           // the Pi payload.episode
   bool isOk = false;          // kind "ok" (driver OK) vs "alert"
-  std::string severity;       // alerts: "medium" | "critical"
-  std::string alertType;      // alerts: the Pi's reason, e.g. "eyes_closed"
+  SeverityString severity;    // alerts: "medium" | "critical"
+  AlertTypeString alertType;  // alerts: the Pi's reason, e.g. "eyes_closed"
   EventPosition position;
   bool hasSpeed = false;
   float speedKmh = 0.0f;
-  std::string model;          // ai_metadata.model ("" = null)
+  ModelString model;          // ai_metadata.model ("" = null; a longer name is cut)
   bool hasScores = false;
   float pNotDrowsy = 0.0f;
   float pDrowsy = 0.0f;
@@ -67,9 +69,11 @@ struct ReportEvent {
 // The event for a live Pi record classified as an event (C1.5): alert_type is the Pi's reason
 // (its class when it has none), the episode the Pi's (its record id when it has none, so the
 // backend doesn't reject it as invalid). `position`/`speed` are this device's at compose time.
-// `kind` must not be PiEventKind::None.
+// `kind` must not be PiEventKind::None. Check recordFitsEvent() first: an id, episode or reason
+// longer than C2.1's 64 chars doesn't fit (and the backend would reject it as invalid).
 ReportEvent eventFromRecord(const PiRecord& record, PiEventKind kind,
                             const EventPosition& position, bool hasSpeed, float speedKmh);
+bool recordFitsEvent(const PiRecord& record);
 
 // A dead letter's stored event (`dlq.body`, as composeEventJson wrote it): false if it isn't a
 // usable one (then compose it from the record with no position, C1.8).

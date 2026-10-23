@@ -120,6 +120,31 @@ static void aFullSenderLeavesTheEventOnThePi() {
   CHECK(d.action == RecordAction::Leave);
   CHECK(d.take == TakeResult::Full);
   CHECK(f.report.taken.size() == (size_t)SenderPolicy::kLiveSlots);
+  CHECK(f.report.leftFull == 1);  // counted for the session's log line
+  CHECK(f.report.leftOther == 0);
+}
+
+static void anEventTooLongForC2IsFailedInvalid() {
+  Fixture f;
+  std::string longId(65, 'a');
+  RecordDecision d = f.feed(line(longId.c_str(), "critical", "none", true), false, 0);
+  CHECK(d.action == RecordAction::FailInvalid);
+  CHECK(f.report.fails.size() == 1);
+  CHECK(f.report.fails[0].id == longId && f.report.fails[0].reason == "invalid");
+  CHECK(!f.sender.livePending());
+  std::string text = line("c2", "critical", "none", true);
+  size_t at = text.find("eyes_closed");
+  text.replace(at, 11, std::string(65, 'r'));
+  CHECK(f.feed(text, false, 0).action == RecordAction::FailInvalid);
+  // A keepalive is never an event, whatever its length.
+  CHECK(f.feed(line(longId.c_str(), "none", "none", false), false, 0).action == RecordAction::Ack);
+}
+
+static void rowsLeftForOtherReasonsAreCounted() {
+  Fixture f;
+  f.feed(R"({"id":"t1","kind":"drows)", false, 0);  // unreadable, no id: left
+  CHECK(f.report.leftOther == 1);
+  CHECK(f.report.leftFull == 0);
 }
 
 static void aDeadLetterReplaysItsStoredEvent() {
@@ -190,6 +215,7 @@ static void finishedEventsRideTheNextSession() {
   SessionReport next;
   addPendingOutcomes(next, f.sender);
   CHECK(next.outcomesIncluded == 2);
+  CHECK(next.outcomeSeqEnd == f.sender.outcomeSeqEnd());
   CHECK(next.acks.size() == 1 && next.acks[0] == "c1");
   CHECK(next.fails.size() == 1 && next.fails[0].id == "m1" &&
         next.fails[0].reason == "retry_window");
@@ -197,7 +223,7 @@ static void finishedEventsRideTheNextSession() {
   CHECK(script[0].line == "FAIL m1 retry_window -");
   CHECK(script[1].line == "ACK c1");
   CHECK(script.back().line == "DONE");
-  f.sender.dropOutcomes(next.outcomesIncluded);  // the Pi answered OK
+  f.sender.dropOutcomesBefore(next.outcomeSeqEnd);  // the Pi answered OK
   CHECK(f.sender.outcomeCount() == 0);
 }
 
@@ -224,6 +250,8 @@ int main() {
   RUN(unreadableRowsAreAckedAwayOnlyWithAnId);
   RUN(aRowServedAgainIsTakenAgainButHeldOnce);
   RUN(aFullSenderLeavesTheEventOnThePi);
+  RUN(anEventTooLongForC2IsFailedInvalid);
+  RUN(rowsLeftForOtherReasonsAreCounted);
   RUN(aDeadLetterReplaysItsStoredEvent);
   RUN(aDeadLetterWithNoStoredEventHasNoPosition);
   RUN(aV1DeadLetterKeepsItsPosition);

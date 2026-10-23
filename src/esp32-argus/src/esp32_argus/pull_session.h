@@ -23,6 +23,7 @@ enum class RecordAction : uint8_t {
   Ack,         // nothing to deliver (a keepalive, a non-event, an unusable row with an id)
   Take,        // held by the sender: TAKEN
   FailTooOld,  // an event whose age the Pi can't tell: FAIL <id> too_old -
+  FailInvalid,  // an event whose id/episode/reason is longer than C2.1 allows: FAIL <id> invalid -
   Leave,       // not reported: stays on the Pi as it was (no id, sender full, finished already)
 };
 
@@ -43,15 +44,21 @@ RecordDecision decidePulledRecord(ParseOutcome parsed, const PiRecord& record, b
                                   SenderPolicy& sender, VigilanceTracker& vigilance,
                                   const HerePosition& here, uint32_t nowMs);
 
-// The report lines collected over one session.
+// The report lines collected over one session, and what happened to its records (for the
+// session's log line).
 struct SessionReport {
   std::vector<std::string> acks;
   std::vector<FailReport> fails;
   std::vector<std::string> taken;
-  int outcomesIncluded = 0;  // how many of the sender's outcomes these lines carry
+  int outcomesIncluded = 0;     // how many of the sender's outcomes these lines carry
+  uint32_t outcomeSeqEnd = 0;   // ...up to this sequence number (SenderPolicy::dropOutcomesBefore)
+  int leftFull = 0;             // events left on the Pi because every sender slot was busy
+  int leftOther = 0;            // rows left on the Pi otherwise (no id, outcome already pending)
 };
 
 void addRecordDecision(SessionReport& report, const std::string& id, const RecordDecision& d);
 // Adds every finished event's ACK/FAIL (oldest first). Once the Pi answers OK, the caller drops
-// `outcomesIncluded` of them from the sender (SenderPolicy::dropOutcomes).
+// them from the sender: SenderPolicy::dropOutcomesBefore(report.outcomeSeqEnd). Without an OK they
+// are resent in a later session (safe: an ACK is idempotent and the Pi ignores a repeated FAIL,
+// C1.2/C1.6 [sync 2]).
 void addPendingOutcomes(SessionReport& report, const SenderPolicy& sender);
