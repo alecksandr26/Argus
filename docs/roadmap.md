@@ -20,6 +20,93 @@ below are corrected to describe this as `main`'s actual current state, not branc
 Everything below distinguishes "missing from the project" (nobody has built it) from "missing
 from what's built" (it's real code, just not everything it needs yet).
 
+## Final tweaks (`feat/final-tweaks`, 2026-10-23): built and tested, not yet on hardware
+
+The last round connecting the Pi, the ESP32, the backend and the dashboard. Plan:
+`docs/designs/final-tweaks-plan.md`; frozen contracts: `docs/designs/final-tweaks-contracts.md`
+(they win over every older doc, this one included). Six team branches go into
+`feat/final-tweaks` as draft PRs, merged in this order: T4 backend + T6 simulator/it-argus, then
+T1 Pi messaging + T2 vision + T3 ESP32 (Bluetooth v2 isn't compatible with v1), then T5 UI.
+Where a section below still describes the older behaviour (heartbeat, panic button,
+`PULL`/`ACK` v1, `POST /api/alerts`, 7 s polling), this section wins.
+
+**What it changes:**
+- **cv-argus:**
+  - Rules: no face for 5 s gives one CRITICAL, with no ladder before it. Each incident sends
+    one MEDIUM plus at most one CRITICAL upgrade. Recovery sends one driver OK.
+  - The 60 s heartbeat is removed; keepalives go to the ESP32 only.
+  - Buffer: a critical-only DLQ, replayed newest first and round-robin, with 5 attempts and
+    then a Pi `archive` table.
+  - Bluetooth protocol v2: `PULL`/`DLQ 1`, `END <dlq> <outbox>`, a `TAKEN` lease, standalone
+    `FAIL`/`ACK`, then `DONE` → `OK`.
+  - Vision: it locks onto the largest face (switching after 5 s), and an inference filter drops
+    head-sized eye boxes.
+- **ESP32:**
+  - The panic button and its SMS are removed. GPS is read every 1 s, with a last-known position
+    kept in NVS.
+  - One sender task with priorities (live critical > medium > OK > DLQ replay), live retry
+    windows of 60/30/30 s, and a real deadline per attempt.
+  - One combined report per POST to `POST /api/devices/me/report`.
+- **backend:**
+  - The report endpoint gives a result per part, picks the event's route by time, and
+    deduplicates through unique indexes.
+  - Incidents: alerts less than 15 min apart form one incident; only a guardian or root_admin
+    closes one, and a critical needs a note.
+  - Routes get an `incident_state` (cleared after 1 h of OK points), and a stop with a reason
+    after which device writes for that route are rejected.
+  - New endpoints: `GET /api/live` and `GET /api/routes/{id}/track`.
+  - GPS retention with a TTL index; a migration script.
+  - The old device endpoints are kept for now (C2.4).
+- **ui-argus:**
+  - One `/api/live` poll every 5 s, paused while the tab is hidden.
+  - An incident feed in tiers (Critical → Medium → Older than 1 h), with a close dialog (a note
+    is required for a critical) and Complete/Stop route dialogs.
+  - Positions with "last known" labels, the GPS path, and a "Recovered after lost connection"
+    badge on replayed alerts. The panic UI is removed.
+- **simulator / it-argus:**
+  - The simulator posts the same report, uses a `no_face` profile instead of `panic`, and can
+    simulate outages.
+  - New it-argus specs: incidents, close with a note, stopping a route, positions.
+
+**Verified (2026-10-23):**
+- Every team branch's own suite is green on its own branch, and again on a local merge of all
+  six branches (no merge conflicts):
+  - cv-argus 601 passed;
+  - backend 362 passed, 3 xfailed;
+  - infra 39;
+  - simulator 175;
+  - ESP32 host tests 17/17;
+  - ui 246 vitest, and the build succeeds.
+- `src/tests/edge_chain`: 66 passed (real Pi buffer and server, a Python mirror of the
+  firmware, the real backend).
+- `src/tests/smoke_backend.py` passes against the bench backend.
+- it-argus Playwright (29 specs, `IT_FINAL_TWEAKS_UI=1`): 27 passed and 2 failed on the first run.
+  - One failure is a too-strict locator in `incidents.spec.ts`: "Driver OK since" appears on both
+    the incident and its alert card. It passes with `.first()`, a local probe fix.
+  - The other is the users/trucks/drivers "created row not visible" flake. It also shows on the
+    base branch (1 in 60).
+
+**Still open:**
+- Nothing above has run on hardware. Never run so far:
+  - v2 between the real Pi and ESP32;
+  - the new firmware compiled or flashed;
+  - the GPRS and HTTPS/AWS paths;
+  - the bench HIL checks: POST time per transport, cold GPS fix, backend down → DLQ → archive,
+    a live alert during a replay, heap and stack.
+- The eye-box retraining (notebook 12/14) waits for the user's Colab run. cv-argus keeps the
+  2026-10-20 model.
+- The face lock has only seen synthetic boxes.
+- Not deployed to AWS: `cdk deploy`, then the migration on Atlas (`--dry-run` first, then decide
+  `--close-ended-routes`) and the TTL index.
+- Not yet measured with real data volumes: the 5 s poll with many routes, and the
+  10 000-points-per-route cap.
+- `src/tests/smoke_cv_argus.py` still speaks v1 and fails against the v2 Pi.
+  `src/tests/requirements.txt` lacks `gdown`.
+- `src/esp32-argus/README.md` still describes the panic button, the SMS and the heartbeat.
+- Legacy device endpoints are still to be removed.
+- Out of scope on purpose: reports on replayed alerts, retrying archived criticals, a "truck
+  lost connection" alert, OSRM route lines.
+
 ## Módulo 3 (Sistemas Distribuidos) grading reality check
 
 `docs/criteria/criteriosaprobacion_0.pdf` requires **architecture**: real-time communication
@@ -42,8 +129,8 @@ its own `CLAUDE.md`. The previous fused CNN+LSTM classifier, 84.24% / 0.8375 mac
 held-out split, is on branch `archive/cnn-lstm-fused`), `pipeline/` (threaded Stage/Pipeline
 abstraction, the BlazeFace stage, camera sources, logging/metrics/MJPEG sinks),
 and the alert pipeline — `alerts/` (Alert/AlertKind data model + serialization), `buffer/`
-(WAL-mode SQLite queue, concurrency-tested), `orchestrator/` (debounce/cooldown decision loop +
-heartbeat), `sender/` (a custom Bluetooth SPP protocol — see section 2 below — fully implemented
+(WAL-mode SQLite queue, concurrency-tested), `orchestrator/` (debounce/cooldown decision loop;
+the heartbeat was removed in the final tweaks), `sender/` (a custom Bluetooth SPP protocol — see section 2 below — fully implemented
 and unit-tested against a fake transport, `FakeTransport`).
 
 `orchestrator/` also now has `fusion_contract.py` — a typed reference contract (enums, dataclasses,
@@ -67,7 +154,7 @@ is unchanged and still camera-only; that boundary is unaffected by this implemen
   exact same training run `11_cnn_lstm_training_drive_pull.ipynb` used — a real, open risk of a
   silent accuracy bug, not a crash.
 - No subject-level cross-validation on the deployed model yet (one split only).
-- Debounce/cooldown/heartbeat constants are reasoned defaults, not tuned against a real
+- Debounce/cooldown constants are reasoned defaults, not tuned against a real
   multi-hour recorded drive.
 - Grip sensor / panic button / CAN bus / alarm speaker / geolocation: **not this module's job at
   all** — see section 2. `cv-argus`'s own `CLAUDE.md` says so explicitly. The grip+drowsy fusion
@@ -85,19 +172,20 @@ actuator, the panic button, the geolocation (GPS) module, and — per the
 implemented vs. still genuinely missing, item by item:**
 
 1. **Bluetooth SPP client** (`bluetooth_client.*`) — implements the exact protocol
-   `cv-argus/src/sender/protocol.py` already serves (see `src/esp32-argus/README.md` for the
+   `cv-argus/src/sender/protocol.py` already serves (protocol v2 since the final tweaks) (see `src/esp32-argus/README.md` for the
    full grammar), including the "only ACK what you actually relayed onward" invariant.
-2. **HTTP relay to `backend-argus`** (`backend_api.*`) — `X-Device-Api-Key`-authenticated
-   `POST /api/alerts` / `PUT /api/alerts/{id}` / `POST /api/routes/{id}/status`, over this
-   device's WiFi (not the SIM800L's GPRS — see the network-path decision in that README).
+2. **HTTP relay to `backend-argus`** — `X-Device-Api-Key`-authenticated. Since the final
+   tweaks it is one combined `POST /api/devices/me/report` (GPS points + at most one event),
+   sent by a single sender task over the SIM800L's mobile data first and WiFi as the fallback;
+   the older `POST /api/alerts` / `PUT /api/alerts/{id}` / `POST /api/routes/{id}/status` calls
+   are gone from the firmware.
 3. **Attaching real GPS coordinates** (`gps_module.*`, NEO-6M via `TinyGPSPlus`) — lat/lon/speed,
    plus a GPS-derived UTC timestamp for `Alert.resolved_at` so this device needs no NTP sync.
 4. **The drowsy+grip fusion decision loop** (`fusion.*`) — a 1:1 C++ port of
    `src/cv-argus/src/orchestrator/fusion_contract.py`'s `FusionOrchestrator` (severity matrix,
    debounce/escalation/recovery, no automatic de-escalation, escalation-as-a-new-linked-row).
-5. **Panic button** (`panic_button.*`) — debounced, edge-triggered, bypasses the fusion loop
-   entirely per spec; also fires an SMS via the SIM800L (`sms_module.*`; the same modem also carries mobile data, `gprs_http.*`) as a
-   hardware-direct fallback that still works if WiFi/the backend is down.
+5. **Panic button — removed in the final tweaks** (with its NVS queue and the panic SMS). The
+   SIM800L stays for mobile data only (`gprs_http.*`).
 6. **Grip sensor** (`grip_sensor.*`) — a debounced digital-input wrapper feeding the fusion loop.
 
 **What's still genuinely missing or unverified, not glossed over:**
@@ -159,7 +247,7 @@ suite (the new validator and the resolve-vs-review device-key authorization spli
   `User`↔`Driver`/`Truck` link to scope by, so this role currently gets unscoped read access.
 - No refresh-token flow — `JWT_EXPIRE_MINUTES` is the only session-length control.
 - No decided real-time push strategy for the live dashboard (currently: `ui-argus` polls
-  `GET /api/routes/active` every 7s).
+  `GET /api/live` every 5 s since the final tweaks).
 
 **Also done (on branch `worktree-aws-cdk-deploy`, not yet merged)**: root_admin-only
 `/api/simulator` on/off control for the AWS demo deployment's on-demand simulator, with the
@@ -363,7 +451,7 @@ over a simulated Bluetooth link; that half of "the idea on the table" below rema
 prefixed drivers/trucks/routes via the backend's admin API, mint a real per-truck device API key
 each, and continuously POST `Status_Route`/`Alert` records against a live `backend-argus` using
 that key (the same HTTP/device-key contract a real ESP32 would use). Three scripted profiles
-(`normal`/`drowsy_escalation`/`panic`) give a demo run a coherent story — this is exactly the
+(`normal`/`drowsy_escalation`/`no_face`; `panic` was retired in the final tweaks) give a demo run a coherent story — this is exactly the
 "guardian watching the real `ui-argus` dashboard sees realistic distributed fleet traffic"
 scenario this section originally proposed. See `src/simulator-argus/CLAUDE.md` for the full
 design and its "Known limitations" section for what it doesn't cover.
@@ -371,7 +459,7 @@ design and its "Known limitations" section for what it doesn't cover.
 **Now built (2026-10-16): the other half.** `src/tests/edge_chain/` is a pytest suite running
 cv-argus's real `Buffer` + `SenderServer` (over `FakeTransport`), a step-for-step Python mirror
 of the ESP32's relay loop driving the real `FusionOrchestrator`, and backend-argus's real app
-with a real device key, all in one process. It covers the PULL/ACK grammar end to end, the
+with a real device key, all in one process. It covers the Pi↔ESP32 grammar (protocol v2 since the final tweaks) end to end, the
 "only ACK what was relayed" invariant, and fused alerts and recovery landing in the backend. It
 also **found a real alert-loss bug**: after a failed `POST /api/alerts`, fusion had already
 confirmed the severity, so the re-served record raised nothing, got ACKed, and the alert was
