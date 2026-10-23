@@ -9,7 +9,7 @@ from beanie.operators import In
 from fastapi import APIRouter, Depends, Query
 
 from app.auth.dependencies import get_current_user
-from app.constants import LIVE_TRACK_INITIAL_WINDOW
+from app.constants import LIVE_SINCE_OVERLAP, LIVE_TRACK_INITIAL_WINDOW
 from app.ids import get_by_id, get_or_404
 from app.incidents import as_utc, incidents_out, utcnow
 from app.models.driver import Driver
@@ -48,9 +48,11 @@ async def live(
     """Without `route`: the active routes, every open incident of any route (an ended route's
     included, `route_ended: true`), and the active routes' track. With `route=<id>`: that one
     route (any status; 404 if unknown), its open incidents and its track. The track is the last
-    15 min without `since`, else the points received after `since` (clamped to 15 min). Pass
-    `server_time` back as `since` on the next poll. Routes and incidents always come in full."""
-    server_time = utcnow()
+    15 min without `since`, else the points received after `since - LIVE_SINCE_OVERLAP`
+    (clamped to 15 min; the overlap catches points committed just after the previous poll's
+    query, the UI de-duplicates). Pass `server_time` back as `since` on the next poll. Routes and
+    incidents always come in full."""
+    server_time = utcnow()  # first, before any query (C3.6)
     if route is not None:
         routes = [await get_or_404(Route, route, "Route")]
         open_query = {"id_route": route, "closed_at": None}
@@ -66,7 +68,7 @@ async def live(
     if since is None:
         time_filter = StatusRoute.timestamp >= floor
     else:
-        since = as_utc(since)
+        since = as_utc(since) - LIVE_SINCE_OVERLAP
         time_filter = StatusRoute.received_at > max(since, floor)
     points = (
         await StatusRoute.find(In(StatusRoute.id_route, route_ids), time_filter)

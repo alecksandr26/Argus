@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from app.constants import LIVE_SINCE_OVERLAP
 from app.geo import GeoJSONPoint
 from app.models.common import RouteStatus, Vigilance
 from app.models.route import Route
@@ -59,6 +60,11 @@ async def test_track_without_since_is_the_last_15_minutes(api_client, guardian, 
 async def test_since_returns_only_points_received_after_it(api_client, guardian, rig_a):
     await post_report(api_client, rig_a, points=[report_point(age_s=5)])
     first = await _live(api_client, guardian)
+    # Next poll, more than LIVE_SINCE_OVERLAP later: only the new point comes back.
+    since = datetime.fromisoformat(first["server_time"].replace("Z", "+00:00"))
+    await StatusRoute.get_motor_collection().update_many(
+        {}, {"$set": {"received_at": since - LIVE_SINCE_OVERLAP - timedelta(seconds=1)}}
+    )
     await post_report(api_client, rig_a, points=[report_point(age_s=2)])
     second = await _live(api_client, guardian, since=first["server_time"])
     assert len(first["track"]) == 1
@@ -66,6 +72,32 @@ async def test_since_returns_only_points_received_after_it(api_client, guardian,
     assert second["track"][0]["t"] > first["track"][0]["t"]
     # Incidents and routes always come in full.
     assert len(second["routes"]) == 1
+
+
+def _point_received(route_id: str, received_at: datetime, t: datetime) -> StatusRoute:
+    return StatusRoute(
+        id_route=route_id,
+        current_coordinates=GeoJSONPoint(coordinates=(-103.0, 20.0)),
+        current_speed=1.0,
+        odometer=0.0,
+        vigilance=Vigilance.LOW,
+        timestamp=t,
+        received_at=received_at,
+    )
+
+
+async def test_since_looks_back_live_since_overlap(api_client, guardian, rig_a):
+    """C3.6 [sync 2]: a point received up to 10 s before `since` (committed after the previous
+    poll's query) comes back again; one received earlier doesn't."""
+    assert LIVE_SINCE_OVERLAP == timedelta(seconds=10)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    since = now - timedelta(seconds=60)
+    for offset in (-11, -5, 0, 1):
+        received = since + timedelta(seconds=offset)
+        await _point_received(rig_a.route_id, received, received).insert()
+    body = await _live(api_client, guardian, since=since.isoformat())
+    got = sorted(datetime.fromisoformat(p["t"].replace("Z", "+00:00")) for p in body["track"])
+    assert got == [since + timedelta(seconds=s) for s in (-5, 0, 1)]
 
 
 async def test_since_older_than_15_minutes_is_clamped(api_client, guardian, rig_a):
