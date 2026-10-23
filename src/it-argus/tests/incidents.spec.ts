@@ -5,11 +5,14 @@ import {
   FINAL_TWEAKS_UI,
   NEEDS_FINAL_TWEAKS_UI,
   alertEvent,
+  closeConfirmation,
+  closeDialog,
   closeIncident,
   createUserAndLogin,
   getAlert,
   getLive,
   getRoute,
+  incidentCard,
   listIncidents,
   login,
   newEpisode,
@@ -18,6 +21,7 @@ import {
   postReportOk,
   restLogin,
   setupActiveTruck,
+  tierRegion,
   uniqueSuffix,
 } from './helpers'
 
@@ -258,23 +262,42 @@ test.describe('incidents in the UI', () => {
 
     await page.goto('/login')
     await login(page, guardian.email, guardian.password)
+    // Live operations: one region per tier (by region name: the header adds a count), and this
+    // truck's critical incident in the Critical one.
     await page.goto('/')
-    for (const tier of ['Critical', 'Medium', 'Older than 1 h']) {
-      await expect(page.getByText(tier, { exact: true }).first()).toBeVisible()
+    for (const tier of ['Critical', 'Medium', 'Older than 1 h'] as const) {
+      await expect(tierRegion(page, tier)).toBeVisible()
     }
-    await expect(page.getByText(truck.plate).first()).toBeVisible()
+    const criticalTier = tierRegion(page, 'Critical')
+    await expect(criticalTier.getByText(truck.plate).first()).toBeVisible()
+    await expect(incidentCard(criticalTier, 'Eyes closed').first()).toBeVisible()
 
+    // The route view lists this route's three incidents; act on the critical one's own card,
+    // whatever order the cards come in.
     await page.goto(`/routes/${truck.routeId}/live`)
-    await expect(page.getByText('Eyes closed', { exact: true }).first()).toBeVisible()
-    await expect(page.getByText('Head down, eyes closed', { exact: true }).first()).toBeVisible()
-    await expect(page.getByText(/Driver OK since \d{1,2}:\d{2}/).first()).toBeVisible()
+    await expect(tierRegion(page, 'Critical')).toBeVisible()
+    await expect(tierRegion(page, 'Medium')).toBeVisible()
+    await expect(tierRegion(page, 'Older than 1 h')).toBeVisible()
+    const criticalCard = incidentCard(page, 'Eyes closed')
+    await expect(criticalCard).toBeVisible()
+    await expect(incidentCard(page, 'Head down, eyes closed')).toBeVisible()
+    await expect(incidentCard(page, 'Head down')).toBeVisible()
+    await expect(criticalCard.getByText(/Driver OK since \d{1,2}:\d{2}/)).toBeVisible()
 
-    await page.getByRole('button', { name: /close incident/i }).first().click()
-    const dialog = page.getByRole('dialog')
-    await dialog.getByRole('button', { name: /close incident/i }).click()
+    await criticalCard.getByRole('button', { name: 'Close incident' }).click()
+    const dialog = closeDialog(page)
+    await dialog.getByRole('button', { name: 'Close incident' }).click()
     await expect(page.getByText('A note is required to close a critical incident')).toBeVisible()
     await dialog.getByRole('textbox').fill(`Rest stop agreed — ${suffix}`)
-    await dialog.getByRole('button', { name: /close incident/i }).click()
-    await expect(page.getByText(/Closed \d{1,2}:\d{2}/).first()).toBeVisible()
+    await dialog.getByRole('button', { name: 'Close incident' }).click()
+    await expect(dialog).toBeHidden()
+    await expect(closeConfirmation(page)).toBeVisible()
+
+    // Only the critical left the Open list; both mediums are still open.
+    await expect(incidentCard(page, 'Eyes closed')).toHaveCount(0)
+    await expect(incidentCard(page, 'Head down, eyes closed')).toBeVisible()
+    await expect(incidentCard(page, 'Head down')).toBeVisible()
+    const open = await listIncidents(request, rootToken, truck.routeId, 'open')
+    expect(open.map((i) => i.severity).sort()).toEqual(['medium', 'medium'])
   })
 })

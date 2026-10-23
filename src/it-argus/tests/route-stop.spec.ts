@@ -48,7 +48,8 @@ test('stopping a route needs a reason and the right role, and then the truck rep
   expect(before.event?.status).toBe('created')
   expect(before.active_route).toBe(truck.routeId)
 
-  // Roles and reason: guardian 403; an empty reason 422; admin with a reason succeeds.
+  // Roles and reason: guardian 403; an empty reason 422 (its message is pinned in C3.6
+  // [sync 3]); admin with a reason succeeds.
   expect((await stopRoute(request, guardian.token, truck.routeId, 'Breakdown')).status).toBe(403)
   const blank = await stopRoute(request, admin.token, truck.routeId, '   ')
   expect(blank.status).toBe(422)
@@ -160,11 +161,12 @@ test.describe('stopping a route in the UI', () => {
     await login(page, ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD)
     await page.goto(`/routes/${truck.routeId}/live`)
     await page.getByRole('button', { name: 'Stop route' }).first().click()
-    const dialog = page.getByRole('dialog')
+    const dialog = page.getByRole('dialog', { name: 'Stop route' })
     await dialog.getByRole('button', { name: 'Stop route' }).click()
     await expect(page.getByText('A reason is required to stop a route')).toBeVisible()
     await dialog.getByRole('textbox').fill(`Driver unwell — ${suffix}`)
     await dialog.getByRole('button', { name: 'Stop route' }).click()
+    await expect(dialog).toBeHidden()
     await expect(page.getByText('Stopped', { exact: true }).first()).toBeVisible()
 
     const route = await getRoute(request, rootToken, truck.routeId)

@@ -129,6 +129,32 @@ test('last-known GPS points are stored as such and drawn as part of the path', a
   expect(track.points).toHaveLength(5)
 })
 
+test('points less than a second apart keep millisecond timestamps and are both stored', async ({
+  request,
+}) => {
+  // C2.1 [sync 3]: a point's timestamp is received_at - age_s truncated to the millisecond, not
+  // rounded to the second, so two points 400 ms apart don't collide in the unique
+  // (id_route, timestamp) index.
+  const suffix = uniqueSuffix()
+  const rootToken = await restLogin(request, ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD)
+  const truck = await setupActiveTruck(request, rootToken, suffix, { platePrefix: 'POS' })
+
+  const result = await postReportOk(request, truck.deviceKey, {
+    points: [
+      reportPoint({ age_s: 1.6, lat: 19.0, lon: -98.0 }),
+      reportPoint({ age_s: 1.2, lat: 19.001, lon: -98.001 }),
+    ],
+  })
+  expect(result.points).toMatchObject({ stored: 2, status: 'ok' })
+
+  const live = await getLive(request, rootToken, truck.routeId)
+  expect(live.track).toHaveLength(2)
+  const [first, second] = live.track.map((p) => Date.parse(p.t))
+  expect(Number.isNaN(first) || Number.isNaN(second)).toBe(false)
+  // Both come from the same received_at, so they are 400 ms apart (+/- 1 ms of truncation).
+  expect(Math.abs(second - first - 400)).toBeLessThanOrEqual(1)
+})
+
 test.describe('position labels in the UI', () => {
   test.skip(!FINAL_TWEAKS_UI, NEEDS_FINAL_TWEAKS_UI)
 

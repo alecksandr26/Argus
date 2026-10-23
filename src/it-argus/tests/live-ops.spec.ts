@@ -3,15 +3,19 @@ import {
   ROOT_ADMIN_EMAIL,
   ROOT_ADMIN_PASSWORD,
   BACKEND_URL,
+  CLOSED_AT,
   FINAL_TWEAKS_UI,
   NEEDS_FINAL_TWEAKS_UI,
   alertEvent,
   authHeaders,
+  closeConfirmation,
+  closeDialog,
   closeIncident,
   createDriver,
   createTruck,
   createUserAndLogin,
   getAlert,
+  incidentCard,
   listIncidents,
   login,
   postReportOk,
@@ -19,6 +23,7 @@ import {
   restLogin,
   rotateDeviceKey,
   setupActiveTruck,
+  tierRegion,
   uniqueSuffix,
 } from './helpers'
 
@@ -99,15 +104,18 @@ test('root_admin creates a route via the Routes screen, and a critical alert the
   await expect(page.locator('.fleet-marker__plate', { hasText: plate })).toBeVisible()
 
   if (FINAL_TWEAKS_UI) {
-    // The incident feed: a "Critical" tier with this truck's incident, labelled by alert type.
-    await expect(page.getByText('Critical', { exact: true }).first()).toBeVisible()
-    const card = page.getByText(plate, { exact: false }).first()
-    await expect(card).toBeVisible()
-    await expect(page.getByText('Eyes closed', { exact: true }).first()).toBeVisible()
+    // The incident feed: the Critical tier holds this truck's incident, labelled by alert type.
+    const criticalTier = tierRegion(page, 'Critical')
+    await expect(criticalTier.getByText(plate).first()).toBeVisible()
+    await expect(incidentCard(criticalTier, 'Eyes closed').first()).toBeVisible()
 
-    // The route view says the incident is open.
+    // The route view lists the incident as open: its own card (not the `Open` filter chip)
+    // still offers Close incident to root_admin and carries no `Closed HH:MM` pill.
     await page.goto(`/routes/${routeId}/live`)
-    await expect(page.getByText('Open', { exact: true }).first()).toBeVisible()
+    const card = incidentCard(page, 'Eyes closed')
+    await expect(card).toBeVisible()
+    await expect(card.getByRole('button', { name: 'Close incident' })).toBeVisible()
+    await expect(card.getByText(CLOSED_AT)).toHaveCount(0)
   }
 })
 
@@ -142,23 +150,32 @@ test('a no-face critical reported by the truck carries no scores, and a guardian
     await page.goto('/login')
     await login(page, guardian.email, guardian.password)
     await page.goto(`/routes/${truck.routeId}/live`)
-    await expect(page.getByText('Driver not visible', { exact: true }).first()).toBeVisible()
-    await expect(page.getByText('Open', { exact: true }).first()).toBeVisible()
+    // The incident is open: its card is listed, with its own Close incident button and no
+    // `Closed HH:MM` pill (the `Open` filter chip says nothing about the incident itself).
+    const card = incidentCard(page, 'Driver not visible')
+    await expect(card).toBeVisible()
+    await expect(card.getByText(CLOSED_AT)).toHaveCount(0)
 
     // A critical incident can't be closed without a note.
-    await page.getByRole('button', { name: /close incident/i }).first().click()
-    const dialog = page.getByRole('dialog')
-    await dialog.getByRole('button', { name: /close incident/i }).click()
+    await card.getByRole('button', { name: 'Close incident' }).click()
+    const dialog = closeDialog(page)
+    await dialog.getByRole('button', { name: 'Close incident' }).click()
     await expect(
       page.getByText('A note is required to close a critical incident'),
     ).toBeVisible()
     await dialog.getByRole('textbox').fill(note)
-    await dialog.getByRole('button', { name: /close incident/i }).click()
-    await expect(page.getByText(/Closed \d{1,2}:\d{2}/).first()).toBeVisible()
+    await dialog.getByRole('button', { name: 'Close incident' }).click()
+    await expect(dialog).toBeHidden()
+    await expect(closeConfirmation(page)).toBeVisible()
+    await expect(incidentCard(page, 'Driver not visible')).toHaveCount(0)
 
-    // It round-tripped through the backend, not just local state.
+    // It round-tripped through the backend, not just local state: after a reload the incident
+    // is under the Closed filter, with its close time and note.
     await page.reload()
-    await expect(page.getByText(/Closed \d{1,2}:\d{2}/).first()).toBeVisible()
+    await page.getByRole('button', { name: 'Closed', exact: true }).click()
+    const closedCard = incidentCard(page, 'Driver not visible')
+    await expect(closedCard.getByText(CLOSED_AT)).toBeVisible()
+    await expect(closedCard.getByText(note)).toBeVisible()
   } else {
     // Without the new UI, close it over REST as the same guardian.
     const closed = await closeIncident(request, guardian.token, incident.id_incident, note)

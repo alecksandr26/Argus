@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import type { APIRequestContext, APIResponse, Page } from '@playwright/test'
+import type { APIRequestContext, APIResponse, Locator, Page } from '@playwright/test'
 
 /**
  * Shared across every spec file — pulled out once `users.spec.ts`/`trucks.spec.ts`/
@@ -269,6 +269,44 @@ export const FINAL_TWEAKS_UI = process.env.IT_FINAL_TWEAKS_UI === '1'
 export const NEEDS_FINAL_TWEAKS_UI =
   "needs ui-argus's final-tweaks UI (T5: incident feed, close/stop dialogs, position labels); " +
   'set IT_FINAL_TWEAKS_UI=1 once it is in the stack'
+
+// --- UI test hooks ui-argus pins for these specs (contracts C3.7 [sync 3]) -----------------
+
+/** A tier section of the incident feed, by its region name, not its header text (the header
+ * adds a count, e.g. `Older than 1 h · 1`). */
+export type IncidentTier = 'Critical' | 'Medium' | 'Older than 1 h'
+
+export function tierRegion(page: Page, tier: IncidentTier): Locator {
+  return page.getByRole('region', { name: `${tier} incidents` })
+}
+
+/**
+ * The incident card holding an alert with this alert-type label (e.g. `Eyes closed`), scoped
+ * so a test never picks up another incident's button or the route view's `Open`/`Closed` filter
+ * chips. The label match is exact, so `Eyes closed` doesn't also match `Head down, eyes closed`.
+ * The card is ui-argus's `<article>` (`IncidentFeed.tsx`'s `IncidentCard`).
+ */
+export function incidentCard(scope: Page | Locator, alertTypeLabel: string): Locator {
+  // `has` is queried relative to each card, so the inner locator must start from the page, not
+  // from `scope` (a region-scoped inner locator would look for the region inside the card).
+  const page = 'page' in scope ? scope.page() : scope
+  return scope
+    .getByRole('article')
+    .filter({ has: page.getByText(alertTypeLabel, { exact: true }) })
+}
+
+/** `Closed HH:MM`, the close time as the UI shows it (confirmation and closed pill). */
+export const CLOSED_AT = /Closed \d{1,2}:\d{2}/
+
+/** The `role="status"` confirmation the UI shows after a successful close. */
+export function closeConfirmation(page: Page): Locator {
+  return page.getByRole('status').filter({ hasText: CLOSED_AT })
+}
+
+/** The close dialog (`role="dialog"` named `Close incident`). */
+export function closeDialog(page: Page): Locator {
+  return page.getByRole('dialog', { name: 'Close incident' })
+}
 
 // --- Fleet setup over REST (root_admin/admin JWT) ------------------------------------------
 
