@@ -1,33 +1,35 @@
-"""`SenderServer` — the accept loop that answers the ESP32's PULL/ACK protocol (see
-`protocol.py`), backed by a `Transport`/`Listener` (Bluetooth in production, `FakeTransport`/
-`FakeListener` in tests).
+"""`SenderServer` — the accept loop that answers the ESP32's Bluetooth protocol v2 (see
+`protocol.py`; contract C1 in `docs/designs/final-tweaks-contracts.md`), backed by a
+`Transport`/`Listener` (Bluetooth in production, `FakeTransport`/`FakeListener` in tests).
 
 **Critical invariant**: `buffer.mark_sent()` is called ONLY after an `ACK` line actually
-arrives — never right after streaming rows via `PULL`'s response. If the connection drops
-between `END` and `ACK`, `readline()` returns `None`, nothing gets marked sent, and those rows
-are re-served verbatim on the next `PULL`. This makes an interrupted pull idempotent by
-construction: a duplicate delivery is possible (the ESP32 could receive the same alert twice if
-it crashes after receiving but before acking), a **lost** alert is not. Backend-side dedup by
-`Alert.id` is out of scope for this repo — flagged, not solved, same as the case of the ESP32
-pulling successfully but then failing its own HTTP relay to the backend.
+arrives — never right after streaming rows. If the connection drops after `END`, `readline()`
+returns `None`, nothing changes, and those rows are re-served verbatim on the next `PULL`. This
+makes an interrupted pull idempotent by construction: a duplicate delivery is possible (the
+backend deduplicates by the record id, `client_event_id`), a **lost** alert is not.
 
 One session at a time (sequential accept loop) — matches the one-Pi-one-ESP32 topology assumed
 throughout this design; a concurrent-client upgrade would be a change to this file, not to the
 protocol itself, and isn't built speculatively here.
 
-A session can also be a `CONFIG` request (see `protocol.py`): this answers with the truck's
-`DeviceConfig` — the backend credentials provisioned from the dashboard — or `NOCONFIG`.
+**Sessions** (the first line decides): `CONFIG` answers with the truck's `DeviceConfig` — the
+backend credentials provisioned from the dashboard — or `NOCONFIG`; `PULL <n>` serves the live
+outbox; `DLQ <k>` serves one dead letter (newest first, round-robin); a session that opens with
+`ACK`/`FAIL` reports on rows the ESP32 took in an earlier session. After a pull the ESP32 reports
+per row, in any order: `ACK` (delivered, or nothing to send) marks it sent; `FAIL <reason>
+<body>` applies the dead-letter rules (`Buffer.apply_fail`: critical -> DLQ or archive, anything
+else -> archive); `TAKEN` leases the rows its sender task now holds for 120 s. `DONE` ends the
+session with an `OK` summary. Each served record carries `age_s` (seconds since the event,
+computed now, see `alerts.age_seconds`), and a dead letter its `dlq` object.
+
 `allowed_peers` (the `ESP32_BT_MAC` env var) optionally restricts every session to this truck's
 own ESP32. A MAC can be spoofed, so this is a second layer on top of the encrypted, paired link
 `BluetoothSppListener` requires, not a replacement for it.
 
-**Live first, dead-letter on failure** (see `protocol.py` and `buffer/store.py`). The ESP32 says
-per record whether it reached the backend: `ACK` (delivered, or nothing to send) marks it sent;
-`FAIL <reason> <body>` moves it to the dead-letter queue with the message the ESP32 composed. The
-live outbox always goes first (`PULL`); the ESP32 asks for dead letters (`DLQ <k>`) only once it
-can reach the backend again. Records the ESP32 never picks up (the link is down) are moved to the
-dead-letter queue after `outbox_max_age_seconds`. The queue's state is logged: every failure as it
-happens, and a summary every `queue_log_seconds` while anything is waiting.
+**Housekeeping.** Records the ESP32 never picks up (the link is down) expire after
+`outbox_max_age_seconds`: a critical goes to the dead-letter queue, a medium/driver OK to the
+archive, keepalives are dropped. The queue's state is logged: every failure as it happens, and a
+summary every `queue_log_seconds` while anything is waiting.
 
 **Link visibility.** The ESP32 opens a fresh connection on every poll, so there's no long-lived
 link to watch. The log says when sessions start (`ESP32 <mac> connected`) and when they stop for
@@ -41,9 +43,12 @@ import logging
 import threading
 import time
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 
+from ..alerts import Alert
 from ..alerts import serialization as alerts_serialization
 from ..buffer import Buffer
+from ..buffer.store import FAIL_ARCHIVED, FAIL_DEAD_LETTERED, FAIL_REQUEUED, event_kind
 from . import protocol
 from .device_config import DeviceConfig
 from .transport import Listener, Transport
@@ -54,16 +59,28 @@ _MIN_ACCEPT_BACKOFF_S = 0.1
 _MAX_ACCEPT_BACKOFF_S = 5.0
 # No session for this long and the ESP32 counts as gone. It polls every 1-5 s.
 DEFAULT_LINK_QUIET_SECONDS = 15.0
-# A live record the ESP32 hasn't picked up after this long goes to the dead-letter queue.
+# A live record the ESP32 hasn't picked up after this long expires (contract C1.6).
 DEFAULT_OUTBOX_MAX_AGE_SECONDS = 60.0
 # How often the queue summary is logged while anything is waiting.
 DEFAULT_QUEUE_LOG_SECONDS = 30.0
-# After ACKED, how long to wait for the ESP32's DONE. An older client just disconnects.
-_DONE_TIMEOUT_S = 1.0
 # The report is awaited in steps this long, checking in between whether the ESP32 has already
-# reconnected (it reset mid-session, BT-20).
+# reconnected (it reset mid-session, BT-20) or the server is stopping.
 _REPORT_POLL_S = 1.0
 _HOUSEKEEPING_INTERVAL_S = 5.0
+
+
+@dataclass
+class _Session:
+    """What one session's report lines did, for the `OK` line and the logs."""
+
+    peer: str | None
+    served: dict[str, Alert]
+    replay: bool = False
+    acked: int = 0
+    leased: int = 0
+    delivered: list[Alert] = field(default_factory=list)
+    taken: list[Alert] = field(default_factory=list)
+    failed: list[tuple[Alert | None, str, str]] = field(default_factory=list)  # alert, reason, outcome
 
 
 class SenderServer:
@@ -79,7 +96,7 @@ class SenderServer:
         listener: Listener,
         *,
         accept_timeout: float = 1.0,
-        # The ESP32 logs and may POST each record before it reports back, so this is generous.
+        # The ESP32 sorts every served row into ACK/TAKEN before DONE, so this is generous.
         ack_timeout: float = 30.0,
         device_config: DeviceConfig | None = None,
         allowed_peers: Iterable[str] | None = None,
@@ -154,6 +171,8 @@ class SenderServer:
         self._listener.close()
         logger.info("sender: stopped")
 
+    # --- sessions --------------------------------------------------------------------------
+
     def _handle_session(self, transport: Transport) -> None:
         if self._allowed_peers is not None and (
             (transport.peer or "").upper() not in self._allowed_peers
@@ -164,103 +183,143 @@ class SenderServer:
         line = transport.readline(timeout=5.0)
         if line is None:
             return
-        request = line.decode()
+        request = line.decode().rstrip("\r")
         if protocol.parse_config_request(request):
             self._answer_config(transport)
             return
-        ack_ids = protocol.parse_ack(request)
-        if ack_ids is not None:
-            # A standalone ACK for rows pulled in an earlier session (see protocol.py).
-            updated = self._buffer.mark_sent(ack_ids)
-            transport.write((protocol.format_acked(updated) + "\n").encode())
-            return
         k = protocol.parse_dlq(request)
         if k is not None:
-            letters = self._buffer.fetch_dlq(limit=k)
+            letters = self._buffer.serve_dlq(limit=k)
             self._serve(transport, [a for a, _ in letters], {a.id: d for a, d in letters})
             return
         n = protocol.parse_pull(request)
-        if n is None:
-            logger.warning("sender: malformed request %r, dropping session", line[:80])
+        if n is not None:
+            self._serve(transport, self._buffer.fetch_unsent(limit=n), {})
             return
-        self._serve(transport, self._buffer.fetch_unsent(limit=n), {})
+        if protocol.parse_ack(request) is not None or protocol.parse_fail(request) is not None:
+            # A report session: results for rows taken in an earlier session.
+            self._report(transport, _Session(transport.peer, {}), first_line=request)
+            return
+        logger.warning("sender: malformed request %r, dropping session", line[:80])
 
-    def _serve(self, transport: Transport, alerts: list, dead_letters: dict) -> None:
-        """Streams `alerts` (live, or dead letters with their `dlq` info), then applies what the
-        ESP32 reports back: `FAIL` lines, an `ACK`, then `DONE`. Anything not reported stays
-        exactly where it was, so an interrupted session loses nothing."""
+    def _serve(self, transport: Transport, alerts: list[Alert], dead_letters: dict) -> None:
+        """Streams `alerts` (live, or one dead letter with its `dlq` object), each with its
+        serve-time `age_s`, then `END <dlq> <outbox>`, then applies what the ESP32 reports.
+        Anything not reported stays exactly where it was, so an interrupted session loses
+        nothing."""
         for alert in alerts:
             data = alerts_serialization.to_dict(alert)
+            data["age_s"] = alerts_serialization.age_seconds(alert)
             if alert.id in dead_letters:
                 data["dlq"] = dead_letters[alert.id]
             transport.write((json.dumps(data, separators=(",", ":")) + "\n").encode())
-        transport.write((protocol.format_end(self._dlq_waiting()) + "\n").encode())
-        if not alerts:
-            return  # nothing to report back
+        transport.write((protocol.format_end(*self._waiting()) + "\n").encode())
+        session = _Session(transport.peer, {a.id: a for a in alerts}, replay=bool(dead_letters))
+        self._report(transport, session)
 
-        by_id = {alert.id: alert for alert in alerts}
-        delivered, failed = [], []
+    def _report(self, transport: Transport, session: _Session, first_line: str | None = None) -> None:
+        """Reads report lines (ACK / FAIL / TAKEN, any order) until `DONE`, a disconnect, the
+        ESP32 reconnecting, the server stopping, or `ack_timeout` in total."""
         deadline = time.monotonic() + self._ack_timeout
+        pending = first_line
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            line = transport.readline(timeout=min(_REPORT_POLL_S, remaining))
-            if line is None:
-                # Disconnected (or an older client that's done after ACKED), or the ESP32 is
-                # already back on a new connection: either way, whatever wasn't reported is
-                # safely re-served next time (see the module docstring).
-                if transport.eof:
+            if pending is not None:
+                text, pending = pending, None
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or self._stop_event.is_set():
                     break
-                if self._listener.pending():
-                    logger.warning("sender: ESP32 reconnected mid-session (it reset?) -- "
-                                   "dropping the old session, nothing it didn't report is lost")
-                    break
-                continue
-            text = line.decode(errors="replace").rstrip("\r")
-            fail = protocol.parse_fail(text)
-            if fail is not None:
-                alert_id, reason, body = fail
-                if alert_id in by_id and self._buffer.mark_dlq(alert_id, reason, body):
-                    failed.append((by_id[alert_id], reason))
-                continue
-            ids = protocol.parse_ack(text)
-            if ids is not None:
-                updated = self._buffer.mark_sent(ids)
-                transport.write((protocol.format_acked(updated) + "\n").encode())
-                delivered.extend(by_id[i] for i in ids if i in by_id)
-                deadline = time.monotonic() + _DONE_TIMEOUT_S
-                continue
+                line = transport.readline(timeout=min(_REPORT_POLL_S, remaining))
+                if line is None:
+                    # Disconnected, or the ESP32 is already back on a new connection: either
+                    # way, whatever wasn't reported is safely re-served next time.
+                    if transport.eof:
+                        break
+                    if self._listener.pending():
+                        logger.warning("sender: ESP32 reconnected mid-session (it reset?) -- "
+                                       "dropping the old session, nothing it didn't report is lost")
+                        break
+                    continue
+                text = line.decode(errors="replace").rstrip("\r")
             if text == protocol.DONE_LINE:
-                result = protocol.format_result(len(delivered), len(failed), self._dlq_waiting())
+                result = protocol.format_result(
+                    session.acked, len(session.failed), session.leased, *self._waiting()
+                )
                 transport.write((result + "\n").encode())
                 break
-            logger.debug("sender: unexpected line %r, ending session", text[:80])
-            break
+            if not self._apply_report_line(transport, text, session):
+                logger.debug("sender: unexpected line %r, ending session", text[:80])
+                break
+        self._log_delivery(session.peer, session.delivered)
+        self._log_session(session)
 
-        self._log_delivery(transport.peer, delivered)
-        self._log_session(transport.peer, delivered, failed, replay=bool(dead_letters))
+    def _apply_report_line(self, transport: Transport, text: str, session: _Session) -> bool:
+        ids = protocol.parse_ack(text)
+        if ids is not None:
+            known = self._lookup(ids, session)
+            updated = self._buffer.mark_sent(ids)
+            session.acked += updated
+            session.delivered.extend(known)
+            transport.write((protocol.format_acked(updated) + "\n").encode())
+            return True
+        fail = protocol.parse_fail(text)
+        if fail is not None:
+            alert_id, reason, body = fail
+            [alert] = self._lookup([alert_id], session) or [None]
+            outcome = self._buffer.apply_fail(alert_id, reason, body)
+            if outcome is not None:
+                session.failed.append((alert, reason, outcome))
+            return True
+        ids = protocol.parse_taken(text)
+        if ids is not None:
+            # Only rows served in this same session can be taken (contract C1.3).
+            served = [i for i in dict.fromkeys(ids) if i in session.served]
+            leased = self._buffer.lease(served)
+            session.leased += leased
+            session.taken.extend(session.served[i] for i in served)
+            transport.write((protocol.format_leased(leased) + "\n").encode())
+            return True
+        return False
 
-    def _dlq_waiting(self) -> int:
-        counts = getattr(self._buffer, "counts", None)
-        return counts()["dlq"] if counts is not None else 0
+    def _lookup(self, ids: list[str], session: _Session) -> list[Alert]:
+        """The records behind these ids, for the logs: served in this session, or (a report
+        session) still waiting in the buffer."""
+        found = [session.served[i] for i in dict.fromkeys(ids) if i in session.served]
+        missing = [i for i in dict.fromkeys(ids) if i not in session.served]
+        if missing:
+            peek = getattr(self._buffer, "peek", None)
+            if peek is not None:
+                found.extend(peek(missing))
+        return found
 
-    def _log_session(self, peer: str | None, delivered: list, failed: list, *, replay: bool) -> None:
-        """One line per session that delivered or failed something the backend cares about (a
-        transition or a heartbeat); a session of keepalives only stays at debug level."""
-        bound = [a for a in delivered if _backend_bound(a)]
-        for alert, reason in failed:
-            logger.warning(
-                "sender: ESP32 %s couldn't deliver %s -> dead-letter queue (%s)",
-                peer or "?", _describe(alert), reason,
-            )
-        if not bound and not failed:
-            logger.debug("sender: ESP32 %s took %d keepalive(s)", peer or "?", len(delivered))
+    def _waiting(self) -> tuple[int, int]:
+        waiting = getattr(self._buffer, "waiting", None)
+        return waiting() if waiting is not None else (0, 0)
+
+    # --- logs ------------------------------------------------------------------------------
+
+    def _log_session(self, session: _Session) -> None:
+        """One line per session that delivered, took or failed a backend event; a session of
+        keepalives only stays at debug level."""
+        peer = session.peer or "?"
+        for alert, reason, outcome in session.failed:
+            what = _describe(alert) if alert is not None else "a record"
+            if outcome == FAIL_REQUEUED:
+                logger.info("sender: ESP32 %s: replay of %s pre-empted by a live event, back in "
+                            "the dead-letter queue", peer, what)
+            elif outcome == FAIL_DEAD_LETTERED:
+                logger.warning("sender: ESP32 %s couldn't deliver %s -> dead-letter queue (%s)",
+                               peer, what, reason)
+            elif outcome == FAIL_ARCHIVED:
+                logger.warning("sender: ESP32 %s gave up on %s -> archive (%s)", peer, what, reason)
+        events = [a for a in session.delivered + session.taken if event_kind(a.payload)]
+        if not events and not session.failed:
+            logger.debug("sender: ESP32 %s acked %d record(s)", peer, session.acked)
             return
-        what = "replayed from the dead-letter queue" if replay else "delivered"
+        what = "replay" if session.replay else "session"
         logger.info(
-            "sender: ESP32 %s %s %d, failed %d | %s",
-            peer or "?", what, len(delivered), len(failed), self._queue_summary(),
+            "sender: ESP32 %s %s: acked %d, took %d, failed %d | %s",
+            peer, what, session.acked, session.leased, len(session.failed), self._queue_summary(),
         )
 
     def _queue_summary(self) -> str:
@@ -274,6 +333,10 @@ class SenderServer:
             age = f"oldest {_age(oldest)} ago, " if oldest else ""
             reasons = ", ".join(f"{r or '?'} {n}" for r, n in sorted(c["dlq_reasons"].items()))
             text += f" ({age}{reasons})"
+        if c.get("leased"):
+            text += f", held by the ESP32 {c['leased']}"
+        if c.get("archived"):
+            text += f", archive {c['archived']}"
         return text
 
     def _housekeeping(self) -> None:
@@ -293,12 +356,13 @@ class SenderServer:
         expire = getattr(self._buffer, "expire_outbox", None)
         if expire is not None:
             cutoff_ms = int((time.time() - self._outbox_max_age_seconds) * 1000)
-            moved, dropped = expire(cutoff_ms)
-            if moved:
+            moved, archived, dropped = expire(cutoff_ms)
+            if moved or archived:
                 logger.warning(
-                    "sender: %d record(s) not picked up by the ESP32 in %.0f s -> dead-letter "
-                    "queue (esp32_unreachable); %d stale keepalive(s) dropped | %s",
-                    moved, self._outbox_max_age_seconds, dropped, self._queue_summary(),
+                    "sender: not picked up by the ESP32 in %.0f s: %d critical(s) -> dead-letter "
+                    "queue, %d other alert(s) -> archive (esp32_unreachable); %d stale "
+                    "keepalive(s) dropped | %s",
+                    self._outbox_max_age_seconds, moved, archived, dropped, self._queue_summary(),
                 )
         if now - self._last_queue_log_at >= self._queue_log_seconds:
             self._last_queue_log_at = now
@@ -346,14 +410,7 @@ class SenderServer:
         transport.write((protocol.format_config(self._device_config.to_wire()) + "\n").encode())
 
 
-def _backend_bound(alert) -> bool:
-    """A heartbeat, or a reading that changed the class or the severity (see buffer/store.py)."""
-    return alert.kind.value == "route_status" or bool(alert.payload.get("transition"))
-
-
-def _describe(alert) -> str:
-    if alert.kind.value == "route_status":
-        return "heartbeat"
+def _describe(alert: Alert) -> str:
     payload = alert.payload
     severity = payload.get("severity") or "?"
     reason = payload.get("reason") or payload.get("class_name") or ""

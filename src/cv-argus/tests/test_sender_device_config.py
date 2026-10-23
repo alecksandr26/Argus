@@ -130,8 +130,9 @@ class TestServerConfig:
         assert CONFIG.truck_id in caplog.text
 
     def test_pull_still_works_alongside(self, tmp_path):
-        lines = _session({"device_config": CONFIG}, "PULL 5", tmp_path=tmp_path)
-        assert lines == [protocol.format_end(0)]
+        # v2: a pull session ends with the ESP32's DONE and the Pi's OK line.
+        lines = _session({"device_config": CONFIG}, "PULL 5\nDONE", tmp_path=tmp_path)
+        assert lines == [protocol.format_end(0, 0), protocol.format_result(0, 0, 0, 0, 0)]
 
 
 class TestServerAllowlist:

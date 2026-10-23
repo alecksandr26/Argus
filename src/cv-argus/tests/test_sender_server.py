@@ -1,6 +1,7 @@
-"""`sender/server.py` — the full PULL/ACK protocol over fakes plus a real `tmp_path` `Buffer`,
-since the "never lose, only mark sent on ACK" guarantee is a cross-module contract worth testing
-against real persistence, not just mocked calls.
+"""`sender/server.py` — the full protocol v2 (PULL / END / ACK / TAKEN / FAIL / DONE / OK,
+contract C1) over fakes plus a real `tmp_path` `Buffer`, since the "never lose, only mark sent
+on ACK" guarantee is a cross-module contract worth testing against real persistence, not just
+mocked calls. The DLQ/archive/lease rules are in test_sender_dlq.py.
 """
 
 import json
@@ -54,6 +55,9 @@ def test_full_happy_path_empties_the_buffer(tmp_path):
         client.write((protocol.format_ack(ids) + "\n").encode())
         acked_line = client.readline(timeout=2.0)
         assert acked_line.decode() == protocol.format_acked(3)
+        client.write(b"DONE\n")
+        assert client.readline(timeout=2.0).decode() == protocol.format_result(3, 0, 0, 0, 0)
+        assert client.readline(timeout=2.0) is None  # OK is the Pi's last line
     finally:
         server.stop()
         server.join(timeout=2.0)
@@ -271,6 +275,8 @@ def test_ack_arriving_in_a_later_session_still_marks_sent(running):
     second = running.connect()
     _send(second, protocol.format_ack([alert.id]))
     assert second.readline(timeout=2.0).decode() == protocol.format_acked(1)
+    _send(second, "DONE")
+    assert second.readline(timeout=2.0).decode() == protocol.format_result(1, 0, 0, 0, 0)
     assert running.buf.unsent_count() == 0
 
 
@@ -389,6 +395,8 @@ def test_logs_each_delivered_severity_change_once(running, caplog):
     ids = [json.loads(line)["id"] for line in _pull_and_collect(client, 50)]
     _send(client, protocol.format_ack(ids))
     assert client.readline(timeout=2.0) == protocol.format_acked(3).encode()
+    _send(client, "DONE")  # v2: the session is logged when it ends
+    assert client.readline(timeout=2.0) is not None
 
     _wait_for(lambda: "severity=critical" in caplog.text)
     assert caplog.text.count("severity=medium (eyes closed 1.6 s)") == 1
@@ -405,3 +413,80 @@ def test_unacked_records_are_not_logged_as_delivered(running, caplog):
     client.close()  # no ACK
     time.sleep(0.2)
     assert "severity=critical" not in caplog.text
+
+
+# --- Protocol v2 session grammar (contract C1.1-C1.3) ---------------------------------------------
+
+
+def _event(severity="critical"):
+    return Alert.new(
+        AlertKind.DROWSINESS, level=2, source_id="cam0",
+        payload={"severity": severity, "previous_severity": "none", "reason": "eyes_closed",
+                 "class_name": "Drowsy", "probabilities": [0.05, 0.95], "transition": True},
+    )
+
+
+def test_end_is_sent_even_with_zero_rows_and_carries_both_counts(running):
+    client = running.connect()
+    _send(client, protocol.format_pull(8))
+    assert client.readline(timeout=2.0).decode() == "END 0 0"
+    _send(client, "DONE")
+    assert client.readline(timeout=2.0).decode() == "OK acked=0 failed=0 leased=0 dlq=0 outbox=0"
+
+
+def test_report_lines_in_any_order_then_done(running):
+    keepalive, event = _drowsy_alert("k"), _event()
+    for a in (keepalive, event):
+        running.buf.enqueue(a)
+    client = running.connect()
+    _pull_and_collect(client, 8)
+    _send(client, protocol.format_taken([event.id]))
+    assert client.readline(timeout=2.0).decode() == protocol.format_leased(1)
+    _send(client, protocol.format_ack([keepalive.id]))
+    assert client.readline(timeout=2.0).decode() == protocol.format_acked(1)
+    _send(client, "DONE")
+    result = protocol.parse_result(client.readline(timeout=2.0).decode())
+    assert result == {"acked": 1, "failed": 0, "leased": 1, "dlq": 0, "outbox": 0}
+
+
+def test_taken_is_not_a_session_opener_and_ignores_ids_not_served(running):
+    event = _event()
+    running.buf.enqueue(event)
+    client = running.connect()
+    _send(client, protocol.format_taken([event.id]))   # not a valid first line
+    assert client.readline(timeout=1.0) is None
+    client = running.connect()
+    _pull_and_collect(client, 8)
+    _send(client, protocol.format_taken(["deadbeef", event.id, event.id]))
+    assert client.readline(timeout=2.0).decode() == protocol.format_leased(1)
+
+
+def test_a_row_served_again_after_its_lease_can_be_taken_again(running):
+    event = _event()
+    running.buf.enqueue(event)
+    running.buf.lease([event.id], now_ms=1)          # a lease that already ran out
+    client = running.connect()
+    [line] = _pull_and_collect(client, 8)
+    assert json.loads(line)["id"] == event.id
+    _send(client, protocol.format_taken([event.id]))
+    assert client.readline(timeout=2.0).decode() == protocol.format_leased(1)
+
+
+def test_an_unexpected_line_ends_the_session_and_changes_nothing(running):
+    event = _event()
+    running.buf.enqueue(event)
+    client = running.connect()
+    _pull_and_collect(client, 8)
+    _send(client, "HELLO")
+    assert client.readline(timeout=2.0) is None
+    assert [a.id for a in running.buf.fetch_unsent()] == [event.id]
+
+
+def test_live_records_carry_age_and_no_dlq_object(running):
+    running.buf.enqueue(_event())
+    client = running.connect()
+    [line] = _pull_and_collect(client, 8)
+    record = json.loads(line)
+    assert record["kind"] == "drowsiness" and "dlq" not in record
+    assert record["payload"]["severity"] == "critical"
+    assert record["age_s"] is not None and record["age_s"] >= 0

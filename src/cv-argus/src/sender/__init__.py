@@ -1,5 +1,6 @@
 """`sender/` — owns communication with the ESP32: a Bluetooth SPP server (the Pi listens, the
-ESP32 initiates each poll), answering a small custom PULL/ACK protocol (see `protocol.py`).
+ESP32 initiates each poll), answering a small custom line protocol, v2 (PULL / DLQ / END / ACK /
+TAKEN / FAIL / DONE, see `protocol.py`).
 `BluetoothSppTransport`/`BluetoothSppListener` (`bluetooth_transport.py`) are the real,
 platform-gated transport, and `BluezProfileListener` (`bluez_profile.py`) gets the same sockets
 from the host's BlueZ over D-Bus (the Pi's rootless container can't open Bluetooth sockets); `FakeTransport`/`FakeListener` (`transport.py`) are in-memory
@@ -18,16 +19,25 @@ from .device_config import DeviceConfig
 from .protocol import (
     CONFIG_REQUEST,
     DEFAULT_PULL_LIMIT,
+    DONE_LINE,
     END_LINE,
+    MAX_DLQ_LIMIT,
     NOCONFIG_LINE,
     format_ack,
     format_acked,
     format_config,
+    format_end,
+    format_leased,
     format_pull,
+    format_result,
+    format_taken,
     parse_ack,
     parse_config,
     parse_config_request,
+    parse_end,
     parse_pull,
+    parse_result,
+    parse_taken,
 )
 from .server import SenderServer
 from .transport import FakeListener, FakeTransport, Listener, Transport
@@ -44,6 +54,8 @@ __all__ = [
     "DeviceConfig",
     "DEFAULT_PULL_LIMIT",
     "END_LINE",
+    "DONE_LINE",
+    "MAX_DLQ_LIMIT",
     "CONFIG_REQUEST",
     "NOCONFIG_LINE",
     "parse_pull",
@@ -51,6 +63,13 @@ __all__ = [
     "parse_ack",
     "format_ack",
     "format_acked",
+    "parse_end",
+    "format_end",
+    "parse_taken",
+    "format_taken",
+    "format_leased",
+    "parse_result",
+    "format_result",
     "parse_config_request",
     "format_config",
     "parse_config",
