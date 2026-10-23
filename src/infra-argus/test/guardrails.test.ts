@@ -1,7 +1,7 @@
 import * as cdk from 'aws-cdk-lib'
 import { Match, Template } from 'aws-cdk-lib/assertions'
 import { buildArgus } from '../lib/argus'
-import { KILL_SWITCH_INVOCATIONS_PER_HOUR } from '../lib/guardrails-stack'
+import { DEMO_LOAD_PER_HOUR, KILL_SWITCH_INVOCATIONS_PER_HOUR } from '../lib/guardrails-stack'
 
 /**
  * The hard cost requirements (README "Cost guardrails", R1–R10) as synth-time assertions: if a
@@ -176,6 +176,16 @@ describe('R8: small backend + kill switch', () => {
       AlarmActions: Match.anyValue(),
     })
     t.guardrails.hasResourceProperties('AWS::SNS::Subscription', { Protocol: 'lambda' })
+  })
+  it('a busy demo hour at the 5 s report/poll cadence stays far below the kill switch', () => {
+    // One real truck + one simulator session + three dashboard tabs, with 2x headroom: a normal
+    // demo must never trip the kill switch, only a runaway loop.
+    const busyHour =
+      DEMO_LOAD_PER_HOUR.realTruck +
+      DEMO_LOAD_PER_HOUR.simulatorSession +
+      3 * DEMO_LOAD_PER_HOUR.dashboardTab
+    expect(busyHour).toBe(6840)
+    expect(2 * busyHour).toBeLessThan(KILL_SWITCH_INVOCATIONS_PER_HOUR)
   })
 })
 

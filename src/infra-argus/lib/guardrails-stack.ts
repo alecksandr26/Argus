@@ -19,9 +19,25 @@ export interface GuardrailsStackProps extends cdk.StackProps {
   config: ArgusConfig
 }
 
-/** Invocations per hour that trip the kill switch. A 10-minute, 6-truck simulator session is
- * ~720 status posts; a demo dashboard polling every 7 s is ~1,000/hour. 20k/hour is far above any
- * real demo and far below anything that costs money. */
+/** Backend requests per hour a demo makes at the final-tweaks cadence
+ * (docs/designs/final-tweaks-contracts.md, C4). Every device write is one
+ * `POST /api/devices/me/report` every 5 s (`REPORT_INTERVAL_MS`; an event goes at once, but it
+ * replaces the next report rather than adding one, and the 60 s heartbeat is gone); live retries
+ * are at most one a second for 60 s per incident, which a demo hour barely notices. The dashboard
+ * polls `/api/live` and alert history every 5 s and the simulator panel every 10 s, and pauses
+ * the live poll while its tab is hidden. */
+export const DEMO_LOAD_PER_HOUR = {
+  /** One real truck (ESP32) reporting all hour. */
+  realTruck: 3600 / 5,
+  /** One 10-minute simulator session of 6 trucks (each posts the same report). */
+  simulatorSession: 6 * ((10 * 60) / 5),
+  /** One open dashboard tab: /api/live 5 s + alert history 5 s + simulator status 10 s. */
+  dashboardTab: 3600 / 5 + 3600 / 5 + 3600 / 10,
+}
+
+/** Invocations per hour that trip the kill switch. A busy demo hour (one real truck, a simulator
+ * session and three dashboard tabs, see `DEMO_LOAD_PER_HOUR`) is ~6,800 requests. 20k/hour leaves
+ * room for that three times over and is still far below anything that costs money. */
 export const KILL_SWITCH_INVOCATIONS_PER_HOUR = 20000
 
 /**
