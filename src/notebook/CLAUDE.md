@@ -143,8 +143,21 @@ three read one dataset, `Argus/dataset/parts_det.zip`, built locally by
 |---|---|---|---|
 | 12 | `tiny_grid_detector` | **our own YOLO-style CNN, from scratch in Keras**: trains only `tiny_yolo_w1`, the modern tiny YOLO (C2f-lite, SPPF-lite, decoupled anchor-free head, neighbour-cell assignment, GIoU + IoU-aware objectness), about 46k params. The YOLOv1-tiny baseline ("step 1"), the winner-picking and the width ablations were removed on 2026-10-19 (they're in git history): the modern head had already won and is what cv-argus deploys. The notebook has four parts. **A**: dataset analysis (images per object, label / gray-vs-IR / per-source examples, histograms of intensity, box size vs the 8 px cell, aspect ratio, grid-centre heatmaps and head pitch/yaw, co-occurrence correlations, human-vs-pitch head labels). **B**: the model plus its maths (convolution through int8 quantisation, with resources), a layer table with receptive fields, and `GridEncoder` collision stats. **C**: one training run with its full setup table and curves. **D**: results (per-class AP/P/R/F1 float vs int8, confusion matrices with a background row and column, PR curves, labelled-vs-predicted images). Figures go to `models/parts_det/figures/` | the thesis model |
 | 13 | `yolo_nano` | Ultralytics `yolo11n` (step 1) + `yolov5nu` (step 2), pretrained, fine-tuned; own sections for dataset checks / labelled examples, per-step test confusion matrix (with a background row/col) + predicted-vs-labelled images, and a step 1 vs 2 comparison (figures → `models/parts_det/figures/`) | off-the-shelf baseline (AGPL-3.0) |
-| 14 | `backbone_grid_detector` | MobileNetV3-Small *minimalistic* (ImageNet), FPN-lite neck, 12's head and loss, two-phase fine-tune | pretrained shared trunk; its **last cell is the 12/13/14 comparison table** |
+| 14 | `backbone_grid_detector` | MobileNetV3-Small *minimalistic* (ImageNet), FPN-lite neck, 12's head and loss, two-phase fine-tune. Since the final tweaks it shares 12's `tf.data` cells verbatim (close-up shrink, zoom-out, eye-label cleaning, the deterministic close-up eval view), 12's BN/int8 calibration cells and 12's eye-box filter in `grid_postprocess` | pretrained shared trunk; its **last cell prints two 12/13/14 comparison tables**: as deployed, and like-for-like on the same test view |
 
+- **Final tweaks (2026-10-23, branch `feat/final-tweaks-t2-vision`): eye-box fixes, not yet
+  retrained.** The deployed model draws head-sized "eye" boxes because 56 % of its training
+  images are full-image eye close-ups. Notebook 12 (and 14, verbatim) now:
+  - shrinks close-ups onto a mean-gray + noise background, and adds a zoom-out augmentation;
+  - drops face-crop eye labels larger than `EYE_LABEL_MAX_FRAC` (0.30, must equal cv-argus's
+    `PARTS_EYE_MAX_FRAC`; it is defined in 12's `tf.data` cell and in its copy in 14);
+  - mirrors cv-argus's inference eye filter (drop an eye box larger than 0.30 of the crop or
+    with its centre outside y 0.15–0.70) in `grid_postprocess`;
+  - reports like-for-like against the 2026-10-20 model.
+
+  Only synthetic/smoke runs exist (14 with `weights=None`). There is no accuracy claim until the
+  user reruns 12 (and 14) in Colab on `parts_det.zip`; until then cv-argus keeps the 2026-10-20
+  23:35 `tiny_yolo_w1`.
 - **Shared cells are generated, not hand-copied.** Setup, loading, evaluation, latency, the
   `tf.data` pipeline and the grid head/loss are byte-identical across notebooks, so the numbers
   are comparable. If you edit one, edit all, or regenerate them.
