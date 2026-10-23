@@ -12,10 +12,13 @@ Confirms, end to end against the real API:
   1. the service is up (GET /health)
   2. a user can log in and read their own profile (POST /api/auth/login, GET /api/auth/me)
   3. the live-ops read path works (GET /api/routes/active)
-  4. the device-API-key contract src/esp32-argus's firmware actually uses works: creates a
-     throwaway truck/driver/route, rotates a real device key for that truck, then uses that
-     key (not a user token) to POST a route-status update and a panic-button alert -- the
-     exact two calls backend_api.cpp makes -- before cleaning everything back up.
+  4. the device-API-key contract src/esp32-argus's firmware actually uses works
+     (docs/designs/final-tweaks-contracts.md C2): creates a throwaway truck/driver/route already
+     in progress, rotates a real device key for that truck, then uses that key (not a user
+     token) on POST /api/devices/me/report, the only device write -- points plus a critical
+     alert (created), the same report again (duplicate), a driver OK for the same episode, then
+     after stopping the route a report whose points and event are both refused
+     (route_finished) -- before cleaning everything back up.
 
 Zero third-party dependencies -- stdlib only (urllib/json/hashlib), so there's nothing to
 `pip install` before running this.
@@ -179,39 +182,19 @@ def main() -> int:
                 "destination_name": "Smoke Destination",
                 "destination_coordinates": {"lat": 19.4326, "lon": -99.1332},
                 "estimated_departure": datetime.now(timezone.utc).isoformat(),
+                # Created in progress: the backend sets actual_departure = now (C3.1 [sync 1]),
+                # which the report's by-time event routing needs.
+                "operative_status": "in_progress",
             },
         )
-        _log(status == 201, "POST /api/routes (throwaway)", f"status={status}")
+        _log(status == 201, "POST /api/routes (throwaway, in progress)", f"status={status}")
         route_id = route.get("id_route") if status == 201 and isinstance(route, dict) else None
 
     if route_id and device_key:
-        status, _ = request(
-            "POST",
-            f"/api/routes/{route_id}/status",
-            device_key=device_key,
-            body={
-                "current_coordinates": {"lat": 19.4326, "lon": -99.1332},
-                "current_speed": 80.0,
-                "odometer": 12345.6,
-                "vigilance": "low",
-            },
-        )
-        _log(status == 201, "POST /api/routes/{id}/status (device key)", f"status={status}")
-
-        status, _ = request(
-            "POST",
-            "/api/alerts",
-            device_key=device_key,
-            body={
-                "id_route": route_id,
-                "alert_type": "panic_button",
-                "severity_level": "critical",
-                "source": "panic_button",
-                "coordinates": {"lat": 19.4326, "lon": -99.1332},
-                "speed_at_event": 80.0,
-            },
-        )
-        _log(status == 201, "POST /api/alerts (device key, panic_button)", f"status={status}")
+        # An event's time is received_at - age_s; it must fall inside the route's
+        # actual_departure..actual_arrival, so let the clock move past the departure first.
+        time.sleep(1.0)
+        _device_report_round_trip(token, device_key, route_id, suffix)
     else:
         _log(False, "device-key round trip", "skipped -- an earlier step didn't produce a "
              "truck/driver/route/device_key")
@@ -230,6 +213,86 @@ def main() -> int:
     return _finish()
 
 
+def _point(age_s: float, vigilance: str = "low") -> dict:
+    return {
+        "age_s": age_s,
+        "lat": 19.4326,
+        "lon": -99.1332,
+        "speed": 80.0,
+        "vigilance": vigilance,
+        "last_known": False,
+        "location_age_s": 0,
+    }
+
+
+def _event(client_event_id: str, episode: str, kind: str) -> dict:
+    event = {
+        "client_event_id": client_event_id,
+        "episode": episode,
+        "kind": kind,
+        "age_s": 0.0,
+        "delivery": "live",
+        "queued_seconds": 0,
+        "position": {"lat": 19.4326, "lon": -99.1332, "last_known": False, "location_age_s": 0},
+        "speed": 80.0,
+        "ai_metadata": {"model": "smoke", "scores": {"not_drowsy": 0.05, "drowsy": 0.95}},
+    }
+    if kind == "alert":
+        event["severity"] = "critical"
+        event["alert_type"] = "eyes_closed"
+    return event
+
+
+def _report(device_key: str, points: list[dict], event: dict | None) -> tuple[int, dict]:
+    status, body = request(
+        "POST",
+        "/api/devices/me/report",
+        device_key=device_key,
+        body={"points": points, "event": event},
+    )
+    return status, body if isinstance(body, dict) else {}
+
+
+def _device_report_round_trip(token: str, device_key: str, route_id: str, suffix: str) -> None:
+    """The firmware's one device write (C2), driven the way sender_policy.cpp drives it."""
+    episode = f"smoke{suffix}"[-12:]
+    alert_id = f"smoke-alert-{suffix}"
+
+    status, body = _report(device_key, [_point(2.0), _point(1.0, "critical")],
+                           _event(alert_id, episode, "alert"))
+    points = body.get("points") or {}
+    event = body.get("event") or {}
+    _log(status == 200 and points.get("status") == "ok" and points.get("route") == route_id,
+         "report: points stored on the active route",
+         f"status={status} points={points}")
+    _log(event.get("status") == "created" and bool(event.get("id_alert")),
+         "report: critical alert created", f"event={event}")
+    _log(body.get("active_route") == route_id, "report: active_route is the route",
+         f"active_route={body.get('active_route')}")
+
+    status, body = _report(device_key, [], _event(alert_id, episode, "alert"))
+    event = body.get("event") or {}
+    _log(status == 200 and event.get("status") == "duplicate",
+         "report: the same event again is a duplicate (a lost answer, retried)", f"event={event}")
+
+    status, body = _report(device_key, [_point(0.5)], _event(f"smoke-ok-{suffix}", episode, "ok"))
+    event = body.get("event") or {}
+    _log(status == 200 and event.get("status") == "created", "report: driver OK created",
+         f"event={event}")
+
+    status, _ = request("POST", f"/api/routes/{route_id}/stop", token=token,
+                        body={"reason": "smoke test"})
+    _log(status == 200, "POST /api/routes/{id}/stop", f"status={status}")
+    status, body = _report(device_key, [_point(0.2)],
+                           _event(f"smoke-late-{suffix}", episode, "alert"))
+    points = body.get("points") or {}
+    event = body.get("event") or {}
+    _log(status == 200 and points.get("status") == "route_finished"
+         and event.get("status") == "rejected" and event.get("reason") == "route_finished",
+         "report after stop: points and event refused (route_finished)",
+         f"status={status} points={points} event={event}")
+
+
 def _finish() -> int:
     print()
     if _FAILURES:
@@ -237,7 +300,7 @@ def _finish() -> int:
         for f in _FAILURES:
             print(f"  - {f}")
         return 1
-    print("All checks passed -- the backend is reachable and the device-key contract works.")
+    print("All checks passed -- the backend is reachable and the device report contract works.")
     return 0
 
 
