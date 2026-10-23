@@ -55,7 +55,7 @@ export class AppStack extends cdk.Stack {
       // R8: small, short, and (where the account allows it) capped concurrency.
       memorySize: 512,
       // Coupled to backend-argus's per-route lock (src/backend-argus/app/constants.py): the
-      // timeout must stay > ROUTE_LOCK_WAIT (5 s, so a waiting request can still answer 503)
+      // timeout must stay > ROUTE_LOCK_WAIT (5 s per request, so a waiting request can still answer 503)
       // and <= ROUTE_LOCK_LEASE (10 s, so a holder killed at the timeout frees its lock by the
       // lease). test/guardrails.test.ts checks both against that file.
       timeout: cdk.Duration.seconds(10),
