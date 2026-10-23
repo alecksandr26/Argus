@@ -43,8 +43,9 @@ static void idIsNotRecoveredFromInsideThePayload() {
 static void clockSyncedFalseIsParsed() {
   PiRecord r;
   const char* line =
-      R"({"id":"s1","kind":"route_status","level":null,"created_at_ms":1500000000000,)"
-      R"("mono_ms":42,"boot_id":"b","clock_synced":false,"source_id":"cam0","payload":{"status":"OK"}})";
+      R"({"id":"s1","kind":"drowsiness","level":1,"created_at_ms":1500000000000,)"
+      R"("mono_ms":42,"boot_id":"b","clock_synced":false,"source_id":"cam0",)"
+      R"("payload":{"class_name":"Not Drowsy","probabilities":[0.9,0.1]}})";
   CHECK(parsePiRecord(line, r) == ParseOutcome::Ok);
   CHECK(r.hasClockSynced);
   CHECK(!r.clockSynced);
@@ -53,8 +54,8 @@ static void clockSyncedFalseIsParsed() {
 static void clockSyncedMissingIsUnknownNotTrue() {
   // Rows from a cv-argus that predates the field: nothing says the clock was synced.
   PiRecord r;
-  const char* line = R"({"id":"s2","kind":"route_status","level":null,"created_at_ms":1,)"
-                     R"("source_id":"cam0","payload":{"status":"OK"}})";
+  const char* line = R"({"id":"s2","kind":"drowsiness","level":1,"created_at_ms":1,)"
+                     R"("source_id":"cam0","payload":{"class_name":"Not Drowsy","probabilities":[0.9,0.1]}})";
   CHECK(parsePiRecord(line, r) == ParseOutcome::Ok);
   CHECK(!r.hasClockSynced);
   CHECK(!r.clockSynced);

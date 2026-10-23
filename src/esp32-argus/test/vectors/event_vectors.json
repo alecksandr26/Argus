@@ -1,0 +1,28 @@
+{
+  "description": "Which Pi records are backend events: docs/designs/final-tweaks-contracts.md C1.5, the rule both the Pi (cv-argus buffer: the DLQ holds only 'alert_critical') and the ESP32 (pi_event_policy.cpp) apply. Replayed by test/host/event_vectors_host_test.cpp; the edge_chain Python mirror (src/tests/edge_chain/esp32_sim.py) can replay the same file. previous_severity null = absent (treated as none).",
+  "cases": [
+    {"name": "keepalive_critical", "transition": false, "severity": "critical", "previous_severity": "critical", "expect": "none"},
+    {"name": "keepalive_none", "transition": false, "severity": "none", "previous_severity": "none", "expect": "none"},
+    {"name": "keepalive_medium_first_record", "transition": false, "severity": "medium", "previous_severity": null, "expect": "none"},
+    {"name": "none_to_medium", "transition": true, "severity": "medium", "previous_severity": "none", "expect": "alert_medium"},
+    {"name": "low_to_medium", "transition": true, "severity": "medium", "previous_severity": "low", "expect": "alert_medium"},
+    {"name": "first_record_medium", "transition": true, "severity": "medium", "previous_severity": null, "expect": "alert_medium"},
+    {"name": "none_to_critical", "transition": true, "severity": "critical", "previous_severity": "none", "expect": "alert_critical"},
+    {"name": "low_to_critical", "transition": true, "severity": "critical", "previous_severity": "low", "expect": "alert_critical"},
+    {"name": "medium_to_critical_escalation", "transition": true, "severity": "critical", "previous_severity": "medium", "expect": "alert_critical"},
+    {"name": "first_record_critical", "transition": true, "severity": "critical", "previous_severity": null, "expect": "alert_critical"},
+    {"name": "critical_reason_change", "transition": true, "severity": "critical", "previous_severity": "critical", "expect": "none"},
+    {"name": "medium_reason_change", "transition": true, "severity": "medium", "previous_severity": "medium", "expect": "none"},
+    {"name": "critical_to_medium", "transition": true, "severity": "medium", "previous_severity": "critical", "expect": "none"},
+    {"name": "medium_to_none_recovery", "transition": true, "severity": "none", "previous_severity": "medium", "expect": "ok"},
+    {"name": "medium_to_low_recovery", "transition": true, "severity": "low", "previous_severity": "medium", "expect": "ok"},
+    {"name": "critical_to_none_recovery", "transition": true, "severity": "none", "previous_severity": "critical", "expect": "ok"},
+    {"name": "critical_to_low_recovery", "transition": true, "severity": "low", "previous_severity": "critical", "expect": "ok"},
+    {"name": "none_to_low", "transition": true, "severity": "low", "previous_severity": "none", "expect": "none"},
+    {"name": "low_to_none", "transition": true, "severity": "none", "previous_severity": "low", "expect": "none"},
+    {"name": "class_only_change", "transition": true, "severity": "none", "previous_severity": "none", "expect": "none"},
+    {"name": "recovery_without_transition_flag", "transition": false, "severity": "none", "previous_severity": "critical", "expect": "none"},
+    {"name": "unknown_severity", "transition": true, "severity": "", "previous_severity": "none", "expect": "none"},
+    {"name": "unknown_previous_counts_as_none", "transition": true, "severity": "medium", "previous_severity": "bogus", "expect": "alert_medium"}
+  ]
+}
