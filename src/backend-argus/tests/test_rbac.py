@@ -194,3 +194,42 @@ async def test_guardian_can_review_alert_but_not_delete(api_client, guardian, ro
 
     delete_resp = await api_client.delete(f"/api/alerts/{alert_id}", headers=auth_headers(guardian))
     assert delete_resp.status_code == 403
+
+
+# --- Final tweaks: who closes incidents and who stops routes (C3.6) ---------------------------
+
+from tests.conftest import post_report, report_event  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    ("role_fixture", "expected"),
+    [("root_admin", 200), ("guardian", 200), ("admin_user", 403), ("truck_driver_user", 403)],
+)
+async def test_close_incident_is_guardian_and_root_admin_only(
+    api_client, rig_a, root_admin, guardian, admin_user, truck_driver_user, role_fixture, expected
+):
+    user = locals()[role_fixture]
+    body = (await post_report(api_client, rig_a, event=report_event(age_s=5))).json()
+    alert = (
+        await api_client.get(f"/api/alerts/{body['event']['id_alert']}", headers=auth_headers(user))
+    ).json()
+    resp = await api_client.post(
+        f"/api/incidents/{alert['id_incident']}/close",
+        json={"note": "called the driver"},
+        headers=auth_headers(user),
+    )
+    assert resp.status_code == expected
+
+
+@pytest.mark.parametrize(
+    ("role_fixture", "expected"),
+    [("root_admin", 200), ("admin_user", 200), ("guardian", 403), ("truck_driver_user", 403)],
+)
+async def test_stop_route_is_root_admin_and_admin_only(
+    api_client, rig_a, root_admin, guardian, admin_user, truck_driver_user, role_fixture, expected
+):
+    user = locals()[role_fixture]
+    resp = await api_client.post(
+        f"/api/routes/{rig_a.route_id}/stop", json={"reason": "x"}, headers=auth_headers(user)
+    )
+    assert resp.status_code == expected
