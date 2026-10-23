@@ -5,21 +5,24 @@ import SearchBox from '../components/SearchBox'
 import StatusPill from '../components/StatusPill'
 import Icon from '../components/Icon'
 import { useAuth } from '../context/AuthContext'
-import { listRoutes } from '../api/routes'
+import FleetMap from '../components/FleetMap'
+import { getRouteTrack, listRoutes } from '../api/routes'
 import { listAlerts } from '../api/alerts'
 import { listDrivers } from '../api/drivers'
 import { listTrucks } from '../api/trucks'
 import { ApiError } from '../api/client'
 import { clock, relativeTime, shortDate } from '../utils/format'
-import { routeStatus, severity } from '../utils/status'
+import { REPLAYED_LABEL, alertTypeLabel, routeStatusBadge, severity } from '../utils/status'
 import { alertPosition, positionSummary } from '../utils/position'
-import type { Alert, Driver, Route, Truck } from '../types'
+import { alertPins, trackPath } from '../utils/mapLayers'
+import type { Alert, Driver, Route, RouteTrack, Truck } from '../types'
 
 /**
- * "Monitoring — Route history": every completed trip against `GET /api/routes?status=completed`,
- * each expandable into the alerts raised during it (`GET /api/alerts`, grouped client-side by
- * `id_route` — both endpoints already return everything this screen needs, so no new backend
- * route was added for it). This is the real screen behind Sidebar.tsx's "Route history" item,
+ * "Monitoring — Route history": every ended trip — completed (`GET /api/routes?status=completed`)
+ * or stopped/cancelled (`?status=cancelled`) — each expandable into its GPS path
+ * (`GET /api/routes/{id}/track`, fetched once when first expanded, downsampled by the server) on a
+ * map with a pin per alert, and the alerts raised during it (`GET /api/alerts`, grouped
+ * client-side by `id_route`), each with its position. This is the real screen behind Sidebar.tsx's "Route history" item,
  * previously a `soon` placeholder labeled "Trip history". Routes and alerts are both readable by
  * every role per the backend's RBAC table, so — like Live operations — this screen carries no
  * `roles` restriction in Sidebar.tsx.
@@ -36,19 +39,22 @@ export default function RouteHistory() {
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  /** GPS paths by route id, fetched on first expand; `'error'` when that failed. */
+  const [tracks, setTracks] = useState<Record<string, RouteTrack | 'loading' | 'error'>>({})
 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
     Promise.all([
       listRoutes(token, 'completed'),
+      listRoutes(token, 'cancelled'),
       listAlerts(token),
       listDrivers(token),
       listTrucks(token),
     ])
-      .then(([routesList, alertsList, driversList, trucksList]) => {
+      .then(([completed, cancelledRoutes, alertsList, driversList, trucksList]) => {
         if (cancelled) return
-        setRoutes(routesList)
+        setRoutes([...completed, ...cancelledRoutes])
         setAlerts(alertsList)
         setDrivers(driversList)
         setTrucks(trucksList)
@@ -110,12 +116,19 @@ export default function RouteHistory() {
   }, [sorted, query, truckById, driverById])
 
   function toggle(id: string) {
+    const opening = !expanded.has(id)
     setExpanded((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
+    if (opening && (tracks[id] === undefined || tracks[id] === 'error')) {
+      setTracks((prev) => ({ ...prev, [id]: 'loading' }))
+      getRouteTrack(id, token)
+        .then((t) => setTracks((prev) => ({ ...prev, [id]: t })))
+        .catch(() => setTracks((prev) => ({ ...prev, [id]: 'error' })))
+    }
   }
 
   const totalAlerts = routes.reduce(
@@ -136,7 +149,7 @@ export default function RouteHistory() {
     >
       <PageHeader
         title="Route history"
-        subtitle={`${routes.length} completed trips · ${totalAlerts} alerts recorded`}
+        subtitle={`${routes.length} ended trips · ${totalAlerts} alerts recorded`}
         actions={
           <SearchBox
             value={query}
@@ -159,7 +172,7 @@ export default function RouteHistory() {
           </div>
         ) : filtered.length === 0 ? (
           <div style={{ padding: 28, textAlign: 'center', color: 'var(--text-faint)' }}>
-            No completed routes yet.
+            No ended routes yet.
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -227,7 +240,7 @@ export default function RouteHistory() {
                         gap: 10,
                       }}
                     >
-                      <StatusPill badge={routeStatus[r.operative_status]} />
+                      <StatusPill badge={routeStatusBadge(r)} />
                       <span
                         className={routeAlerts.length ? 'pill pill--warn' : 'pill'}
                         style={{ fontSize: 10.5, padding: '3px 9px' }}
@@ -247,6 +260,12 @@ export default function RouteHistory() {
                           : '14px 14px 14px 42px',
                       }}
                     >
+                      {r.stop_reason && (
+                        <div style={{ fontSize: 12, color: 'var(--warn)', padding: '8px 0' }}>
+                          Stopped: {r.stop_reason}
+                        </div>
+                      )}
+                      <RoutePath track={tracks[r.id_route]} routeId={r.id_route} alerts={routeAlerts} />
                       {routeAlerts.length === 0 ? (
                         <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>
                           No alerts recorded for this trip.
@@ -286,7 +305,7 @@ export default function RouteHistory() {
                                   <span
                                     style={{ fontSize: 12.5, fontWeight: 500, minWidth: 160 }}
                                   >
-                                    {a.alert_type}
+                                    {alertTypeLabel(a.alert_type)}
                                   </span>
                                   <span
                                     className={
@@ -317,6 +336,14 @@ export default function RouteHistory() {
                                   >
                                     {positionSummary(alertPosition(a))}
                                   </span>
+                                  {a.delivery === 'dlq' && (
+                                    <span
+                                      className="pill pill--warn"
+                                      style={{ fontSize: 10, padding: '2px 8px' }}
+                                    >
+                                      {REPLAYED_LABEL}
+                                    </span>
+                                  )}
                                 </Link>
                               </li>
                             )
@@ -331,6 +358,54 @@ export default function RouteHistory() {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+/** The GPS path of an ended route on a small map, with a pin per alert. */
+function RoutePath({
+  track,
+  routeId,
+  alerts,
+}: {
+  track: RouteTrack | 'loading' | 'error' | undefined
+  routeId: string
+  alerts: Alert[]
+}) {
+  if (track === undefined || track === 'loading') {
+    return <div style={{ fontSize: 12, color: 'var(--text-faint)', padding: '8px 0' }}>Loading GPS path…</div>
+  }
+  if (track === 'error') {
+    return (
+      <div role="alert" style={{ fontSize: 12, color: 'var(--danger, #e5484d)', padding: '8px 0' }}>
+        Couldn't load the GPS path.
+      </div>
+    )
+  }
+  const path = trackPath(routeId, track.points)
+  return (
+    <div style={{ padding: '8px 0' }} data-testid="route-path">
+      <div style={{ fontSize: 11.5, color: 'var(--text-faint)', marginBottom: 6 }}>
+        {track.points.length === 0
+          ? 'No GPS points were recorded for this trip.'
+          : `GPS path · ${track.points.length} point${track.points.length === 1 ? '' : 's'}${
+              track.downsampled ? ' (downsampled)' : ''
+            }`}
+      </div>
+      {track.points.length > 0 && (
+        <div
+          style={{
+            position: 'relative',
+            height: 260,
+            borderRadius: 8,
+            overflow: 'hidden',
+            isolation: 'isolate',
+            border: '1px solid var(--border-soft)',
+          }}
+        >
+          <FleetMap markers={[]} paths={path ? [path] : []} pins={alertPins(alerts)} maxZoom={13} />
+        </div>
+      )}
     </div>
   )
 }
