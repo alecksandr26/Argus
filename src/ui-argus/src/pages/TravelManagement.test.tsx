@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import TravelManagement from './TravelManagement'
@@ -68,10 +68,23 @@ function seedSession(role: LoginUser['role']) {
   )
 }
 
-/** GETs answer from the fixtures; a PUT echoes the route back with the body merged in. */
+/** GETs answer from the fixtures; a PUT echoes the route back with the body merged in; a
+ * POST /stop returns it cancelled with the reason. */
 function mockBackend(routes: Route[]) {
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body })
+    if (init?.method === 'POST' && url.endsWith('/stop')) {
+      const id = url.split('/').slice(-2)[0]
+      const current = routes.find((r) => r.id_route === id)!
+      const { reason } = JSON.parse(String(init.body))
+      return ok({
+        ...current,
+        operative_status: 'cancelled',
+        stop_reason: reason,
+        stopped_by: 'u1',
+        stopped_at: '2026-10-23T12:00:00Z',
+      })
+    }
     if (init?.method === 'PUT') {
       const id = url.split('/').pop()
       const current = routes.find((r) => r.id_route === id)!
@@ -97,6 +110,8 @@ function renderPage() {
 
 const putCalls = (fetchMock: ReturnType<typeof mockBackend>) =>
   fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT')
+const postCalls = (fetchMock: ReturnType<typeof mockBackend>) =>
+  fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -119,17 +134,66 @@ describe('TravelManagement trips', () => {
     expect(await screen.findByRole('button', { name: 'Complete trip' })).toBeInTheDocument()
   })
 
-  it('Complete trip sets the route completed with an arrival time', async () => {
+  it('Complete trip asks for confirmation, then sets the route completed with an arrival time', async () => {
     seedSession('root_admin')
     const fetchMock = mockBackend([route('r-1', 'in_progress')])
     const user = userEvent.setup()
     renderPage()
 
     await user.click(await screen.findByRole('button', { name: 'Complete trip' }))
+    const dialog = screen.getByRole('dialog', { name: 'Complete trip' })
+    expect(putCalls(fetchMock)).toHaveLength(0)
+    await user.click(within(dialog).getByRole('button', { name: 'Complete trip' }))
 
     const body = JSON.parse(String(putCalls(fetchMock)[0][1]!.body))
     expect(body.operative_status).toBe('completed')
     expect(Number.isNaN(Date.parse(body.actual_arrival))).toBe(false)
+    expect(await screen.findByText('Completed')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Stop route' })).not.toBeInTheDocument()
+  })
+
+  it('Stop route needs a reason, then POSTs /stop and the route reads "Stopped"', async () => {
+    seedSession('admin')
+    const fetchMock = mockBackend([route('r-1', 'in_progress')])
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: 'Stop route' }))
+    const dialog = screen.getByRole('dialog', { name: 'Stop route' })
+    await user.click(within(dialog).getByRole('button', { name: 'Stop route' }))
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('A reason is required')
+    expect(postCalls(fetchMock)).toHaveLength(0)
+
+    await user.type(within(dialog).getByRole('textbox'), 'Truck broke down near Celaya')
+    await user.click(within(dialog).getByRole('button', { name: 'Stop route' }))
+
+    const [[url, init]] = postCalls(fetchMock)
+    expect(url).toContain('/api/routes/r-1/stop')
+    expect(JSON.parse(String(init!.body))).toEqual({ reason: 'Truck broke down near Celaya' })
+    expect(await screen.findByText('Stopped')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Stop route' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Complete trip' })).not.toBeInTheDocument()
+    // An ended route still opens in the route view (whole path, closed incidents).
+    expect(screen.getByRole('link', { name: /View route/ })).toHaveAttribute('href', '/routes/r-1/live')
+  })
+
+  it('a scheduled route can be started or stopped, not completed', async () => {
+    seedSession('root_admin')
+    mockBackend([route('r-1', 'scheduled')])
+    renderPage()
+    expect(await screen.findByRole('button', { name: 'Start trip' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Stop route' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Complete trip' })).not.toBeInTheDocument()
+  })
+
+  it('completed and cancelled routes offer no trip buttons', async () => {
+    seedSession('root_admin')
+    mockBackend([route('r-1', 'completed'), route('r-2', 'cancelled')])
+    renderPage()
+    expect(await screen.findByText('From r-1 → To r-1')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Stop route' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Complete trip' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start trip' })).not.toBeInTheDocument()
   })
 
   it('refuses to start a second trip on a truck that already has one in progress', async () => {
@@ -146,10 +210,12 @@ describe('TravelManagement trips', () => {
 
   it('guardian sees no trip buttons', async () => {
     seedSession('guardian')
-    mockBackend([route('r-1', 'scheduled')])
+    mockBackend([route('r-1', 'scheduled'), route('r-2', 'in_progress')])
     renderPage()
 
     expect(await screen.findByText('From r-1 → To r-1')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Start trip' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Complete trip' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Stop route' })).not.toBeInTheDocument()
   })
 })
