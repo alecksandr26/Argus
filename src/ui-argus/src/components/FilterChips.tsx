@@ -1,5 +1,7 @@
 /** A row of pill-shaped filter buttons — the same look `LiveOps.tsx`'s severity filter
- * originated, now shared with `RouteLiveView`'s "Route alerts" tab and `AlertHistory`. */
+ * originated, now shared with `RouteLiveView`'s Open/Closed incident chips and `AlertHistory`.
+ * Each chip is a toggle `button` with `aria-pressed` on the selected one (C3.7: the chips are
+ * buttons, not incident state). */
 export interface ChipOption<T extends string> {
   key: T
   label: string
@@ -19,6 +21,8 @@ export default function FilterChips<T extends string>({
       {options.map((o) => (
         <button
           key={o.key}
+          type="button"
+          aria-pressed={value === o.key}
           onClick={() => onChange(o.key)}
           style={{
             fontSize: 11,

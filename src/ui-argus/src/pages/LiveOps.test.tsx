@@ -98,6 +98,12 @@ function mockBackend(live: LiveResponse = liveFixture()) {
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const u = new URL(url)
     if (u.pathname === '/api/live') return ok(live)
+    const close = u.pathname.match(/^\/api\/incidents\/([^/]+)\/close$/)
+    if (close && init?.method === 'POST') {
+      const inc = live.incidents.find((i) => i.id_incident === close[1])!
+      const note = JSON.parse(String(init.body)).note
+      return ok({ ...inc, closed_at: '2026-10-23T20:32:41.123Z', closed_by: 'u1', close_note: note })
+    }
     if (u.pathname.endsWith('/stop') && init?.method === 'POST') {
       return ok({ ...live.routes[0], operative_status: 'cancelled' })
     }
@@ -248,5 +254,37 @@ describe('LiveOps', () => {
           .filter(([u]) => new URL(u).pathname === '/api/live').length,
       ).toBeGreaterThan(0),
     )
+  })
+
+  it('after a close: a role=status "Closed HH:MM" confirmation, the incident leaves the feed, no panel switch', async () => {
+    seedSession('guardian')
+    // The backend keeps returning the incident (a poll that was in flight): it stays hidden.
+    const fetchMock = mockBackend()
+    const user = userEvent.setup()
+    renderPage()
+
+    const medium = await screen.findByRole('region', { name: 'Medium incidents' })
+    expect(screen.getByRole('status')).toBeEmptyDOMElement()
+    const card = within(medium).getByRole('article', { name: 'Medium incident' })
+    await user.click(within(card).getByRole('button', { name: 'Close incident' }))
+    const dialog = screen.getByRole('dialog', { name: 'Close incident' })
+    await user.click(within(dialog).getByRole('button', { name: 'Close incident' }))
+
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Closed \d{1,2}:\d{2}/))
+    // 20:32:41.123Z is 14:32 in Mexico City.
+    expect(screen.getByRole('status')).toHaveTextContent('Medium incident closed · ARG-002 · Closed 14:32')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Medium incidents' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Critical incidents' })).toBeInTheDocument()
+    expect(screen.getByText('1 open')).toBeInTheDocument()
+    expect(map.props!.pins!.map((p) => p.id)).toEqual(['a-c'])
+    // Still on the incidents panel, all tiers (the view doesn't switch on its own).
+    expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
+
+    // It re-polled after the close, and the confirmation stays (no auto-dismiss).
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.filter(([u]) => new URL(u).pathname === '/api/live').length).toBeGreaterThan(1),
+    )
+    expect(screen.getByRole('status')).toHaveTextContent('Closed 14:32')
   })
 })

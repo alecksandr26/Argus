@@ -4,6 +4,7 @@ import PageHeader from '../components/PageHeader'
 import FleetMap, { type MapFocus } from '../components/FleetMap'
 import FilterChips from '../components/FilterChips'
 import IncidentFeed from '../components/IncidentFeed'
+import CloseNotice from '../components/CloseNotice'
 import RouteEndActions from '../components/RouteEndActions'
 import SimulatorControl from '../components/SimulatorControl'
 import StatusPill from '../components/StatusPill'
@@ -14,7 +15,7 @@ import { incidentState } from '../utils/status'
 import { toLatLng } from '../utils/geo'
 import { incidentPins, routeMarkers, trackPaths } from '../utils/mapLayers'
 import { pointPosition, positionSummary } from '../utils/position'
-import type { Alert, IncidentTier } from '../types'
+import type { Alert, Incident, IncidentTier } from '../types'
 
 /**
  * Live operations, on one poll: `GET /api/live` every 5 s (`useLive`, paused while the tab is
@@ -26,6 +27,9 @@ import type { Alert, IncidentTier } from '../types'
  *   per open-incident alert.
  * - **Incidents:** the tiered feed (Critical → Medium → Older than 1 h), grouped by route.
  *   Guardian and root_admin close incidents from it; "Show on map" flies the map to an alert.
+ *   After a close, a `role="status"` confirmation ("… incident closed · Closed HH:MM", C3.7)
+ *   stays above the panel until the next close or navigation, and the incident leaves the feed
+ *   at once (it's hidden locally until the re-poll drops it).
  *   There's no "Reviewed/Unreviewed" filter any more: the feed holds exactly the open incidents,
  *   and a closed incident leaves it for Alert history.
  * - **Routes:** the active routes, with Complete trip / Stop route for root_admin and admin.
@@ -61,6 +65,20 @@ export default function LiveOps() {
   const [focus, setFocus] = useState<MapFocus | null>(null)
   const focusNonce = useRef(0)
 
+  // The last close's confirmation, and the incidents closed from this page: hidden from the
+  // feed right away, so a poll that was already in flight can't flash them back.
+  const [closedNotice, setClosedNotice] = useState<Incident | null>(null)
+  const [closedIds, setClosedIds] = useState<ReadonlySet<string>>(() => new Set())
+  const openIncidents = useMemo(
+    () => live.incidents.filter((i) => !closedIds.has(i.id_incident)),
+    [live.incidents, closedIds],
+  )
+  function onIncidentClosed(inc: Incident) {
+    setClosedNotice(inc)
+    setClosedIds((prev) => new Set(prev).add(inc.id_incident))
+    void refresh()
+  }
+
   const tiles = useMemo(() => {
     const counts = { fine: 0, medium: 0, critical: 0 }
     for (const r of live.routes) counts[r.incident_state]++
@@ -69,11 +87,11 @@ export default function LiveOps() {
 
   const markers = useMemo(() => routeMarkers(live.routes), [live.routes])
   const paths = useMemo(() => trackPaths(live.track), [live.track])
-  const pins = useMemo(() => incidentPins(live.incidents), [live.incidents])
+  const pins = useMemo(() => incidentPins(openIncidents), [openIncidents])
 
   const feed = useMemo(
-    () => live.incidents.filter((i) => tierFilter === 'all' || i.tier === tierFilter),
-    [live.incidents, tierFilter],
+    () => openIncidents.filter((i) => tierFilter === 'all' || i.tier === tierFilter),
+    [openIncidents, tierFilter],
   )
 
   function showOnMap(a: Alert) {
@@ -196,9 +214,11 @@ export default function LiveOps() {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <FilterChips options={PANELS} value={panel} onChange={setPanel} />
             <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>
-              {live.incidents.length} open
+              {openIncidents.length} open
             </span>
           </div>
+
+          <CloseNotice incident={closedNotice} />
 
           {panel === 'incidents' ? (
             <>
@@ -208,7 +228,7 @@ export default function LiveOps() {
                   incidents={feed}
                   role={role}
                   token={token}
-                  onClosed={() => void refresh()}
+                  onClosed={onIncidentClosed}
                   onShowOnMap={showOnMap}
                   focusedAlertId={focus?.pinId ?? null}
                   emptyLabel={
