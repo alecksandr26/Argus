@@ -68,11 +68,17 @@ class Settings(BaseSettings):
     simulator_medium_blip_probability: Optional[float] = None
 
     # Optional demo disruptions, at most one of each per route (disruptions.py), off by default.
-    # Outage: 70-150 s in which every report fails with `no_network` (points dropped, a critical
-    # reaches the dead-letter queue and is replayed afterwards as "recovered after lost
-    # connection"). GPS loss: 30-90 s of last-known positions.
+    # Outage: 70-150 s in which every report fails with `no_network`: points are dropped and a
+    # critical goes to the dead-letter queue after its 60 s live window. It is replayed
+    # ("Recovered after lost connection") only if the network comes back within about 20 s of
+    # that (4 more attempts, one per 5 s report); otherwise it is archived, as on the real
+    # device. GPS loss: 30-90 s of last-known positions.
     simulator_outage_chance: float = Field(default=0.0, ge=0.0, le=1.0)
     simulator_gps_loss_chance: float = Field(default=0.0, ge=0.0, le=1.0)
+    # For a dependable replay demo: place the outage (still drawn with the chance above) from 5 s
+    # before the scenario's first critical to 70 s after it, so that critical is dead-lettered
+    # and then replayed. `normal` routes have no critical and keep a random outage.
+    simulator_outage_around_critical: bool = False
 
     # Deletes any SIM-* trucks/drivers/routes/alerts left over from a previous run before
     # provisioning fresh ones, so repeated `docker compose up`s during dev stay idempotent

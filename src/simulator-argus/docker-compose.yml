@@ -76,6 +76,7 @@ services:
       # Optional demo disruptions per route (network outage, GPS loss); 0 = off.
       - SIMULATOR_OUTAGE_CHANCE=${SIMULATOR_OUTAGE_CHANCE:-0}
       - SIMULATOR_GPS_LOSS_CHANCE=${SIMULATOR_GPS_LOSS_CHANCE:-0}
+      - SIMULATOR_OUTAGE_AROUND_CRITICAL=${SIMULATOR_OUTAGE_AROUND_CRITICAL:-false}
       - SIMULATOR_RESET=${SIMULATOR_RESET:-true}
       # On by default -- see the `osrm` service below and README's "Optional: real
       # road-following routes via OSRM" for the one-time setup needed before it actually takes

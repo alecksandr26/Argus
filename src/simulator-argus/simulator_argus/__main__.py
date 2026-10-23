@@ -43,6 +43,7 @@ async def run() -> None:
                 blip_chance=settings.simulator_normal_blip_chance,
                 outage_chance=settings.simulator_outage_chance,
                 gps_loss_chance=settings.simulator_gps_loss_chance,
+                outage_around_critical=settings.simulator_outage_around_critical,
             )
             for spec in specs
         ]

@@ -40,7 +40,13 @@ from .constants import (
     SIMULATOR_REPORT_INTERVAL_S,
 )
 from .delivery import DeliveryQueue, Finished, QueuedEvent
-from .disruptions import GPS_LOSS_SECONDS, OUTAGE_SECONDS, in_window, plan_window
+from .disruptions import (
+    GPS_LOSS_SECONDS,
+    OUTAGE_SECONDS,
+    in_window,
+    plan_window,
+    plan_window_around,
+)
 from .events import EpisodeTracker, vigilance_for
 from .fleet import VirtualTruckSpec
 from .report import (
@@ -136,6 +142,7 @@ class VirtualTruck:
         wall_clock: Callable[[], datetime] = _utcnow,
         outage_chance: float = 0.0,
         gps_loss_chance: float = 0.0,
+        outage_around_critical: bool = False,
     ) -> None:
         self._client = client
         self._spec = spec
@@ -158,7 +165,15 @@ class VirtualTruck:
         self._active_route: Optional[str] = None
         self.finished = False
         # Optional demo disruptions (disruptions.py), as `[start, end)` tick windows or None.
-        self._outage = plan_window(outage_chance, total_ticks, OUTAGE_SECONDS, self._tick_seconds)
+        critical_tick = getattr(self._scenario, "first_critical_tick", None)
+        if outage_around_critical and critical_tick is not None:
+            self._outage = plan_window_around(
+                outage_chance, critical_tick, total_ticks, tick_seconds=self._tick_seconds
+            )
+        else:
+            self._outage = plan_window(
+                outage_chance, total_ticks, OUTAGE_SECONDS, self._tick_seconds
+            )
         self._gps_loss = plan_window(
             gps_loss_chance, total_ticks, GPS_LOSS_SECONDS, self._tick_seconds
         )

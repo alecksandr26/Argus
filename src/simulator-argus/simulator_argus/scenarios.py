@@ -59,6 +59,12 @@ class Scenario:
         self._blip: Optional[tuple[int, int]] = self._plan_blip(blip_chance)
 
     @property
+    def first_critical_tick(self) -> Optional[int]:
+        """The tick of the route's first critical reading, or `None` (`normal` has none). Used
+        to place the optional outage around it (`SIMULATOR_OUTAGE_AROUND_CRITICAL`)."""
+        return None
+
+    @property
     def blip_window(self) -> Optional[tuple[int, int]]:
         """`(first tick, first tick after)` of the route's one blip, or `None`."""
         return self._blip
@@ -117,6 +123,10 @@ class DrowsyEscalationScenario(Scenario):
         self._recover_at = max(self._peak_at + 1, round(cycle * self._RECOVER_FRACTION))
         self._cycle_length = self._recover_at + max(2, round(cycle * 0.2))
 
+    @property
+    def first_critical_tick(self) -> Optional[int]:
+        return self._peak_at
+
     def reading(self, tick: int) -> Reading:
         cycle = tick % self._cycle_length
         if cycle < self._escalate_at:
@@ -154,6 +164,10 @@ class NoFaceScenario(Scenario):
         self._away_from = random.randint(1, window)
         away = random.uniform(self._AWAY_SECONDS_MIN, self._AWAY_SECONDS_MAX)
         self._away_until = self._away_from + self._ticks(away)
+
+    @property
+    def first_critical_tick(self) -> Optional[int]:
+        return self._away_from
 
     def reading(self, tick: int) -> Reading:
         if self._away_from <= tick < self._away_until:

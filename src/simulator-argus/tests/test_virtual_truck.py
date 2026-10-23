@@ -201,6 +201,18 @@ def test_only_normal_takes_a_blip(cls):
         assert "head_down" not in {e.alert_type for _, e in _events(scenario, 1200)}
 
 
+@pytest.mark.parametrize("cls", [NoFaceScenario, DrowsyEscalationScenario])
+@pytest.mark.parametrize("total_ticks", [60, 1200, 7200])
+def test_first_critical_tick_is_the_first_critical_event(cls, total_ticks):
+    scenario = cls(total_ticks=total_ticks)
+    first = next(t for t, e in _events(scenario, total_ticks) if e.severity == "critical")
+    assert scenario.first_critical_tick == first
+
+
+def test_normal_has_no_critical_tick():
+    assert Scenario(total_ticks=1200, blip_chance=1.0).first_critical_tick is None
+
+
 def test_no_face_scenario_has_one_incident_per_route():
     for _ in range(50):
         scenario = NoFaceScenario(total_ticks=1200, blip_chance=1.0)
@@ -765,3 +777,74 @@ async def test_disruptions_are_off_by_default():
     truck, _, client = _truck(_Backend())
     await client.aclose()
     assert truck._outage is None and truck._gps_loss is None
+
+
+def _scenario_truck(backend: _Backend, scenario: str, **kwargs):
+    """A truck that plays its real scenario (not a script), for the disruption placement."""
+    clock = _Clock()
+    departure = datetime(2026, 10, 23, 12, 0, tzinfo=timezone.utc)
+    spec = VirtualTruckSpec(
+        route_id="r1",
+        truck_id="t1",
+        device_key="device-key",
+        geometry=[(25.6866, -100.3161), (25.4260, -100.9959)],
+        departure=departure,
+        arrival=departure + timedelta(minutes=20),
+        scenario=scenario,
+    )
+    client = BackendClient("http://backend", transport=httpx.MockTransport(backend.handler))
+    truck = VirtualTruck(
+        client,
+        spec,
+        clock=clock,
+        wall_clock=lambda: departure + timedelta(seconds=clock.t - 1000.0),
+        **kwargs,
+    )
+    return truck, clock, client
+
+
+async def test_a_random_outage_archives_a_critical_raised_early_in_it(caplog):
+    # The reworded promise: a critical raised more than ~80 s before the network comes back uses
+    # up its DLQ attempts during the outage and is archived, as on the real device.
+    backend = _Backend()
+    truck, clock, client = _truck(backend, {t: _CRITICAL for t in range(10, 13)})
+    truck._outage = (5, 150)
+    with caplog.at_level(logging.INFO, logger="simulator_argus.virtual_truck"):
+        await _run(truck, clock, range(0, 160))
+    await client.aclose()
+
+    assert "result=archived:max_attempts" in caplog.text
+    assert not [b["event"] for b in backend.bodies if b.get("event")]
+
+
+@pytest.mark.parametrize("scenario", ["no_face", "drowsy_escalation"])
+@pytest.mark.parametrize("seed", range(4))
+async def test_an_outage_around_the_critical_replays_it_from_the_dlq(scenario, seed, caplog):
+    random.seed(seed)
+    backend = _Backend()
+    truck, clock, client = _scenario_truck(
+        backend, scenario, outage_chance=1.0, outage_around_critical=True
+    )
+    critical = truck._scenario.first_critical_tick
+    assert truck._outage == (critical - 5, critical + 70)
+    with caplog.at_level(logging.INFO, logger="simulator_argus.virtual_truck"):
+        await _run(truck, clock, range(0, critical + 100))
+    await client.aclose()
+
+    assert "result=dead_lettered:no_network" in caplog.text
+    assert "archived" not in caplog.text
+    replays = [
+        b["event"] for b in backend.bodies if b.get("event") and b["event"]["delivery"] == "dlq"
+    ]
+    assert [(e["kind"], e["severity"]) for e in replays] == [("alert", "critical")]
+
+
+async def test_outage_around_critical_keeps_a_random_outage_on_a_normal_route():
+    random.seed(3)
+    truck, _, client = _scenario_truck(
+        _Backend(), "normal", outage_chance=1.0, outage_around_critical=True
+    )
+    await client.aclose()
+    assert truck._scenario.first_critical_tick is None
+    start, end = truck._outage
+    assert 70 <= end - start <= 150

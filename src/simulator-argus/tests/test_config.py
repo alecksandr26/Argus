@@ -85,3 +85,10 @@ def test_demo_disruptions_are_off_by_default_and_read_their_env_names(monkeypatc
     assert (on.simulator_outage_chance, on.simulator_gps_loss_chance) == (1.0, 0.25)
     with pytest.raises(pydantic.ValidationError):
         _settings(monkeypatch, SIMULATOR_OUTAGE_CHANCE="2")
+
+
+def test_outage_around_critical_is_off_by_default(monkeypatch):
+    monkeypatch.delenv("SIMULATOR_OUTAGE_AROUND_CRITICAL", raising=False)
+    assert _settings(monkeypatch).simulator_outage_around_critical is False
+    on = _settings(monkeypatch, SIMULATOR_OUTAGE_AROUND_CRITICAL="true")
+    assert on.simulator_outage_around_critical is True
