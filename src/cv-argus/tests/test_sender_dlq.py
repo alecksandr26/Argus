@@ -73,6 +73,21 @@ def _replay_fail(buf, alert_id, reason="no_network", body=None):
     return buf.apply_fail(alert_id, reason, body)
 
 
+def _lapsed_live_critical(buf):
+    """C1.6 [sync 3] case: a live critical the ESP32 `TAKEN` whose 120 s lease lapsed while the
+    Bluetooth link was down, so `expire_outbox` moved it to the DLQ as `esp32_unreachable` with
+    no body and no attempt."""
+    a = _critical()
+    buf.enqueue(a)
+    now = int(time.time() * 1000)
+    assert buf.lease([a.id], now_ms=now - LEASE_MS - 10_000) == 1   # already lapsed
+    assert buf.expire_outbox(now + 1000) == (1, 0, 0)
+    [(row, dlq)] = buf.fetch_dlq(1)
+    assert row.id == a.id
+    assert (dlq["error"], dlq["body"], dlq["attempts"]) == ("esp32_unreachable", None, 0)
+    return a
+
+
 # --- which rows are events (C1.5) -----------------------------------------------------------
 
 @pytest.mark.parametrize("severity,previous,transition,expected", [
@@ -293,6 +308,36 @@ class TestFail:
         buf.lease([a.id], now_ms=1_000_000)
         assert buf.apply_fail(a.id, "no_network", now_ms=1_000_000 + LEASE_MS + 1) is None
         assert buf.fetch_dlq(1)[0][1]["attempts"] == 1
+
+    # --- [sync 3] an ignored repeated FAIL still fills a missing body ---------------------
+
+    def test_a_late_fail_fills_the_body_of_an_expired_live_critical(self, buf):
+        a = _lapsed_live_critical(buf)
+        composed = {"severity": "critical", "position": {"lat": 19.4, "lon": -99.1}}
+        assert buf.apply_fail(a.id, "no_network", composed) is None   # ignored
+        [(_, dlq)] = buf.fetch_dlq(1)                         # still served: not leased
+        assert dlq["body"] == composed
+        assert dlq["attempts"] == 0                           # still no attempt counted
+        assert dlq["error"] == "esp32_unreachable"            # dlq_error untouched
+
+    def test_a_second_fail_never_overwrites_a_stored_body(self, buf):
+        a = _lapsed_live_critical(buf)
+        first, second = {"first": True}, {"second": True}
+        assert buf.apply_fail(a.id, "no_network", first) is None
+        assert buf.apply_fail(a.id, "timeout", second) is None
+        assert buf.apply_fail(a.id, "timeout", None) is None
+        [(_, dlq)] = buf.fetch_dlq(1)
+        assert dlq["body"] == first and dlq["attempts"] == 0
+        assert dlq["error"] == "esp32_unreachable"
+
+    def test_an_ignored_fail_keeps_a_body_from_a_counted_failure(self, buf):
+        a = _critical()
+        buf.enqueue(a)
+        buf.lease([a.id])
+        assert buf.apply_fail(a.id, "no_network", {"original": True}) == "dlq"
+        assert buf.apply_fail(a.id, "no_network", {"resent": True}) is None
+        [(_, dlq)] = buf.fetch_dlq(1)
+        assert dlq["body"] == {"original": True} and dlq["attempts"] == 1
 
     @pytest.mark.parametrize("reason", ["too_old", "route_finished", "invalid"])
     def test_rule_3_still_archives_a_dead_letter_served_but_not_taken(self, buf, reason):
@@ -653,6 +698,19 @@ def _done(client):
     return protocol.parse_result(_recv(client))
 
 
+def _wait_for_attempts(buf, attempts, timeout=2.0):
+    """Poll until the one dead letter shows `attempts` (the server thread applies report lines
+    as it reads them) or `timeout` passes; the row is hidden while it is still leased."""
+    deadline = time.monotonic() + timeout
+    while True:
+        rows = buf.fetch_dlq(1)
+        if rows and rows[0][1]["attempts"] == attempts:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+
+
 @pytest.fixture
 def session(buf):
     s = _Session(buf)
@@ -801,12 +859,22 @@ class TestServer:
         assert _recv(client) == "LEASED 1"
         _send(client, protocol.format_fail(a.id, "timeout"))
         client.close()                                   # broke before DONE -> no OK
-        time.sleep(0.2)
-        assert buf.fetch_dlq(1)[0][1]["attempts"] == 2   # applied when read
+        assert _wait_for_attempts(buf, 2)                # applied when read
         report = session.connect()
         _send(report, protocol.format_fail(a.id, "timeout"))
         assert _done(report) == {"acked": 0, "failed": 0, "leased": 0, "dlq": 1, "outbox": 0}
         assert buf.fetch_dlq(1)[0][1]["attempts"] == 2
+
+    def test_a_late_fail_fills_a_missing_body_without_counting(self, buf, session):
+        # C1.6 [sync 3]: the ignored repeat still fills a NULL dlq_body; `failed` stays 0.
+        a = _lapsed_live_critical(buf)
+        composed = {"severity": "critical", "position": {"lat": 19.4, "lon": -99.1}}
+        report = session.connect()
+        _send(report, protocol.format_fail(a.id, "no_network", composed))
+        assert _done(report) == {"acked": 0, "failed": 0, "leased": 0, "dlq": 1, "outbox": 0}
+        [(_, dlq)] = buf.fetch_dlq(1)
+        assert dlq["body"] == composed and dlq["attempts"] == 0
+        assert dlq["error"] == "esp32_unreachable"
 
     def test_a_preempted_replay_is_not_an_attempt(self, buf, session):
         a = _critical()

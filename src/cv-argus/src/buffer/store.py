@@ -512,7 +512,10 @@ class Buffer:
         for a non-leased `dlq` row is a resend of one already applied (the ESP32 resends outcomes
         it got no `OK` for, C1.2/C1.8): it is ignored, not counted, and logged at debug. Accepted
         cost: a DLQ replay whose lease lapsed before its FAIL arrived is an uncounted attempt.
-        Rules 1-3 need no guard.
+        Rules 1-3 need no guard. `[sync 3]` An ignored FAIL still fills `dlq_body` when none is
+        stored and `body` is a JSON object (`COALESCE`), so a live critical that `expire_outbox`
+        moved to the DLQ while its lease had lapsed keeps the event-time position from its late
+        FAIL; `attempts`, `dlq_error` and the lease are left alone.
 
         Returns `"archived"`, `"dlq"` or `"requeued"`, or `None` when the id is unknown, sent or
         already archived, or the FAIL is a repeat (ignored)."""
@@ -541,6 +544,15 @@ class Buffer:
                 )
                 return FAIL_REQUEUED
             if state == DLQ and not leased:
+                if isinstance(body, dict):
+                    # C1.6 [sync 3]: a live critical TAKEN by the ESP32 whose lease lapsed during
+                    # a Bluetooth outage was expired to the DLQ as `esp32_unreachable`, with no
+                    # body; its late dead-lettering FAIL carries the composed event (event-time
+                    # position). Keep that body, nothing else: no attempt, no dlq_error.
+                    self._conn.execute(
+                        "UPDATE alerts SET dlq_body = COALESCE(dlq_body, ?) WHERE id = ?",
+                        (stored, alert_id),
+                    )
                 logger.debug(
                     "buffer: ignoring repeated FAIL %s for dead letter %s (not leased)",
                     reason, alert_id,
