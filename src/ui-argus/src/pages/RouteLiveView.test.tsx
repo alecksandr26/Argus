@@ -243,6 +243,9 @@ describe('RouteLiveView', () => {
     // C3.7: the confirmation, and the focused alert's incident is no longer offered for closing.
     expect(screen.getByRole('status')).toHaveTextContent(/Closed \d{1,2}:\d{2}/)
     expect(screen.queryByRole('button', { name: 'Close incident' })).not.toBeInTheDocument()
+    // The view does not switch tabs on its own: still on "This alert".
+    expect(screen.getByRole('button', { name: 'This alert' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: /^Incidents/ })).toHaveAttribute('aria-pressed', 'false')
   })
 
   it('close from the Open feed with no focused alert: role=status "Closed HH:MM", leaves Open, stays on Open', async () => {

@@ -232,6 +232,8 @@ export function IncidentCard({
             onShowOnMap={onShowOnMap}
             focused={a.id_alert === focusedAlertId}
             to={alertHref?.(a)}
+            // The header above already shows "Driver OK since": once per incident card.
+            showDriverOk={false}
           />
         ))}
       </div>

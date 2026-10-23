@@ -17,12 +17,17 @@ const toneColor = {
  * "Show on map" button, the replayed badge for an alert recovered from the dead-letter queue,
  * and "Driver OK since" once the device reported the driver OK (informational only: it never
  * closes anything).
+ *
+ * Inside an incident card the incident header already carries "Driver OK since", so the card
+ * passes `showDriverOk={false}` and the pill appears once per incident; a standalone alert card
+ * keeps it.
  */
 export default function AlertCard({
   alert,
   onShowOnMap,
   focused = false,
   to,
+  showDriverOk = true,
 }: {
   alert: Alert
   /** Shown as a "Show on map" button when the alert has a position. */
@@ -31,9 +36,12 @@ export default function AlertCard({
   focused?: boolean
   /** Where the alert's title links to (default: the alert's own page). */
   to?: string
+  /** Show "Driver OK since" (off inside an incident card, whose header already shows it). */
+  showDriverOk?: boolean
 }) {
   const sev = severity[alert.severity_level]
   const pos = alertPosition(alert)
+  const driverOk = showDriverOk && alert.driver_ok_at
   return (
     <div
       data-testid="alert-card"
@@ -83,16 +91,16 @@ export default function AlertCard({
           </button>
         )}
       </div>
-      {(alert.delivery === 'dlq' || alert.driver_ok_at) && (
+      {(alert.delivery === 'dlq' || driverOk) && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
           {alert.delivery === 'dlq' && (
             <span className="pill pill--warn" style={{ fontSize: 10, padding: '2px 8px' }}>
               {REPLAYED_LABEL}
             </span>
           )}
-          {alert.driver_ok_at && (
+          {driverOk && (
             <span className="pill pill--good" style={{ fontSize: 10, padding: '2px 8px' }}>
-              Driver OK since {clock(alert.driver_ok_at)}
+              Driver OK since {clock(driverOk)}
             </span>
           )}
         </div>

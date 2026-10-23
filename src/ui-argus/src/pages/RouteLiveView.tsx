@@ -891,6 +891,8 @@ function TabButton({
 }) {
   return (
     <button
+      type="button"
+      aria-pressed={active}
       onClick={onClick}
       style={{
         fontSize: 12,

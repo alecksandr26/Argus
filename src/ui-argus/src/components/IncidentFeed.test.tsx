@@ -118,6 +118,24 @@ describe('IncidentFeed', () => {
     expect(within(card).getByText(/^Driver OK since/)).toBeInTheDocument()
   })
 
+  it('"Driver OK since" shows once per incident card, on its header, not again on its alerts', () => {
+    renderFeed([
+      makeIncident({
+        driver_ok_at: '2026-10-23T12:05:00Z',
+        alert_count: 2,
+        alerts: [
+          makeAlert({ id_alert: 'a-1', driver_ok_at: '2026-10-23T12:05:00Z' }),
+          makeAlert({ id_alert: 'a-2', driver_ok_at: '2026-10-23T12:05:00Z' }),
+        ],
+      }),
+    ])
+    const card = screen.getByTestId('incident-card')
+    expect(within(card).getAllByText(/^Driver OK since/)).toHaveLength(1)
+    for (const alertCard of within(card).getAllByTestId('alert-card')) {
+      expect(within(alertCard).queryByText(/^Driver OK since/)).not.toBeInTheDocument()
+    }
+  })
+
   it('"Show on map" hands the alert to the caller', async () => {
     const { onShowOnMap, user } = renderFeed([makeIncident()])
     await user.click(screen.getByRole('button', { name: 'Show on map' }))

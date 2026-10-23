@@ -270,7 +270,9 @@ with `unknown`, `IncidentState`, `TimeSource` with `relative`). Timing constants
   C3.4 `[sync 3]`), and the UI never assumes it resolves to a user.
 - `components/AlertCard.tsx`: the `ALERT_TYPE_LABEL` text (unknown types show the raw string),
   its position via `utils/position.ts` (coordinates, "Last known (N old)", or "Position
-  unknown"), "Show on map" when it has coordinates, and the replayed badge.
+  unknown"), "Show on map" when it has coordinates, and the replayed badge. It shows "Driver OK
+  since" only standalone: `IncidentCard` passes `showDriverOk={false}`, so the pill appears
+  once per incident card (on the incident header), not again on each of its alerts.
 
 ### Dialogs and the close confirmation
 
