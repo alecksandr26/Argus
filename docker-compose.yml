@@ -87,10 +87,15 @@ services:
       - SIMULATOR_ADMIN_EMAIL=${ROOT_ADMIN_EMAIL:-admin@argus.dev}
       - SIMULATOR_ADMIN_PASSWORD=${ROOT_ADMIN_PASSWORD:-changeme123}
       - SIMULATOR_TRUCK_COUNT=${SIMULATOR_TRUCK_COUNT:-6}
-      - SIMULATOR_STATUS_INTERVAL_SECONDS=${SIMULATOR_STATUS_INTERVAL_SECONDS:-5}
+      - SIMULATOR_REPORT_INTERVAL_S=${SIMULATOR_REPORT_INTERVAL_S:-5}
       - SIMULATOR_ROUTE_DURATION_MINUTES=${SIMULATOR_ROUTE_DURATION_MINUTES:-20}
-      - SIMULATOR_SCENARIO_WEIGHTS=${SIMULATOR_SCENARIO_WEIGHTS:-normal=0.45,drowsy_escalation=0.35,panic=0.20}
-      - SIMULATOR_MEDIUM_BLIP_PROBABILITY=${SIMULATOR_MEDIUM_BLIP_PROBABILITY:-0.1}
+      - SIMULATOR_SCENARIO_WEIGHTS=${SIMULATOR_SCENARIO_WEIGHTS:-normal=0.45,drowsy_escalation=0.35,no_face=0.20}
+      # Chance that a `normal` route gets its one head_down medium blip (contracts C4). The old
+      # per-5-s SIMULATOR_MEDIUM_BLIP_PROBABILITY is retired: read only to warn it's ignored.
+      - SIMULATOR_NORMAL_BLIP_CHANCE=${SIMULATOR_NORMAL_BLIP_CHANCE:-0.5}
+      # Optional demo disruptions, chance per route (0 = off). See src/simulator-argus/README.md.
+      - SIMULATOR_OUTAGE_CHANCE=${SIMULATOR_OUTAGE_CHANCE:-0}
+      - SIMULATOR_GPS_LOSS_CHANCE=${SIMULATOR_GPS_LOSS_CHANCE:-0}
       - SIMULATOR_RESET=${SIMULATOR_RESET:-true}
       # On by default — see the `osrm` service below and src/simulator-argus/README.md's
       # "Optional: real road-following routes via OSRM" for the one-time setup needed before it
