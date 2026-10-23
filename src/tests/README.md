@@ -12,7 +12,7 @@ pip install -r src/tests/requirements.txt
 |---|---|---|
 | `smoke_cv_argus.py` | script | nothing else |
 | `smoke_backend.py` | script | a running backend (`src/esp32-argus/test/hil/bench_backend.py` is enough) |
-| `edge_chain/` | pytest suite, cv-argus → simulated ESP32 → backend, in one process | nothing else. See its README.md |
+| `edge_chain/` | pytest suite, cv-argus → simulated ESP32 (Bluetooth v2 + the report sender) → backend, in one process | nothing else. See its README.md |
 
 The bench test against the **real ESP32** lives with the firmware, in
 `src/esp32-argus/test/hil/` (own `requirements.txt`).
@@ -33,10 +33,21 @@ up.
 ## `smoke_backend.py` — confirms the real backend-argus HTTP contract
 
 Hits a real, running `backend-argus` + MongoDB over HTTP: health check, login, `GET
-/api/auth/me`, `GET /api/routes/active`, then a full device-API-key round trip (create a
-throwaway truck → rotate its device key → create a driver + route → use that key, not a user
-token, to `POST /api/routes/{id}/status` and `POST /api/alerts`) — the exact contract
-`src/esp32-argus`'s firmware uses. Cleans up everything it created, so it's safe to re-run.
+/api/auth/me`, `GET /api/routes/active`, then a full device-API-key round trip, the exact
+contract `src/esp32-argus`'s firmware uses (`docs/designs/final-tweaks-contracts.md` C2):
+
+1. Create a throwaway truck and rotate its device key, then a driver and a route **created
+   `in_progress`** (the backend sets its `actual_departure`, which the by-time event routing
+   needs, C3.1 [sync 1]).
+2. With that key, not a user token, `POST /api/devices/me/report`, the only device write:
+   points plus a critical alert (`created`, points stored on the active route, `active_route`
+   in the answer); the same report again (`duplicate`); a driver OK for the same episode.
+3. `POST /api/routes/{id}/stop` with a reason, then two reports that must be refused
+   `route_finished`: one whose points and event are timed now, and a late event timed *inside*
+   the route but posted after the stop (a dead letter's replay, C2.2 rule 4 [sync 2]).
+
+Cleans up everything it created, so it's safe to re-run. It needs a backend with the report
+endpoint (backend-argus after the final-tweaks work).
 
 Stdlib only. It needs *some* backend-argus reachable over HTTP. The simplest is the in-memory
 bench backend, which is the real app on mongomock, with no Docker and no `mongod`:

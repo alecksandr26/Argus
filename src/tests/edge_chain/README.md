@@ -1,20 +1,20 @@
 # Edge-chain tests: cv-argus → ESP32 → backend-argus
 
-A pytest suite that runs the whole edge-to-cloud alert path in one process, with real code at
-every hop except the Bluetooth radio:
+A pytest suite that runs the whole edge-to-cloud path in one process, with real code at every hop
+except the Bluetooth radio and the ESP32's C++:
 
 | Hop | What runs |
 |---|---|
-| Pi alert queue | cv-argus's real `Buffer` (SQLite, WAL) |
-| Pi Bluetooth server | cv-argus's real `SenderServer` and its PULL/DLQ/FAIL/ACK/DONE protocol, over `FakeTransport` |
-| ESP32 relay loop | `esp32_sim.SimulatedEsp32`, a step-for-step Python mirror of `bluetoothExchange()`, `parsePiRecord()`, `decidePiEvent()`, the compose functions and `handle()` |
-| Cloud | backend-argus's real FastAPI app, authenticated with a real per-truck device key, on mongomock |
+| Pi alert queue | cv-argus's real `Buffer` (SQLite, WAL): outbox, DLQ (criticals only), leases, archive |
+| Pi Bluetooth server | cv-argus's real `SenderServer`, protocol v2 (`PULL`/`DLQ 1`, `END <dlq> <outbox>`, `ACK`/`TAKEN`/`FAIL`, `DONE` → `OK`), over `FakeTransport` |
+| ESP32 | `esp32_sim.SimulatedEsp32`, a module-for-module Python mirror of the firmware: the record parse, the C1.5 event rule, the session decisions, `SenderPolicy` (priority, retry windows, the DLQ's one try, outcomes), the report body and the answer's handling |
+| Cloud | backend-argus's real FastAPI app on mongomock: `POST /api/devices/me/report` with a real per-truck device key |
 
-The point is the seams none of the per-module suites cover: the protocol grammar end to end,
-"live first, dead-letter on failure" (only what the ESP32 couldn't deliver stays on the Pi, and
-it's replayed later with its original position and time), device-key auth, and what the alerts
-look like once they land in the backend. There's no grip sensor yet, so alerts follow the Pi's
-own severity, like the firmware.
+The contracts are `docs/designs/final-tweaks-contracts.md` C1 (Bluetooth v2) and C2 (the
+report). The point is the seams none of the per-module suites cover: the protocol grammar end to
+end, "live first, dead-letter on failure" (a critical the backend can't take within its 60 s
+window waits in the Pi's DLQ with the event composed then, and is replayed with its original
+position), device-key auth, by-time event routing, and what lands in the backend.
 
 ## Running it
 
@@ -25,31 +25,50 @@ pip install -r src/tests/requirements.txt
 cd src/tests/edge_chain && pytest
 ```
 
+It needs cv-argus and backend-argus from the same final-tweaks generation as the firmware (v2
+Pi server, report endpoint). Last run: 66 passed on a scratch merge of T1 (`3ceb5b6`) and T4
+(`7a389d3`) with this branch, 2026-10-23.
+
 ## What it covers
 
-- A camera critical becomes exactly one `critical` alert (reason as `alert_type`, the model, the
-  scores, GPS, `grip_status: "good"` as a placeholder); a heartbeat relays the camera's
-  severity as `vigilance`; the fall back resolves the alert.
-- A record the backend rejects comes back as `FAIL`, waits in the Pi's dead-letter queue, and
-  the replay delivers it, with the position where it happened.
-- Without a GPS fix an alert is dead-lettered (`no_gps`) and a heartbeat is skipped.
-
+- `test_edge_chain.py` (hand-built Pi records): a critical becomes one alert (`delivery: live`,
+  position, scores, episode, incident) and the recovery one driver OK (`driver_ok_at`; the alert
+  stays open); points carry the camera's severity as `vigilance`; a critical refused through its
+  live window goes to the Pi's DLQ (attempt 1, with its event) and the replay delivers it with its
+  original position (`delivery: dlq`); with no network every attempt counts and the fifth archives
+  it (`max_attempts`); a FAIL resent after a session broke before `OK` is counted once (C1.6
+  [sync 2]); with no position the event says so and a liveness report (`points: []`) still goes;
+  an event after a stop is archived `route_finished`; a medium is archived after its 30 s window;
+  an event whose age the Pi can't tell is archived `too_old`.
 - `test_edge_chain_scenarios.py` and `test_edge_chain_edge_cases.py` drive cv-argus's real
-  `Orchestrator` (no hand-built readings) through the chain: incidents, recovery, `No Face`,
-  backlogs, route changes, two cameras, an ESP32 reset mid-session. Known bugs are
-  `xfail(strict=True)` with their scenario ID from `docs/designs/edge-cloud-scenarios.md`; the
-  newer ones also pin `raises=AssertionError`, so a crash in the harness can't pass as the bug.
-- `test_firmware_vectors.py` replays the shared fusion vectors (X-15) that the C++ host test
-  replays against `fusion.cpp`.
+  `Orchestrator` (and its rule engine) on a fake clock: incident and recovery, a 30 s Bluetooth
+  outage (event times from `age_s`), a poison record, a stopped route, a lost report (no
+  duplicate), a failed driver OK retried, a reboot mid-incident, no face (one CRITICAL, no
+  ladder), escalation (one incident, linked alerts), no credentials then a DLQ replay, a slumped
+  driver who doesn't "recover", an unsynced Pi clock, two cameras, a backlog keeping its
+  position, points keeping their vigilance, a route change mid-incident, an ESP32 reset after
+  `END`, and the alert landing within one poll.
+- `test_provisioning.py`: the dashboard's key reaches the ESP32 over `CONFIG` and authorizes its
+  reports, whose answer names the active route; rotation and revocation lock the old key out.
+- `test_firmware_vectors.py` replays the vectors shared with the firmware's host tests:
+  `event_vectors.json` (C1.5) against `esp32_sim.classify()`, and the fusion vectors (X-15).
 
-`esp32_sim.py` mirrors today's firmware. Known gaps without a test here for now (removed by
-user decision 2026-10-20, still listed in `docs/designs/edge-cloud-scenarios.md`): a cell-tower
-position when there's no GPS fix, and camera-offline detection. The no-face scenarios drive cv-argus's real rule
-engine (`Scenario.signals`), not hand-made detections. When a firmware fix lands, mirror it here so the matching xfail starts
-passing.
+Scenario IDs are in `docs/designs/edge-cloud-scenarios.md`. A known bug is marked
+`xfail(strict=True, raises=AssertionError)` with its ID; none is open today.
+
+Notes on the harness:
+
+- The route is created with `actual_departure` an hour back: events are routed by time
+  (`occurred_at = received_at - age_s`) and the scenarios' fake clock runs far ahead of the real
+  one, so their events are "older" than the real time that passed.
+- The Pi's leases (120 s) and outbox expiry (60 s) run on the real clock, so they never lapse
+  during a test; nothing here relies on them lapsing.
+- `conftest.py` stubs `gdown` when it isn't installed: the rule engine's `to_detection()` imports
+  cv-argus's `model` package, whose downloader imports it; the chain never downloads a model.
 
 ## What it doesn't cover
 
 The real radio (`BluetoothSppTransport`, the ESP32's `BluetoothSerial`), the firmware's actual
-C++ HTTP/JSON code, and GPS/grip hardware. The C++ fusion logic itself has its own host-compiled
-tests in `src/esp32-argus/test/host/`. Keep `esp32_sim.py` in sync with the firmware by hand.
+C++ (its pure modules have host tests in `src/esp32-argus/test/host/`), the sender task's
+pre-emption between AT steps (an attempt is atomic here), real timeouts, and GPS hardware. Keep
+`esp32_sim.py` in sync with the firmware by hand.
