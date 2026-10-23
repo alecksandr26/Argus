@@ -1,8 +1,9 @@
 # cv-argus
 
 The Raspberry Pi 5 edge module: camera → MediaPipe BlazeFace → our tiny YOLO eye/mouth/head
-detector → a tracker and timed rules that decide a severity → an alert-decision loop that queues Alerts/RouteStatus heartbeats locally (SQLite) for a Bluetooth
-hand-off to the ESP32 — running live in a Docker container. This is the practical "how do I run
+detector → a tracker and timed rules that decide a severity → a decision loop that queues
+readings locally (SQLite) for a Bluetooth hand-off to the ESP32 — running live in a Docker
+container. This is the practical "how do I run
 it" guide — for the architecture, why things are built the way they are, and the deep
 notebook-fidelity contract, see [`CLAUDE.md`](CLAUDE.md) instead.
 
@@ -58,8 +59,9 @@ container (`down -v` also wipes the named volumes — see "Model download strate
 - **The ESP32 link (Pi only).** On the Pi, `docker-compose.pi.yml` serves the ESP32 through
   the host's own Bluetooth service (BlueZ, over the host's D-Bus socket), so the host only needs
   Bluetooth on (`systemctl status bluetooth`, the Raspberry Pi OS default). On a laptop,
-  `docker-compose.yml` leaves the link off (`SENDER_TRANSPORT=none`): readings and heartbeats
-  still get decided and queued in `buffer/`'s SQLite file, there's just no ESP32 to serve them.
+  `docker-compose.yml` leaves the link off (`SENDER_TRANSPORT=none`): readings still get
+  decided and queued in `buffer/`'s SQLite file, there's just no ESP32 to serve them (the queue
+  is bounded by `BUFFER_MAX_UNSENT_ROWS`).
   Nothing extra is needed to run the quick start below as-is.
 
 ## What you'll see
@@ -85,7 +87,7 @@ including model-artifact overrides not covered here).
 | `PARTS_INT8_FALLBACK` | `1` | If the int8 model can't load or run on this device (it has failed on a Pi 5), use the float `.keras` instead. Checked at startup in a child process; `0` = fail instead. |
 | `PARTS_CLOSED_EYE_THRESHOLD` | `0.40` | An eye counts as closed when p_closed / (p_open + p_closed) ≥ this. 0.5 = plain argmax; lower = more sensitive. |
 | `PARTS_HEAD_DOWN_THRESHOLD` | `0.30` | Same for head down vs. straight. Lower than the eye one because `head_down` is the detector's weakest class. |
-| `RULE_*` | see `src/constants.py` | Rule timers in seconds, e.g. `RULE_EYES_CRITICAL_S=3.0`, `RULE_YAWN_RECENT_S=10`, `RULE_HEAD_GRACE_S=1.0`. |
+| `RULE_*` | see `src/constants.py` | Rule timers in seconds, e.g. `RULE_EYES_CRITICAL_S=3.0`, `RULE_NO_FACE_CRITICAL_S=5.0`, `RULE_HEAD_GRACE_S=1.0`. |
 | `METRICS_LOG_PATH` | `$BUFFER_DIR/metrics.jsonl` | Where `OUTPUTS=metrics` writes one JSON line per frame (see "Measuring it for the report"). |
 | `RESOURCE_SAMPLE_S` | `1` | How often the CPU-per-core / RAM reading in the logs and metrics is re-sampled, in seconds. |
 | `DEMO_STREAM_WIDTH` | unset | Downscale the MJPEG stream to this width (boxes are drawn first, so they stay aligned). |
@@ -106,6 +108,14 @@ including model-artifact overrides not covered here).
 | `ARGUS_TRUCK_ID` / `ARGUS_DEVICE_API_KEY` / `ARGUS_BACKEND_URL` | unset | This truck's backend credentials, from `argus-device.env` — see "Provisioning a truck" below. All three or none; a partial set stops startup. |
 | `ARGUS_WIFI_SSID` / `ARGUS_WIFI_PASSWORD` | unset | The WiFi the ESP32 falls back to (phone hotspot / 4G MiFi, 2.4 GHz). Set in `.env`, sent in `CONFIG`; used verbatim (spaces included). Unset = the ESP32's WiFi stays off. |
 | `ARGUS_GPRS_APN` / `ARGUS_GPRS_USER` / `ARGUS_GPRS_PASSWORD` | unset | The SIM's mobile-data APN. Set in `.env`, sent in `CONFIG`. Set = the ESP32 uses mobile data first, WiFi second; unset = WiFi only. Carrier values in `.env.example`. |
+
+**Code constants, not env vars** (change them in `src/constants.py` and rebuild):
+- the face lock: `FACE_LOCK_MAX_SHIFT_FRAC` 0.6, `FACE_LOCK_MAX_SCALE` 1.6,
+  `FACE_LOCK_MISS_GRACE_S` 1.0, `FACE_LOCK_TAKEOVER_SCALE` 1.25, `FACE_SWITCH_AFTER_S` 5.0;
+- the eye-box filter: `PARTS_EYE_MAX_FRAC` 0.30, `PARTS_EYE_CY_RANGE` 0.15-0.70;
+- the ESP32 link: `BUFFER_LEASE_SECONDS` 120, `BUFFER_DLQ_MAX_ATTEMPTS` 5,
+  `BUFFER_MAX_UNSENT_ROWS` 20000, and the protocol's `MAX_PULL_LIMIT` 50 / `MAX_DLQ_LIMIT` 1.
+  These are contract values the ESP32 firmware relies on.
 
 ## Provisioning a truck
 
@@ -146,34 +156,61 @@ So the host's bluetoothd listens on the channel (and advertises it, so the ESP32
 it up) and hands each accepted connection to the container over D-Bus — see
 `src/sender/bluez_profile.py`.
 
-Downstream of a detection, `orchestrator/` reports the debounced class and every severity change
-as a *reading*, plus a keepalive, and emits a periodic RouteStatus("OK") heartbeat; `buffer/`
-writes them to SQLite and `sender/` answers the ESP32's Bluetooth poll — see `CLAUDE.md`'s
-"`orchestrator/`, `buffer/`, `sender/`, `alerts/` — done" for the full design.
+Downstream of a detection, `orchestrator/` reports every severity change at once and the
+debounced class as *readings*, plus a keepalive every 2 s (there is no heartbeat any more);
+`buffer/` writes them to SQLite and `sender/` answers the ESP32's Bluetooth sessions — see
+`CLAUDE.md`'s "`orchestrator/`, `buffer/`, `sender/`, `alerts/` — done" for the full design.
 
 ### The ESP32 link: live first, dead-letter queue on failure
 
-The ESP32 takes the newest records every 2 s, tries to send what the backend needs (an alert
-when the severity rises to medium/critical, a resolve when it falls back, the truck's position
-on each heartbeat), and tells the Pi per record whether that worked. Only what it couldn't send
-stays in the SQLite queue, the **dead-letter queue**, with the reason and the exact message the
-ESP32 composed (where and when it happened). Once the backend is reachable again the ESP32 sends
-them back 5 at a time, after the live records. Without `argus-device.env` that's every alert
-and heartbeat (`no_credentials`), which is expected until the truck is provisioned.
+This is **Bluetooth protocol v2**. It isn't compatible with v1, so deploy this image together
+with the matching ESP32 firmware. The exact rules are in
+`docs/designs/final-tweaks-contracts.md` (C1); `CLAUDE.md` explains them.
+
+How it works:
+- The ESP32 pulls the newest records every 2 s (`PULL 8`). Each one updates its view of the
+  driver's state, which it attaches to the GPS points it sends the backend every 5 s.
+- Only three kinds of record are **backend events**: an alert when the severity rises to
+  medium, an alert when it rises to critical (or escalates from medium), and a "driver OK" when
+  it falls back to none/low. The ESP32 confirms everything else (keepalives, small changes) at
+  once.
+- The ESP32 holds the events it takes (`TAKEN`, a 120 s lease, so the Pi doesn't serve them
+  again), sends them, and tells the Pi later: `ACK` (delivered) or `FAIL <reason>`. Each line
+  takes effect the moment the Pi reads it, so if a session breaks the ESP32 just resends its
+  outcomes; a repeated FAIL is ignored.
+- What happens to a failure:
+  - a **critical** goes to the **dead-letter queue**, with the reason and the message the ESP32
+    composed (where and when it happened);
+  - a medium or driver OK the ESP32 couldn't send within its 30 s window is **archived** (kept in
+    the `archive` table, never resent);
+  - an event the backend rejects for good (`route_finished`, `no_route`, `too_old`,
+    `wrong_truck`, `invalid`) is archived at once.
+- Once the backend is reachable again, the ESP32 replays dead letters **one per session, newest
+  first, round-robin**, and only while no live event is waiting. Each failed attempt counts; the
+  5th archives the row (`max_attempts`).
+- If the ESP32 doesn't pick records up for 60 s (the Bluetooth link is down), the Pi moves a
+  critical to the dead-letter queue (`esp32_unreachable`), archives a medium/OK and drops
+  keepalives. If the ESP32 later reports that same critical with the message it composed, the
+  Pi keeps that message.
+- Every record carries `age_s`, the seconds since the event, computed when it's served. The
+  backend turns it into a time with its own clock, so the Pi's clock doesn't need to be right.
+- Without `argus-device.env` the ESP32 can't reach the backend (`no_credentials`), so criticals
+  collect in the dead-letter queue. That's expected until the truck is provisioned.
 
 What the log shows:
 ```
-orchestrator: cam0 -> Drowsy, severity none -> critical (eyes_closed), episode 3f2a | queued for the ESP32
-sender: ESP32 78:1C:3C:36:4A:22 couldn't deliver drowsiness critical (eyes_closed) -> dead-letter queue (no_credentials)
-sender: queue: outbox 0, dead-letter queue 7 (oldest 12 min ago, no_credentials 7)
+orchestrator: cam0 -> Drowsy, severity none -> critical (eyes_closed), episode 3f2a1b2c3d4e | queued for the ESP32
+sender: ESP32 78:1C:3C:36:4A:22 couldn't deliver drowsiness critical (eyes_closed) -> dead-letter queue (no_network)
+sender: queue: outbox 0, dead-letter queue 7 (oldest 12 min ago, no_network 7), archive 3
 ```
 
 Two commands in the running container (prefix them with
 `docker compose -f docker-compose.yml -f docker-compose.pi.yml exec cv-argus`):
 - `python -m cv_argus.sender.inject critical` queues a fake critical reading, to test the whole
   link without the camera; it prints the `inject none --episode <id>` that resolves it.
-- `python -m cv_argus.buffer.status --bodies` lists the queue and each dead letter (when, what,
-  why, the composed message). Read-only.
+- `python -m cv_argus.buffer.status --bodies` lists the outbox, each dead letter (when, what,
+  why, attempts, replay round, lease, the composed message) and the archive (count by reason,
+  newest rows). Read-only.
 
 **`mjpeg` has no authentication.** It's meant for demos on a network you trust, not for leaving
 on — see `CLAUDE.md`'s "Demo" section for why this matters more than usual for this project.
@@ -251,10 +288,12 @@ a live camera runs until stopped.
 
 The pipeline is simple and explainable:
 
-1. BlazeFace finds the face, which is cropped square and converted to gray, exactly as in
-   training.
+1. BlazeFace finds the faces, and a **face lock** keeps the driver's (below). That face is
+   cropped square and converted to gray, exactly as in training.
 2. Our own **46k-parameter detector** (notebook 12, `tiny_yolo_w1`) finds open/closed eyes, a
-   yawning mouth, and head straight or down.
+   yawning mouth, and head straight or down. Eye boxes that are too big or in the wrong place on
+   the face (over 0.30 of the crop side, or centre outside 0.15-0.70 of its height) are dropped
+   before NMS; notebook 12 applies the same filter.
 3. A tracker gives each part a stable ID.
 4. **Deterministic rules with timers** decide the severity.
 
@@ -301,11 +340,28 @@ More head-down training data is the real fix.
 | Head down + eyes closed or hidden | | | **3.0** (2.0 after a yawn) |
 | Head down, eyes open (looking down) | | 3.0 | |
 | Yawning alone: ≥ 3 yawns (≥ 1.5 s each) in 5 min | yes | never | never |
-| No face for 3 s after one was seen | yes | | |
+| No face for 5 s after one was seen | | | **5.0** (no LOW/MEDIUM step) |
 
 Closed eyes and head down are the risks; yawning only makes those fire sooner. Severity rises
-immediately and drops only after 2 s clear. A one-frame flicker (≤ 0.4 s; 1 s for the head)
-doesn't reset a timer.
+immediately and drops only after 2 s with a visible, clear face (never while the face is
+missing). The "driver OK" record goes out the moment it drops. A one-frame flicker (≤ 0.4 s; 1 s
+for the head) doesn't reset a timer.
+
+**One face.** A passenger or someone leaning in must not count as the driver:
+- At start the **largest** face is locked: it's nearest the camera, so normally the driver's.
+- Other faces seen next to it are **bystanders** and are ignored. They're remembered for 1 s
+  after they leave the frame, so a one-frame detector miss doesn't confuse them with a new face.
+- If the driver's face disappears and only a bystander is left, it reads as no face. That raises
+  the no-face CRITICAL at 5 s, and at 5 s the lock moves to the bystander. A new face that
+  matches no bystander (typically the driver coming back, or the box jumping) takes the lock at
+  once.
+- A face at least 1.25x bigger than the locked one, next to it for 5 s, takes the lock. This is
+  how the driver takes it back from a passenger.
+- A switch resets the rule timers but never the held severity, so an alarm stays on until the
+  new face has been clear for 2 s.
+- Known limits: a stranger never seen next to the driver, or a passenger out of view for more
+  than 1 s, takes the lock at once; a passenger leaning in at 1.25x the driver's size or more for
+  5 s takes it too.
 
 ### Measuring it for the report
 
@@ -313,6 +369,7 @@ doesn't reset a timer.
 - the severity, reason and trigger time;
 - the eye / mouth / head states and every tracked part with its confidence;
 - the timers;
+- the face lock: `face_lock` = `{faces, ignored, switch_s, takeover_s, switched, reacquired}`;
 - the time of every step, in ms: BlazeFace, crop, model inference, decode, tracker, rules, the
   whole stage, the queueing between stages, and end to end;
 - CPU and RAM (`res`), re-sampled every `RESOURCE_SAMPLE_S` (1 s):
@@ -323,8 +380,14 @@ doesn't reset a timer.
 The console shows the same thing as one line per frame, led by the criticality:
 
 ```
-[pi_camera] criticality=LOW (no_face 13.6s) | face=no | eyes=- mouth=- head=- | eyes_closed 0.0s head_down 0.0s | ms blazeface 6.8 crop 0.6 infer 0.7 decode 0.3 track 0.1 rules 0.0 queue 0.3 e2e 7.2 | cpu 23% [12 30 25 26] proc 45% | ram 412MB sys 18%
+[pi_camera] criticality=CRITICAL (no_face 5.0s) | face=no faces=1 ignored=1 switch=4.2s | eyes=- mouth=- head=- | eyes_closed 0.0s head_down 0.0s | ms blazeface 6.8 crop 0.6 infer 0.7 decode 0.3 track 0.1 rules 0.0 queue 0.3 e2e 7.2 | cpu 23% [12 30 25 26] proc 45% | ram 412MB sys 18%
 ```
+
+After `face=` come the face-lock tokens: `faces=<n> ignored=<n>` on every frame; `switch=<s>s`
+while the lock waits to move to a bystander; `takeover=<s>s` while a bigger face waits to take
+the lock; `SWITCHED` on the frame the lock moves; `REACQUIRED` when a new face takes the lock at
+once. A passenger sitting next to the driver looks like `face=yes faces=2 ignored=1`, with no
+`switch=` timer.
 
 ```sh
 docker compose cp cv-argus:/app/data/metrics.jsonl .
@@ -357,10 +420,12 @@ The summary has:
 
 int8 is the default. The Pi 5 is slower and **unmeasured**.
 
-The ESP32 and backend are unchanged:
+What the ESP32 gets:
 - MEDIUM and CRITICAL go out as `Drowsy` (`p_drowsy` 0.75 / 0.95); none and LOW go out as
   `Not Drowsy`.
-- `severity`, `reason`, `trigger_s` and `timers` ride along in the buffered reading's payload.
+- `severity`, `previous_severity`, `episode`, `reason`, `trigger_s` and `timers` ride along in
+  the buffered reading's payload. See "The ESP32 link" above for which readings become backend
+  events.
 
 ## Demo: watching it work
 
@@ -523,7 +588,7 @@ stop the container instead.
 cd src/cv-argus
 pip install -e .          # once -- maps src/ to the cv_argus import name (see setup.py)
 pip install pytest        # not in requirements.txt on purpose -- see CLAUDE.md's "Tests"
-pytest                    # the full unit suite (223 tests)
+pytest                    # the full unit suite (about 540 tests)
 ```
 
 The default run is **hermetic** — no network, no camera, no Google Drive, no model download.
@@ -562,7 +627,7 @@ no-op, and the `SOURCE`/`OUTPUTS` guards reject bad values.
 
 - [`CLAUDE.md`](CLAUDE.md) — the real architecture: the `Stage`/`Pipeline` threading design, the
   parts pipeline's training-fidelity rules, thresholds and measurements, the `orchestrator/`/`buffer/`/`sender/`/
-  `alerts/` design (decision loop, SQLite schema, the Bluetooth PULL/ACK protocol), exact model
+  `alerts/` design (decision loop, SQLite schema, the Bluetooth protocol v2), exact model
   input/output shapes, and every convention worth knowing before changing code here.
 - [`tests/`](tests/) — the `pytest` suite (mirrors `src/`: `test_model_*`, `test_pipeline_*`,
   `test_alerts_*`, `test_buffer_*`, `test_orchestrator_*`, `test_sender_*`, `test_main.py`, plus
@@ -571,8 +636,9 @@ no-op, and the `SOURCE`/`OUTPUTS` guards reject bad values.
   threading/queue plumbing itself, runnable with no camera, no model, and none of `cv2`/
   `mediapipe`/`tensorflow` installed. `tests/test_pipeline_stage.py` is the maintained `pytest`
   version of the same checks.
-- **What's still genuinely open, not just undocumented**: the ESP32 link (`SENDER_TRANSPORT=
-  bluez`, `docker-compose.pi.yml`) is tested against a private `dbus-daemon` with a stand-in
-  BlueZ, but hasn't yet run on the real Pi + ESP32 pair (real pairing, the real bluetoothd); and
-  the detector hasn't been measured on a Pi 5, real cabin NoIR footage, or unseen drivers (see
+- **What's still genuinely open, not just undocumented**: the ESP32 link paired and answered
+  `CONFIG` on the real Pi + ESP32 under protocol v1 (2026-10-20), but **protocol v2** has only
+  run against in-memory fakes and the `src/tests/edge_chain` simulation, not the real pair; the
+  detector hasn't been measured on a Pi 5, real cabin NoIR footage, or unseen drivers; and the
+  notebook 12 retrain with the eye-box filter and the new augmentations is pending in Colab (see
   `CLAUDE.md`'s "Current status").
