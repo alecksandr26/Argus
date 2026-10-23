@@ -4,6 +4,7 @@ import Icon from '../components/Icon'
 import FilterChips from '../components/FilterChips'
 import IncidentFeed, { IncidentCard } from '../components/IncidentFeed'
 import CloseIncidentDialog from '../components/CloseIncidentDialog'
+import CloseNotice from '../components/CloseNotice'
 import RouteEndActions from '../components/RouteEndActions'
 import FleetMap, { type MapFocus } from '../components/FleetMap'
 import { useAuth } from '../context/AuthContext'
@@ -68,8 +69,15 @@ const INCIDENT_VIEWS: { key: IncidentsView; label: string }[] = [
  * (C3.6 `[sync 2]`). Closed incidents come from `GET /api/incidents?route_id=&status=closed`.
  *
  * The map shows the truck (coloured by the route's `incident_state`, hollow when it's a last
- * known position), the path, and a pin per alert. Guardian and root_admin close incidents (a
- * note is required for a critical one); root_admin and admin complete or stop the route.
+ * known position), the path, and a pin per alert. It follows the truck; "Show on map" pauses
+ * that to fly to an alert, and "Follow truck" resumes it. Guardian and root_admin close
+ * incidents (a note is required for a critical one); root_admin and admin complete or stop the
+ * route.
+ *
+ * After a close (from the Open feed or the focused alert's "Close incident"), a `role="status"`
+ * confirmation ("… incident closed · Closed HH:MM", C3.7) stays above the tabs until the next
+ * close or navigation; the incident leaves the Open list at once and the view stays where it is
+ * (no switch to Closed).
  */
 export default function RouteLiveView() {
   const { alertId: legacyAlertId, routeId: routeIdParam } = useParams<{
@@ -147,7 +155,19 @@ export default function RouteLiveView() {
   const routeId = isLegacy ? (focusedAlert?.id_route ?? null) : (routeIdParam ?? null)
   const { live, loading, error, errorStatus, refresh } = useLive(token, routeId, Boolean(routeId))
   const route = live.routes.find((r) => r.id_route === routeId) ?? null
-  const openIncidents = live.incidents
+
+  // The last close's confirmation and the incidents closed here: hidden from the Open list right
+  // away (a poll already in flight can't bring them back). Navigating resets both.
+  const [closedNotice, setClosedNotice] = useState<Incident | null>(null)
+  const [closedIds, setClosedIds] = useState<ReadonlySet<string>>(() => new Set())
+  useEffect(() => {
+    setClosedNotice(null)
+    setClosedIds(new Set())
+  }, [routeId, focusedAlertId])
+  const openIncidents = useMemo(
+    () => live.incidents.filter((i) => !closedIds.has(i.id_incident)),
+    [live.incidents, closedIds],
+  )
   const position = route?.latest_position ?? null
 
   // Closed incidents of this route (Incidents tab → Closed, and their pins on the map).
@@ -205,7 +225,9 @@ export default function RouteLiveView() {
   }
 
   const [closing, setClosing] = useState<Incident | null>(null)
-  function afterClose() {
+  function afterClose(inc: Incident) {
+    setClosedNotice(inc)
+    setClosedIds((prev) => new Set(prev).add(inc.id_incident))
     void refresh()
     loadClosed()
     if (focusedAlertId) reloadFocusedAlert(focusedAlertId).catch(() => {})
@@ -509,6 +531,24 @@ export default function RouteLiveView() {
             }}
           >
             <FleetMap markers={markers} paths={paths} pins={pins} focus={focus} maxZoom={14} follow />
+            {focus && markers.length > 0 && (
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setFocus(null)}
+                style={{
+                  position: 'absolute',
+                  top: 12,
+                  right: 12,
+                  zIndex: 1000,
+                  padding: '5px 12px',
+                  fontSize: 12,
+                }}
+              >
+                <Icon name="route" size={14} />
+                Follow truck
+              </button>
+            )}
           </div>
 
           {focusedAlert && (
@@ -563,6 +603,8 @@ export default function RouteLiveView() {
             overflow: 'hidden',
           }}
         >
+          <CloseNotice incident={closedNotice} />
+
           <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
             {focusedAlertId && (
               <TabButton active={tab === 'alert'} onClick={() => setTab('alert')}>
@@ -824,9 +866,9 @@ export default function RouteLiveView() {
           incident={closing}
           token={token}
           onCancel={() => setClosing(null)}
-          onClosed={() => {
+          onClosed={(inc) => {
             setClosing(null)
-            afterClose()
+            afterClose(inc)
           }}
         />
       )}

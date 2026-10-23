@@ -240,6 +240,74 @@ describe('RouteLiveView', () => {
     const close = fetchMock.mock.calls.find(([u]) => String(u).endsWith('/api/incidents/i-1/close'))!
     expect(JSON.parse(String(close[1]!.body))).toEqual({ note: 'Driver pulled over' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    // C3.7: the confirmation, and the focused alert's incident is no longer offered for closing.
+    expect(screen.getByRole('status')).toHaveTextContent(/Closed \d{1,2}:\d{2}/)
+    expect(screen.queryByRole('button', { name: 'Close incident' })).not.toBeInTheDocument()
+  })
+
+  it('close from the Open feed with no focused alert: role=status "Closed HH:MM", leaves Open, stays on Open', async () => {
+    seedSession('guardian')
+    const incident = makeIncident({
+      tier: 'medium',
+      alerts: [makeAlert({ alert_type: 'yawn_eyes_closed' })],
+    })
+    // The live poll keeps returning the incident (as a poll in flight would): it stays hidden.
+    const fetchMock = mockBackend({ lives: [{ incidents: [incident] }] })
+    const user = userEvent.setup()
+    renderAt('/routes/r-1/live')
+
+    const medium = await screen.findByRole('region', { name: 'Medium incidents' })
+    expect(screen.getByRole('status')).toBeEmptyDOMElement()
+    const card = within(medium).getByRole('article', { name: 'Medium incident' })
+    expect(within(card).getByText('Eyes closed after yawning')).toBeInTheDocument()
+    await user.click(within(card).getByRole('button', { name: 'Close incident' }))
+    const dialog = screen.getByRole('dialog', { name: 'Close incident' })
+    await user.click(within(dialog).getByRole('button', { name: 'Close incident' }))
+
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Closed \d{1,2}:\d{2}/))
+    // at(100) = 12:01:40Z = 06:01 in Mexico City.
+    expect(screen.getByRole('status')).toHaveTextContent('Medium incident closed · ARG-001 · Closed 06:01')
+    expect(screen.queryByRole('region', { name: 'Medium incidents' })).not.toBeInTheDocument()
+    expect(screen.getByText('No open incidents on this route.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Incidents (0 open)' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Closed' })).toHaveAttribute('aria-pressed', 'false')
+    // It re-read the closed list for the Closed chip.
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([u]) => new URL(u).pathname === '/api/incidents').length,
+      ).toBeGreaterThan(1),
+    )
+  })
+
+  it('"Follow truck" clears a "Show on map" focus so the map follows the truck again', async () => {
+    seedSession('guardian')
+    mockBackend({
+      route: makeRouteLive({
+        id_route: 'r-1',
+        latest_position: {
+          t: at(0),
+          lat: 20.5,
+          lon: -103,
+          speed: 60,
+          vigilance: 'low',
+          last_known: false,
+          location_age_s: 0,
+        },
+      }),
+      lives: [{ incidents: [makeIncident()] }],
+    })
+    const user = userEvent.setup()
+    renderAt('/routes/r-1/live')
+
+    const medium = await screen.findByRole('region', { name: 'Medium incidents' })
+    expect(screen.queryByRole('button', { name: 'Follow truck' })).not.toBeInTheDocument()
+    await user.click(within(medium).getByRole('button', { name: 'Show on map' }))
+    expect(map.props!.focus).toMatchObject({ pinId: 'a-1' })
+
+    await user.click(screen.getByRole('button', { name: 'Follow truck' }))
+    expect(map.props!.focus).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Follow truck' })).not.toBeInTheDocument()
   })
 
   it('an old panic-button row still reads, labelled "Panic button"', async () => {
