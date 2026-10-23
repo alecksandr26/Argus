@@ -1,118 +1,94 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import SearchBox from '../components/SearchBox'
 import FilterChips from '../components/FilterChips'
-import Icon from '../components/Icon'
+import { IncidentCard } from '../components/IncidentFeed'
 import { useAuth } from '../context/AuthContext'
+import { usePolling } from '../hooks/usePolling'
 import { listRoutes } from '../api/routes'
-import { listAlerts } from '../api/alerts'
-import { listDrivers } from '../api/drivers'
-import { listTrucks } from '../api/trucks'
+import { listIncidents } from '../api/incidents'
 import { ApiError } from '../api/client'
-import { clock, relativeTime, shortDate } from '../utils/format'
-import { severity } from '../utils/status'
+import { alertTypeLabel } from '../utils/status'
 import { ALERT_HISTORY_POLL_MS } from '../constants'
-import type { Alert, AlertSeverity, Driver, Route, Truck } from '../types'
+import type { Incident, Route } from '../types'
 
-const POLL_MS = ALERT_HISTORY_POLL_MS
+/** How many closed incidents the screen reads (the backend allows up to 500). */
+const HISTORY_LIMIT = 200
 
-// No "Low" chip — see LiveOps.tsx's FILTERS comment: a real Alert row is never actually
-// severity_level "low" in practice.
-const FILTERS: { key: AlertSeverity | 'all'; label: string }[] = [
+const FILTERS: { key: Incident['severity'] | 'all'; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'critical', label: 'Critical' },
   { key: 'medium', label: 'Medium' },
 ]
 
 /**
- * "Alert history" — every alert a human has already reviewed (`reviewed_by_operator`), fetched
- * directly via `GET /api/alerts?reviewed=true` rather than folded into `RouteHistory.tsx`
- * (which is keyed off route *completion*, an unrelated concept — a reviewed alert on a still
- * in-progress route wouldn't show up there at all). Reviewing an alert from `RouteLiveView` is
- * the entire mechanism that makes it appear here: no separate "move to history" step exists,
- * it's just this screen's `reviewed: true` filter picking up what `LiveOps.tsx`'s default
- * `Unreviewed` filter just started excluding.
+ * "Alert history": the **closed** incidents (`GET /api/incidents?status=closed`), newest close
+ * first, polled every 5 s (paused while the tab is hidden). An incident leaves Live operations'
+ * feed and lands here the moment a guardian or root_admin closes it — closing is per incident,
+ * with a note (required for a critical one), and it closes every alert of the incident. Each
+ * incident shows its close time and note and all of its alerts, each with its position
+ * ("Last known (N old)" / "Position unknown" where that applies) and the replayed badge.
+ *
+ * This replaced the earlier per-alert `reviewed=true` list: `reviewed_by_operator` is still set
+ * on every alert of a closed incident, but "closed" is now the one state that moves an alert
+ * out of the live feed.
  */
 export default function AlertHistory() {
   const { session } = useAuth()
   const token = session!.token
 
-  const [alerts, setAlerts] = useState<Alert[]>([])
+  const [incidents, setIncidents] = useState<Incident[]>([])
   const [routes, setRoutes] = useState<Route[]>([])
-  const [drivers, setDrivers] = useState<Driver[]>([])
-  const [trucks, setTrucks] = useState<Truck[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
-  const [severityFilter, setSeverityFilter] = useState<AlertSeverity | 'all'>('all')
+  const [severityFilter, setSeverityFilter] = useState<Incident['severity'] | 'all'>('all')
 
-  // Routes/drivers/trucks resolve names for each alert's row — fetched once, not polled.
+  // Routes resolve origin → destination for each incident's header — fetched once, not polled.
   useEffect(() => {
     listRoutes(token).then(setRoutes).catch(() => {})
-    listDrivers(token).then(setDrivers).catch(() => {})
-    listTrucks(token).then(setTrucks).catch(() => {})
   }, [token])
 
-  useEffect(() => {
-    let cancelled = false
-    const poll = () => {
-      listAlerts(token, { reviewed: true })
+  const poll = useCallback(
+    () =>
+      listIncidents(token, { status: 'closed', limit: HISTORY_LIMIT })
         .then((rows) => {
-          if (cancelled) return
-          setAlerts(rows)
+          setIncidents(rows)
           setError(null)
         })
         .catch((err) => {
-          if (!cancelled) {
-            setError(err instanceof ApiError ? err.message : 'Failed to load alert history')
-          }
+          setError(err instanceof ApiError ? err.message : 'Failed to load alert history')
         })
-        .finally(() => {
-          if (!cancelled) setLoading(false)
-        })
-    }
-    poll()
-    const id = setInterval(poll, POLL_MS)
-    return () => {
-      cancelled = true
-      clearInterval(id)
-    }
-  }, [token])
+        .finally(() => setLoading(false)),
+    [token],
+  )
+  usePolling(poll, ALERT_HISTORY_POLL_MS, { resetKey: token })
 
   const routeById = useMemo(() => new Map(routes.map((r) => [r.id_route, r])), [routes])
-  const driverById = useMemo(() => new Map(drivers.map((d) => [d.id_driver, d])), [drivers])
-  const truckById = useMemo(() => new Map(trucks.map((t) => [t.id_truck, t])), [trucks])
-
-  const rows = useMemo(() => {
-    return [...alerts]
-      .sort((a, b) => +new Date(b.timestamp) - +new Date(a.timestamp))
-      .map((a) => {
-        const route = routeById.get(a.id_route)
-        const driver = route ? driverById.get(route.id_driver) : undefined
-        const truck = route ? truckById.get(route.id_truck) : undefined
-        return {
-          alert: a,
-          originDestination: route ? `${route.origin_name} → ${route.destination_name}` : null,
-          plate: truck?.plate_number ?? null,
-          driverName: driver ? `${driver.first_name} ${driver.last_name}` : null,
-        }
-      })
-  }, [alerts, routeById, driverById, truckById])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return rows
-      .filter((r) => severityFilter === 'all' || r.alert.severity_level === severityFilter)
-      .filter((r) => {
+    return [...incidents]
+      .sort((a, b) => Date.parse(b.closed_at ?? '') - Date.parse(a.closed_at ?? ''))
+      .filter((i) => severityFilter === 'all' || i.severity === severityFilter)
+      .filter((i) => {
         if (!q) return true
-        return `${r.alert.alert_type} ${r.originDestination ?? ''} ${r.driverName ?? ''} ${
-          r.plate ?? ''
-        }`
+        const route = routeById.get(i.id_route)
+        return [
+          i.truck_plate_number ?? '',
+          i.driver_full_name ?? '',
+          i.close_note,
+          route ? `${route.origin_name} ${route.destination_name}` : '',
+          ...i.alerts.map((a) => alertTypeLabel(a.alert_type)),
+        ]
+          .join(' ')
           .toLowerCase()
           .includes(q)
       })
-  }, [rows, query, severityFilter])
+  }, [incidents, query, severityFilter, routeById])
+
+  const alertCount = incidents.reduce((n, i) => n + i.alert_count, 0)
 
   return (
     <div
@@ -127,12 +103,12 @@ export default function AlertHistory() {
     >
       <PageHeader
         title="Alert history"
-        subtitle={`${alerts.length} reviewed alerts`}
+        subtitle={`${incidents.length} closed incidents · ${alertCount} alerts`}
         actions={
           <SearchBox
             value={query}
             onChange={setQuery}
-            placeholder="Search route, driver or truck…"
+            placeholder="Search truck, driver, route, alert or note…"
           />
         }
       />
@@ -145,65 +121,43 @@ export default function AlertHistory() {
         </div>
       )}
 
-      <div className="panel" style={{ flex: 1, overflow: 'auto', padding: 6 }}>
+      <div className="panel" style={{ flex: 1, overflow: 'auto', padding: 10 }}>
         {loading ? (
           <div style={{ padding: 28, textAlign: 'center', color: 'var(--text-faint)' }}>
             Loading alert history…
           </div>
         ) : filtered.length === 0 ? (
           <div style={{ padding: 28, textAlign: 'center', color: 'var(--text-faint)' }}>
-            No reviewed alerts match these filters.
+            No closed incidents match these filters.
           </div>
         ) : (
-          <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {filtered.map(({ alert, originDestination, plate, driverName }) => {
-              const sev = severity[alert.severity_level]
+          <ul
+            style={{
+              listStyle: 'none',
+              margin: 0,
+              padding: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 12,
+            }}
+          >
+            {filtered.map((inc) => {
+              const route = routeById.get(inc.id_route)
               return (
-                <li key={alert.id_alert}>
-                  <Link
-                    to={`/alerts/${alert.id_alert}`}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 12,
-                      padding: '10px 12px',
-                      borderRadius: 8,
-                      textDecoration: 'none',
-                      color: 'inherit',
-                    }}
-                  >
-                    <Icon
-                      name="check"
-                      size={14}
-                      style={{ color: 'var(--good)', flexShrink: 0 }}
-                    />
-                    <span style={{ fontSize: 12.5, fontWeight: 500, minWidth: 160 }}>
-                      {alert.alert_type}
-                    </span>
-                    <span
-                      className={sev.tone === 'neutral' ? 'pill' : `pill pill--${sev.tone}`}
-                      style={{ fontSize: 10, padding: '2px 8px' }}
-                    >
-                      {sev.label}
-                    </span>
-                    <span className="mono" style={{ fontSize: 11.5, color: 'var(--text-soft)', minWidth: 150 }}>
-                      {plate ?? '—'} · {driverName ?? '—'}
-                    </span>
-                    <span style={{ fontSize: 11.5, color: 'var(--text-faint)', minWidth: 170 }}>
-                      {originDestination ?? '—'}
-                    </span>
-                    <span
+                <li key={inc.id_incident} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <Link
+                      to={`/routes/${inc.id_route}/live`}
                       className="mono"
-                      style={{
-                        fontSize: 11,
-                        color: 'var(--text-faint)',
-                        marginLeft: 'auto',
-                      }}
+                      style={{ fontSize: 12, color: 'var(--text-soft)' }}
                     >
-                      {shortDate(alert.timestamp)}, {clock(alert.timestamp)} ·{' '}
-                      {relativeTime(alert.timestamp)}
+                      {inc.truck_plate_number ?? '—'} · {inc.driver_full_name ?? '—'}
+                    </Link>
+                    <span style={{ fontSize: 11.5, color: 'var(--text-faint)' }}>
+                      {route ? `${route.origin_name} → ${route.destination_name}` : '—'}
                     </span>
-                  </Link>
+                  </div>
+                  <IncidentCard incident={inc} canClose={false} />
                 </li>
               )
             })}
