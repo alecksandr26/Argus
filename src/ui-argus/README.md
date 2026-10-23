@@ -1,41 +1,41 @@
 # ui-argus
 
 The Argus web frontend — a React + TypeScript app (Vite) serving all four roles: **Control
-Tower** (`guardian`, read-only monitoring + alert review), **Administration / Logistics**
+Tower** (`guardian`, read-only monitoring + closing incidents), **Administration / Logistics**
 (`root_admin` full control, `admin` scoped to trucks/drivers/routes), and `truck_driver`. See
 `CLAUDE.md` in this directory for why it's built this way, and the top-level `CLAUDE.md` for how
 this fits the rest of Argus.
 
-**Current status: every screen calls the real backend.** `src/data/fixtures.ts` is deleted —
-`Login`, `Fleet`, `Drivers`, `TravelManagement`, `LiveOps`, and `RouteLiveView` (the single-alert
-`AlertTriage` screen, since generalized into a route+alert live view — see below) all fetch from
-`src/backend-argus` via `src/api/*`, and two screens that never had fixture data at all now
-exist: **`Access`** (root_admin/admin user management — an admin session is scoped server-side
-to guardian accounts only) and **`Profile`** (self-service email/name/phone/password edit for
-any role). A third screen, **`RouteHistory`** (`/history`, "Route history" in the sidebar —
-previously a `soon` placeholder labeled "Trip history"), lists completed routes
-(`GET /api/routes?status=completed`) each expandable into the alerts raised on that trip
-(`GET /api/alerts`, grouped client-side by `id_route` — type, severity, timestamp, and
-lat/lon), linking each alert through to `RouteLiveView`. A fourth, **`AlertHistory`**
-(`/alerts/history`, "Alert history" in the sidebar), lists every alert a human has already
-reviewed (`GET /api/alerts?reviewed=true`) independent of whether its route has completed.
-`RouteLiveView` itself (`/alerts/:alertId`, or the newer `/routes/:routeId/live` from
-`TravelManagement`'s per-row "View live" button) now live-tracks the truck's map position
-(`FleetMap`'s new `follow` prop), shows a client-side improving/worsening trend pill, and has a
-"Route alerts" tab listing every alert on that route with its own severity/reviewed filters —
-`LiveOps.tsx`'s own feed gained a matching Unreviewed/Reviewed/All filter, which is the whole
-mechanism behind a reviewed alert moving into `AlertHistory`. Role-based gating is real:
-`RequireRole` gates `/access`, `Sidebar.tsx`'s nav items are filtered per role, and
-`Fleet`/`Drivers`/`TravelManagement` render read-only (no Add/Save) for a `guardian` session
-instead of letting a write attempt fail with an unexplained 403. The live-ops dashboard polls
-`GET /api/routes/active` + `GET /api/alerts` every 7s for its map/feed (the interim real-time
-strategy — see `INTEGRATION.md` for the still-open WebSocket/SSE question). UI copy is in
-English (the design canvas is in Spanish; translated on request). `npm install`, lint,
-typecheck, build, and the full Vitest suite (65 tests across 13 files) have all been run for
-real against this exact code — see "Running the tests" below and `CLAUDE.md`'s "Current
-status"/"Testing" sections (including a real environment gotcha worth reading before you hit it
-yourself) — and **`INTEGRATION.md` for what's still genuinely open** (OSRM, a real-time push
-mechanism, `Alert.media_url` storage).
+## What it shows
+
+Every screen calls the real `src/backend-argus` API through `src/api/*`:
+
+- **Live operations** (`/`): one `GET /api/live` poll every 5 s (paused while the browser tab is
+  hidden). A map with one marker per active route, coloured by the route's alert state
+  (normal / medium / critical, hollow when it's a last-known position), each route's GPS path
+  and a pin per open-incident alert. Beside it, the **open incidents** in tier sections
+  (Critical → Medium → Older than 1 h), grouped by route, each alert with its position
+  ("Last known (N old)" / "Position unknown" where that applies), "Show on map", "Driver OK
+  since" and a "Recovered after lost connection" badge for alerts replayed from the truck's
+  dead-letter queue. Guardian and root_admin **close incidents** (a note is required for a
+  critical one); a "… incident closed · Closed HH:MM" confirmation stays until the next close.
+  Root_admin and admin **complete or stop** a route (a reason is required to stop).
+- **Route view** (`/routes/:id/live`, optionally `?alert=<id>`; the old `/alerts/:id` links still
+  work): one route, active or ended — the whole GPS path (seeded from
+  `GET /api/routes/{id}/track`, then the live points), the truck followed on the map ("Follow
+  truck" after a "Show on map"), its open and closed incidents, and the focused alert's detail.
+- **Alert history** (`/alerts/history`): closed incidents with their close time, note and alerts.
+- **Route history** (`/history`): completed and stopped trips, each with its GPS path, alert
+  pins and alerts (each with "Show on map").
+- **Routes**, **Fleet**, **Drivers**, **Access** (user management, root_admin/admin) and
+  **Profile** (self-service account edit). Fleet issues each truck's device key
+  (`argus-device.env`); root_admin also gets the cloud **Fleet simulator** switch on Live
+  operations.
+
+The panic button and grip sensor were removed from the system, and from the UI; old panic alerts
+still read as "Panic button". UI copy is in English (the design canvas is in Spanish).
+**`INTEGRATION.md`** lists what's still open (OSRM, a push channel instead of polling,
+`Alert.media_url` storage).
 
 ## Quick start (Docker — recommended)
 
@@ -53,11 +53,11 @@ will show `ui-argus`'s image).
 
 ## Quick start (local Node, no Docker)
 
-Needs Node 22+ and npm on your machine.
+Needs **Node ≥22.14** (Node 24 works) and npm.
 
 ```bash
 cp .env.example .env
-npm install
+npm ci
 npm run dev
 ```
 
@@ -74,42 +74,43 @@ npm run dev
 ## Running the tests
 
 ```bash
-npm install    # once
+npm ci         # once
 npm run test
 ```
 
-64 tests across 13 files (Vitest + React Testing Library + jsdom) — component rendering/
-interaction (`RecordTable`, `SearchBox`, `Sidebar`, `StatusPill`, `Login`, `RequireRole`) and
-pure utility logic (`status.ts`, `format.ts`, `geo.ts`'s coordinate-shape adapter, `crypto.ts`'s
-`sha256Hex`), plus real (mocked-`fetch`) network/role-gating flows: `Access.test.tsx`,
-`Profile.test.tsx`, and `Fleet.test.tsx` (write-gating: `root_admin` gets an editable panel,
-`guardian` gets a read-only one). See `CLAUDE.md`'s "Testing" section for what each file covers,
-what isn't covered yet, and two real gotchas hit while building this out (React Testing
-Library's auto-cleanup needing an explicit `afterEach`; jsdom's missing `crypto.subtle` needing
-a Node `webcrypto` polyfill in `src/test/setup.ts`).
+246 tests across 30 files (Vitest + React Testing Library + jsdom): the `/api/live` merge and
+de-duplication, the incident tiers, positions and map layers as pure functions; the polling
+hooks; the incident feed, the close / complete / stop dialogs (including the 503 "Route is busy,
+try again" retry); and every page with a mocked `fetch` (Leaflet is mocked too — what the map
+actually draws is only checked in a browser, by `src/it-argus`). See `CLAUDE.md`'s "Testing"
+section for what each file covers.
 
 **Two environment gotchas, not code bugs — read this before assuming `npm run test` is broken**:
-this project needs **Node ≥22.14** (older Node 20.x hits an `ERR_REQUIRE_ESM` crash from a
-broken `html-encoding-sniffer`/`@exodus/bytes` combo in the committed lockfile — ESLint/`tsc`/
-the build are unaffected, only Vitest's jsdom environment). Separately, if this checkout lives
-under a Windows-mounted path in WSL2 (`/mnt/c/Users/...`), Vitest's workers may simply time out
-trying to start at all — run (or at least test) from a native Linux filesystem path instead if
-you hit `Timeout waiting for worker to respond` with zero tests actually running. See
-`CLAUDE.md`'s "Current status" for the full diagnosis of both.
+- **Node ≥22.14.** Node 20.x crashes Vitest's jsdom environment with `ERR_REQUIRE_ESM`
+  (`html-encoding-sniffer` requiring the ESM-only `@exodus/bytes`). ESLint, `tsc` and the build
+  are unaffected.
+- **WSL2 `/mnt/c/...` checkouts.** Vitest's workers may time out starting (`Timeout waiting for
+  worker to respond`, zero tests run). Copy the module to a native Linux path and test there:
 
-**This suite now also runs automatically inside `docker build`/`docker compose build`**, as a
-real gate — the `checks` stage runs `npm run lint` → `npm run test` → `npm run build` in order,
-and both the `dev` and `prod` targets genuinely depend on it passing (verified directly: a
-deliberately-broken test fails `docker build` outright, no image produced). See `CLAUDE.md`'s
-"Docker architecture" for the exact mechanism.
+  ```bash
+  rsync -a --delete --exclude node_modules --exclude dist src/ui-argus/ ~/ui-run/
+  cd ~/ui-run && npm ci && npm test && npm run build
+  ```
+
+`npm ci` works since the lockfile fix: `package-lock.json` had been committed with a
+machine-local `file:../../../../../../mnt/c/...` root version and the same prefix on every
+package key, so `npm ci` saw every dependency as missing. See `CLAUDE.md`'s "Current status".
+
+**This suite also runs inside `docker build`/`docker compose build`**, as a real gate — the
+`checks` stage runs `npm run lint` → `npm run test` → `npm run build` in order, and both the
+`dev` and `prod` targets depend on it passing. See `CLAUDE.md`'s "Docker architecture".
 
 ## Building the production image
 
 The Dockerfile's default target (`prod`) builds the app and serves the static bundle via
-nginx — meant for an eventual production deploy sitting next to `src/backend-argus` (the FastAPI
-backend, now real code — see its own README for running it), not something you run for
-day-to-day development. The repo-root `docker-compose.yml` doesn't use this target yet — it
-runs this module's `dev` target instead, for local integration testing against a real backend:
+nginx. The repo-root `docker-compose.yml` runs this module's `dev` target instead, for local
+integration testing against a real backend; the AWS deployment (`src/infra-argus`) serves the
+built bundle from S3 + CloudFront.
 
 ```bash
 docker build -t argus/ui-argus:prod .
@@ -120,7 +121,11 @@ docker run --rm -p 8080:80 argus/ui-argus:prod
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `VITE_API_BASE_URL` | `http://localhost:8000` | Base URL of `src/backend-argus` (now real code, see its README). Read by `src/api/client.ts` for every backend call, starting with login. |
+| `VITE_API_BASE_URL` | `http://localhost:8000` | Base URL of `src/backend-argus`. Read by `src/api/client.ts` for every backend call. |
+
+Polling intervals are constants in `src/constants.ts`, not config: `/api/live` every 5 s (paused
+while the tab is hidden), Alert history every 5 s, the simulator status every 10 s while a
+session is open.
 
 ## Troubleshooting
 
@@ -131,24 +136,23 @@ docker run --rm -p 8080:80 argus/ui-argus:prod
 - **Edits under `src/` aren't showing up in the Docker dev server** — this shouldn't happen
   (`vite.config.ts` forces polling specifically so bind-mount edits are always picked up); if
   it does, restart the container rather than digging into it first.
-- **`npm ci` instead of `npm install`** — the Dockerfile still uses `npm install`.
-  `package-lock.json` **is committed** (since the "adding unit tests for UI" commit) — switching
-  the Dockerfile's `deps` stage to `npm ci` for reproducible installs is a real, small remaining
-  step, not blocked on anything anymore; see `CLAUDE.md`'s "Next steps".
-- **`npm run test` hangs or crashes outright** — see the two environment gotchas called out in
-  "Running the tests" above (Node version, WSL2 `/mnt/c` path) before assuming it's a code bug.
+- **The Dockerfile still uses `npm install`.** `npm ci` works now; switching the `deps` stage
+  to it is a small open step (see `CLAUDE.md`'s "Next steps").
+- **"Route is busy, try again" when stopping or completing a route** — another request held the
+  route's lock on the backend; the dialog stays open, press the button again.
+- **An incident closed long ago is missing from Alert history** — it reads the 200 most recent
+  closed incidents by their last alert time (see `CLAUDE.md`'s "Known limits").
+- **`npm run test` hangs or crashes outright** — see the two environment gotchas in "Running
+  the tests" above before assuming it's a code bug.
 
 ## Missing / not yet built
 
 Short pointer, not a duplicate — see `INTEGRATION.md` for the full per-screen breakdown, and
 `docs/roadmap.md` for how this fits the whole project's gaps:
 
-- No Reports panel, no Geofence management, no dedicated Truck Driver screen — none of these
-  were in the first UI pass (no committed API/table effort behind them). Access (Users) and
-  Profile, previously in this same "not built" list, are done now.
+- No Reports panel, no Geofence management, no dedicated Truck Driver screen.
 - `Alert.media_url`'s storage/serving story (S3? the backend directly?) isn't decided anywhere.
-- No real-time push mechanism for the live dashboard — currently polling every 7s.
+- No real-time push channel for the live screens — `/api/live` is polled every 5 s.
 - OSRM integration for `TravelManagement`'s create form — `destination_coordinates`/
   `estimated_arrival` are still stubbed.
-- No shared data-fetching/caching layer (TanStack Query or similar) — every screen does its own
-  `useEffect` fetch.
+- No shared data-fetching/caching layer (TanStack Query or similar) for the non-live screens.

@@ -17,8 +17,9 @@ logic (`Sidebar.tsx`) but no dedicated screen exists yet — per the root `CLAUD
 mainly *receives* alerts/status rather than manages the fleet, so it may not need one. Every
 role, including `truck_driver`, does get `Profile.tsx` — the self-service account page.
 
-**UI copy and route paths are in English** (`/fleet`, `/drivers`, `/routes`, `/alerts/:id`,
-`/access`, `/profile`), even though the design canvas is in Spanish — translated on request.
+**UI copy and route paths are in English** (`/fleet`, `/drivers`, `/routes`,
+`/routes/:id/live`, `/alerts/:id`, `/alerts/history`, `/history`, `/access`, `/profile`), even
+though the design canvas is in Spanish — translated on request.
 Domain field names still follow the ER model. If the copy ever needs to go back to Spanish,
 it's all in the `src/pages/*` / `src/components/*` JSX and `src/utils/status.ts` (the label
 map).
@@ -52,10 +53,10 @@ map).
   dark UI. Google Maps was considered and rejected: its "free" tier still needs a
   billing-enabled Google Cloud key shipped in the browser bundle, and it contradicts the
   design already written down. OSRM route-line rendering stays deferred ("mejora futura") —
-  the map shows live truck positions from the real backend (`GET /api/routes/active`), not
-  fixtures (see "Current status" below — `src/data/fixtures.ts` is gone). Full write-up (both this
-  and the coordinate-adapter decision, with the Google Maps / Amazon Location rejection
-  reasoning): `docs/designs/frontend-map-and-coordinates.md`.
+  the map shows live truck positions, each route's recorded GPS path and a pin per alert from the
+  real backend (`GET /api/live`, `GET /api/routes/{id}/track`; see "Live data" below). Full
+  write-up (both this and the coordinate-adapter decision, with the Google Maps / Amazon Location
+  rejection reasoning): `docs/designs/frontend-map-and-coordinates.md`.
 
 ## Auth
 
@@ -101,6 +102,8 @@ is a plain frontend with no native-wheel/glibc-vs-musl concerns, so it uses Alpi
 `cv-argus`'s Debian slim base:
 
 - **`deps`**: `npm install`, cached separately so it only re-runs when `package*.json` change.
+  (`npm ci` works too since the lockfile fix described under "Current status"; switching this
+  stage to it is a small open step.)
 - **`checks`** (the lint/test/typecheck gate): `COPY . .` then `npm run lint` → `npm run test`
   → `npm run build` (`tsc -b && vite build`) — see "Testing" below for what `npm run test`
   actually runs. Both `dev` and `prod` below depend on this stage *passing*, not just on it
@@ -164,229 +167,217 @@ Vite app.
   `render()` in a file would stay mounted into the same `jsdom` `document.body` and leak into
   the next test in that file (multiple-match query errors, flaky selectors) — hit and fixed in
   the same session this was added, not a hypothetical.
-- **13 test files** (real; see "Current status" below for the environment caveat on actually
-  running them): the original 9 — `utils/status.test.ts`, `utils/format.test.ts`,
-  `utils/geo.test.ts` (the coordinate-shape adapter), `utils/crypto.test.ts`,
-  `components/StatusPill.test.tsx`, `components/RecordTable.test.tsx`,
-  `components/SearchBox.test.tsx`, `components/Sidebar.test.tsx` (extended with role-gating
-  cases: `Access` hidden from a guardian session but visible, un-"soon", for `root_admin`;
-  `Fleet`/`Drivers`/`Routes` hidden from `truck_driver`), `pages/Login.test.tsx` — plus
-  four new ones added alongside the backend-wiring pass: `components/RequireRole.test.tsx`
-  (allowed role renders the gated route, disallowed/no session redirects),
-  `pages/Access.test.tsx` (root_admin sees every role in the create form; an admin session's
-  role picker is locked to `guardian`; the two destructive actions — Deactivate vs. Delete
-  permanently — are both present and distinct), `pages/Profile.test.tsx` (loads/edits the
-  caller's own fields via `GET`/`PUT /api/auth/me`, asserts the request body never carries a
-  `role`/`is_active` key), `pages/Fleet.test.tsx` (write-gating: `root_admin` sees an editable
-  panel with "Add truck", `guardian` sees a read-only "View truck" panel with disabled inputs
-  and no Save button).
-- **Not yet covered**: `AppLayout`, `PageHeader`, `Icon`, `FleetMap` (would need a
-  `react-leaflet` mocking strategy — not attempted yet), `Drivers.test.tsx`/
-  `TravelManagement.test.tsx` (same write-gating shape as `Fleet.test.tsx`, not yet duplicated),
-  `LiveOps`/`RouteLiveView`/`AlertHistory` (the data-heaviest pages — multiple parallel fetches
-  each).
 - **`src/test/setup.ts` polyfills `crypto.subtle`** via Node's `webcrypto` — jsdom provides
   `window.crypto` but not `.subtle`, which `sha256Hex` (and therefore the real `Login` submit
   path) needs; without this, any test exercising it throws immediately. Also clears
   `localStorage` in `afterEach` for the same leakage reason `cleanup()` is already there.
-- Run locally with `npm run test` (`vitest run` — single pass, not watch mode; there is no
-  separate `npm run test:watch` script yet).
+- **`src/test/fixtures.ts`** builds C3-shaped test data (`makeAlert`, `makeIncident`,
+  `makeRouteLive`, `makePoint`, `makeLive`, `at(seconds)`). It is test-only; the old app
+  fixtures in `src/data/` are long gone.
+- **The map is mocked in page tests.** Leaflet doesn't run in jsdom, so the `LiveOps`,
+  `RouteLiveView` and `RouteHistory` tests `vi.mock` `FleetMap` and assert on the props the page
+  hands it (`markers`, `paths`, `pins`, `focus`). The layer builders are pure and tested in
+  `utils/mapLayers.test.ts`. What Leaflet then draws (icons, polylines, `flyTo`, following) is
+  only checked in a real browser.
+- **What's covered (30 files, 246 tests):** the C3 logic as pure functions —
+  `utils/live.test.ts` (the `/api/live` merge, `(id_route, t)` dedup including millisecond
+  times, the per-route cap, dropping the track of routes that left the active set),
+  `utils/incidents.test.ts` (tier order, route grouping, note/reason rules),
+  `utils/position.test.ts`, `utils/mapLayers.test.ts`, `utils/status.test.ts` (labels),
+  `utils/format.test.ts`; the hooks — `hooks/usePolling.test.tsx` (interval, pause while hidden,
+  no stacking), `hooks/useLive.test.tsx` (the `since` cursor, request-order guard, `/track` seed
+  and retry, ms timestamps); the components — `IncidentFeed`, `CloseIncidentDialog`,
+  `RouteEndActions` (incl. the 503 retry), `StatusPill`, `SimulatorControl` (10 s poll),
+  `Sidebar`, `RequireRole`, `RecordTable`, `SearchBox`; and the pages — `LiveOps`,
+  `RouteLiveView`, `AlertHistory`, `RouteHistory`, `TravelManagement`, `Fleet`, `Access`,
+  `Profile`, `Login`.
+- **Not covered:** `AppLayout`, `PageHeader`, `Icon`, `Drivers` (same write-gating shape as
+  `Fleet`), and Leaflet's rendering (above).
+- Run locally with `npm run test` (`vitest run`, a single pass). See "Current status" for the
+  Node version and the WSL2 `/mnt/c` caveat.
+
+## Live data (contracts C3, `docs/designs/final-tweaks-contracts.md`)
+
+The "final tweaks" rework moved the live screens from polling several per-alert endpoints to one
+poll and an incident model. `types.ts` follows C3.1–C3.7 field for field (`RouteLive`,
+`LivePosition`, `TrackPoint`, `LiveResponse`, `Incident`, the new `Alert` fields, `Vigilance`
+with `unknown`, `IncidentState`, `TimeSource` with `relative`). Timing constants are in
+`src/constants.ts` (C4): `UI_POLL_MS` 5000, `ALERT_HISTORY_POLL_MS` 5000, `SIMULATOR_POLL_MS`
+10000, `LIVE_TRACK_MAX_POINTS_PER_ROUTE` 10000. The backend's own thresholds (group window,
+"old" after 1 h, ...) are deliberately **not** mirrored: the UI trusts the server's `tier` and
+`incident_state`.
+
+### `/api/live` and `useLive`
+
+- **One poll.** `hooks/useLive.ts` calls `GET /api/live` every `UI_POLL_MS` through
+  `hooks/usePolling.ts`, which **pauses while the tab is hidden** (`document.visibilityState`),
+  polls at once when it shows again, and never stacks a tick on a pending request. Only the
+  data refreshes; the page never reloads.
+- **Merge** (`utils/live.ts`, pure): `routes` and `incidents` come in full and replace the old
+  ones; the server's `tier` is trusted, never recomputed between polls. `track` is a delta
+  (points received since the previous `server_time`, passed back as `since`). Points are
+  appended and **de-duplicated by `(id_route, t)`** on the parsed instant, so the backend's 10 s
+  `LIVE_SINCE_OVERLAP` re-send and an equal time written differently (`.250Z`, `.250000Z`,
+  `+00:00`) collapse, while two points in the same second with different **milliseconds** stay
+  two points (C3.3 `[sync 3]`: the backend no longer rounds point times to the second). Each
+  route keeps at most **10000 points**, newest kept. Without a `route` filter, the track of a
+  route that left the active set is dropped.
+- **Sequence guard.** Each request takes a sequence number, and a response older than the last
+  one applied is dropped, so `refresh()` right after a close can't be overwritten by an older
+  interval poll landing last. Changing the scope (token or route) starts over with no cursor.
+- **Route view seed.** With a `route`, the whole path is seeded once from
+  `GET /api/routes/{id}/track` (any status; `/api/live` without `since` only returns 15 min) and
+  the live deltas fold in with the same dedup, in whichever order they arrive. A failed seed is
+  retried on the next poll.
+
+### Screens
+
+- **Live operations** (`pages/LiveOps.tsx`, `/`): stat tiles count routes by `incident_state`.
+  The map has one marker per route, **keyed by `id_route`** and coloured by `incident_state`
+  (not by the newest point), a hollow dashed "last known" marker when the position is a saved
+  fix, each active route's GPS path, and a pin per open-incident alert. The right panel is the
+  incident feed (tier chips All/Critical/Medium/Old) or the active routes (with Complete trip /
+  Stop route for root_admin/admin and a "View live" link).
+- **Route view** (`pages/RouteLiveView.tsx`, `/routes/:id/live[?alert=]`, and the legacy
+  `/alerts/:alertId`): `/api/live?route=` plus the `/track` seed; the map follows the truck.
+  "Show on map" pauses following to fly to an alert; a **Follow truck** button on the map clears
+  that focus and resumes following. Tabs: "This alert" (when focused: position, model output,
+  Close incident for the alert's open incident, notes, de-escalation) and "Incidents" (Open /
+  Closed filter chips; the closed list is `GET /api/incidents?route_id=&status=closed`). A trend
+  pill (improving/worsening/steady) compares the newest point's vigilance between polls;
+  `unknown` breaks it.
+- **Alert history** (`pages/AlertHistory.tsx`, `/alerts/history`): closed incidents
+  (`GET /api/incidents?status=closed&limit=200`), polled every 5 s, newest close first, each with
+  its close time, note and alerts. It has no map: each alert links to the route view, which is
+  where its "Show on map" is.
+- **Route history** (`pages/RouteHistory.tsx`, `/history`): completed and stopped routes, each
+  expandable into its GPS path (`/track`, downsampled by the server) on a small map with a pin
+  per alert, and its alerts with positions. Each alert row links to the route view focused on
+  it and has a "Show on map" that flies the small map to its pin.
+- **Routes** (`pages/TravelManagement.tsx`, `/routes`): Start trip, and Complete trip / Stop
+  route through `RouteEndActions`. Those two are disabled while a Start trip is in flight.
+
+### Incidents, tiers and alert cards
+
+- `components/IncidentFeed.tsx` + `utils/incidents.ts`: tier sections **Critical → Medium →
+  Older than 1 h** (the server's `tier`), incidents newest `last_alert_at` first. Inside a
+  section there is one route header per route (routes ordered by their newest incident; off in
+  the single-route view), with a "Route ended" pill when `route_ended`.
+- `IncidentCard`: severity, alert count, time span, "Driver OK since" (informational: it never
+  closes anything), the replayed badge when any alert came from the Pi's dead-letter queue
+  ("Recovered after lost connection"), and, once closed, "Closed HH:MM" and the close note.
+  `closed_by` is not shown: it may be `null` (closed by the system, e.g. the data migration,
+  C3.4 `[sync 3]`), and the UI never assumes it resolves to a user.
+- `components/AlertCard.tsx`: the `ALERT_TYPE_LABEL` text (unknown types show the raw string),
+  its position via `utils/position.ts` (coordinates, "Last known (N old)", or "Position
+  unknown"), "Show on map" when it has coordinates, and the replayed badge.
+
+### Dialogs and the close confirmation
+
+- **Close incident** (`components/CloseIncidentDialog.tsx`, guardian and root_admin only,
+  `canCloseIncidents`): `POST /api/incidents/{id}/close` with `{note}`. A critical incident needs
+  a note ("A note is required to close a critical incident", checked before sending, same as the
+  backend's 422). Closing closes every alert of the incident.
+- **After a successful close** (`components/CloseNotice.tsx`, on Live ops and the route view,
+  with or without a focused alert): an always-mounted `role="status"` element reads
+  `<Severity> incident closed · <plate> · Closed HH:MM` (`timeOfDay`: a bare Mexico City HH:MM).
+  It is not auto-dismissed: the next close replaces it and navigation clears it. The incident
+  leaves the Open list at once (the page hides closed ids locally, so a poll already in flight
+  can't flash it back), and the view doesn't switch tabs or chips.
+- **Complete trip / Stop route** (`components/RouteEndActions.tsx`, root_admin and admin only,
+  hidden on an ended route), each behind a dialog. Complete is `PUT /api/routes/{id}` with only
+  `operative_status: completed` and `actual_arrival`; Stop is `POST /api/routes/{id}/stop` with
+  a reason ("A reason is required to stop a route"), after which the route reads "Stopped". A
+  **503** (the backend's per-route lock was busy, C3.6 `[sync 3]`) always shows "Route is busy,
+  try again" **inside the dialog, which stays open** with the reason kept, so pressing again
+  retries. Other errors (e.g. 409 for an ended route) show the server's message. The UI never
+  reopens a finished route (the backend answers 409) and never sends `resolved_at` (a 422 since
+  C2.4).
+
+### Test hooks it-argus relies on (C3.7 `[sync 3]`)
+
+Keep these stable; `src/it-argus` selects on them:
+- tier sections are `role="region"` named `Critical incidents`, `Medium incidents`,
+  `Older than 1 h incidents` (the visible header adds a count, e.g. `Older than 1 h · 1`);
+- the close confirmation is the `role="status"` element containing `Closed HH:MM`;
+- dialogs are `role="dialog"` named `Close incident` / `Stop route` / `Complete trip`, with a
+  textbox (Close, Stop), a confirm button of the same name, and the error texts above;
+- each incident card is an `article` named `<Severity> incident` with its own `Close incident`
+  button; the route view's `Open` / `Closed` chips are `button`s with `aria-pressed`.
+
+### Removed: panic button and grip
+
+The panic button and the steering-wheel grip sensor were removed from the system, and so was
+their UI: no grip panel, no panic filter or badge, no grip status on alert cards. `panic_button`
+stays only as a label ("Panic button"), as an `alert_type` and as a `source`, so old rows still
+read. `grip_status` stays in `types.ts` because old rows carry it; it is never shown.
+
+### Known limits
+
+- **Alert history reads at most 200 closed incidents, and the server orders them by
+  `last_alert_at`**, not by `closed_at`; the page re-sorts by `closed_at` on the client. With
+  more than 200 closed incidents, an old incident closed just now can be missing. A
+  `sort=closed_at` option on `GET /api/incidents` (backend) would fix it.
+- **Legacy `low` alerts have no incident** (`id_incident: null`), so they don't appear in Alert
+  history (the old `reviewed=true` list showed them). They still show in Route history.
+- **Leaflet layers are only checked in a browser**: unit tests assert the layer data handed to
+  `FleetMap`, not what Leaflet draws, and not `flyTo`/following.
+- The route view's per-alert "Operator review" (notes) still uses `PUT /api/alerts/{id}`;
+  closing is per incident.
 
 ## Current status
 
-**Every screen now calls the real backend.** `src/data/fixtures.ts` is deleted — `Fleet`,
-`Drivers`, `TravelManagement`, `LiveOps`, and `RouteLiveView` (`AlertTriage`'s current name —
-see below) all fetch from `src/backend-argus`
-via `src/api/*`, and two new screens (`Access.tsx`, `Profile.tsx`) exist that never had fixture
-data at all. `src/types.ts`'s `Role` grew from three members to four (`root_admin` / `admin` /
-`guardian` / `truck_driver`) alongside the backend's own RBAC change — see the top-level
-`CLAUDE.md` and `src/backend-argus/CLAUDE.md` for what `admin` is and how its scoping works.
-`npx tsc -b` and `npm run build` (Vite production build) both pass clean.
+All screens call the real backend; `src/data/fixtures.ts` is long gone. The final-tweaks rework
+(above) replaced `GET /api/routes/active` + `GET /api/alerts` polling with `/api/live`, replaced
+per-alert review-to-close with incidents, and removed the panic/grip UI. `api/routes.ts` no
+longer wraps `/api/routes/active` or `/api/routes/{id}/status`.
 
-**Two real, pre-existing environment issues were hit (and resolved) while verifying this session's
-changes — neither caused by this session's code**:
+**Verified** (from a native Linux copy, Node 24): `npm ci`, `npm test` (30 files, 246 tests),
+`npm run build` (`tsc -b && vite build`), and `eslint .` (one pre-existing `AuthContext.tsx`
+fast-refresh warning). **Not verified here:** a real-browser click-through of the reworked
+screens and the Leaflet layers. That is `src/it-argus`'s Playwright suite against the real
+backend, run in the integration step.
 
-1. This sandbox originally had no Node.js at all; once installed, `npm run test` failed outright
-   with `ERR_REQUIRE_ESM` (`html-encoding-sniffer@6.0.0` — the version actually pinned in the
-   committed `package-lock.json` — does a CJS `require()` of `@exodus/bytes`, which has been a
-   pure-ESM-only package since its first release; reproduces identically on the pre-existing
-   test files, unrelated to any app code). Node 20.x hits it every time; Node ≥22.14 (where
-   `require(esm)` support is more complete) avoids the crash.
-2. Even with a working Node version, every vitest worker — default parallelism, and even
-   `--maxWorkers=1` — timed out trying to start at all when run from this checkout's actual path
-   under `/mnt/c/Users/...` (a Windows filesystem mounted into WSL2): `Timeout waiting for
-   worker to respond`, 13 minutes, zero tests run. Confirmed the cause by copying the exact same
-   `ui-argus` source to a native Linux path and running from there instead: **13/13 files, 65/65
-   tests pass in under 2 seconds** — so this really is WSL2/`/mnt/c` I/O latency in Vitest's
-   worker startup, not a Vitest, Node, or app bug. Running (or at least testing) this repo from
-   a native filesystem path, not a `/mnt/c/...` one, avoids it entirely.
+**`package-lock.json` fix.** The lock had been committed with a machine-local root version
+(`file:../../../../../../mnt/c/...`) and the same bogus prefix on every `packages` key, so
+`npm ci` reported every dependency as missing. The root version is now `0.0.1`, the `""`
+package carries the `package.json` name, and the keys are plain `node_modules/...` paths. No
+`resolved`/`integrity` value changed. `npm ci` now installs cleanly.
 
-`npx tsc -b`, `npm run build`, and the full Vitest suite (64 tests across 13 files, including
-the `RequireRole.test.tsx`/`Access.test.tsx`/`Profile.test.tsx`/`Fleet.test.tsx` files and the
-role-gating additions to `Sidebar.test.tsx`) all verified passing clean in this session.
+**Two environment gotchas (not code bugs):**
+1. **Node ≥22.14** (Node 24 used here). On Node 20, `npm run test` crashes with
+   `ERR_REQUIRE_ESM` (`html-encoding-sniffer` does a CJS `require()` of the ESM-only
+   `@exodus/bytes`). ESLint, `tsc` and the build are unaffected.
+2. **WSL2 `/mnt/c` paths:** Vitest workers time out starting (`Timeout waiting for worker to
+   respond`) when run from a Windows-mounted checkout. Copy the module to a native Linux path
+   (e.g. `rsync -a --exclude node_modules --exclude dist src/ui-argus/ ~/ui-run/`) and test there.
 
-**`RouteHistory.tsx`** (new, `/history`): the real "Route history" screen behind
-`Sidebar.tsx`'s nav item, previously a `soon` placeholder labeled "Trip history" that pointed
-nowhere. Lists completed routes (`listRoutes(token, 'completed')` →
-`GET /api/routes?status=completed`) sorted newest-first by `actual_arrival`; each row expands
-into a nested list of that route's alerts (`listAlerts(token)`, all alerts fetched once and
-grouped client-side by `id_route` in a `useMemo` — the same "fetch the full list, join in
-memory" shape `TravelManagement.tsx` already uses for driver/truck names, not a new pattern),
-each entry showing `alert_type`, a severity pill, `timestamp` (`shortDate`/`clock`/
-`relativeTime`), and `coordinates` (lat/lon), linking through to what was then `AlertTriage`
-(now `RouteLiveView` — see below). No backend change was needed — `GET /api/routes` already
-supported a `status` filter and
-`GET /api/alerts` already supported `route_id`; this screen just composes two endpoints that
-already existed. This also dropped the one `Sidebar.test.tsx` case asserting the item stayed
-"soon" (folded into the "renders every real nav link" case instead), which is where the test
-count above went from 65 to 64. **Verification gap, stated plainly**: this sandbox had no
-`npm`/`npx`/Playwright/`chromium-cli` available, so verification here is `docker build --target
-checks` (lint → the Vitest suite → `tsc -b && vite build`, all passing) plus a live
-`docker compose up` against the seeded demo data confirming `GET /api/routes?status=completed`
-and `GET /api/alerts?route_id=...` return exactly the shape this component expects (one
-completed route, one `medium`-severity fusion alert) — not an actual rendered-in-a-browser
-screenshot of the expand/collapse interaction. Worth a real browser check next session before
-treating the UI polish (not just the data plumbing) as verified.
+### History (short)
 
-**`RouteLiveView.tsx`** (renamed/generalized from `AlertTriage.tsx`) + **`AlertHistory.tsx`**
-(new, `/alerts/history`): a Control Tower iteration closing several Live Operations/Routes gaps
-in one pass. `AlertTriage.tsx` — previously a single-alert-only page — is now `RouteLiveView.tsx`,
-mounted at **two** URL shapes rendering the same component: the legacy `/alerts/:alertId` (kept
-byte-for-byte working since `src/it-argus/tests/live-ops.spec.ts` asserts that exact URL three
-times) and the new canonical `/routes/:routeId/live` (+ optional `?alert=<id>` focus), which
-`TravelManagement.tsx`'s new per-row "View live" button (active routes only, via `isActiveRoute()`)
-and `AlertHistory.tsx`'s rows both link to. It polls the route (`getRoute`), its live telemetry
-(new `getRouteStatus()` in `api/routes.ts`, wrapping the previously-unwrapped
-`GET /api/routes/:id/status`; 404-when-no-telemetry-yet is treated as "no live data", not an
-error), and its alerts (`listAlerts(token, { route_id, severity, reviewed })`, using the filter
-params `api/alerts.ts`'s `listAlerts` now accepts) every 7s, same interval `LiveOps.tsx` already
-used. `FleetMap.tsx` gained a `follow` prop (a `useMap()`-based `FollowMarker` child that
-`flyTo()`s the single marker on each position change post-mount, preserving the user's manual
-zoom) so this page's map actually tracks the live truck instead of only framing it once at
-mount. A client-side-only trend pill (improving/worsening/steady, ranked off `vigilance`'s
-severity scale) shows whether a route's condition is trending better or worse since the tab was
-opened — there's no backend status-history endpoint, only the latest snapshot, so this
-necessarily resets on reload; treated as an accepted limitation, not a bug. The right panel has
-two tabs: "This alert" (today's review UI, unchanged, only present when an alert is focused) and
-a new "Route alerts" tab listing every alert on that route with its own editable severity/
-reviewed filters. `AlertHistory.tsx` is the "reviewed alerts" list this same reviewed filter
-made possible — `GET /api/alerts?reviewed=true` directly, deliberately **not** folded into
-`RouteHistory.tsx` (which is keyed off route *completion*, an unrelated concept — a reviewed
-alert on a still-`in_progress` route wouldn't show up there). `LiveOps.tsx`'s own feed gained a
-matching Unreviewed/Reviewed/All filter (default `Unreviewed`) — review-then-filtered-out is the
-entire "moves to history" mechanism, no separate state machine. Also fixed while touching that
-file: the feed previously read `alert.reviewed_by_operator` into a variable named `resolved` and
-labeled it "RESOLVED" — wrong field (`resolved_at` is a distinct, real concept: automatic
-condition-recovery, not human review); renamed to `reviewed`/relabeled "REVIEWED", a pure
-rename, not new behavior. A small `FilterChips.tsx` component was extracted for the (now three)
-places rendering the same pill-row filter pattern (`LiveOps.tsx`, `RouteLiveView.tsx`,
-`AlertHistory.tsx`). Medium-severity map dots (`.fleet-marker__dot--warn` in `index.css`) also
-got the same bigger/glow "elevated" treatment critical's dot already had (smaller/fainter, so
-critical still reads as more severe) — the actual gap behind the original "add medium alerts"
-ask, since medium already had its own filter chip/stat tile in `LiveOps.tsx`.
-**Verification**: `docker build --target checks` (lint clean — one unrelated pre-existing
-`AuthContext.tsx` fast-refresh warning aside — 65/65 Vitest tests, `tsc -b && vite build` all
-passing) plus a live `docker compose up` (`SEED_DEMO_DATA=true`) confirming the exact new/
-extended endpoint contracts against real seeded data: `GET /api/routes/:id/status` (200 with a
-live snapshot, 404 for a route with none yet), `GET /api/alerts?reviewed=true`, and
-`GET /api/alerts?severity=medium` all returned exactly the shapes this code expects. This
-sandbox had no `npm`/`npx`/Playwright available (same gap noted for `RouteHistory.tsx` above),
-so — beyond every touched module transforming cleanly through Vite's dev server — this is
-build/lint/test/API-contract verification, not an actual rendered-in-a-browser click-through of
-the map-following/tab/filter interactions; worth a real browser pass next session.
-
-- **`src/api/`** — one client module per backend resource (`client`, `auth`, `me`, `users`,
-  `trucks`, `drivers`, `routes`, `alerts`), all built on `apiFetch`. `routes.ts`/`alerts.ts` run
-  every coordinate field through `normalizeCoordinates()` once, at this layer. `listRoutes` now
-  takes an optional `status` filter (`GET /api/routes?status=...`), added for `RouteHistory.tsx`.
-  `listAlerts` now takes an optional `AlertFilters` (`severity`/`source`/`reviewed`/`route_id`,
-  mapping onto `GET /api/alerts`'s existing query params) and `routes.ts` gained `getRouteStatus`
-  (`GET /api/routes/:id/status`) — both added for `RouteLiveView.tsx`/`AlertHistory.tsx`.
-- **`src/types.ts`** — `Role` is now 4 members; added `RouteWithStatus` (the
-  `GET /api/routes/active` shape, embedding a route's newest `Status_Route` + truck/driver
-  names).
-- **`src/components/RequireRole.tsx`** (new) — a route-level role gate on top of
-  `ProtectedRoute`'s auth-only check, used for `/access`.
-- **`src/components/FilterChips.tsx`** (new) — the shared pill-row filter control (see above).
-- **`src/components/FleetMap.tsx`** — gained a `follow` prop (see above).
-- **`src/pages/Access.tsx`** (new) — root_admin/admin user management, role-aware (see "Auth"
-  above).
-- **`src/pages/Profile.tsx`** (new) — self-service email/name/phone/password edit for any role.
-- **`src/pages/RouteHistory.tsx`** (new) — see above.
-- **`src/pages/RouteLiveView.tsx`** (renamed/generalized from `AlertTriage.tsx`) and
-  **`src/pages/AlertHistory.tsx`** (new) — see above.
-- **`src/utils/format.ts`** — `relativeTime`/`clock`/`longDay`/`daysUntil` now default to
-  `new Date()` instead of the retired `MOCK_NOW` fixture constant; the optional `now` param is
-  still there purely for tests to pin a fixed reference time.
-
-**Follow-up fixes, from real usage against the running simulator**: `RouteLiveView`'s map didn't
-actually zoom in on the truck at all, despite `FleetMap`'s `maxZoom` prop being raised from 13 to
-17/18 — root-caused by reading `react-leaflet`'s own `MapContainer` source directly: its `bounds`/
-`boundsOptions` are captured in a `useCallback` with an **empty dependency array**, so the real
-Leaflet `Map` is constructed exactly once, using only whatever `bounds` existed on `FleetMap`'s
-very first render. `RouteLiveView`'s truck position loads asynchronously (`liveStatus` starts
-`null`), so `markers` is always empty on that first render — the map permanently locked onto the
-wide `FALLBACK_CENTER`/`FALLBACK_ZOOM` view and never fit to the truck at all, no matter what
-`maxZoom` was passed, since `fitBounds` is simply never invoked again afterwards. Raising
-`maxZoom` alone (the first attempted fix) could never have worked; the real fix is in
-`FollowMarker` itself, which is now the *only* thing that ever frames a followed single marker,
-not a follow-up to an initial framing `MapContainer` usually didn't actually do: on its own first
-appearance it now calls `map.setView(position, maxZoom)` (an instant snap — nothing to animate
-*from* yet), and only eases via `flyTo` on later live-tracking updates. Also, while addressing
-separate feedback: dropped the "Low" chip from every Alert severity filter (`LiveOps.tsx`,
-`RouteLiveView.tsx`'s Route alerts tab, `AlertHistory.tsx`) since a real `Alert` row is never
-actually posted at `severity_level` "low" in practice (see `src/simulator-argus/CLAUDE.md`'s
-"Scenario design" section and the fusion contract it mirrors); and relabeled the shared
-`severity` map's `low` entry from "Low"/neutral-gray to "Normal"/good-green in `utils/status.ts`
-— a truck being fine isn't a severity, and the map legend/stat tile were already green for this
-state while the marker dot itself rendered gray, a real inconsistency now fixed everywhere at
-once.
-
-**`components/SimulatorControl.tsx`** (+ `api/simulator.ts`, `SimulatorControl.test.tsx`): the
-root_admin-only *Fleet simulator* card at the top of Live operations, rendered only when
-`session.user.role === 'root_admin'` (the backend 403s everyone else anyway). It's an accessible
-`role="switch"` On/Off toggle for the AWS deployment's on-demand simulator task
-(`src/infra-argus`). It shows Off / Starting… / On, a live countdown to the fixed 10-minute
-auto-off, and "X of 12 sessions left" this month, and it disables itself when the quota is used
-up. There's deliberately **no duration input**: session length is a server-side cost guardrail,
-not a user choice. It polls `GET /api/simulator` every 10 s only while a session is open.
-409/429/503 are shown as plain sentences. Verified: lint, 70/70 Vitest tests across 14 files,
-`tsc -b && vite build`. This ran natively on Node 24 from a native Linux copy of the module,
-since Docker/Node weren't usable in that WSL session; same `/mnt/c` caveat as above.
-
-**`components/DeviceCredentials.tsx`** (+ `utils/deviceEnv.ts`, tests in
-`utils/deviceEnv.test.ts` and `pages/Fleet.test.tsx`'s "Fleet device credentials"): the block in
-Fleet's edit panel that provisions a truck's edge device. It shows the key status
-(`has_device_key`, issued/last-seen times), and gives root_admin/admin **Generate** /
-**Rotate key** (confirm first, since rotation locks the installed device out) and **Revoke**.
-A fresh key is shown once, rendered as `argus-device.env` (`ARGUS_TRUCK_ID`,
-`ARGUS_DEVICE_API_KEY`, `ARGUS_BACKEND_URL`) with Download/Copy. The backend URL defaults to
-`API_BASE_URL` (`VITE_API_BASE_URL`, the CloudFront URL on AWS) and is editable, with a warning
-for `localhost`, which the truck can't reach. guardian sees the status only. Verified: lint,
-82/82 Vitest tests across 15 files, `tsc -b && vite build`, run from a native Linux copy (the
-`/mnt/c` caveat above). Not clicked through in a real browser yet.
-
-**Start trip / Complete trip** (`TravelManagement.tsx`, tests in `pages/TravelManagement.test.tsx`):
-a Trip column for root_admin/admin. Start sets a `scheduled` route to `in_progress` with
-`actual_departure`, Complete sets an active one to `completed` with `actual_arrival`
-(`PUT /api/routes/{id}`). Before this nothing could start a route, and a truck's ESP32 only
-gets a route (`GET /api/devices/me/active-route`) while it's in progress, so a real device
-answered `no_route` forever. Starting is refused while the truck already has an active trip:
-the device follows only the newest one. Verified: lint, 86/86 Vitest tests across 16 files,
-`tsc -b && vite build`, from a native Linux copy. Not clicked through in a real browser yet.
+Earlier iterations, superseded where they conflict with the sections above:
+- `RouteHistory.tsx` replaced the "Trip history" placeholder; `AlertTriage.tsx` became
+  `RouteLiveView.tsx` with two URL shapes; `AlertHistory.tsx` was first a `reviewed=true` alert
+  list (now closed incidents); `FilterChips.tsx` was extracted for the pill-row filters.
+- `FleetMap`'s `follow`: `MapContainer`'s `bounds` are init-only (react-leaflet builds the
+  Leaflet map once, before the route view's position has loaded), so `FollowMarker` does the
+  framing itself: `setView` on first appearance, `flyTo` at the current zoom afterwards.
+- `components/SimulatorControl.tsx`: root_admin-only On/Off for the AWS on-demand simulator
+  (fixed 10-minute sessions, 12 a month, no duration input), polling every 10 s while open.
+- `components/DeviceCredentials.tsx`: Fleet's Generate / Rotate / Revoke for a truck's device
+  key, shown once as `argus-device.env`.
+- Start trip (`TravelManagement.tsx`): a truck's device only gets a route while it's in
+  progress, so Start is what moves a real device off `no_route`; it's refused while the truck
+  already has an active trip.
+- Severity `low` reads "Normal"/green everywhere (a fine truck isn't a severity).
 
 ## Next steps (not started)
 
-- Fix the `html-encoding-sniffer`/`@exodus/bytes` toolchain bug for real (pin a working
-  `html-encoding-sniffer` version via `overrides`, regenerate `package-lock.json`) and document
-  both the Node ≥22.14 requirement and the "run tests from a native filesystem path, not
-  `/mnt/c/...` under WSL2" gotcha in the README, rather than relying on whoever hits this next
-  rediscovering both workarounds from scratch.
-- Extend the Vitest suite to `Drivers.tsx`/`TravelManagement.tsx` (same write-gating shape as
-  the new `Fleet.test.tsx`) and to `LiveOps`/`RouteLiveView`/`AlertHistory`.
-- A real browser (Playwright/manual) pass over this session's map-following, tab-switching, and
-  filter interactions — see "Verification" above for exactly what's unverified.
-- A caching/data-fetching layer (TanStack Query or similar) — every screen still does its own
-  `useEffect` fetch with no shared cache; not blocking, just a quality improvement.
-- Everything else — OSRM for `TravelManagement`, a real-time push mechanism for `LiveOps`,
-  `Alert.media_url` storage — is tracked in `INTEGRATION.md`, not here.
+- Switch the Dockerfile's `deps` stage to `npm ci` (the lockfile works now).
+- Ask the backend for `GET /api/incidents?sort=closed_at` if Alert history ever outgrows 200
+  closed incidents, and decide whether legacy `low` alerts need a view.
+- Fix the `html-encoding-sniffer`/`@exodus/bytes` Node 20 crash for real (an `overrides` pin),
+  or state Node ≥22.14 in `package.json` `engines`.
+- A `Drivers.test.tsx` (same write-gating shape as `Fleet.test.tsx`).
+- A caching/data-fetching layer (TanStack Query or similar) for the non-live screens.
+- Everything else — OSRM for `TravelManagement`, a push channel instead of the 5 s poll,
+  `Alert.media_url` storage — is tracked in `INTEGRATION.md`.
