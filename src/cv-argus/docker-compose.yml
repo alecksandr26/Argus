@@ -75,8 +75,9 @@ services:
       # "bluez" (the host's bluetoothd listens and pairs; the connection comes in over the host's
       # D-Bus socket, which that file mounts). "bluetooth" (a raw RFCOMM socket in this process)
       # can't work in a container on Docker's default network: Linux only creates Bluetooth
-      # sockets in the host's network namespace. Until the link is on, readings and heartbeats
-      # just queue in buffer/ -- nothing is lost.
+      # sockets in the host's network namespace. Until the link is on, readings queue in
+      # buffer/: after 60 s unpicked, a critical goes to the dead-letter queue, a medium or
+      # driver OK to the archive table, and keepalives are dropped.
       - SENDER_TRANSPORT=${SENDER_TRANSPORT:-none}
       - BLUETOOTH_CHANNEL=${BLUETOOTH_CHANNEL:-4}
       # The link the ESP32 connects over must be paired + encrypted ("medium") -- CONFIG sends
