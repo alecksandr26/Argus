@@ -22,7 +22,15 @@ enum class GprsEnd : uint8_t {
   TransportError,  // not registered, no bearer, an AT step failed, or a SIM800L 6xx code
   Timeout,         // the attempt's deadline passed
   Preempted,       // stopped between AT steps for a higher event (before the request was fired)
+  ModemBusy,       // an earlier attempt's request still holds the modem's HTTP session: this
+                   // attempt fails, but not as a transport failure (no WiFi hold-off, the bearer
+                   // and the registration stay as they were)
 };
+
+// Composes the request body when called. gprsPostJson calls it once, right before AT+HTTPDATA,
+// so every age in it is measured after registration, bearer setup and the other AT steps
+// (contracts C2.1 [sync 3]).
+typedef String (*GprsBodyComposer)();
 
 struct GprsResult {
   GprsEnd end = GprsEnd::TransportError;
@@ -30,11 +38,12 @@ struct GprsResult {
   String body;
 };
 
-// POSTs `body` as JSON with the X-Device-Api-Key header. `deadline` bounds the whole attempt
-// (every AT step's wait is capped by what is left of it). `preempt` is asked between AT steps,
-// never after AT+HTTPACTION fired the request; true stops the attempt (GprsEnd::Preempted).
-GprsResult gprsPostJson(const String& url, const DeviceCredentials& creds, const String& body,
-                        const Deadline& deadline, bool (*preempt)());
+// POSTs the body `compose` returns as JSON with the X-Device-Api-Key header. `deadline` bounds
+// the whole attempt (every AT step's wait is capped by what is left of it). `preempt` is asked
+// between AT steps (and between the short waits for an earlier request's late result), never
+// after AT+HTTPACTION fired the request; true stops the attempt (GprsEnd::Preempted).
+GprsResult gprsPostJson(const String& url, const DeviceCredentials& creds,
+                        GprsBodyComposer compose, const Deadline& deadline, bool (*preempt)());
 
 // True while the data bearer isn't known to be open (after power-on, or after a lost signal or
 // a failed attempt): the next attempt also gets MODEM_SETUP_TIMEOUT_MS (attemptTimeoutMs()).

@@ -1,30 +1,36 @@
 #!/usr/bin/env python3
-"""Manual smoke-check script for cv-argus's sender/ module.
+"""Manual smoke-check script for cv-argus's sender/ module, Bluetooth protocol v2.
 
 NOT part of cv-argus's own hermetic pytest suite (src/cv-argus/tests/) -- same real
 SenderServer/Buffer/Alert/protocol code those tests already exercise, just run here as a
 readable, logged script instead of pytest asserts, so you can `python` it and watch it work.
 
 "Simulates the server": this project's real Bluetooth SPP SERVER is cv-argus's own
-sender.server.SenderServer -- the piece src/esp32-argus's firmware connects to as a *client*
-and polls with PULL/ACK (src/cv-argus/src/sender/protocol.py). Real Bluetooth
-hardware/passthrough isn't available in any session that's touched this repo (see
-src/cv-argus/CLAUDE.md's "Open decisions" -- neither compose file wires it up yet), so this
-script runs the real SenderServer against cv-argus's own in-memory FakeTransport/FakeListener
-pair -- the exact stand-in cv-argus's own unit tests use -- and plays the client's part by hand
-against it, printing every step. This proves the real server/buffer/alerts/protocol code works
-end to end; it does NOT prove real Bluetooth connectivity, which needs real hardware no
-session has had access to.
+sender.server.SenderServer -- the piece src/esp32-argus's firmware connects to as a *client*.
+The protocol is v2 (docs/designs/final-tweaks-contracts.md C1, src/cv-argus/src/sender/
+protocol.py): `PULL n` / `DLQ 1` sessions that end with `END <dlq_waiting> <outbox_waiting>`,
+then report lines (`ACK` -> `ACKED n`, `TAKEN` -> `LEASED n`, `FAIL <id> <reason> <body|->`,
+no reply) and `DONE` -> `OK acked= failed= leased= dlq= outbox=`. Real Bluetooth hardware isn't
+used here: the script runs the real SenderServer against cv-argus's own in-memory
+FakeTransport/FakeListener pair -- the exact stand-in cv-argus's own unit tests use -- and plays
+the ESP32's part by hand, printing every step. It walks one critical alert through the whole
+v2 life the firmware gives it when the backend is down and then back:
+
+  1. PULL: a keepalive (ACKed at once) and a critical raise (TAKEN: leased to the ESP32).
+  2. A report session: `FAIL <id> no_network <event JSON>` -- the live window ran out, so the
+     critical moves to the Pi's dead-letter queue (attempt 1, its composed body kept).
+  3. DLQ 1: the one dead letter comes back with its `dlq` block; the ESP32 TAKENs it.
+  4. A report session: `ACK <id>` -- delivered on the replay. Nothing is left unsent.
+
+This proves the real server/buffer/alerts/protocol code works end to end; it does NOT prove
+real Bluetooth connectivity, which needs real hardware.
 
 No install needed, no Docker needed. `alerts/`, `buffer/`, and `sender/` are deliberately
-dependency-light -- pure stdlib (dataclasses/enum/json/sqlite3/socket/threading, no numpy/
-mediapipe/tensorflow/opencv -- verified directly against every file in that import chain,
-including constants.py). So rather than `pip install -e src/cv-argus` (which would pull in that
-full heavy dependency list for nothing, since this script never touches model/ or pipeline/),
-this script registers `cv_argus` as a module pointing straight at src/cv-argus/src/ itself,
-below -- the same `package_dir={"cv_argus": "src"}` mapping setup.py does for a real install,
-just done at runtime via importlib instead of setuptools. A plain `sys.path.insert` alone
-wouldn't work here: that directory is named `src` on disk, not `cv_argus`, so Python wouldn't
+dependency-light (pure stdlib), so rather than `pip install -e src/cv-argus` (which would pull in
+the full heavy dependency list for nothing), this script registers `cv_argus` as a module pointing
+straight at src/cv-argus/src/ itself, below -- the same `package_dir={"cv_argus": "src"}` mapping
+setup.py does for a real install, just done at runtime via importlib. A plain `sys.path.insert`
+alone wouldn't work: that directory is named `src` on disk, not `cv_argus`, so Python wouldn't
 find anything under the name this code's relative imports (`from ..alerts import ...` etc.)
 expect.
 
@@ -34,6 +40,7 @@ Usage:
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -53,15 +60,8 @@ if "cv_argus" not in sys.modules:
 try:
     from cv_argus.alerts import Alert, AlertKind
     from cv_argus.buffer import open_buffer
-    from cv_argus.sender import (
-        END_LINE,
-        FakeListener,
-        FakeTransport,
-        SenderServer,
-        format_ack,
-        format_acked,
-        format_pull,
-    )
+    from cv_argus.sender import FakeListener, FakeTransport, SenderServer
+    from cv_argus.sender import protocol
 except ImportError as exc:
     print(f"[FAIL] cv_argus isn't importable even from {_CV_ARGUS_SRC}: {exc}")
     print()
@@ -71,6 +71,7 @@ except ImportError as exc:
     sys.exit(1)
 
 _FAILURES: list[str] = []
+_TIMEOUT_S = 3.0
 
 
 def _log(ok: bool, label: str, detail: str = "") -> None:
@@ -80,74 +81,169 @@ def _log(ok: bool, label: str, detail: str = "") -> None:
         _FAILURES.append(label)
 
 
+def _record(severity: str, previous: str, *, transition: bool, episode: str | None) -> Alert:
+    """A v2 drowsiness record as the orchestrator writes it (contracts C1.4)."""
+    payload = {
+        "class_name": "Drowsy" if severity == "critical" else "Not Drowsy",
+        "probabilities": [0.05, 0.95] if severity == "critical" else [0.9, 0.1],
+        "transition": transition,
+        "severity": severity,
+        "previous_severity": previous,
+        "reason": "eyes_closed" if severity == "critical" else "ok",
+        "model": "parts-rules-v1",
+    }
+    if episode:
+        payload["episode"] = episode
+    return Alert.new(
+        AlertKind.DROWSINESS,
+        level=2 if severity == "critical" else 1,
+        source_id="smoke-cam-0",
+        payload=payload,
+    )
+
+
+class _Session:
+    """One ESP32 connection: a fresh FakeTransport pair offered to the server's accept loop (the
+    firmware opens a new connection per session, and the Pi closes it after `OK`)."""
+
+    def __init__(self, listener: FakeListener) -> None:
+        self.client, server_side = FakeTransport.pair()
+        listener.offer(server_side)
+
+    def send(self, line: str) -> None:
+        self.client.write((line + "\n").encode())
+        print(f"       client -> server: {line if len(line) < 120 else line[:117] + '...'}")
+
+    def recv(self) -> str | None:
+        line = self.client.readline(timeout=_TIMEOUT_S)
+        if line is None:
+            return None
+        text = line.decode()
+        print(f"       client <- server: {text if len(text) < 120 else text[:117] + '...'}")
+        return text
+
+    def read_until_end(self) -> tuple[list[dict], tuple[int, int] | None]:
+        """The records of a PULL/DLQ session and the parsed `END <dlq> <outbox>`."""
+        records: list[dict] = []
+        while True:
+            text = self.recv()
+            if text is None:
+                return records, None
+            end = protocol.parse_end(text)
+            if end is not None:
+                return records, end
+            records.append(json.loads(text))
+
+    def done(self) -> dict[str, int] | None:
+        """`DONE` -> the parsed `OK acked= failed= leased= dlq= outbox=`, then the Pi closes."""
+        self.send(protocol.DONE_LINE)
+        text = self.recv()
+        result = protocol.parse_result(text) if text is not None else None
+        closed = self.client.readline(timeout=_TIMEOUT_S) is None
+        _log(closed, "the Pi closed the connection after OK")
+        return result
+
+
 def main() -> int:
     print(
-        "cv-argus sender/ smoke check (real server code, simulated transport -- not real "
-        "Bluetooth)\n"
+        "cv-argus sender/ smoke check, protocol v2 (real server code, simulated transport -- "
+        "not real Bluetooth)\n"
     )
 
     with tempfile.TemporaryDirectory() as tmp:
         buffer = open_buffer(Path(tmp) / "smoke_buffer.sqlite3")
 
-        # Seed one real Alert -- the exact envelope shape src/esp32-argus/README.md section 1
-        # documents the ESP32 pulling.
-        alert = Alert.new(
-            kind=AlertKind.DROWSINESS,
-            level=2,
-            source_id="smoke-cam-0",
-            payload={"class_name": "Drowsy", "probabilities": [0.12, 0.88]},
-        )
-        buffer.enqueue(alert)
-        _log(True, "seeded one Alert into a real Buffer", f"id={alert.id}")
+        keepalive = _record("none", "none", transition=False, episode=None)
+        critical = _record("critical", "none", transition=True, episode="a1b2c3d4e5f6")
+        buffer.enqueue(keepalive)
+        buffer.enqueue(critical)
+        _log(True, "seeded a keepalive and a critical raise into a real Buffer",
+             f"critical id={critical.id}")
 
-        client_transport, server_transport = FakeTransport.pair()
         listener = FakeListener()
-        listener.offer(server_transport)  # "a client connects" -- queued for the accept loop
-
-        server = SenderServer(buffer, listener)
+        server = SenderServer(buffer, listener, accept_timeout=0.1)
         server.start()
         _log(True, "started a real SenderServer (accept loop running on its own thread)")
 
         try:
-            client_transport.write((format_pull(10) + "\n").encode())
-            _log(True, "client -> server: PULL 10")
+            # 1. PULL: ACK the keepalive, TAKEN the critical.
+            print("\n-- 1. live pull --")
+            s = _Session(listener)
+            s.send(protocol.format_pull(8))
+            records, end = s.read_until_end()
+            ids = [r.get("id") for r in records]
+            _log(ids == [keepalive.id, critical.id], "PULL served both rows, oldest first",
+                 f"got {len(records)} record(s)")
+            _log(end == (0, 2), "END <dlq_waiting> <outbox_waiting> counts the served rows",
+                 f"got {end}")
+            served = {r.get("id"): r for r in records}
+            age = served.get(critical.id, {}).get("age_s")
+            _log(isinstance(age, (int, float)) and age >= 0, "the record carries age_s",
+                 f"age_s={age!r}")
+            _log(served.get(critical.id, {}).get("payload", {}).get("severity") == "critical",
+                 "the critical record carries its severity")
+            s.send(protocol.format_ack([keepalive.id]))
+            _log(s.recv() == protocol.format_acked(1), "ACK the keepalive -> ACKED 1")
+            s.send(protocol.format_taken([critical.id]))
+            _log(s.recv() == protocol.format_leased(1), "TAKEN the critical -> LEASED 1")
+            result = s.done()
+            _log(result == {"acked": 1, "failed": 0, "leased": 1, "dlq": 0, "outbox": 0},
+                 "OK: 1 acked, 1 leased, nothing waiting (the leased row isn't counted)",
+                 f"got {result}")
 
-            received: list[str] = []
-            while True:
-                line = client_transport.readline(timeout=3.0)
-                if line is None:
-                    _log(False, "client <- server", "timed out waiting for a line")
-                    break
-                text = line.decode()
-                if text == END_LINE:
-                    _log(True, "client <- server: END")
-                    break
-                received.append(text)
-                print(f"       client <- server: {text}")
+            # 2. A report session: the live window ran out with the backend down.
+            print("\n-- 2. report session: the critical is dead-lettered --")
+            body = {
+                "client_event_id": critical.id, "episode": "a1b2c3d4e5f6", "kind": "alert",
+                "severity": "critical", "alert_type": "eyes_closed", "age_s": 61.2,
+                "delivery": "live", "queued_seconds": 0,
+                "position": {"lat": 20.6597, "lon": -103.3496, "last_known": False,
+                             "location_age_s": 0},
+                "speed": 62.5, "ai_metadata": None,
+            }
+            s = _Session(listener)
+            s.send(protocol.format_fail(critical.id, "no_network", body))
+            result = s.done()
+            _log(result == {"acked": 0, "failed": 1, "leased": 0, "dlq": 1, "outbox": 0},
+                 "OK: FAIL counted, the critical now waits in the DLQ", f"got {result}")
 
-            _log(
-                len(received) == 1,
-                "received exactly the one seeded Alert back",
-                f"got {len(received)} record(s)",
-            )
+            # 3. DLQ 1: the dead letter comes back with its dlq block.
+            print("\n-- 3. dead-letter pull --")
+            s = _Session(listener)
+            s.send(protocol.format_dlq(1))
+            records, end = s.read_until_end()
+            _log(len(records) == 1 and records[0].get("id") == critical.id,
+                 "DLQ 1 served the one dead letter", f"got {len(records)} record(s)")
+            dlq = records[0].get("dlq", {}) if records else {}
+            _log(dlq.get("attempts") == 1 and dlq.get("error") == "no_network",
+                 "its dlq block counts the live failure as attempt 1", f"dlq={dlq}")
+            _log((dlq.get("body") or {}).get("position") == body["position"],
+                 "the composed body kept the event-time position")
+            _log(isinstance(dlq.get("queued_s"), int), "dlq.queued_s is an int",
+                 f"queued_s={dlq.get('queued_s')!r}")
+            _log(end == (1, 0), "END counts the just-served row (not leased yet)", f"got {end}")
+            s.send(protocol.format_taken([critical.id]))
+            _log(s.recv() == protocol.format_leased(1), "TAKEN the dead letter -> LEASED 1")
+            result = s.done()
+            _log(result == {"acked": 0, "failed": 0, "leased": 1, "dlq": 0, "outbox": 0},
+                 "OK: leased, nothing waiting", f"got {result}")
 
-            if received:
-                client_transport.write((format_ack([alert.id]) + "\n").encode())
-                _log(True, f"client -> server: {format_ack([alert.id])}")
-
-                acked_line = client_transport.readline(timeout=3.0)
-                acked_text = acked_line.decode() if acked_line is not None else None
-                _log(
-                    acked_text == format_acked(1),
-                    "client <- server: ACKED",
-                    f"got {acked_text!r}",
-                )
+            # 4. A report session: the replay was delivered.
+            print("\n-- 4. report session: delivered on the replay --")
+            s = _Session(listener)
+            s.send(protocol.format_ack([critical.id]))
+            _log(s.recv() == protocol.format_acked(1), "ACK the replay -> ACKED 1")
+            result = s.done()
+            _log(result == {"acked": 1, "failed": 0, "leased": 0, "dlq": 0, "outbox": 0},
+                 "OK: delivered, nothing waiting", f"got {result}")
         finally:
             server.stop()
             server.join(timeout=2.0)
             _log(not server.is_alive, "server stopped cleanly")
 
-        _log(buffer.unsent_count() == 0, "buffer shows 0 unsent after the ACK round trip")
+        counts = buffer.counts()
+        _log(buffer.unsent_count() == 0, "buffer shows 0 unsent after the round trips")
+        _log(counts.get("archived") == 0, "nothing was archived", f"counts={counts}")
         buffer.close()
 
     print()
@@ -157,7 +253,7 @@ def main() -> int:
             print(f"  - {f}")
         return 1
     print(
-        "All checks passed -- the real sender/buffer/alerts/protocol code works end to end "
+        "All checks passed -- the real sender/buffer/alerts/protocol v2 code works end to end "
         "(simulated transport, not real Bluetooth hardware)."
     )
     return 0

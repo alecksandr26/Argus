@@ -7,7 +7,7 @@ bool prepareReport(SenderPolicy& sender, TrackBuffer& track, uint32_t nowMs, Pre
   out.tier = EventTier::Ok;
   out.attemptNo = 1;
   out.pointCount = 0;
-  out.body.clear();
+  out.held = HeldEvent();
 
   sender.expire(nowMs);
   out.plan = sender.plan(nowMs, track.size() > 0);
@@ -23,22 +23,25 @@ bool prepareReport(SenderPolicy& sender, TrackBuffer& track, uint32_t nowMs, Pre
   if (!sender.inFlight()) return false;  // a plan with nothing behind it (never expected)
   out.pointCount = track.take(out.points);
 
-  float ageS = 0.0f;
-  float queuedS = 0.0f;
-  EventDelivery delivery = EventDelivery::Live;
   if (held) {
     out.hasEvent = true;
     out.dlq = held->dlq;
     out.recordId = held->recordId;
     out.tier = held->tier;
     out.attemptNo = held->dlq ? held->priorAttempts + 1 : held->attempts + 1;
-    ageS = held->ageS(nowMs);
-    queuedS = held->queuedS(nowMs);
-    delivery = held->dlq ? EventDelivery::Dlq : EventDelivery::Live;
+    out.held = *held;
   }
-  out.body = composeReportBody(out.points, out.pointCount, nowMs, held ? &held->event : nullptr,
-                               ageS, delivery, queuedS);
   return true;
+}
+
+std::string composePreparedReport(const PreparedReport& rep, uint32_t nowMs) {
+  if (!rep.hasEvent) {
+    return composeReportBody(rep.points, rep.pointCount, nowMs, nullptr, 0.0f,
+                             EventDelivery::Live, 0.0f);
+  }
+  const HeldEvent& e = rep.held;
+  return composeReportBody(rep.points, rep.pointCount, nowMs, &e.event, e.ageS(nowMs),
+                           e.dlq ? EventDelivery::Dlq : EventDelivery::Live, e.queuedS(nowMs));
 }
 
 ReportResult finishReport(SenderPolicy& sender, TrackBuffer& track, const PreparedReport& rep,

@@ -34,7 +34,9 @@ bool credentialsStale();
 void credentialsMarkStale();
 
 // Stores a fresh copy from the Pi (writes NVS only if it changed) and clears the stale flag.
-void credentialsApply(const DeviceCredentials& fresh);
+// True when the backend identity changed (truck id, key or URL: sameBackendIdentity()), i.e. the
+// known active route no longer applies; a new WiFi or APN alone is false.
+bool credentialsApply(const DeviceCredentials& fresh);
 
 // The Pi answered NOCONFIG: nothing is provisioned there. Clears the stale flag so we don't ask
 // every poll; keeps any NVS copy (still the best guess) until the Pi has one again.

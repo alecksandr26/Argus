@@ -62,6 +62,28 @@ static void creg() {
   CHECK(!parseCreg("+CSQ: 20,0", c));
 }
 
+static void aLateResultFreesTheModem() {
+  CHECK(lateActionVerdict(true, false, 1000, 130000) == LateAction::Free);
+  CHECK(lateActionVerdict(true, true, 1000, 130000) == LateAction::Free);  // it came: use it
+}
+
+static void aBusyModemIsNotATransportFailure() {
+  // Still waiting when the attempt runs out: Busy (modem_busy), not a timeout of the network.
+  CHECK(lateActionVerdict(false, false, 9000, 130000) == LateAction::Busy);
+  // A higher event arrived while waiting: stop, the request stays pending.
+  CHECK(lateActionVerdict(false, true, 9000, 130000) == LateAction::Preempted);
+  // Past the give-up age the result is never coming: free the session and go on.
+  CHECK(lateActionVerdict(false, false, 130000, 130000) == LateAction::Free);
+}
+
+static void theWaitGoesInShortChunks() {
+  CHECK(lateActionChunkMs(8000) == 500);
+  CHECK(lateActionChunkMs(1400) == 400);  // keeps 1 s for the request itself
+  CHECK(lateActionChunkMs(1000) == 0);
+  CHECK(lateActionChunkMs(0) == 0);
+  CHECK(lateActionChunkMs(5000, 200, 0) == 200);
+}
+
 int main() {
   RUN(clbsFix);
   RUN(clbsNoFix);
@@ -70,5 +92,8 @@ int main() {
   RUN(httpAction);
   RUN(httpActionModuleErrorsAreTransportErrors);
   RUN(creg);
+  RUN(aLateResultFreesTheModem);
+  RUN(aBusyModemIsNotATransportFailure);
+  RUN(theWaitGoesInShortChunks);
   return report("modem_parse_host_test");
 }

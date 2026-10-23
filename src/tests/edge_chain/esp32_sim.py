@@ -567,16 +567,23 @@ class SimulatedEsp32:
             if kind == "wait":
                 return made
             made += 1
+            # The choice (event + points) is made now, at plan time; the JSON, with every age,
+            # when it is sent (composePreparedReport(), C2.1 [sync 3]).
             points, self.track = self.track[-REPORT_MAX_POINTS:], []
-            body = {"points": [
-                {"age_s": round_age(now - p["at"]), "lat": p["lat"], "lon": p["lon"],
-                 "speed": 0.0 if p["last_known"] else p["speed"], "vigilance": p["vigilance"],
-                 "last_known": p["last_known"], "location_age_s": p["location_age_s"]}
-                for p in points]}
-            if held is not None:
-                body["event"] = compose_event(held.event, held.age(now),
-                                              "dlq" if held.dlq else "live", held.queued(now))
-            status, answer, reason = await self._post(body)
+
+            def compose(sent_at: float, points=points, held=held) -> dict:
+                body = {"points": [
+                    {"age_s": round_age(sent_at - p["at"]), "lat": p["lat"], "lon": p["lon"],
+                     "speed": 0.0 if p["last_known"] else p["speed"], "vigilance": p["vigilance"],
+                     "last_known": p["last_known"], "location_age_s": p["location_age_s"]}
+                    for p in points]}
+                if held is not None:
+                    body["event"] = compose_event(held.event, held.age(sent_at),
+                                                  "dlq" if held.dlq else "live",
+                                                  held.queued(sent_at))
+                return body
+
+            status, answer, reason = await self._post(compose)
             r = react_to_report(status, answer, held is not None, reason)
             if r.route_known:
                 self.sender.route = "active" if r.active_route else "none"
@@ -593,12 +600,15 @@ class SimulatedEsp32:
                 self.sender.end_attempt(held, "failed", r.reason or "bad_response", now)
         return made
 
-    async def _post(self, body: dict) -> tuple[int, dict | None, str]:
-        """backend_api.cpp's backendPostReport()."""
+    async def _post(self, compose: Callable[[float], dict]) -> tuple[int, dict | None, str]:
+        """backend_api.cpp's backendPostReport(): the body is composed only once the attempt has
+        a network, right before it goes (C2.1 [sync 3]). The sim's attempt is atomic, so that is
+        the plan's clock reading; the firmware's host test sender_step covers a setup delay."""
         if not self.device_key:
             return -1, None, "no_credentials"
         if not self.wifi:
             return -1, None, "no_network"
+        body = compose(self.clock())
         if self.backend_failures > 0:
             self.backend_failures -= 1
             return 503, None, ""

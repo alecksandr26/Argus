@@ -30,8 +30,9 @@ if "cv_argus" not in sys.modules:
     _spec.loader.exec_module(_module)
 
 # The rule engine's to_detection() imports cv-argus's `model` package, whose __init__ imports the
-# model downloader, which imports gdown. The chain never downloads a model, so an empty stand-in
-# keeps that import working where gdown isn't installed (it isn't in src/tests/requirements.txt).
+# model downloader, which imports gdown. src/tests/requirements.txt installs it; the chain never
+# downloads a model, so where it is missing anyway (an older venv) an empty stand-in keeps that
+# import working.
 try:
     import gdown  # noqa: F401
 except ImportError:

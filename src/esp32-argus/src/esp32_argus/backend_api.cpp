@@ -29,6 +29,33 @@ bool tlsConfigured = false;
 DeviceCredentials creds;
 uint32_t credsGeneration = 0;
 
+// The current attempt's composer and deadline, for composeNow() (gprs_http takes a plain function
+// pointer). The sender task only: one attempt at a time.
+ReportComposer activeComposer = nullptr;
+const Deadline* activeDeadline = nullptr;
+const char* activeVia = "none";
+
+// Composes the body now and logs it: "[report] -> POST ... via gprs (812 B, 4.2 s of 8.0 s left)".
+String composeNow() {
+  std::string body = activeComposer ? activeComposer(millis()) : std::string("{\"points\":[]}");
+  Serial.print("[report] -> POST ");
+  Serial.print(kReportPath);
+  Serial.print(" via ");
+  Serial.print(activeVia);
+  Serial.print(" (");
+  Serial.print((unsigned)body.size());
+  Serial.print(" B");
+  if (activeDeadline) {
+    Serial.print(", ");
+    Serial.print(activeDeadline->remaining(millis()) / 1000.0, 1);
+    Serial.print(" s of ");
+    Serial.print(activeDeadline->budgetMs / 1000.0, 1);
+    Serial.print(" s left");
+  }
+  Serial.println(")");
+  return String(body.c_str());
+}
+
 // Prints why there's no network, at most every NET_STATUS_LOG_INTERVAL_MS.
 void logNoNetwork(const String& why) {
   static bool logged = false;
@@ -40,7 +67,7 @@ void logNoNetwork(const String& why) {
   Serial.println(why);
 }
 
-ReportSend sendOverWifi(const String& url, const String& body, const Deadline& deadline) {
+ReportSend sendOverWifi(const String& url, const Deadline& deadline) {
   ReportSend r;
   r.via = "wifi";
   uint32_t left = deadline.remaining(millis());
@@ -71,6 +98,7 @@ ReportSend sendOverWifi(const String& url, const String& body, const Deadline& d
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-Device-Api-Key", creds.apiKey);
 
+  String body = composeNow();  // as late as HTTPClient allows: the ages count every step above
   r.status = http.POST(body);
   if (r.status > 0) {
     r.body = http.getString();
@@ -85,7 +113,7 @@ ReportSend sendOverWifi(const String& url, const String& body, const Deadline& d
 
 }  // namespace
 
-ReportSend backendPostReport(const std::string& body, bool retry, bool (*preempt)()) {
+ReportSend backendPostReport(ReportComposer compose, bool retry, bool (*preempt)()) {
   ReportSend r;
   credentialsCopyIfChanged(creds, credsGeneration);
   if (!creds.valid()) {
@@ -93,13 +121,20 @@ ReportSend backendPostReport(const std::string& body, bool retry, bool (*preempt
     return r;
   }
 
-  // Mobile data first (unless it is on hold after a transport failure and WiFi is up), then WiFi.
-  uint32_t now = millis();
+  // The attempt starts here, so its deadline also bounds the mobile registration check.
+  uint32_t startedAt = millis();
   bool wifiUp = wifiIsConnected();
+  // Mobile data first (unless it is on hold after a transport failure and WiFi is up), then WiFi.
+  bool tryGprs = creds.useGprs() && transport.pick(startedAt, wifiUp) == Transport::Gprs;
+  Deadline deadline(startedAt,
+                    attemptTimeoutMs(timeouts, tryGprs ? Transport::Gprs : Transport::Wifi, retry,
+                                     tryGprs && gprsNeedsSetup()));
   bool useGprs = false;
   int stat = -2;  // not checked
-  if (creds.useGprs() && transport.pick(now, wifiUp) == Transport::Gprs) {
+  if (tryGprs) {
+    modemSetDeadline(&deadline);  // AT+CREG? (when the cached state is stale) waits no longer
     stat = modemRegistrationCached(MODEM_REG_CACHE_MS);
+    modemSetDeadline(nullptr);
     useGprs = modemStatRegistered(stat);
   }
   if (!useGprs && !wifiUp) {
@@ -113,28 +148,24 @@ ReportSend backendPostReport(const std::string& body, bool retry, bool (*preempt
     }
     return r;
   }
+  if (tryGprs && !useGprs) {
+    // Not registered: WiFi carries this attempt, with WiFi's budget from the same start (the
+    // registration check was its first step).
+    deadline = Deadline(startedAt, attemptTimeoutMs(timeouts, Transport::Wifi, retry, false));
+  }
   if (preempt && preempt()) {
     r.preempted = true;
     return r;
   }
 
   Transport via = useGprs ? Transport::Gprs : Transport::Wifi;
-  uint32_t budget = attemptTimeoutMs(timeouts, via, retry, useGprs && gprsNeedsSetup());
-  Deadline deadline(millis(), budget);
   String url = creds.backendUrl + kReportPath;
-  String payload(body.c_str());
-  Serial.print("[report] -> POST ");
-  Serial.print(kReportPath);
-  Serial.print(" via ");
-  Serial.print(transportName(via));
-  Serial.print(" (");
-  Serial.print(payload.length());
-  Serial.print(" B, deadline ");
-  Serial.print(budget / 1000.0, 1);
-  Serial.println(" s)");
+  activeComposer = compose;
+  activeDeadline = &deadline;
+  activeVia = transportName(via);
 
   if (useGprs) {
-    GprsResult g = gprsPostJson(url, creds, payload, deadline, preempt);
+    GprsResult g = gprsPostJson(url, creds, composeNow, deadline, preempt);
     r.via = "gprs";
     switch (g.end) {
       case GprsEnd::Response:
@@ -144,6 +175,9 @@ ReportSend backendPostReport(const std::string& body, bool retry, bool (*preempt
         break;
       case GprsEnd::Preempted:
         r.preempted = true;  // says nothing about the network
+        break;
+      case GprsEnd::ModemBusy:
+        r.reason = "modem_busy";  // nor does a modem still busy with an earlier request
         break;
       case GprsEnd::Timeout:
         r.reason = "timeout";
@@ -155,8 +189,10 @@ ReportSend backendPostReport(const std::string& body, bool retry, bool (*preempt
         break;
     }
   } else {
-    r = sendOverWifi(url, payload, deadline);
+    r = sendOverWifi(url, deadline);
   }
+  activeComposer = nullptr;
+  activeDeadline = nullptr;
 
   if (r.status > 0) {
     Serial.print("[report] <- ");

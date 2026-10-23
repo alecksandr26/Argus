@@ -103,7 +103,7 @@
 #define CONFIG_REFRESH_INTERVAL_MS 600000UL
 
 // =====================================================
-// Mobile data (SIM800L GPRS) -- tried first for every GET/POST when the Pi sends an APN
+// Mobile data (SIM800L GPRS) -- tried first for every report POST when the Pi sends an APN
 // (ARGUS_GPRS_APN, with optional ARGUS_GPRS_USER / ARGUS_GPRS_PASSWORD); no APN = WiFi only.
 // WiFi is the fallback. Only a transport failure (no network, no bearer, modem error) switches
 // to WiFi, for GPRS_HOLD_OFF_MS, then mobile data is tried again (see transport_policy.h).
@@ -141,7 +141,7 @@
 // only while no live event is pending (sender_policy.h). DLQ_REPLAY_BATCH is gone (C4).
 // The Bluetooth link's status line (up/down, sessions, records) on Serial.
 #define PI_BT_LINK_LOG_INTERVAL_MS 30000UL
-// How often backendIsReachable() may print why there's no network (no APN, mobile data on hold,
+// How often backend_api's logNoNetwork() may print why there's no network (no APN, mobile data on hold,
 // the modem's registration state), so a no_network loop explains itself without flooding Serial.
 #define NET_STATUS_LOG_INTERVAL_MS 30000UL
 

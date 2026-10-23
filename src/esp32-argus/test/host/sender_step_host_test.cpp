@@ -66,7 +66,7 @@ static void aPointsOnlyReportCarriesEveryPoint() {
   CHECK(rep.pointCount == 3);
   CHECK(t.size() == 0);
   JsonDocument d;
-  CHECK(deserializeJson(d, rep.body) == DeserializationError::Ok);
+  CHECK(deserializeJson(d, composePreparedReport(rep, 4000)) == DeserializationError::Ok);
   CHECK(d["points"].size() == 3);
   CHECK_NEAR(d["points"][0]["age_s"].as<float>(), 3.0, 1e-3);  // oldest first
   CHECK(d["event"].isNull());
@@ -83,7 +83,7 @@ static void aLivenessReportHasNoPoints() {
   CHECK(prepareReport(s, t, 0, rep));
   CHECK(rep.pointCount == 0);
   JsonDocument d;
-  CHECK(deserializeJson(d, rep.body) == DeserializationError::Ok);
+  CHECK(deserializeJson(d, composePreparedReport(rep, 0)) == DeserializationError::Ok);
   CHECK(d["points"].is<JsonArray>() && d["points"].size() == 0);  // `points: []`, never absent
   ReportResult r = finishReport(s, t, rep, false, answer(200, NO_ROUTE, false), 300);
   CHECK(s.route() == RouteKnowledge::None);
@@ -133,7 +133,7 @@ static void aDeliveredEventIsAckedToThePi() {
   CHECK(prepareReport(s, t, 1500, rep));
   CHECK(rep.hasEvent && !rep.dlq && rep.attemptNo == 1);
   JsonDocument d;
-  CHECK(deserializeJson(d, rep.body) == DeserializationError::Ok);
+  CHECK(deserializeJson(d, composePreparedReport(rep, 1500)) == DeserializationError::Ok);
   CHECK(d["event"]["client_event_id"] == "c1");
   CHECK(d["event"]["delivery"] == "live");
   CHECK_NEAR(d["event"]["age_s"].as<float>(), 1.5, 1e-3);
@@ -187,7 +187,7 @@ static void aDlqReplayIsLoggedAsTheNthOfFive() {
   CHECK(prepareReport(s, t, 0, rep));
   CHECK(rep.dlq && rep.attemptNo == 3);
   JsonDocument d;
-  CHECK(deserializeJson(d, rep.body) == DeserializationError::Ok);
+  CHECK(deserializeJson(d, composePreparedReport(rep, 0)) == DeserializationError::Ok);
   CHECK(d["event"]["delivery"] == "dlq");
   CHECK_NEAR(d["event"]["queued_seconds"].as<float>(), 30.0, 1e-3);
   ReportResult r = finishReport(s, t, rep, false, answer(503, "", true), 7400);
@@ -224,6 +224,49 @@ static void anAnswerWithoutTheEventIsAFailedAttempt() {
   CHECK(s.route() == RouteKnowledge::Active);  // the route part was still readable
 }
 
+// C2.1 [sync 3]: the ages are measured when the body is composed (right before AT+HTTPDATA /
+// http.POST), not when the attempt was planned: a 9 s modem setup in between shows in every age_s.
+static void agesAreMeasuredAtSendNotAtPlan() {
+  SenderPolicy s;
+  TrackBuffer t;
+  addPoints(t, 2, 0);  // read at 0 and 1000
+  CHECK(s.takeLive("c1", ev("c1"), EventTier::Critical, 1.0f, 1000) == TakeResult::Queued);
+  PreparedReport rep;
+  CHECK(prepareReport(s, t, 1500, rep));  // planned at 1.5 s ...
+  CHECK(t.size() == 0);                   // ... the points and the event are chosen now
+  addPoints(t, 1, 5000);                  // read during the setup: not in this report
+  const uint32_t sentAt = 1500 + 9000;    // ... registration + bearer + AT steps: sent at 10.5 s
+  JsonDocument d;
+  CHECK(deserializeJson(d, composePreparedReport(rep, sentAt)) == DeserializationError::Ok);
+  CHECK(d["points"].size() == 2);
+  CHECK_NEAR(d["points"][0]["age_s"].as<float>(), 10.5, 1e-3);  // not 1.5
+  CHECK_NEAR(d["points"][1]["age_s"].as<float>(), 9.5, 1e-3);   // not 0.5
+  CHECK_NEAR(d["event"]["age_s"].as<float>(), 10.5, 1e-3);      // 1.0 at take + 9.5 held
+  CHECK(d["event"]["delivery"] == "live");
+  CHECK(d["event"]["queued_seconds"].as<float>() == 0.0f);
+
+  // The plan-time copy doesn't move with the policy: composing twice gives the same event.
+  JsonDocument again;
+  CHECK(deserializeJson(again, composePreparedReport(rep, sentAt)) == DeserializationError::Ok);
+  CHECK(again["event"]["client_event_id"] == "c1");
+  finishReport(s, t, rep, false, answer(200, CREATED, true), sentAt + 800);
+  CHECK(t.size() == 1);
+}
+
+// A DLQ replay's queued_seconds also counts the time until it is sent.
+static void aDlqReplaysQueuedSecondsIsMeasuredAtSend() {
+  SenderPolicy s;
+  TrackBuffer t;
+  CHECK(s.takeDlq("d1", ev("d1"), 90, 30, 0, 0) == TakeResult::Queued);
+  PreparedReport rep;
+  CHECK(prepareReport(s, t, 2000, rep));
+  JsonDocument d;
+  CHECK(deserializeJson(d, composePreparedReport(rep, 14000)) == DeserializationError::Ok);
+  CHECK_NEAR(d["event"]["age_s"].as<float>(), 104.0, 1e-3);
+  CHECK_NEAR(d["event"]["queued_seconds"].as<float>(), 44.0, 1e-3);
+  CHECK(d["event"]["delivery"] == "dlq");
+}
+
 int main() {
   RUN(nothingDueMeansNoAttempt);
   RUN(aPointsOnlyReportCarriesEveryPoint);
@@ -236,5 +279,7 @@ int main() {
   RUN(aDlqReplayIsLoggedAsTheNthOfFive);
   RUN(unauthorizedForgetsTheRoute);
   RUN(anAnswerWithoutTheEventIsAFailedAttempt);
+  RUN(agesAreMeasuredAtSendNotAtPlan);
+  RUN(aDlqReplaysQueuedSecondsIsMeasuredAtSend);
   return report("sender_step_host_test");
 }

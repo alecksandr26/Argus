@@ -160,6 +160,17 @@ void logHealth() {
 
 PreparedReport rep;  // static: the sender task's one report in the making
 
+// backend_api calls this right before AT+HTTPDATA / http.POST: the body, with every age_s measured
+// now (C2.1 [sync 3]). Reads only `rep`, the sender task's own copy: no lock.
+std::string composeAtSend(uint32_t nowMs) {
+  std::string body = composePreparedReport(rep, nowMs);
+  if (rep.hasEvent) {
+    Serial.print(rep.dlq ? "[dlq] event: " : "[live] event: ");
+    Serial.println(body.c_str());
+  }
+  return body;
+}
+
 void senderOnce() {
   bool due;
   {
@@ -172,13 +183,9 @@ void senderOnce() {
     vTaskDelay(pdMS_TO_TICKS(waitMs > 0 ? waitMs : 1));
     return;
   }
-  if (rep.hasEvent) {
-    Serial.print(rep.dlq ? "[dlq] event: " : "[live] event: ");
-    Serial.println(rep.body.c_str());
-  }
 
   uint32_t startedAt = millis();
-  ReportSend sent = backendPostReport(rep.body, rep.plan.retry, preemptCheck);
+  ReportSend sent = backendPostReport(composeAtSend, rep.plan.retry, preemptCheck);
   uint32_t endedAt = millis();
   ReportReaction reaction;
   if (!sent.preempted) {
@@ -375,10 +382,11 @@ void refreshCredentialsIfStale() {
   DeviceCredentials fresh;
   switch (bluetoothFetchConfig(fresh)) {
     case ConfigLineResult::Ok:
-      credentialsApply(fresh);
-      {
+      // Only a new truck, key or backend makes the known route unknown again (until a 200); the
+      // 10-minute refresh with the same credentials, or a new WiFi/APN, keeps it.
+      if (credentialsApply(fresh)) {
         RtosLock lock(stateMutex);
-        sender.forgetRoute();  // new credentials, maybe another truck: unknown until a 200
+        sender.forgetRoute();
       }
       break;
     case ConfigLineResult::NoConfig:

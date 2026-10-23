@@ -164,31 +164,45 @@ void logLateAction(const String& urc) {
   }
 }
 
-// True when the modem's HTTP session is free (no fired request still waiting for its result).
-// Waits up to waitMs for a pending result.
-bool settleLateAction(uint32_t waitMs) {
-  if (!actionPending) return true;
+void freeLateAction() {
+  actionPending = false;
+  modemSendAT("AT+HTTPTERM", "OK", 2000UL);
+}
+
+// Waits for a pending late result in short chunks (lateActionChunkMs, ~500 ms), asking between
+// them whether to stop, so a live event can still pre-empt and the deadline still holds. With no
+// Steps (gprsPoll, between attempts) it only checks what already arrived, without blocking.
+LateAction settleLateAction(Steps* s) {
+  if (!actionPending) return LateAction::Free;
   String urc;
   bool got = modemTakeHttpActionUrc(&urc);
-  if (!got && waitMs > 0) {
+  bool preempted = false;
+  while (!got && s) {
+    if (!s->canContinue()) {
+      preempted = s->why() == GprsEnd::Preempted;
+      break;
+    }
+    uint32_t chunk = lateActionChunkMs(s->left());
+    if (chunk == 0) break;
     String buf;
-    if (modemReadUntil("+HTTPACTION:", waitMs, &buf)) {
+    if (modemReadUntil("+HTTPACTION:", chunk, &buf)) {
       String rest;
       modemReadUntil("\n", 1000UL, &rest);
       urc = buf.substring(buf.indexOf("+HTTPACTION:")) + rest;
       got = true;
     }
   }
-  if (got) {
-    logLateAction(urc);
-  } else if (millis() - actionFiredAt >= GPRS_LATE_ACTION_MAX_MS) {
-    Serial.println("[gprs] A timed-out request never got its result -- freeing the modem");
-  } else {
-    return false;
+  LateAction verdict =
+      lateActionVerdict(got, preempted, millis() - actionFiredAt, GPRS_LATE_ACTION_MAX_MS);
+  if (verdict == LateAction::Free) {
+    if (got) {
+      logLateAction(urc);
+    } else {
+      Serial.println("[gprs] A timed-out request never got its result -- freeing the modem");
+    }
+    freeLateAction();
   }
-  actionPending = false;
-  modemSendAT("AT+HTTPTERM", "OK", 2000UL);
-  return true;
+  return verdict;
 }
 
 GprsResult finish(GprsResult r) {
@@ -196,6 +210,7 @@ GprsResult finish(GprsResult r) {
   if (r.end != GprsEnd::Response && !actionPending) {
     modemSendAT("AT+HTTPTERM", "OK", 1000UL);  // frees a half-built request (short, local)
   }
+  // ModemBusy and Preempted say nothing about the network: the bearer and registration stay.
   if (r.end == GprsEnd::TransportError || r.end == GprsEnd::Timeout) {
     bearerOpen = false;  // verify (and allow setup time) next attempt: the signal may be gone
     modemForgetRegistration();
@@ -208,20 +223,25 @@ GprsResult finish(GprsResult r) {
 bool gprsNeedsSetup() { return !bearerOpen; }
 
 void gprsPoll() {
-  if (actionPending) settleLateAction(0);
+  if (actionPending) settleLateAction(nullptr);
 }
 
-GprsResult gprsPostJson(const String& url, const DeviceCredentials& creds, const String& body,
-                        const Deadline& deadline, bool (*preempt)()) {
+GprsResult gprsPostJson(const String& url, const DeviceCredentials& creds,
+                        GprsBodyComposer compose, const Deadline& deadline, bool (*preempt)()) {
   GprsResult r;
   modemSetDeadline(&deadline);
   Steps s(deadline, preempt);
 
   // A request a timed-out attempt fired may still hold the modem's HTTP session.
-  if (!settleLateAction(s.left() > 1000 ? s.left() - 1000 : 0)) {
-    Serial.println("[gprs] The modem is still waiting on an earlier request");
-    r.end = GprsEnd::Timeout;
-    return finish(r);
+  switch (settleLateAction(&s)) {
+    case LateAction::Free: break;
+    case LateAction::Preempted:
+      r.end = GprsEnd::Preempted;
+      return finish(r);
+    case LateAction::Busy:
+      Serial.println("[gprs] The modem is still busy with an earlier request (modem_busy)");
+      r.end = GprsEnd::ModemBusy;
+      return finish(r);
   }
 
   int stat = modemRegistrationCached(MODEM_REG_CACHE_MS);
@@ -253,6 +273,12 @@ GprsResult gprsPostJson(const String& url, const DeviceCredentials& creds, const
     r.end = s.stopped() ? s.why() : GprsEnd::TransportError;
     return finish(r);
   }
+  // Composed now, right before it goes to the modem: the ages in it count every step above.
+  if (!s.canContinue()) {
+    r.end = s.why();
+    return finish(r);
+  }
+  String body = compose();
   bool bodyLoaded =
       s.at("AT+HTTPDATA=" + String(body.length()) + ",10000", "DOWNLOAD", 5000UL);
   if (bodyLoaded) {

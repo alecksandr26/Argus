@@ -120,6 +120,11 @@ static void transportErrorsCarryTheCallersReason() {
   CHECK(reactToReport(-11, "", true, nullptr).reason == "transport_error");
   CHECK(reactToReport(-1, "", true, "").reason == "transport_error");
   CHECK(reactToReport(-1, "", true, "no_network").event == EventOutcome::AttemptFailed);
+  // The SIM800L still busy with an earlier timed-out request: a failed attempt (retry rules), its
+  // own token, so the Pi's dlq_error and the [live]/[dlq] line say what happened.
+  ReportReaction busy = reactToReport(-1, "", true, "modem_busy");
+  CHECK(busy.event == EventOutcome::AttemptFailed && busy.reason == "modem_busy");
+  CHECK(!busy.recredential && !busy.routeKnown);
 }
 
 int main() {

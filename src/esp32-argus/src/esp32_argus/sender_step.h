@@ -1,9 +1,13 @@
 #pragma once
 
 // One report attempt of the sender task, minus the I/O (final-tweaks plan section 1 "ESP32:
-// sending"; contracts C1.8, C2.3). The sketch's senderTask calls prepareReport() under the shared
-// mutex, sends the body with the mutex released (backend_api.h), then calls finishReport() under
-// the mutex again. Everything here is pure, so test/host/sender_step_host_test.cpp runs the whole
+// sending"; contracts C1.8, C2.1, C2.3). The sketch's senderTask calls prepareReport() under the
+// shared mutex, sends with the mutex released (backend_api.h), then calls finishReport() under
+// the mutex again. prepareReport() decides *what* goes (the event and the points, SenderPolicy's
+// choice at plan time); composePreparedReport() writes the JSON, and the transport calls it as
+// late as it can (right before AT+HTTPDATA on GPRS, right before http.POST on WiFi), so every
+// age_s is measured at send time, after registration, bearer setup and the other AT steps
+// (C2.1 [sync 3]). Everything here is pure, so test/host/sender_step_host_test.cpp runs the whole
 // cycle on the PC: which points a report carries, which go back to the buffer, and how the
 // backend's answer (ack_policy.h) moves the event and the known active route.
 
@@ -25,14 +29,19 @@ struct PreparedReport {
   int attemptNo = 0;            // 1-based: live, this device's tries; DLQ, the Pi's count + 1
   int pointCount = 0;
   TrackPoint points[REPORT_MAX_POINTS];
-  std::string body;             // the C2.1 JSON to POST
+  HeldEvent held;               // a copy of the event's slot at plan time (when hasEvent)
 };
 
 // Gives up on live events whose retry window ran out, asks the policy what is due and, when
 // something is, begins the attempt: takes every point from the track buffer (a liveness report
-// takes none) and composes the body. False when nothing is due yet: `out.plan` is Idle or Wait
-// (with waitMs).
+// takes none) and copies the event. No JSON yet: see composePreparedReport(). False when nothing
+// is due yet: `out.plan` is Idle or Wait (with waitMs).
 bool prepareReport(SenderPolicy& sender, TrackBuffer& track, uint32_t nowMs, PreparedReport& out);
+
+// The C2.1 body of `rep`, with every age measured at `nowMs`: each point's age_s from its read,
+// the event's age_s (and a DLQ replay's queued_seconds) from when it was taken plus the time held
+// since. Reads only `rep` (a copy), so the sender task calls it without the shared mutex.
+std::string composePreparedReport(const PreparedReport& rep, uint32_t nowMs);
 
 // What finishReport() did, for the attempt's log line.
 struct ReportResult {

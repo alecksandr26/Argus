@@ -114,14 +114,16 @@ void credentialsMarkStale() {
   stale = true;
 }
 
-void credentialsApply(const DeviceCredentials& fresh) {
+bool credentialsApply(const DeviceCredentials& fresh) {
+  bool identityChanged;
   {
     RtosLock lock(mutex);
     stale = false;
     sawNoConfig = false;
     fetchedOnce = true;
     lastFetchedAt = millis();
-    if (sameAs(fresh, current)) return;
+    if (sameAs(fresh, current)) return false;
+    identityChanged = !sameBackendIdentity(fresh, current);
     current = fresh;
     generation++;
   }
@@ -135,6 +137,7 @@ void credentialsApply(const DeviceCredentials& fresh) {
   prefs.putString("gprs_user", fresh.gprsUser);
   prefs.putString("gprs_pass", fresh.gprsPassword);
   logLoaded(fresh, "fresh from the Pi, saved to NVS");
+  return identityChanged;
 }
 
 void credentialsNoneOnPi() {

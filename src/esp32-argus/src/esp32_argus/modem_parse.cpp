@@ -76,3 +76,17 @@ bool parseCreg(const char* response, CregResult& result) {
   if (!p) return false;
   return parseIntField(p, result.n) && skipComma(p) && parseIntField(p, result.stat);
 }
+
+LateAction lateActionVerdict(bool resultArrived, bool preempted, uint32_t sinceFiredMs,
+                             uint32_t giveUpAfterMs) {
+  if (resultArrived) return LateAction::Free;
+  if (preempted) return LateAction::Preempted;
+  if (sinceFiredMs >= giveUpAfterMs) return LateAction::Free;
+  return LateAction::Busy;
+}
+
+uint32_t lateActionChunkMs(uint32_t attemptLeftMs, uint32_t chunkMs, uint32_t reserveMs) {
+  if (attemptLeftMs <= reserveMs) return 0;
+  uint32_t usable = attemptLeftMs - reserveMs;
+  return usable < chunkMs ? usable : chunkMs;
+}
