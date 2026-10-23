@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import SearchBox from '../components/SearchBox'
 import StatusPill from '../components/StatusPill'
 import Icon from '../components/Icon'
 import { useAuth } from '../context/AuthContext'
-import FleetMap from '../components/FleetMap'
+import FleetMap, { type MapFocus } from '../components/FleetMap'
 import { getRouteTrack, listRoutes } from '../api/routes'
 import { listAlerts } from '../api/alerts'
 import { listDrivers } from '../api/drivers'
@@ -15,6 +15,7 @@ import { clock, relativeTime, shortDate } from '../utils/format'
 import { REPLAYED_LABEL, alertTypeLabel, routeStatusBadge, severity } from '../utils/status'
 import { alertPosition, positionSummary } from '../utils/position'
 import { alertPins, trackPath } from '../utils/mapLayers'
+import { toLatLng } from '../utils/geo'
 import type { Alert, Driver, Route, RouteTrack, Truck } from '../types'
 
 /**
@@ -22,7 +23,9 @@ import type { Alert, Driver, Route, RouteTrack, Truck } from '../types'
  * or stopped/cancelled (`?status=cancelled`) — each expandable into its GPS path
  * (`GET /api/routes/{id}/track`, fetched once when first expanded, downsampled by the server) on a
  * map with a pin per alert, and the alerts raised during it (`GET /api/alerts`, grouped
- * client-side by `id_route`), each with its position. This is the real screen behind Sidebar.tsx's "Route history" item,
+ * client-side by `id_route`), each with its position and a "Show on map" that flies that trip's
+ * small map to the alert's pin. Each alert links to the route view focused on it
+ * (`/routes/{id}/live?alert={id}`). This is the real screen behind Sidebar.tsx's "Route history" item,
  * previously a `soon` placeholder labeled "Trip history". Routes and alerts are both readable by
  * every role per the backend's RBAC table, so — like Live operations — this screen carries no
  * `roles` restriction in Sidebar.tsx.
@@ -41,6 +44,15 @@ export default function RouteHistory() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   /** GPS paths by route id, fetched on first expand; `'error'` when that failed. */
   const [tracks, setTracks] = useState<Record<string, RouteTrack | 'loading' | 'error'>>({})
+  /** "Show on map" target per route (each expanded trip has its own small map). */
+  const [focusByRoute, setFocusByRoute] = useState<Record<string, MapFocus>>({})
+  const focusNonce = useRef(0)
+  function showOnMap(a: Alert) {
+    if (!a.coordinates) return
+    focusNonce.current += 1
+    const focus = { position: toLatLng(a.coordinates), pinId: a.id_alert, nonce: focusNonce.current }
+    setFocusByRoute((prev) => ({ ...prev, [a.id_route]: focus }))
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -180,6 +192,9 @@ export default function RouteHistory() {
               const routeAlerts = alertsByRoute.get(r.id_route) ?? []
               const isOpen = expanded.has(r.id_route)
               const truck = truckById.get(r.id_truck)
+              const track = tracks[r.id_route]
+              // "Show on map" needs the small map, which draws once the path has points.
+              const hasMap = typeof track === 'object' && track.points.length > 0
               return (
                 <div
                   key={r.id_route}
@@ -265,7 +280,12 @@ export default function RouteHistory() {
                           Stopped: {r.stop_reason}
                         </div>
                       )}
-                      <RoutePath track={tracks[r.id_route]} routeId={r.id_route} alerts={routeAlerts} />
+                      <RoutePath
+                        track={tracks[r.id_route]}
+                        routeId={r.id_route}
+                        alerts={routeAlerts}
+                        focus={focusByRoute[r.id_route] ?? null}
+                      />
                       {routeAlerts.length === 0 ? (
                         <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>
                           No alerts recorded for this trip.
@@ -284,10 +304,16 @@ export default function RouteHistory() {
                           {routeAlerts.map((a) => {
                             const sev = severity[a.severity_level]
                             return (
-                              <li key={a.id_alert}>
+                              <li
+                                key={a.id_alert}
+                                data-testid="history-alert"
+                                style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                              >
                                 <Link
-                                  to={`/alerts/${a.id_alert}`}
+                                  to={`/routes/${a.id_route}/live?alert=${a.id_alert}`}
                                   style={{
+                                    flex: 1,
+                                    minWidth: 0,
                                     display: 'flex',
                                     alignItems: 'center',
                                     gap: 12,
@@ -345,6 +371,16 @@ export default function RouteHistory() {
                                     </span>
                                   )}
                                 </Link>
+                                {a.coordinates && hasMap && (
+                                  <button
+                                    type="button"
+                                    className="btn btn--ghost"
+                                    style={{ padding: '2px 8px', fontSize: 11, flexShrink: 0 }}
+                                    onClick={() => showOnMap(a)}
+                                  >
+                                    Show on map
+                                  </button>
+                                )}
                               </li>
                             )
                           })}
@@ -362,15 +398,18 @@ export default function RouteHistory() {
   )
 }
 
-/** The GPS path of an ended route on a small map, with a pin per alert. */
+/** The GPS path of an ended route on a small map, with a pin per alert; `focus` is the last
+ * "Show on map" of one of its alerts. */
 function RoutePath({
   track,
   routeId,
   alerts,
+  focus,
 }: {
   track: RouteTrack | 'loading' | 'error' | undefined
   routeId: string
   alerts: Alert[]
+  focus: MapFocus | null
 }) {
   if (track === undefined || track === 'loading') {
     return <div style={{ fontSize: 12, color: 'var(--text-faint)', padding: '8px 0' }}>Loading GPS path…</div>
@@ -403,7 +442,13 @@ function RoutePath({
             border: '1px solid var(--border-soft)',
           }}
         >
-          <FleetMap markers={[]} paths={path ? [path] : []} pins={alertPins(alerts)} maxZoom={13} />
+          <FleetMap
+            markers={[]}
+            paths={path ? [path] : []}
+            pins={alertPins(alerts)}
+            focus={focus}
+            maxZoom={13}
+          />
         </div>
       )}
     </div>

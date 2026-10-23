@@ -5,11 +5,16 @@ import { MemoryRouter } from 'react-router-dom'
 import RouteHistory from './RouteHistory'
 import { AuthProvider } from '../context/AuthContext'
 import { at, makeAlert, makePoint, makeRoute } from '../test/fixtures'
-import type { FleetMapMarker, MapPath, MapPin } from '../components/FleetMap'
+import type { FleetMapMarker, MapFocus, MapPath, MapPin } from '../components/FleetMap'
 
 // Leaflet doesn't run in jsdom; capture what the page hands the map instead.
 const map = vi.hoisted(() => ({
-  props: null as null | { markers: FleetMapMarker[]; paths?: MapPath[]; pins?: MapPin[] },
+  props: null as null | {
+    markers: FleetMapMarker[]
+    paths?: MapPath[]
+    pins?: MapPin[]
+    focus?: MapFocus | null
+  },
 }))
 vi.mock('../components/FleetMap', () => ({
   default: (props: typeof map.props) => {
@@ -131,5 +136,20 @@ describe('RouteHistory', () => {
     renderPage()
     await user.click(await screen.findByRole('button', { name: /León → Celaya/ }))
     expect(screen.getByText('Stopped: Truck broke down')).toBeInTheDocument()
+  })
+
+  it('an alert row links to the route view focused on it, and "Show on map" flies the small map to it', async () => {
+    seedSession()
+    mockBackend()
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: /Guadalajara → Querétaro/ }))
+    await screen.findByTestId('route-path')
+
+    const row = screen.getByTestId('history-alert')
+    expect(within(row).getByRole('link')).toHaveAttribute('href', '/routes/r-1/live?alert=a-1')
+    expect(map.props!.focus ?? null).toBeNull()
+    await user.click(within(row).getByRole('button', { name: 'Show on map' }))
+    expect(map.props!.focus).toMatchObject({ position: [20.6597, -103.3496], pinId: 'a-1' })
   })
 })
