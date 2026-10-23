@@ -24,15 +24,20 @@ FACE_DETECTOR_BUNDLE_FILENAME = "blaze_face_short_range.tflite"
 FACE_DETECTOR_MIN_DETECTION_CONFIDENCE = 0.5
 FACE_DETECTOR_BBOX_MARGIN_FRAC = 0.25
 
-# One face (pipeline/face_detector_stage.py `FaceLock`): the largest face is locked and followed;
-# every other face is ignored. A detection is the locked face when its centre is within
-# FACE_LOCK_MAX_SHIFT_FRAC x the locked box's side of the locked centre and its side is within a
-# factor FACE_LOCK_MAX_SCALE of it (the box is updated every matched frame, so the lock follows a
-# moving driver). While the locked face is missing and another face stays visible for
-# FACE_SWITCH_AFTER_S, the lock switches to the largest visible face (contracts C1.7).
+# One face (pipeline/face_detector_stage.py `FaceLock`, contracts C1.7 [sync 2]): the largest
+# face is locked and followed. A detection matches a tracked box (the locked face or a bystander)
+# when its centre is within FACE_LOCK_MAX_SHIFT_FRAC x the tracked box's side and its side is
+# within a factor FACE_LOCK_MAX_SCALE of it (the tracked box follows every match). Bystanders (the
+# other faces seen next to the locked one) are kept FACE_LOCK_MISS_GRACE_S unseen. While the
+# locked face is missing, a face matching no bystander re-acquires the lock at once; with only
+# bystanders in view the lock switches to the largest after FACE_SWITCH_AFTER_S. A face with a
+# side >= FACE_LOCK_TAKEOVER_SCALE x the locked face's, in view for FACE_SWITCH_AFTER_S next to
+# it, takes the lock over (the driver taking it back from a passenger).
 FACE_SWITCH_AFTER_S = 5.0
 FACE_LOCK_MAX_SHIFT_FRAC = 0.6
 FACE_LOCK_MAX_SCALE = 1.6
+FACE_LOCK_MISS_GRACE_S = 1.0
+FACE_LOCK_TAKEOVER_SCALE = 1.25
 
 # --- The "parts" pipeline: tiny YOLO-style detector + rule engine ---
 # notebook/12_tiny_grid_detector.ipynb's model "tiny_yolo_w1" (46k params), the 2026-10-20 23:35

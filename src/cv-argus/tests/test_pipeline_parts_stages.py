@@ -193,3 +193,101 @@ def test_driver_leaves_and_a_passenger_stays_no_face_critical_holds_through_the_
         assert c.detection.extras["severity"] == "critical"
     assert out[s + 1].face_found and out[s + 1].features["face_bbox_raw"] == passenger
     assert out[-1].detection.extras["severity"] == "none"  # the new face recovered
+
+
+# --- face lock end to end (contracts C1.7 [sync 2]) ---------------------------------------------
+
+PASSENGER = (40, 180, 80, 100)              # side 100; the driver (FACE) is 1.5x that
+
+
+def _fake_blazeface(frames):
+    from types import SimpleNamespace
+
+    def det(box):
+        x, y, w, h = box
+        return SimpleNamespace(bounding_box=SimpleNamespace(origin_x=x, origin_y=y, width=w, height=h),
+                               categories=[SimpleNamespace(score=0.9)])
+
+    class _Fake:
+        def detect_for_video(self, image, ts_ms):
+            return SimpleNamespace(detections=[det(b) for b in frames[ts_ms // 200]])
+
+        def close(self):
+            pass
+
+    return _Fake()
+
+
+class _WhoseEyesDetector(_StubDetector):
+    """Eyes closed when the crop holds the passenger (the bright patch painted on the frame),
+    open for the driver's (dark) crop: the rules' verdict shows whose face the lock is on."""
+
+    def __init__(self):
+        super().__init__(pd_.OPEN_EYE)
+
+    def detect(self, x):
+        self.cls = pd_.CLOSED_EYE if x.max() > 0.5 else pd_.OPEN_EYE
+        return super().detect(x)
+
+
+def _run_chain(frames, detector, rules=None):
+    pytest.importorskip("mediapipe")
+    from cv_argus.pipeline.face_detector_stage import FaceDetectorCropStage
+
+    face = FaceDetectorCropStage(detector=_fake_blazeface(frames))
+    parts = PartsInferenceStage(detector, rules=rules)
+    out = []
+    px, py, pw, ph = PASSENGER
+    for k in range(len(frames)):
+        ctx = _ctx(k * 200, face=False)
+        ctx.frame_bgr[py:py + ph, px:px + pw] = 255
+        out.append(parts.process_item(face.process_item(ctx)))
+    return out
+
+
+def _severity(ctx):
+    return "none" if ctx.detection is None else ctx.detection.extras["severity"]
+
+
+def test_lone_driver_whose_box_jumps_100px_gets_no_no_face_critical(monkeypatch):
+    """Reviewer repro: the driver's box (120x150) moves 100 px between two frames with nobody
+    else in view. Round 1 read that as no face and fired a no_face CRITICAL 5 s later."""
+    monkeypatch.setenv("RULE_NO_FACE_CRITICAL_S", "5.0")
+    jumped = (FACE[0] + 100, FACE[1], FACE[2], FACE[3])
+    frames = [[FACE]] * 10 + [[jumped]] * 40
+    out = _run_chain(frames, _StubDetector(pd_.OPEN_EYE))
+    assert all(c.face_found for c in out)
+    assert all(_severity(c) == "none" for c in out)
+    assert not any(c.features.get("face_switched") for c in out)
+    assert out[-1].features["face_bbox_raw"] == jumped
+
+
+def test_driver_returning_while_the_passenger_stays_is_relocked_after_5s_held_severity_kept(monkeypatch):
+    """Reviewer repro: the driver steps out, the passenger stays, the lock goes to the passenger
+    at 5 s. The driver comes back and takes the lock back 5 s later (take-over, 1.5x larger).
+    The passenger's closed eyes left a CRITICAL held; it survives the take-over and only drops
+    after RULE_RECOVERY_S of the driver's open eyes."""
+    from cv_argus import constants
+
+    monkeypatch.setenv("RULE_NO_FACE_CRITICAL_S", "5.0")
+    n_switch = int(constants.FACE_SWITCH_AFTER_S / 0.2)            # 25 frames
+    frames = ([[FACE, PASSENGER]] + [[PASSENGER]] * (n_switch + 1)  # switch on frame 26
+              + [[PASSENGER, FACE]] * (n_switch + 30))
+    rules = _RecordingRules()
+    out = _run_chain(frames, _WhoseEyesDetector(), rules=rules)
+
+    switches = [k for k, c in enumerate(out) if c.features.get("face_switched")]
+    assert len(switches) == 2
+    s1, s2 = switches
+    assert s1 == n_switch + 1
+    assert out[s1 + 1].features["face_bbox_raw"] == PASSENGER
+    assert s2 == s1 + 1 + n_switch                                    # driver back on s1+1, 5 s later
+    assert out[s2].features["face_bbox_raw"] == PASSENGER            # take-over frame: old face
+    assert out[s2].features["face_lock"]["takeover_s"] == pytest.approx(constants.FACE_SWITCH_AFTER_S)
+    assert out[s2 + 1].features["face_bbox_raw"] == FACE             # driver re-locked
+    assert [c for c, _ in rules.calls].count("reset") == 2
+    assert _severity(out[s2 - 1]) == "critical"                      # the passenger's eyes
+    recovery = int(round(constants.RULE_RECOVERY_S / 0.2))
+    for c in out[s2:s2 + recovery]:                                  # held through the take-over
+        assert _severity(c) == "critical"
+    assert _severity(out[-1]) == "none"                              # the driver recovered it
