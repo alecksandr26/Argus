@@ -21,6 +21,8 @@ v2 life the firmware gives it when the backend is down and then back:
      critical moves to the Pi's dead-letter queue (attempt 1, its composed body kept).
   3. DLQ 1: the one dead letter comes back with its `dlq` block; the ESP32 TAKENs it.
   4. A report session: `ACK <id>` -- delivered on the replay. Nothing is left unsent.
+  5. A medium alert the ESP32 TAKENs and then gives up on (its 30 s live window ran out):
+     `FAIL <id> retry_window -` moves it straight to the archive (the DLQ holds criticals only).
 
 This proves the real server/buffer/alerts/protocol code works end to end; it does NOT prove
 real Bluetooth connectivity, which needs real hardware.
@@ -83,20 +85,21 @@ def _log(ok: bool, label: str, detail: str = "") -> None:
 
 def _record(severity: str, previous: str, *, transition: bool, episode: str | None) -> Alert:
     """A v2 drowsiness record as the orchestrator writes it (contracts C1.4)."""
+    alerting = severity in ("medium", "critical")
     payload = {
-        "class_name": "Drowsy" if severity == "critical" else "Not Drowsy",
-        "probabilities": [0.05, 0.95] if severity == "critical" else [0.9, 0.1],
+        "class_name": "Drowsy" if alerting else "Not Drowsy",
+        "probabilities": [0.05, 0.95] if alerting else [0.9, 0.1],
         "transition": transition,
         "severity": severity,
         "previous_severity": previous,
-        "reason": "eyes_closed" if severity == "critical" else "ok",
+        "reason": {"critical": "eyes_closed", "medium": "yawning"}.get(severity, "ok"),
         "model": "parts-rules-v1",
     }
     if episode:
         payload["episode"] = episode
     return Alert.new(
         AlertKind.DROWSINESS,
-        level=2 if severity == "critical" else 1,
+        level=2 if alerting else 1,
         source_id="smoke-cam-0",
         payload=payload,
     )
@@ -236,6 +239,27 @@ def main() -> int:
             result = s.done()
             _log(result == {"acked": 1, "failed": 0, "leased": 0, "dlq": 0, "outbox": 0},
                  "OK: delivered, nothing waiting", f"got {result}")
+
+            # 5. A medium the ESP32 gave up on: archived at once, never dead-lettered.
+            print("\n-- 5. a medium alert past its live window is archived --")
+            medium = _record("medium", "none", transition=True, episode="0f0e0d0c0b0a")
+            buffer.enqueue(medium)
+            s = _Session(listener)
+            s.send(protocol.format_pull(8))
+            records, end = s.read_until_end()
+            _log([r.get("id") for r in records] == [medium.id], "PULL served the medium",
+                 f"got {len(records)} record(s)")
+            _log(end == (0, 1), "END counts it in the outbox", f"got {end}")
+            s.send(protocol.format_taken([medium.id]))
+            _log(s.recv() == protocol.format_leased(1), "TAKEN the medium -> LEASED 1")
+            result = s.done()
+            _log(result == {"acked": 0, "failed": 0, "leased": 1, "dlq": 0, "outbox": 0},
+                 "OK: leased, nothing waiting", f"got {result}")
+            s = _Session(listener)
+            s.send(protocol.format_fail(medium.id, "retry_window", None))
+            result = s.done()
+            _log(result == {"acked": 0, "failed": 1, "leased": 0, "dlq": 0, "outbox": 0},
+                 "OK: FAIL counted, the medium did not go to the DLQ", f"got {result}")
         finally:
             server.stop()
             server.join(timeout=2.0)
@@ -243,7 +267,9 @@ def main() -> int:
 
         counts = buffer.counts()
         _log(buffer.unsent_count() == 0, "buffer shows 0 unsent after the round trips")
-        _log(counts.get("archived") == 0, "nothing was archived", f"counts={counts}")
+        _log(counts.get("archived") == 1
+             and counts.get("archive_reasons") == {"retry_window": 1},
+             "only the medium was archived, with reason retry_window", f"counts={counts}")
         buffer.close()
 
     print()
