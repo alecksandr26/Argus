@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+from beanie import PydanticObjectId
 from pydantic import ValidationError
 from pymongo.errors import BulkWriteError
 
@@ -108,6 +109,8 @@ async def store_points(route_id: str, docs: list[StatusRoute]) -> list[StatusRou
             minute = as_utc(doc.timestamp).replace(second=0, microsecond=0)
             doc.keep = minute not in kept_minutes
             kept_minutes.add(minute)
+            if doc.id is None:
+                doc.id = PydanticObjectId()  # insert_many doesn't set ids on the documents
 
         failed: set[int] = set()
         try:

@@ -43,7 +43,61 @@ async def test_create_route_and_coordinates_round_trip(api_client, root_admin, s
     body = resp.json()
     # {lat, lon} out, exactly as posted — not GeoJSON [lon, lat] — see app/geo.py.
     assert body["destination_coordinates"] == {"lat": 20.6597, "lon": -103.3496}
+    # Created in progress: departed now (device events are matched to routes by time, C3.1).
+    assert body["actual_departure"] is not None
+    assert body["incident_state"] == "fine"
+    assert body["stop_reason"] is None and body["stopped_at"] is None
     return body
+
+
+@pytest.mark.parametrize(
+    ("status", "departed", "arrived"),
+    [("scheduled", False, False), ("in_progress", True, False), ("completed", False, True)],
+)
+async def test_create_route_actual_times_by_status(
+    api_client, root_admin, sample_truck, status, departed, arrived
+):
+    headers = auth_headers(root_admin)
+    driver_id = await _make_driver(api_client, headers)
+    body = (
+        await api_client.post(
+            "/api/routes",
+            json={
+                "id_driver": driver_id,
+                "id_truck": str(sample_truck.id),
+                "origin_name": "CDMX",
+                "destination_name": "GDL",
+                "destination_coordinates": {"lat": 20.6597, "lon": -103.3496},
+                "estimated_departure": "2030-01-01T08:00:00Z",
+                "operative_status": status,
+            },
+            headers=headers,
+        )
+    ).json()
+    assert (body["actual_departure"] is not None) == departed
+    assert (body["actual_arrival"] is not None) == arrived
+
+
+async def test_create_route_keeps_a_given_actual_departure(api_client, root_admin, sample_truck):
+    headers = auth_headers(root_admin)
+    driver_id = await _make_driver(api_client, headers)
+    body = (
+        await api_client.post(
+            "/api/routes",
+            json={
+                "id_driver": driver_id,
+                "id_truck": str(sample_truck.id),
+                "origin_name": "CDMX",
+                "destination_name": "GDL",
+                "destination_coordinates": {"lat": 20.6597, "lon": -103.3496},
+                "estimated_departure": "2030-01-01T08:00:00Z",
+                "actual_departure": "2029-12-31T23:00:00Z",
+                "operative_status": "in_progress",
+            },
+            headers=headers,
+        )
+    ).json()
+    assert body["actual_departure"].startswith("2029-12-31T23:00:00")
 
 
 @pytest.mark.asyncio

@@ -6,12 +6,88 @@ from __future__ import annotations
 
 import pytest
 
-from app.auth.security import hash_secret
+import app.auth.dependencies as deps
+from app.auth.security import hash_secret, key_fingerprint
 from app.models.common import Role
 from app.models.truck import Truck
 from app.models.user import User
 from beanie import PydanticObjectId
-from tests.conftest import auth_headers, fusion_alert_body, status_body
+from tests.conftest import auth_headers, fusion_alert_body, make_rig, post_report, status_body
+
+
+# --- Warm-container cache (C2: DEVICE_AUTH_CACHE_TTL) -------------------------------------------
+
+
+@pytest.fixture
+def bcrypt_calls(monkeypatch):
+    """Counts bcrypt verifications of device keys."""
+    calls: list[str] = []
+    real = deps.verify_secret
+
+    def counting(plaintext, hashed):
+        calls.append(plaintext)
+        return real(plaintext, hashed)
+
+    monkeypatch.setattr(deps, "verify_secret", counting)
+    return calls
+
+
+async def test_second_report_skips_bcrypt(api_client, rig_a, bcrypt_calls):
+    for _ in range(3):
+        assert (await post_report(api_client, rig_a)).status_code == 200
+    assert len(bcrypt_calls) == 1
+
+
+async def test_cache_also_serves_the_legacy_route_endpoints(api_client, rig_a, bcrypt_calls):
+    await post_report(api_client, rig_a)
+    resp = await api_client.post(
+        f"/api/routes/{rig_a.route_id}/status", json=status_body(), headers=rig_a.headers
+    )
+    assert resp.status_code == 201
+    assert len(bcrypt_calls) == 1
+
+
+async def test_expired_cache_entry_checks_bcrypt_again(api_client, rig_a, bcrypt_calls):
+    await post_report(api_client, rig_a)
+    fingerprint = key_fingerprint(rig_a.key)
+    truck_id, _ = deps._device_cache[fingerprint]
+    deps._device_cache[fingerprint] = (truck_id, 0.0)
+    assert (await post_report(api_client, rig_a)).status_code == 200
+    assert len(bcrypt_calls) == 2
+
+
+async def test_rotate_rejects_a_cached_key_at_once(api_client, root_admin, rig_a):
+    assert (await post_report(api_client, rig_a)).status_code == 200
+    await api_client.post(f"/api/trucks/{rig_a.truck_id}/rotate-key", headers=auth_headers(root_admin))
+    assert (await post_report(api_client, rig_a)).status_code == 401
+
+
+async def test_revoke_rejects_a_cached_key_at_once(api_client, root_admin, rig_a):
+    assert (await post_report(api_client, rig_a)).status_code == 200
+    await api_client.delete(f"/api/trucks/{rig_a.truck_id}/device-key", headers=auth_headers(root_admin))
+    assert (await post_report(api_client, rig_a)).status_code == 401
+
+
+async def test_key_changed_by_another_container_is_rejected(api_client, rig_a):
+    """Another warm container rotated the key: this container's cache entry is still there,
+    but the truck's stored fingerprint no longer matches, so the old key fails at once."""
+    assert (await post_report(api_client, rig_a)).status_code == 200
+    truck = await Truck.get(PydanticObjectId(rig_a.truck_id))
+    await truck.set(
+        {
+            "device_api_key_hash": hash_secret("new-key"),
+            "device_api_key_fingerprint": key_fingerprint("new-key"),
+        }
+    )
+    assert key_fingerprint(rig_a.key) in deps._device_cache
+    assert (await post_report(api_client, rig_a)).status_code == 401
+
+
+async def test_legacy_key_without_fingerprint_gets_one(api_client, mongo_client):
+    rig = await make_rig("LEGACY-KEY", fingerprint=False)
+    assert (await post_report(api_client, rig)).status_code == 200
+    truck = await Truck.get(PydanticObjectId(rig.truck_id))
+    assert truck.device_api_key_fingerprint == key_fingerprint(rig.key)
 
 
 async def test_truck_a_key_on_truck_b_route_is_401_for_alerts(api_client, rig_a, rig_b):

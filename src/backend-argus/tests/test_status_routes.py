@@ -52,6 +52,9 @@ async def test_device_key_can_post_status(api_client, root_admin, sample_truck):
         headers={"X-Device-Api-Key": device_key},
     )
     assert resp.status_code == 201
+    # No vigilance in the body: stored as `unknown`, never assumed `low` (C2.4).
+    assert resp.json()["vigilance"] == "unknown"
+    assert resp.json()["location_is_last_known"] is False
 
 
 @pytest.mark.asyncio
