@@ -295,6 +295,21 @@ export function incidentCard(scope: Page | Locator, alertTypeLabel: string): Loc
     .filter({ has: page.getByText(alertTypeLabel, { exact: true }) })
 }
 
+/**
+ * A text in the incident card's *own* rows (its header and its pill row: `Driver OK since`, the
+ * replayed badge, `Closed HH:MM`), never inside one of its alert cards. Several of those pills
+ * exist at both levels (an alert of the episode the driver confirmed OK also shows `Driver OK
+ * since`, a replayed alert its own replayed badge), so an unscoped `card.getByText(...)` would
+ * match twice and fail strict mode whenever the alert card shows it too. The card's direct
+ * `div` children that hold no alert card are exactly its own rows.
+ */
+export function incidentOwnText(card: Locator, text: string | RegExp): Locator {
+  return card
+    .locator(':scope > div')
+    .filter({ hasNot: card.page().getByTestId('alert-card') })
+    .getByText(text)
+}
+
 /** `Closed HH:MM`, the close time as the UI shows it (confirmation and closed pill). */
 export const CLOSED_AT = /Closed \d{1,2}:\d{2}/
 

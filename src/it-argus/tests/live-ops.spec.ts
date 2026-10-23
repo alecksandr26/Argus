@@ -16,6 +16,7 @@ import {
   createUserAndLogin,
   getAlert,
   incidentCard,
+  incidentOwnText,
   listIncidents,
   login,
   postReportOk,
@@ -166,7 +167,13 @@ test('a no-face critical reported by the truck carries no scores, and a guardian
     await dialog.getByRole('textbox').fill(note)
     await dialog.getByRole('button', { name: 'Close incident' }).click()
     await expect(dialog).toBeHidden()
+    // The view stays where it was (C3.7 [sync 3]: no tab switch): the confirmation shows, the
+    // Open chip is still the selected one, and the incident is no longer in that list.
     await expect(closeConfirmation(page)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Open', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
     await expect(incidentCard(page, 'Driver not visible')).toHaveCount(0)
 
     // It round-tripped through the backend, not just local state: after a reload the incident
@@ -174,7 +181,7 @@ test('a no-face critical reported by the truck carries no scores, and a guardian
     await page.reload()
     await page.getByRole('button', { name: 'Closed', exact: true }).click()
     const closedCard = incidentCard(page, 'Driver not visible')
-    await expect(closedCard.getByText(CLOSED_AT)).toBeVisible()
+    await expect(incidentOwnText(closedCard, CLOSED_AT)).toBeVisible()
     await expect(closedCard.getByText(note)).toBeVisible()
   } else {
     // Without the new UI, close it over REST as the same guardian.

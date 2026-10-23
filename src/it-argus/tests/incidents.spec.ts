@@ -13,6 +13,7 @@ import {
   getLive,
   getRoute,
   incidentCard,
+  incidentOwnText,
   listIncidents,
   login,
   newEpisode,
@@ -282,7 +283,8 @@ test.describe('incidents in the UI', () => {
     await expect(criticalCard).toBeVisible()
     await expect(incidentCard(page, 'Head down, eyes closed')).toBeVisible()
     await expect(incidentCard(page, 'Head down')).toBeVisible()
-    await expect(criticalCard.getByText(/Driver OK since \d{1,2}:\d{2}/)).toBeVisible()
+    // The incident's own `Driver OK since` pill (its alert card may show one too: same episode).
+    await expect(incidentOwnText(criticalCard, /Driver OK since \d{1,2}:\d{2}/)).toBeVisible()
 
     await criticalCard.getByRole('button', { name: 'Close incident' }).click()
     const dialog = closeDialog(page)
@@ -291,7 +293,13 @@ test.describe('incidents in the UI', () => {
     await dialog.getByRole('textbox').fill(`Rest stop agreed — ${suffix}`)
     await dialog.getByRole('button', { name: 'Close incident' }).click()
     await expect(dialog).toBeHidden()
+    // No tab switch after a close (C3.7 [sync 3]): the confirmation shows and the Open list
+    // stays selected, minus the closed incident.
     await expect(closeConfirmation(page)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Open', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
 
     // Only the critical left the Open list; both mediums are still open.
     await expect(incidentCard(page, 'Eyes closed')).toHaveCount(0)
