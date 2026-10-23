@@ -40,7 +40,19 @@ DEVICE_AUTH_CACHE_TTL = timedelta(seconds=60)
 CLOSE_NOTE_MAX_LEN = 1000
 STOP_REASON_MAX_LEN = 500
 
-# How long a per-route grouping lock is held at most (a crashed holder frees it after this), and
-# how long a request waits for it before answering 503 (the device retries).
+# Per-route lock (app/incidents.py `route_lock`, C2.3 [sync 2]). A request waits at most
+# ROUTE_LOCK_WAIT for it, then answers 503 (the device counts a failed attempt and retries).
+# A holder keeps it at most ROUTE_LOCK_LEASE; a crashed (or Lambda-killed) holder frees it then.
+#
+# Coupled to the deployment, keep these true when changing either side:
+#   ROUTE_LOCK_WAIT  <  the ESP32's 8 s attempt timeout  (else the 503 never reaches it)
+#   ROUTE_LOCK_WAIT  <  the backend Lambda timeout       (src/infra-argus/lib/app-stack.ts)
+#   ROUTE_LOCK_LEASE >= the backend Lambda timeout       (a killed holder's lock outlives it)
+# src/infra-argus/test reads this file and asserts the two Lambda inequalities at synth time.
 ROUTE_LOCK_LEASE = timedelta(seconds=10)
-ROUTE_LOCK_WAIT = timedelta(seconds=12)
+ROUTE_LOCK_WAIT = timedelta(seconds=5)
+
+# `GET /api/live?since=`: points received up to this long before `since` are sent again, so a
+# point whose report was received just before the previous `server_time` but committed after
+# that poll's query isn't lost. The UI de-duplicates by `(id_route, t)` (C3.6 [sync 2]).
+LIVE_SINCE_OVERLAP = timedelta(seconds=10)

@@ -1,3 +1,5 @@
+import * as fs from 'fs'
+import * as path from 'path'
 import * as cdk from 'aws-cdk-lib'
 import { Match, Template } from 'aws-cdk-lib/assertions'
 import { buildArgus } from '../lib/argus'
@@ -176,6 +178,27 @@ describe('R8: small backend + kill switch', () => {
       AlarmActions: Match.anyValue(),
     })
     t.guardrails.hasResourceProperties('AWS::SNS::Subscription', { Protocol: 'lambda' })
+  })
+  it('backend Lambda timeout fits the backend route lock (wait < timeout <= lease)', () => {
+    // src/backend-argus/app/constants.py: a request waits ROUTE_LOCK_WAIT for a route's lock,
+    // then answers 503; a holder killed by the Lambda timeout frees the lock after
+    // ROUTE_LOCK_LEASE. Read from the backend source so the two modules can't drift apart.
+    const constants = fs.readFileSync(
+      path.resolve(__dirname, '..', '..', 'backend-argus', 'app', 'constants.py'),
+      'utf8',
+    )
+    const seconds = (name: string) => {
+      const pattern = new RegExp(`^${name}\\s*=\\s*timedelta\\(seconds=(\\d+(?:\\.\\d+)?)\\)`, 'm')
+      const m = constants.match(pattern)
+      if (!m) throw new Error(`${name} = timedelta(seconds=...) not found in backend constants.py`)
+      return Number(m[1])
+    }
+    const fns = t.app.findResources('AWS::Lambda::Function', { Properties: { PackageType: 'Image' } })
+    const timeouts = Object.values(fns).map((fn) => fn.Properties.Timeout as number)
+    expect(timeouts).toHaveLength(1)
+    const [timeout] = timeouts
+    expect(timeout).toBeGreaterThan(seconds('ROUTE_LOCK_WAIT'))
+    expect(timeout).toBeLessThanOrEqual(seconds('ROUTE_LOCK_LEASE'))
   })
   it('a busy demo hour at the 5 s report/poll cadence stays far below the kill switch', () => {
     // One real truck + one simulator session + three dashboard tabs, with 2x headroom: a normal
