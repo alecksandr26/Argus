@@ -5,11 +5,16 @@
  */
 
 import type {
+  AlertDelivery,
   AlertSeverity,
   DriverStatus,
+  IncidentState,
+  IncidentTier,
   Role,
+  Route,
   RouteStatus,
   TruckStatus,
+  Vigilance,
 } from '../types'
 
 export type Tone = 'good' | 'warn' | 'bad' | 'neutral'
@@ -58,6 +63,61 @@ export const severity: Record<AlertSeverity, Badge> = {
   critical: { label: 'Critical', tone: 'bad' },
   medium: { label: 'Medium', tone: 'warn' },
   low: { label: 'Normal', tone: 'good' },
+}
+
+/** A GPS point's vigilance (C3.3). `unknown` (no recent Pi reading) is neutral gray: it is
+ * neither reassuring nor an alarm. */
+export const vigilance: Record<Vigilance, Badge> = {
+  ...severity,
+  unknown: { label: 'Unknown', tone: 'neutral' },
+}
+
+/** A route's `incident_state` (C3.1) — the map marker colour. */
+export const incidentState: Record<IncidentState, Badge> = {
+  fine: { label: 'Fine', tone: 'good' },
+  medium: { label: 'Medium', tone: 'warn' },
+  critical: { label: 'Critical', tone: 'bad' },
+}
+
+/** Incident feed tier sections (C3.4), in feed order. */
+export const incidentTier: Record<IncidentTier, Badge> = {
+  critical: { label: 'Critical', tone: 'bad' },
+  medium: { label: 'Medium', tone: 'warn' },
+  old: { label: 'Older than 1 h', tone: 'neutral' },
+}
+
+/** Shown on an alert/incident that reached the backend from the Pi's dead-letter queue. */
+export const REPLAYED_LABEL = 'Recovered after lost connection'
+
+export const delivery: Record<AlertDelivery, Badge | null> = {
+  live: null,
+  dlq: { label: REPLAYED_LABEL, tone: 'warn' },
+}
+
+/** Display names for `Alert.alert_type` (the Pi rule reasons, C1.4/C3.7). `panic_button` stays
+ * for old rows only. Use `alertTypeLabel()`, which falls back to the raw value. */
+export const ALERT_TYPE_LABEL: Record<string, string> = {
+  eyes_closed: 'Eyes closed',
+  yawn_eyes_closed: 'Eyes closed after yawning',
+  head_down: 'Head down',
+  head_down_eyes_closed: 'Head down, eyes closed',
+  no_face: 'Driver not visible',
+  panic_button: 'Panic button',
+}
+
+export function alertTypeLabel(alertType: string): string {
+  return Object.prototype.hasOwnProperty.call(ALERT_TYPE_LABEL, alertType)
+    ? ALERT_TYPE_LABEL[alertType]
+    : alertType
+}
+
+/** A route's status badge; a `cancelled` route that was stopped (`stop_reason` set) reads
+ * "Stopped", since that's what the user did. */
+export function routeStatusBadge(r: Pick<Route, 'operative_status' | 'stop_reason'>): Badge {
+  if (r.operative_status === 'cancelled' && r.stop_reason) {
+    return { label: 'Stopped', tone: 'warn' }
+  }
+  return routeStatus[r.operative_status]
 }
 
 /** True when a route currently counts as "on the road" for dashboard tallies. */

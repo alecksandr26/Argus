@@ -118,9 +118,22 @@ export interface Route {
   actual_departure: string | null
   actual_arrival: string | null
   operative_status: RouteStatus
+  /** Drives the map marker colour (C3.1/C3.5). Raised only by medium/critical alerts; lowered by
+   * closing incidents or by 1 h of only-OK GPS points. The UI never recomputes it. */
+  incident_state: IncidentState
+  /** Newest `occurred_at` of a medium/critical alert or point on this route. */
+  last_not_ok_at: string | null
+  /** Set by `POST /api/routes/{id}/stop` ("Stop route"; the status becomes `cancelled`). */
+  stop_reason: string | null
+  /** User id of whoever stopped the route. */
+  stopped_by: string | null
+  stopped_at: string | null
   created_at: string
   updated_at: string
 }
+
+/** A route's alert state for its map marker (C3.1): `fine` = no medium/critical outstanding. */
+export type IncidentState = 'fine' | 'medium' | 'critical'
 
 /** The one shared severity scale for both live status and alerts (backend-argus's `Severity`) —
  * previously two separate, mismatched 3-tier enums (`StatusRoute` had its own `normal`/
@@ -128,8 +141,14 @@ export interface Route {
  * status and its alert history are directly comparable. */
 export type AlertSeverity = 'critical' | 'medium' | 'low'
 
-export type TimeSource = 'gps' | 'network' | 'server'
+/** `relative` = computed by the backend from a device `age_s` (every report event, C2.1). */
+export type TimeSource = 'gps' | 'network' | 'server' | 'relative'
 export type LocationSource = 'gps' | 'cell'
+
+/** A GPS point's vigilance (C3.3): the latest Pi reading when the ESP32 took the point, or
+ * `unknown` when no Pi record arrived recently (or none since boot). `unknown` is the backend
+ * default — a point is never assumed `low`. */
+export type Vigilance = 'low' | 'medium' | 'critical' | 'unknown'
 
 export interface StatusRoute {
   id_status_route: string
@@ -137,10 +156,11 @@ export interface StatusRoute {
   current_coordinates: Coordinates
   current_speed: number
   odometer: number
-  /** Shares `AlertSeverity`'s exact scale — see that type's doc comment. Mirrors the most
-   * recently posted `Alert.severity_level` for this truck's route (see
-   * `src/esp32-argus/README.md`'s fusion section), not a separate drowsiness-only reading. */
-  vigilance: AlertSeverity
+  vigilance: Vigilance
+  /** `true` = the ESP32 had no fix; this is its saved last good position. */
+  location_is_last_known: boolean
+  /** Age of that fix at the point's time, seconds (`0`/`null` for a live fix). */
+  location_age_s: number | null
   /** When the event happened (device GPS/network clock), else when the backend received it. */
   timestamp: string
   /** When the backend received it; later than `timestamp` for records relayed from a backlog. */
@@ -154,9 +174,8 @@ export interface StatusRoute {
 
 /**
  * `GET /api/routes/active`'s response shape — a `Route` embedding its newest `Status_Route`
- * snapshot plus light truck/driver refs, built specifically for `LiveOps.tsx` so it doesn't
- * need a follow-up fetch per marker. See `src/backend-argus/CLAUDE.md`'s "routes/active"
- * section.
+ * snapshot plus light truck/driver refs. Kept by the backend, but the UI is moving to
+ * `GET /api/live` (`LiveResponse`) for Live operations and the route view.
  */
 export interface RouteWithStatus extends Route {
   latest_status: StatusRoute | null
@@ -164,47 +183,133 @@ export interface RouteWithStatus extends Route {
   driver_full_name: string | null
 }
 
-/** Which decision path produced an `Alert`: the ESP32's fused drowsy+grip evaluation, or the
- * panic button (unconditional `critical`, no debounce) — see `src/esp32-argus/README.md`'s
- * fusion section and `src/cv-argus/src/orchestrator/fusion_contract.py`'s reference decision
- * logic. */
+/** A GPS point as `GET /api/live` / `GET /api/routes/{id}/track` return it (C3.6). */
+export interface LivePosition {
+  /** The point's time (ISO). */
+  t: string
+  lat: number
+  lon: number
+  /** km/h; `0` for a last-known point. */
+  speed: number
+  vigilance: Vigilance
+  /** `true` = no current fix, this is the last good position. */
+  last_known: boolean
+  location_age_s: number | null
+}
+
+export interface TrackPoint extends LivePosition {
+  id_route: string
+}
+
+/** One route in `GET /api/live`'s `routes` (C3.6): a `Route` plus its newest point. */
+export interface RouteLive extends Route {
+  truck_plate_number: string | null
+  driver_full_name: string | null
+  latest_position: LivePosition | null
+}
+
+/** Feed tier (C3.4), computed by the server at response time: `old` = more than 1 h since the
+ * incident's last alert, else its severity. The UI trusts it and never recomputes it. */
+export type IncidentTier = 'critical' | 'medium' | 'old'
+
+/** Medium/critical alerts of one route less than 15 min apart, closed together by a guardian or
+ * root_admin (C3.4). */
+export interface Incident {
+  id_incident: string
+  id_route: string
+  /** Max `severity_level` of its alerts. */
+  severity: 'medium' | 'critical'
+  tier: IncidentTier
+  first_alert_at: string
+  last_alert_at: string
+  alert_count: number
+  /** When the driver was OK again (episode of its newest alert). It never closes anything. */
+  driver_ok_at: string | null
+  /** Any of its alerts was replayed from the DLQ ("recovered after lost connection"). */
+  has_replayed: boolean
+  closed_at: string | null
+  /** User id. */
+  closed_by: string | null
+  /** `''` when none. */
+  close_note: string
+  /** The route is completed or cancelled now. */
+  route_ended: boolean
+  truck_plate_number: string | null
+  driver_full_name: string | null
+  /** Timestamp ascending, full alerts (each with its position). */
+  alerts: Alert[]
+}
+
+/** `GET /api/live` (C3.6). Incidents and routes come in full every time; `track` is a delta
+ * since the `since` cursor (the previous response's `server_time`). */
+export interface LiveResponse {
+  /** Pass back as `since` on the next poll. */
+  server_time: string
+  routes: RouteLive[]
+  /** All open incidents in scope, feed-ordered (tier, then `last_alert_at` descending). */
+  incidents: Incident[]
+  /** Ordered by `id_route`, then `t` ascending. */
+  track: TrackPoint[]
+}
+
+/** `GET /api/routes/{id}/track` (C3.6): a route's whole path, downsampled past `max_points`. */
+export interface RouteTrack {
+  id_route: string
+  downsampled: boolean
+  points: TrackPoint[]
+}
+
+/** Which decision path produced an `Alert`. Every new alert is `fusion`; `panic_button` exists
+ * only on old rows (the panic button was removed and the backend 422s a new one), so it stays
+ * here purely so those rows still read. */
 export type AlertSource = 'fusion' | 'panic_button'
 
-/** The grip sensor's contribution to a `fusion` alert — `null` for `panic_button` alerts, since
- * no camera/grip evaluation happens for those. */
+/** The grip sensor's contribution to an old `fusion` alert. No longer sent: `null` on new
+ * alerts. */
 export type GripStatus = 'good' | 'bad'
+
+/** How an alert reached the backend (C3.2): `live`, or replayed from the Pi's dead-letter queue
+ * after a lost connection (`dlq`, shown as "Recovered after lost connection"). */
+export type AlertDelivery = 'live' | 'dlq'
 
 export interface AlertAiMetadata {
   /** Which model produced the classification, for the triage readout. Nullable: the deployed
-   * cv-argus pipeline doesn't currently expose a per-alert model-version string — see the
-   * backend CLAUDE.md's "Coordination note". */
+   * cv-argus pipeline doesn't always expose a per-alert model-version string. */
   model: string | null
   /** Probability of Drowsy vs Not Drowsy — the project's binary scheme (root CLAUDE.md's
-   * drowsiness-class migration), not the old 3-class Alert/Low Vigilant/Drowsy split. */
-  scores: { not_drowsy: number; drowsy: number }
-  /** Nullable for the same reason as `model` — no discrete clip duration in the current
-   * pipeline (a rolling window, not a fixed-length clip). */
-  clip_seconds: number | null
+   * drowsiness-class migration). May be `null` (no scores for this alert). */
+  scores: { not_drowsy: number; drowsy: number } | null
+  /** No discrete clip duration in the current pipeline (a rolling window, not a fixed-length
+   * clip); absent or `null` on report-endpoint alerts. */
+  clip_seconds?: number | null
 }
 
 export interface Alert {
   id_alert: string
   id_route: string
+  /** The Pi rule `reason` (`eyes_closed`, `no_face`, ...): show it through `alertTypeLabel()`. */
   alert_type: string
   severity_level: AlertSeverity
   source: AlertSource
-  /** Required (non-null) when `source === 'fusion'`, `null` when `source === 'panic_button'` —
-   * see backend-argus's `validate_source_ai_metadata`. */
+  /** The Pi episode this alert belongs to (an escalation shares its medium's episode). */
+  episode: string | null
+  /** `null` only for `low` alerts (old rows). */
+  id_incident: string | null
+  delivery: AlertDelivery
+  /** Seconds the event waited in the Pi's dead-letter queue (`0` for `live`). */
+  queued_seconds: number
+  /** May be `null` (an alert with no model output). */
   ai_metadata: AlertAiMetadata | null
-  /** Required (non-null) when `source === 'fusion'`, `null` when `source === 'panic_button'`. */
+  /** `null` on every new alert (grip is no longer sent); set only on old rows. */
   grip_status: GripStatus | null
-  /** Set when this alert is an escalation of a still-open incident (e.g. a `medium` fusion
-   * alert that didn't improve within the escalation window) — points back at the original
+  /** Set when this alert is an escalation of the same episode — points back at the original
    * alert's `id_alert` rather than that alert being mutated in place. */
   related_alert_id: string | null
-  /** Set once the underlying condition recovers (both signals good, held for the recovery
-   * window) — `null` while the incident is still open. */
-  resolved_at: string | null
+  /** When the device said the driver was OK again. Informational only: it never closes the
+   * alert. Replaces the retired `resolved_at`. */
+  driver_ok_at: string | null
+  /** Set when a guardian/root_admin closed this alert's incident. */
+  closed_at: string | null
   /** Set by a guardian/root_admin's manual de-escalation (`POST /api/alerts/:id/de-escalate`):
    * the severity the device originally reported. `severity_level` then holds the lowered one.
    * `null` if never de-escalated. */
@@ -213,9 +318,17 @@ export interface Alert {
   deescalated_at: string | null
   deescalation_reason: string
   media_url: string | null
-  coordinates: Coordinates
-  speed_at_event: number
-  /** When the event happened (device GPS/network clock), else when the backend received it. */
+  /** `null` = position unknown (the device had neither a fix nor a saved last-known one). */
+  coordinates: Coordinates | null
+  /** `true` iff `coordinates` is `null`. */
+  position_unknown: boolean
+  /** `true` = `coordinates` is the last known fix, not a live one (see `location_age_s`). */
+  location_is_last_known: boolean
+  /** Age of that fix at the event time, seconds. */
+  location_age_s: number | null
+  /** km/h, or `null` when unknown. */
+  speed_at_event: number | null
+  /** When the event happened (`occurred_at`). */
   timestamp: string
   /** When the backend received it; later than `timestamp` for records relayed from a backlog. */
   received_at: string

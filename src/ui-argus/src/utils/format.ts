@@ -90,6 +90,28 @@ export function pct(n: number): string {
   return `${Math.round(n * 100)}%`
 }
 
+/** A duration in seconds, compactly: "45s", "3 min", "2h 5m", "2h", "3d", "3d 4h". Used for
+ * "Last known (N old)" and "queued N". Negative or non-finite input reads as "0s". */
+export function durationShort(seconds: number): string {
+  const s = Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds) : 0
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m} min`
+  const h = Math.floor(m / 60)
+  if (h < 24) {
+    const rem = m % 60
+    return rem ? `${h}h ${rem}m` : `${h}h`
+  }
+  const d = Math.floor(h / 24)
+  const remH = h % 24
+  return remH ? `${d}d ${remH}h` : `${d}d`
+}
+
+/** "20.6597, -103.3496" — 4 decimals (about 11 m), for alert cards and history rows. */
+export function coords(c: { lat: number; lon: number }): string {
+  return `${c.lat.toFixed(4)}, ${c.lon.toFixed(4)}`
+}
+
 /** Days until an ISO date, relative to `now`. Negative = past. */
 export function daysUntil(iso: string, now: Date = new Date()): number {
   return Math.round(

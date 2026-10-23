@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { relativeTime, clock, shortDate, pct, daysUntil } from './format'
+import { relativeTime, clock, shortDate, pct, daysUntil, durationShort, coords } from './format'
 
 const NOW = new Date('2026-08-24T12:00:00.000Z')
 
@@ -67,6 +67,31 @@ describe('pct', () => {
     expect(pct(0.7321)).toBe('73%')
     expect(pct(1)).toBe('100%')
     expect(pct(0)).toBe('0%')
+  })
+})
+
+describe('durationShort', () => {
+  it('renders seconds, minutes, hours and days compactly', () => {
+    expect(durationShort(0)).toBe('0s')
+    expect(durationShort(42.4)).toBe('42s')
+    expect(durationShort(59.6)).toBe('1 min')
+    expect(durationShort(180)).toBe('3 min')
+    expect(durationShort(3600)).toBe('1h')
+    expect(durationShort(3725)).toBe('1h 2m')
+    expect(durationShort(86400)).toBe('1d')
+    expect(durationShort(3 * 86400 + 4 * 3600 + 59)).toBe('3d 4h')
+  })
+
+  it('reads negative or non-finite input as 0s', () => {
+    expect(durationShort(-5)).toBe('0s')
+    expect(durationShort(Number.NaN)).toBe('0s')
+    expect(durationShort(Number.POSITIVE_INFINITY)).toBe('0s')
+  })
+})
+
+describe('coords', () => {
+  it('renders lat, lon with 4 decimals', () => {
+    expect(coords({ lat: 20.65971234, lon: -103.3 })).toBe('20.6597, -103.3000')
   })
 })
 

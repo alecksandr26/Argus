@@ -12,6 +12,7 @@ import { listTrucks } from '../api/trucks'
 import { ApiError } from '../api/client'
 import { clock, relativeTime, shortDate } from '../utils/format'
 import { routeStatus, severity } from '../utils/status'
+import { alertPosition, positionSummary } from '../utils/position'
 import type { Alert, Driver, Route, Truck } from '../types'
 
 /**
@@ -314,8 +315,7 @@ export default function RouteHistory() {
                                       marginLeft: 'auto',
                                     }}
                                   >
-                                    lat {a.coordinates.lat.toFixed(4)}, lon{' '}
-                                    {a.coordinates.lon.toFixed(4)}
+                                    {positionSummary(alertPosition(a))}
                                   </span>
                                 </Link>
                               </li>

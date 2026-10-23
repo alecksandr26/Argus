@@ -15,7 +15,7 @@ import { listDrivers } from '../api/drivers'
 import { listTrucks } from '../api/trucks'
 import { ApiError } from '../api/client'
 import { clock, pct, relativeTime, shortDate } from '../utils/format'
-import { severity } from '../utils/status'
+import { severity, vigilance } from '../utils/status'
 import { toLatLng } from '../utils/geo'
 import FleetMap, { type FleetMapMarker } from '../components/FleetMap'
 import type {
@@ -212,18 +212,23 @@ export default function RouteLiveView() {
           setRouteAlerts(alerts)
           setRouteNotFound(false)
           setRouteError(null)
-          if (status) {
+          const v = status?.vigilance
+          if (v === 'unknown') {
+            // No recent Pi reading: no trend can be read from it.
+            setTrend('unknown')
+            prevVigilanceRef.current = null
+          } else if (v) {
             const prev = prevVigilanceRef.current
             setTrend(
               prev === null
                 ? 'unknown'
-                : SEVERITY_RANK[status.vigilance] < SEVERITY_RANK[prev]
+                : SEVERITY_RANK[v] < SEVERITY_RANK[prev]
                   ? 'improving'
-                  : SEVERITY_RANK[status.vigilance] > SEVERITY_RANK[prev]
+                  : SEVERITY_RANK[v] > SEVERITY_RANK[prev]
                     ? 'worsening'
                     : 'steady',
             )
-            prevVigilanceRef.current = status.vigilance
+            prevVigilanceRef.current = v
           }
         })
         .catch((err) => {
@@ -355,20 +360,17 @@ export default function RouteLiveView() {
   const sev = focusedAlert
     ? severity[focusedAlert.severity_level]
     : liveStatus
-      ? severity[liveStatus.vigilance]
+      ? vigilance[liveStatus.vigilance]
       : { label: 'No live data', tone: 'neutral' as const }
 
   // Binary Not Drowsy / Drowsy scheme (root CLAUDE.md's drowsiness-class migration) — the old
-  // 3-way Alert/Low vigilance/Drowsy split is retired. `ai_metadata` is null for a
-  // panic_button alert (no camera evaluation happened) — see types.ts's doc comment.
-  const scores = focusedAlert?.ai_metadata
+  // 3-way Alert/Low vigilance/Drowsy split is retired. `ai_metadata` and its `scores` may be
+  // null (no model output for this alert) — see types.ts's doc comment.
+  const aiScores = focusedAlert?.ai_metadata?.scores ?? null
+  const scores = aiScores
     ? [
-        {
-          label: 'Not drowsy',
-          value: focusedAlert.ai_metadata.scores.not_drowsy,
-          color: 'var(--good)',
-        },
-        { label: 'Drowsy', value: focusedAlert.ai_metadata.scores.drowsy, color: 'var(--bad)' },
+        { label: 'Not drowsy', value: aiScores.not_drowsy, color: 'var(--good)' },
+        { label: 'Drowsy', value: aiScores.drowsy, color: 'var(--bad)' },
       ]
     : []
 
@@ -381,8 +383,8 @@ export default function RouteLiveView() {
         origin: route.origin_name,
         destination: route.destination_name,
         speedKmh: liveStatus.current_speed,
-        vigilanceLabel: severity[liveStatus.vigilance].label,
-        tone: severity[liveStatus.vigilance].tone,
+        vigilanceLabel: vigilance[liveStatus.vigilance].label,
+        tone: vigilance[liveStatus.vigilance].tone,
         timestamp: liveStatus.timestamp,
       }
     : null
@@ -392,7 +394,11 @@ export default function RouteLiveView() {
         { label: 'Truck', value: truck ? `${truck.plate_number} · ${truck.company_number}` : '—', mono: true },
         { label: 'Driver', value: driver ? `${driver.first_name} ${driver.last_name}` : '—' },
         { label: 'Route', value: `${route.origin_name} → ${route.destination_name}` },
-        { label: 'Speed at event', value: `${focusedAlert.speed_at_event} km/h`, mono: true },
+        {
+          label: 'Speed at event',
+          value: focusedAlert.speed_at_event == null ? '—' : `${focusedAlert.speed_at_event} km/h`,
+          mono: true,
+        },
         { label: 'Source', value: SOURCE_LABEL[focusedAlert.source] },
       ]
     : [
@@ -527,11 +533,16 @@ export default function RouteLiveView() {
                 </Link>
               )}
               <span
-                className={focusedAlert.resolved_at ? 'pill' : 'pill pill--warn'}
+                className={focusedAlert.closed_at ? 'pill' : 'pill pill--warn'}
                 style={{ fontSize: 10.5, padding: '3px 9px' }}
               >
-                {focusedAlert.resolved_at ? `Resolved ${clock(focusedAlert.resolved_at)}` : 'Ongoing'}
+                {focusedAlert.closed_at ? `Closed ${clock(focusedAlert.closed_at)}` : 'Open'}
               </span>
+              {focusedAlert.driver_ok_at && !focusedAlert.closed_at && (
+                <span className="pill pill--good" style={{ fontSize: 10.5, padding: '3px 9px' }}>
+                  Driver OK since {clock(focusedAlert.driver_ok_at)}
+                </span>
+              )}
             </div>
           )}
         </div>

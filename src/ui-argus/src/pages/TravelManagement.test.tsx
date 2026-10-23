@@ -49,6 +49,11 @@ const route = (id: string, status: Route['operative_status']): Route => ({
   actual_departure: null,
   actual_arrival: null,
   operative_status: status,
+  incident_state: 'fine',
+  last_not_ok_at: null,
+  stop_reason: null,
+  stopped_by: null,
+  stopped_at: null,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
 })
