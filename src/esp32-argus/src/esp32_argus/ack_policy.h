@@ -18,8 +18,8 @@ enum class EventOutcome : unsigned char {
 
 struct ReportReaction {
   EventOutcome event = EventOutcome::NoEvent;
-  // Rejected: the backend's reason (route_finished, no_route, too_old, wrong_truck, invalid; a
-  // malformed one becomes `invalid`). AttemptFailed: http_<status>, bad_response, or the
+  // Rejected: the backend's reason (route_finished, no_route, too_old, wrong_truck, invalid; any
+  // other one becomes `invalid`). AttemptFailed: http_<status>, bad_response, or the
   // transport reason the caller passed (no_network, no_credentials, timeout, transport_error).
   std::string reason;
   bool routeKnown = false;  // a readable 200: the active route below is the backend's answer
