@@ -73,3 +73,15 @@ def test_the_retired_per_5_s_blip_rate_is_ignored_with_a_warning(monkeypatch, ca
     assert "SIMULATOR_NORMAL_BLIP_CHANCE" in caplog.text
 
     assert warn_retired_settings(_blip_settings(monkeypatch)) == []
+
+
+def test_demo_disruptions_are_off_by_default_and_read_their_env_names(monkeypatch):
+    for name in ("SIMULATOR_OUTAGE_CHANCE", "SIMULATOR_GPS_LOSS_CHANCE"):
+        monkeypatch.delenv(name, raising=False)
+    defaults = _settings(monkeypatch)
+    assert (defaults.simulator_outage_chance, defaults.simulator_gps_loss_chance) == (0.0, 0.0)
+
+    on = _settings(monkeypatch, SIMULATOR_OUTAGE_CHANCE="1", SIMULATOR_GPS_LOSS_CHANCE="0.25")
+    assert (on.simulator_outage_chance, on.simulator_gps_loss_chance) == (1.0, 0.25)
+    with pytest.raises(pydantic.ValidationError):
+        _settings(monkeypatch, SIMULATOR_OUTAGE_CHANCE="2")

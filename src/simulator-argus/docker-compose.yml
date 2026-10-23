@@ -73,6 +73,9 @@ services:
       - SIMULATOR_SCENARIO_WEIGHTS=${SIMULATOR_SCENARIO_WEIGHTS:-normal=0.45,drowsy_escalation=0.35,no_face=0.20}
       # At most one head_down medium blip per `normal` route, with this chance (see .env.example).
       - SIMULATOR_NORMAL_BLIP_CHANCE=${SIMULATOR_NORMAL_BLIP_CHANCE:-0.5}
+      # Optional demo disruptions per route (network outage, GPS loss); 0 = off.
+      - SIMULATOR_OUTAGE_CHANCE=${SIMULATOR_OUTAGE_CHANCE:-0}
+      - SIMULATOR_GPS_LOSS_CHANCE=${SIMULATOR_GPS_LOSS_CHANCE:-0}
       - SIMULATOR_RESET=${SIMULATOR_RESET:-true}
       # On by default -- see the `osrm` service below and README's "Optional: real
       # road-following routes via OSRM" for the one-time setup needed before it actually takes

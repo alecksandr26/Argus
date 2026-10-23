@@ -694,3 +694,74 @@ async def test_no_active_route_slows_points_only_reports_to_30_s():
     assert len(backend.bodies) == 2
     assert truck.active_route is None
     assert not truck.finished
+
+
+# --- optional demo disruptions: a network outage and a GPS loss -----------------------------
+
+
+async def test_a_simulated_outage_dead_letters_a_critical_and_replays_it_afterwards(caplog):
+    backend = _Backend()
+    readings = {t: _CRITICAL for t in range(10, 13)}
+    truck, clock, client = _truck(backend, readings)
+    truck._outage = (5, 85)
+    with caplog.at_level(logging.INFO, logger="simulator_argus.virtual_truck"):
+        await _run(truck, clock, range(0, 95))
+    await client.aclose()
+
+    # Nothing reached the backend during the outage; the attempts failed with no_network.
+    assert "transport=none" in caplog.text and "failed:no_network" in caplog.text
+    assert "result=dead_lettered:no_network" in caplog.text
+    assert "result=dropped:retry_window" in caplog.text  # the driver OK of t=13
+
+    events = [b["event"] for b in backend.bodies if b.get("event")]
+    assert [(e["kind"], e["severity"], e["delivery"]) for e in events] == [
+        ("alert", "critical", "dlq")
+    ]
+    replay = events[0]
+    assert replay["queued_seconds"] > 0 and replay["age_s"] >= 75
+    assert replay["position"]["last_known"] is False
+    assert not truck.queue.dlq and not truck.queue.live
+
+
+async def test_a_simulated_gps_loss_sends_the_last_known_position():
+    backend = _Backend()
+    truck, clock, client = _truck(backend, {t: _MEDIUM for t in range(5, 20)})
+    truck._gps_loss = (3, 8)
+    await _run(truck, clock, range(0, 11))
+    await client.aclose()
+
+    first, second = backend.bodies
+    points = first["points"] + second["points"]
+    assert [p["last_known"] for p in points] == [False] * 3 + [True] * 5 + [False] * 3
+    fix = points[2]
+    lost = points[3:8]
+    assert all((p["lat"], p["lon"], p["speed"]) == (fix["lat"], fix["lon"], 0.0) for p in lost)
+    assert [p["location_age_s"] for p in lost] == [1.0, 2.0, 3.0, 4.0, 5.0]
+
+    # The medium of t=5 went with that last-known position and no speed.
+    event = first["event"]
+    assert event["position"] == {
+        "lat": fix["lat"],
+        "lon": fix["lon"],
+        "last_known": True,
+        "location_age_s": 3.0,
+    }
+    assert event["speed"] is None
+
+
+async def test_with_no_fix_yet_an_event_goes_with_position_unknown_and_no_points():
+    backend = _Backend()
+    truck, clock, client = _truck(backend, {1: _MEDIUM, 2: _MEDIUM})
+    truck._gps_loss = (0, 3)
+    await _run(truck, clock, range(0, 2))
+    await client.aclose()
+
+    [body] = backend.bodies
+    assert body["points"] == []
+    assert body["event"]["position"] is None and body["event"]["speed"] is None
+
+
+async def test_disruptions_are_off_by_default():
+    truck, _, client = _truck(_Backend())
+    await client.aclose()
+    assert truck._outage is None and truck._gps_loss is None

@@ -40,6 +40,7 @@ from .constants import (
     SIMULATOR_REPORT_INTERVAL_S,
 )
 from .delivery import DeliveryQueue, Finished, QueuedEvent
+from .disruptions import GPS_LOSS_SECONDS, OUTAGE_SECONDS, in_window, plan_window
 from .events import EpisodeTracker, vigilance_for
 from .fleet import VirtualTruckSpec
 from .report import (
@@ -133,6 +134,8 @@ class VirtualTruck:
         tick_seconds: float = GPS_READ_INTERVAL_S,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], datetime] = _utcnow,
+        outage_chance: float = 0.0,
+        gps_loss_chance: float = 0.0,
     ) -> None:
         self._client = client
         self._spec = spec
@@ -154,6 +157,20 @@ class VirtualTruck:
         self._route_known = False
         self._active_route: Optional[str] = None
         self.finished = False
+        # Optional demo disruptions (disruptions.py), as `[start, end)` tick windows or None.
+        self._outage = plan_window(outage_chance, total_ticks, OUTAGE_SECONDS, self._tick_seconds)
+        self._gps_loss = plan_window(
+            gps_loss_chance, total_ticks, GPS_LOSS_SECONDS, self._tick_seconds
+        )
+        if self._outage or self._gps_loss:
+            logger.info(
+                "Truck %s: simulated network outage ticks %s, GPS loss ticks %s",
+                spec.truck_id,
+                self._outage,
+                self._gps_loss,
+            )
+        self._tick = 0
+        self._last_fix: Optional[tuple[float, float, float]] = None  # (t, lat, lon)
 
     @property
     def queue(self) -> DeliveryQueue:
@@ -212,13 +229,30 @@ class VirtualTruck:
 
     def _read(self, tick: int) -> float:
         """One GPS read: a point, the scenario's reading, maybe a new live event."""
+        self._tick = tick
         now = self._clock()
-        lat, lon, speed = self._position()
         reading = self._scenario.reading(tick)
-        self._points.add(GpsPoint(now, lat, lon, speed, vigilance_for(reading.severity)))
+        vigilance = vigilance_for(reading.severity)
+        position: Optional[dict]
+        event_speed: Optional[float]
+        if not in_window(self._gps_loss, tick):
+            lat, lon, speed = self._position()
+            self._last_fix = (now, lat, lon)
+            self._points.add(GpsPoint(now, lat, lon, speed, vigilance))
+            position = {"lat": lat, "lon": lon, "last_known": False, "location_age_s": 0}
+            event_speed = speed
+        elif self._last_fix is not None:
+            # No fix: the last good position, marked last known, with its age (C2.1); points
+            # carry speed 0, events speed null (C1.8 [sync 2]).
+            fix_t, lat, lon = self._last_fix
+            age = round(max(0.0, now - fix_t), 1)
+            self._points.add(GpsPoint(now, lat, lon, 0.0, vigilance, True, age))
+            position = {"lat": lat, "lon": lon, "last_known": True, "location_age_s": age}
+            event_speed = None
+        else:  # no fix yet at all: no point, and events go with position unknown
+            position, event_speed = None, None
 
-        position = {"lat": lat, "lon": lon, "last_known": False, "location_age_s": 0}
-        event = self._tracker.update(reading, now, position=position, speed=speed)
+        event = self._tracker.update(reading, now, position=position, speed=event_speed)
         if event is not None:
             self._queue.add_live(event, now)
             logger.info(
@@ -269,33 +303,43 @@ class VirtualTruck:
 
         started = self._clock()
         body = build_report(points, item.to_wire(started) if had_event else None, started)
-        try:
-            response = await self._client.post_report(self._spec.device_key, body)
-            outcome = classify_response(response.status_code, response.body, had_event)
-        except httpx.TimeoutException:
-            outcome = classify_transport_error("timeout", had_event)
-        except httpx.TransportError:
-            outcome = classify_transport_error("transport_error", had_event)
+        transport = "http"
+        if in_window(self._outage, self._tick):
+            # Simulated lost connection: the attempt fails before reaching the backend.
+            transport = "none"
+            outcome = classify_transport_error("no_network", had_event)
+        else:
+            try:
+                response = await self._client.post_report(self._spec.device_key, body)
+                outcome = classify_response(response.status_code, response.body, had_event)
+            except httpx.TimeoutException:
+                outcome = classify_transport_error("timeout", had_event)
+            except httpx.TransportError:
+                outcome = classify_transport_error("transport_error", had_event)
         ended = self._clock()
         self._last_report_end = ended
-        self._apply(item, outcome, ended)
 
         result = outcome.event_result or ("ok" if outcome.http_status == 200 else "failed")
         if outcome.event_reason:
             result = f"{result}:{outcome.event_reason}"
+        elif transport == "none":
+            result = f"{result}:no_network"
         log = logger.info if had_event or outcome.http_status != 200 else logger.debug
         log(
-            "%s truck=%s event=%s attempt=%d transport=http status=%s duration=%.2fs "
+            "%s truck=%s event=%s attempt=%d transport=%s status=%s duration=%.2fs "
             "points=%d result=%s",
             tag,
             self._spec.truck_id,
             f"{item.event.priority_key}/{item.event.alert_type or 'driver_ok'}" if had_event else "-",
             attempt,
+            transport,
             outcome.http_status if outcome.http_status is not None else "-",
             ended - started,
             len(points),
             result,
         )
+        # After the attempt's own line, so a give-up it caused is logged right after it.
+        self._apply(item, outcome, ended)
         return outcome
 
     def _apply(self, item: Optional[QueuedEvent], outcome: ReportOutcome, now: float) -> None:

@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     # read only to warn that it's ignored (see __main__.py). Use SIMULATOR_NORMAL_BLIP_CHANCE.
     simulator_medium_blip_probability: Optional[float] = None
 
+    # Optional demo disruptions, at most one of each per route (disruptions.py), off by default.
+    # Outage: 70-150 s in which every report fails with `no_network` (points dropped, a critical
+    # reaches the dead-letter queue and is replayed afterwards as "recovered after lost
+    # connection"). GPS loss: 30-90 s of last-known positions.
+    simulator_outage_chance: float = Field(default=0.0, ge=0.0, le=1.0)
+    simulator_gps_loss_chance: float = Field(default=0.0, ge=0.0, le=1.0)
+
     # Deletes any SIM-* trucks/drivers/routes/alerts left over from a previous run before
     # provisioning fresh ones, so repeated `docker compose up`s during dev stay idempotent
     # instead of piling up ghost fleets.
