@@ -61,16 +61,29 @@ with `npx playwright show-trace test-results/<test-name>/trace.zip`.
   no Save button on an existing truck).
 - `tests/drivers.spec.ts` — the same shape as `trucks.spec.ts`, for `POST /api/drivers`/the
   Drivers screen.
-- `tests/live-ops.spec.ts` — Live operations (`LiveOps.tsx`) and Alert triage
-  (`AlertTriage.tsx`), the two screens that ingest `Status_Route`/`Alert` data. Since the ESP32
-  firmware doesn't exist yet, that ingestion is done directly against the backend (a root_admin
-  JWT, the same fallback path `authorize_device_or_user()` documents for manual testing without
-  real hardware). Covers: creating a route through the real Routes screen and promoting it to
-  `in_progress`, a fused critical alert showing as a live map marker and an alert-feed entry
-  (severity filter included), the full triage detail view for both `fusion` (AI scores, grip
-  status) and `panic_button` (no scores — no camera/grip evaluation happens) alerts, a guardian
-  reviewing an alert and that review surviving a page reload, and an admin seeing the triage
-  screen read-only (no review controls at all).
+- `tests/live-ops.spec.ts` — Live operations and the route/alert view, fed the way a truck feeds
+  them: every alert is reported with the truck's own device key through
+  `POST /api/devices/me/report` (`helpers.ts`'s `postReport`/`alertEvent`), the only device
+  write. Covers: a route created through the Routes screen whose critical alert shows as a live
+  map marker, a no-face critical (no scores) whose incident a guardian closes with a note, an
+  admin being refused the close (403), and a guardian de-escalating an alert.
+- `tests/incidents.spec.ts` — incident grouping (15 min window by event time, escalations,
+  duplicates, the driver OK never closing anything, the tier-ordered `/api/live` feed) and
+  closing (a note required for a critical, guardian/root_admin only, route state dropping with
+  each close, a late alert never joining a closed incident).
+- `tests/route-stop.spec.ts` — "Stop route" (reason required, root_admin/admin only), then every
+  report for that route rejected `route_finished` (points, a new event, the driver OK, a
+  dead-letter replay); "Complete trip" the same; `no_route` before any route started.
+- `tests/positions.spec.ts` — alert positions (live, last known with its age, unknown) and
+  last-known GPS points in the path.
+
+**`IT_FINAL_TWEAKS_UI`.** The incident feed, the close/stop dialogs and the position labels land
+in `ui-argus` after the backend does (final-tweaks merge order: backend + simulator + this module
+first, the UI last). Specs, or spec halves, that assert on those screens are skipped unless the
+run sets `IT_FINAL_TWEAKS_UI=1` (`IT_FINAL_TWEAKS_UI=1 docker compose up --build
+--abort-on-container-exit`); the API-level checks of the same behaviour always run. Their
+selectors are written from the UI strings agreed in the contracts (`docs/designs/
+final-tweaks-contracts.md`, C3.7) and may need adjusting to the merged UI's exact DOM.
 
 Every spec generates its own test data (unique emails/plate numbers/license numbers per run —
 see `tests/helpers.ts`'s `uniqueSuffix()`) rather than hardcoding fixed values, since this

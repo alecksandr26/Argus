@@ -72,6 +72,10 @@ services:
       # tests/helpers.ts's `BACKEND_URL` comment. Only needed by users.spec.ts's direct-REST
       # negative-scope test; every other spec drives the backend through the browser instead.
       - IT_BACKEND_URL=http://backend-argus:8000
+      # 1 = also run the specs (and spec halves) that assert on ui-argus's final-tweaks screens
+      # (incident feed, close/stop dialogs, position labels). Off until that UI is in the stack;
+      # the API-level checks of the same behaviour run either way. See tests/helpers.ts.
+      - IT_FINAL_TWEAKS_UI=${IT_FINAL_TWEAKS_UI:-0}
     volumes:
       # Bind-mounts the HTML reporter's output (see playwright.config.ts) onto the host so it
       # survives `--abort-on-container-exit` tearing this container down — without this, the
