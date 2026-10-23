@@ -262,17 +262,20 @@ def test_lone_driver_whose_box_jumps_100px_gets_no_no_face_critical(monkeypatch)
     assert out[-1].features["face_bbox_raw"] == jumped
 
 
-def test_driver_returning_while_the_passenger_stays_is_relocked_after_5s_held_severity_kept(monkeypatch):
+@pytest.mark.parametrize("driver", [FACE, (300, 160, 104, 130)], ids=["1.5x", "1.3x"])
+def test_driver_returning_while_the_passenger_stays_is_relocked_after_5s_held_severity_kept(
+        monkeypatch, driver):
     """Reviewer repro: the driver steps out, the passenger stays, the lock goes to the passenger
-    at 5 s. The driver comes back and takes the lock back 5 s later (take-over, 1.5x larger).
-    The passenger's closed eyes left a CRITICAL held; it survives the take-over and only drops
-    after RULE_RECOVERY_S of the driver's open eyes."""
+    at 5 s. The driver comes back and takes the lock back 5 s later (take-over; run with a driver
+    1.5x and 1.3x the passenger's side, the latter being C1.7's literal required case). The
+    passenger's closed eyes left a CRITICAL held; it survives the take-over and only drops after
+    RULE_RECOVERY_S of the driver's open eyes."""
     from cv_argus import constants
 
     monkeypatch.setenv("RULE_NO_FACE_CRITICAL_S", "5.0")
     n_switch = int(constants.FACE_SWITCH_AFTER_S / 0.2)            # 25 frames
-    frames = ([[FACE, PASSENGER]] + [[PASSENGER]] * (n_switch + 1)  # switch on frame 26
-              + [[PASSENGER, FACE]] * (n_switch + 30))
+    frames = ([[driver, PASSENGER]] + [[PASSENGER]] * (n_switch + 1)  # switch on frame 26
+              + [[PASSENGER, driver]] * (n_switch + 30))
     rules = _RecordingRules()
     out = _run_chain(frames, _WhoseEyesDetector(), rules=rules)
 
@@ -284,7 +287,7 @@ def test_driver_returning_while_the_passenger_stays_is_relocked_after_5s_held_se
     assert s2 == s1 + 1 + n_switch                                    # driver back on s1+1, 5 s later
     assert out[s2].features["face_bbox_raw"] == PASSENGER            # take-over frame: old face
     assert out[s2].features["face_lock"]["takeover_s"] == pytest.approx(constants.FACE_SWITCH_AFTER_S)
-    assert out[s2 + 1].features["face_bbox_raw"] == FACE             # driver re-locked
+    assert out[s2 + 1].features["face_bbox_raw"] == driver           # driver re-locked
     assert [c for c, _ in rules.calls].count("reset") == 2
     assert _severity(out[s2 - 1]) == "critical"                      # the passenger's eyes
     recovery = int(round(constants.RULE_RECOVERY_S / 0.2))
