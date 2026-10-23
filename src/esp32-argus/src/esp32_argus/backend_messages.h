@@ -75,6 +75,12 @@ ReportEvent eventFromRecord(const PiRecord& record, PiEventKind kind,
 // usable one (then compose it from the record with no position, C1.8).
 bool eventFromStoredJson(const std::string& json, ReportEvent& out);
 
+// The position (and speed) in a v1 firmware's stored body (the retired POST /api/alerts body:
+// `coordinates {lat, lon}`, `speed_at_event`), so a dead letter left over from before the v2
+// update still replays with where it happened. False when it has none.
+bool legacyPositionFromBody(const std::string& json, EventPosition& position, bool& hasSpeed,
+                            float& speedKmh);
+
 // The `event` object alone, compact: the `<body>` of the FAIL that first dead-letters a critical.
 std::string composeEventJson(const ReportEvent& event, float ageS, EventDelivery delivery,
                              float queuedSeconds);

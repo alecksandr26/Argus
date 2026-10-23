@@ -146,6 +146,25 @@ bool eventFromStoredJson(const std::string& json, ReportEvent& out) {
   return true;
 }
 
+bool legacyPositionFromBody(const std::string& json, EventPosition& position, bool& hasSpeed,
+                            float& speedKmh) {
+  position = EventPosition();
+  hasSpeed = false;
+  speedKmh = 0.0f;
+  JsonDocument doc;
+  if (json.empty() || deserializeJson(doc, json) != DeserializationError::Ok) return false;
+  JsonObjectConst c = doc["coordinates"];
+  if (c.isNull() || !c["lat"].is<double>() || !c["lon"].is<double>()) return false;
+  position.known = true;
+  position.lat = c["lat"].as<double>();
+  position.lon = c["lon"].as<double>();
+  if (doc["speed_at_event"].is<float>()) {
+    hasSpeed = true;
+    speedKmh = doc["speed_at_event"].as<float>();
+  }
+  return true;
+}
+
 std::string composeEventJson(const ReportEvent& event, float ageS, EventDelivery delivery,
                              float queuedSeconds) {
   JsonDocument doc;

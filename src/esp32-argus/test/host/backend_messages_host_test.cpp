@@ -177,6 +177,23 @@ static void unusableStoredEventsAreRefused() {
       out));
 }
 
+static void legacyBodiesKeepTheirPosition() {
+  // A dead letter queued by the v1 firmware stored the retired POST /api/alerts body.
+  EventPosition p;
+  bool hasSpeed = false;
+  float speed = 0;
+  CHECK(legacyPositionFromBody(
+      R"({"alert_type":"eyes_closed","coordinates":{"lat":19.5,"lon":-99.25},"speed_at_event":40})",
+      p, hasSpeed, speed));
+  CHECK(p.known && !p.lastKnown);
+  CHECK_NEAR(p.lat, 19.5, 1e-6);
+  CHECK(hasSpeed);
+  CHECK_NEAR(speed, 40.0, 1e-6);
+  CHECK(!legacyPositionFromBody(R"({"alert_type":"eyes_closed"})", p, hasSpeed, speed));
+  CHECK(!p.known);
+  CHECK(!legacyPositionFromBody("", p, hasSpeed, speed));
+}
+
 static TrackPoint point(uint32_t atMs, const char* vigilance, bool lastKnown = false) {
   TrackPoint t;
   t.atMs = atMs;
@@ -299,6 +316,7 @@ int main() {
   RUN(lastKnownPositionIsLabelled);
   RUN(storedEventRoundTripsForADlqReplay);
   RUN(unusableStoredEventsAreRefused);
+  RUN(legacyBodiesKeepTheirPosition);
   RUN(reportCarriesPointsOldestFirstWithRelativeAges);
   RUN(reportKeepsOnlyTheNewestTenPoints);
   RUN(emptyReportStillHasAPointsArray);
