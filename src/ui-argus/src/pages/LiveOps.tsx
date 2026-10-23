@@ -1,30 +1,47 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
-import FleetMap, { type FleetMapMarker } from '../components/FleetMap'
+import FleetMap, { type MapFocus } from '../components/FleetMap'
 import FilterChips from '../components/FilterChips'
+import IncidentFeed from '../components/IncidentFeed'
+import RouteEndActions from '../components/RouteEndActions'
 import SimulatorControl from '../components/SimulatorControl'
+import StatusPill from '../components/StatusPill'
 import { useAuth } from '../context/AuthContext'
-import { listActiveRoutes } from '../api/routes'
-import { listAlerts } from '../api/alerts'
-import { listDrivers } from '../api/drivers'
-import { listTrucks } from '../api/trucks'
-import { ApiError } from '../api/client'
-import { longDay, relativeTime } from '../utils/format'
-import { severity, vigilance } from '../utils/status'
+import { useLive } from '../hooks/useLive'
+import { longDay } from '../utils/format'
+import { incidentState } from '../utils/status'
 import { toLatLng } from '../utils/geo'
-import type { AlertSeverity, Driver, RouteWithStatus, Truck } from '../types'
+import { incidentPins, routeMarkers, trackPaths } from '../utils/mapLayers'
+import { pointPosition, positionSummary } from '../utils/position'
+import type { Alert, IncidentTier } from '../types'
 
 /**
- * Live operations dashboard against the real API. `GET /api/routes/active` (built specifically
- * for this screen — see `src/backend-argus/CLAUDE.md`) feeds the map/stat tiles;
- * `GET /api/alerts` feeds the feed. Polling on an interval is the interim real-time strategy
- * `INTEGRATION.md` gap #5 names as acceptable pending a real push mechanism (WebSocket/SSE).
- * Drivers/trucks are fetched once (not polled) purely to resolve names for alerts whose route
- * isn't currently active — active routes already embed their own names.
+ * Live operations, on one poll: `GET /api/live` every 5 s (`useLive`, paused while the tab is
+ * hidden; only the data refreshes, never the page). It gives the active routes with their newest
+ * position, every open incident in full, and the GPS points since the last poll.
+ *
+ * - **Map:** one marker per route, coloured by the route's `incident_state` (not by the newest
+ *   point), a hollow dashed marker for a last-known position, each route's GPS path, and a pin
+ *   per open-incident alert.
+ * - **Incidents:** the tiered feed (Critical → Medium → Older than 1 h), grouped by route.
+ *   Guardian and root_admin close incidents from it; "Show on map" flies the map to an alert.
+ *   There's no "Reviewed/Unreviewed" filter any more: the feed holds exactly the open incidents,
+ *   and a closed incident leaves it for Alert history.
+ * - **Routes:** the active routes, with Complete trip / Stop route for root_admin and admin.
  */
 
-const POLL_MS = 7000
+const TIER_FILTERS: { key: IncidentTier | 'all'; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'critical', label: 'Critical' },
+  { key: 'medium', label: 'Medium' },
+  { key: 'old', label: 'Old' },
+]
+
+const PANELS: { key: 'incidents' | 'routes'; label: string }[] = [
+  { key: 'incidents', label: 'Open incidents' },
+  { key: 'routes', label: 'Routes on the road' },
+]
 
 const toneColor = {
   good: 'var(--good)',
@@ -33,132 +50,37 @@ const toneColor = {
   neutral: 'var(--text-faint)',
 } as const
 
-// No "Low" chip: a real Alert row is never actually severity_level "low" in practice — per
-// the fusion contract (src/cv-argus/src/orchestrator/fusion_contract.py), "low" means no
-// incident is open at all, so nothing gets posted at that severity. Keeping "All" covers the
-// (should-never-happen) edge case without offering a dead filter button.
-const FILTERS: { key: AlertSeverity | 'all'; label: string }[] = [
-  { key: 'all', label: 'All' },
-  { key: 'critical', label: 'Critical' },
-  { key: 'medium', label: 'Medium' },
-]
-
-type ReviewedFilter = 'unreviewed' | 'reviewed' | 'all'
-
-const REVIEWED_FILTERS: { key: ReviewedFilter; label: string }[] = [
-  { key: 'unreviewed', label: 'Unreviewed' },
-  { key: 'reviewed', label: 'Reviewed' },
-  { key: 'all', label: 'All' },
-]
-
 export default function LiveOps() {
   const { session } = useAuth()
   const token = session!.token
+  const role = session!.user.role
 
-  const [filter, setFilter] = useState<AlertSeverity | 'all'>('all')
-  const [reviewedFilter, setReviewedFilter] = useState<ReviewedFilter>('unreviewed')
-  const [activeRoutes, setActiveRoutes] = useState<RouteWithStatus[]>([])
-  const [alerts, setAlerts] = useState<Awaited<ReturnType<typeof listAlerts>>>([])
-  const [drivers, setDrivers] = useState<Driver[]>([])
-  const [trucks, setTrucks] = useState<Truck[]>([])
-  const [error, setError] = useState<string | null>(null)
-
-  // Drivers/trucks resolve names for alerts on routes that are no longer active — fetched once.
-  useEffect(() => {
-    listDrivers(token).then(setDrivers).catch(() => {})
-    listTrucks(token).then(setTrucks).catch(() => {})
-  }, [token])
-
-  useEffect(() => {
-    let cancelled = false
-    const poll = () => {
-      Promise.all([listActiveRoutes(token), listAlerts(token)])
-        .then(([routes, alertRows]) => {
-          if (cancelled) return
-          setActiveRoutes(routes)
-          setAlerts(alertRows)
-          setError(null)
-        })
-        .catch((err) => {
-          if (!cancelled) setError(err instanceof ApiError ? err.message : 'Failed to load live data')
-        })
-    }
-    poll()
-    const id = setInterval(poll, POLL_MS)
-    return () => {
-      cancelled = true
-      clearInterval(id)
-    }
-  }, [token])
-
-  const routeById = useMemo(
-    () => new Map(activeRoutes.map((r) => [r.id_route, r])),
-    [activeRoutes],
-  )
-  const driverById = useMemo(() => new Map(drivers.map((d) => [d.id_driver, d])), [drivers])
-  const truckById = useMemo(() => new Map(trucks.map((t) => [t.id_truck, t])), [trucks])
+  const { live, error, refresh } = useLive(token)
+  const [tierFilter, setTierFilter] = useState<IncidentTier | 'all'>('all')
+  const [panel, setPanel] = useState<'incidents' | 'routes'>('incidents')
+  const [focus, setFocus] = useState<MapFocus | null>(null)
+  const focusNonce = useRef(0)
 
   const tiles = useMemo(() => {
-    const counts = { low: 0, medium: 0, critical: 0, unknown: 0 }
-    for (const r of activeRoutes) {
-      if (r.latest_status) counts[r.latest_status.vigilance]++
-    }
-    return {
-      onRoute: activeRoutes.length,
-      low: counts.low,
-      medium: counts.medium,
-      critical: counts.critical,
-    }
-  }, [activeRoutes])
+    const counts = { fine: 0, medium: 0, critical: 0 }
+    for (const r of live.routes) counts[r.incident_state]++
+    return { onRoute: live.routes.length, ...counts }
+  }, [live.routes])
 
-  const markers = useMemo<FleetMapMarker[]>(
-    () =>
-      activeRoutes
-        .filter((r) => r.latest_status)
-        .map((r) => {
-          const s = r.latest_status!
-          const v = vigilance[s.vigilance]
-          return {
-            id: s.id_status_route,
-            position: toLatLng(s.current_coordinates),
-            plate: r.truck_plate_number ?? '—',
-            driver: r.driver_full_name ?? '—',
-            origin: r.origin_name,
-            destination: r.destination_name,
-            speedKmh: s.current_speed,
-            vigilanceLabel: v.label,
-            tone: v.tone,
-            timestamp: s.timestamp,
-          }
-        }),
-    [activeRoutes],
+  const markers = useMemo(() => routeMarkers(live.routes), [live.routes])
+  const paths = useMemo(() => trackPaths(live.track), [live.track])
+  const pins = useMemo(() => incidentPins(live.incidents), [live.incidents])
+
+  const feed = useMemo(
+    () => live.incidents.filter((i) => tierFilter === 'all' || i.tier === tierFilter),
+    [live.incidents, tierFilter],
   )
 
-  const feed = useMemo(() => {
-    const rows = [...alerts].sort(
-      (a, b) => +new Date(b.timestamp) - +new Date(a.timestamp),
-    )
-    return rows
-      .filter((a) => filter === 'all' || a.severity_level === filter)
-      .filter(
-        (a) =>
-          reviewedFilter === 'all' ||
-          (reviewedFilter === 'reviewed' ? a.reviewed_by_operator : !a.reviewed_by_operator),
-      )
-      .map((a) => {
-        const route = routeById.get(a.id_route)
-        const driver = route ? driverById.get(route.id_driver) : undefined
-        const truck = route ? truckById.get(route.id_truck) : undefined
-        return {
-          alert: a,
-          originDestination: route ? `${route.origin_name} → ${route.destination_name}` : null,
-          plate: route?.truck_plate_number ?? truck?.plate_number ?? null,
-          driverName: route?.driver_full_name ?? (driver ? `${driver.first_name} ${driver.last_name}` : null),
-        }
-      })
-  }, [alerts, filter, reviewedFilter, routeById, driverById, truckById])
-
-  const todayCount = alerts.length
+  function showOnMap(a: Alert) {
+    if (!a.coordinates) return
+    focusNonce.current += 1
+    setFocus({ position: toLatLng(a.coordinates), pinId: a.id_alert, nonce: focusNonce.current })
+  }
 
   return (
     <div
@@ -203,24 +125,13 @@ export default function LiveOps() {
       />
 
       {/* root_admin only: cloud simulator on/off (10-minute sessions, see SimulatorControl) */}
-      {session!.user.role === 'root_admin' && <SimulatorControl token={token} />}
+      {role === 'root_admin' && <SimulatorControl token={token} />}
 
-      {/* stat tiles */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-          gap: 14,
-        }}
-      >
+      {/* stat tiles: routes by their alert state (incident_state) */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 14 }}>
         <Tile label="Trucks on route" value={tiles.onRoute} />
-        <Tile label="Normal" value={tiles.low} color="var(--good)" />
-        <Tile
-          label="Medium severity"
-          value={tiles.medium}
-          color="var(--warn)"
-          border="var(--warn)"
-        />
+        <Tile label="Normal" value={tiles.fine} color="var(--good)" />
+        <Tile label="Medium severity" value={tiles.medium} color="var(--warn)" border="var(--warn)" />
         <Tile
           label="Critical severity"
           value={tiles.critical}
@@ -230,7 +141,6 @@ export default function LiveOps() {
         />
       </div>
 
-      {/* body */}
       <div style={{ flex: 1, display: 'flex', gap: 18, minHeight: 0 }}>
         {/* map */}
         <div
@@ -244,28 +154,13 @@ export default function LiveOps() {
             overflow: 'hidden',
           }}
         >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-            }}
-          >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span style={{ fontSize: 13, fontWeight: 600 }}>
               Fleet map — Central Mexico &amp; Bajío
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  background: 'var(--bad)',
-                }}
-              />
-              <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>
-                LIVE
-              </span>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--bad)' }} />
+              <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>LIVE</span>
             </div>
           </div>
 
@@ -280,54 +175,16 @@ export default function LiveOps() {
               background: '#e8eaed',
             }}
           >
-            <FleetMap markers={markers} />
-
-            <div
-              style={{
-                position: 'absolute',
-                left: 12,
-                bottom: 12,
-                zIndex: 1000,
-                pointerEvents: 'none',
-                display: 'flex',
-                gap: 14,
-                background: 'oklch(1 0 0 / 0.85)',
-                padding: '7px 12px',
-                borderRadius: 8,
-                border: '1px solid var(--border-soft)',
-              }}
-            >
-              {(['good', 'warn', 'bad'] as const).map((t, i) => (
-                <span
-                  key={t}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 5,
-                    fontSize: 11,
-                    color: 'oklch(0.28 0.02 258)',
-                  }}
-                >
-                  <span
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: '50%',
-                      background: toneColor[t],
-                    }}
-                  />
-                  {['Normal', 'Medium', 'Critical'][i]}
-                </span>
-              ))}
-            </div>
+            <FleetMap markers={markers} paths={paths} pins={pins} focus={focus} />
+            <MapLegend />
           </div>
         </div>
 
-        {/* alert feed */}
+        {/* incidents / routes */}
         <div
           className="panel"
           style={{
-            width: 380,
+            width: 400,
             flexShrink: 0,
             padding: 16,
             display: 'flex',
@@ -336,127 +193,152 @@ export default function LiveOps() {
             overflow: 'hidden',
           }}
         >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-            }}
-          >
-            <span style={{ fontSize: 13, fontWeight: 600 }}>Recent alerts</span>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <FilterChips options={PANELS} value={panel} onChange={setPanel} />
             <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>
-              {todayCount} today
+              {live.incidents.length} open
             </span>
           </div>
 
-          <FilterChips options={FILTERS} value={filter} onChange={setFilter} />
-          <FilterChips options={REVIEWED_FILTERS} value={reviewedFilter} onChange={setReviewedFilter} />
-
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 8,
-              overflowY: 'auto',
-            }}
-          >
-            {feed.map(({ alert, originDestination, plate, driverName }) => {
-              const sev = severity[alert.severity_level]
-              const reviewed = alert.reviewed_by_operator
-              return (
-                <Link
-                  key={alert.id_alert}
-                  to={`/alerts/${alert.id_alert}`}
-                  style={{
-                    display: 'flex',
-                    gap: 10,
-                    padding: 11,
-                    borderRadius: 9,
-                    color: 'inherit',
-                    background:
-                      sev.tone === 'bad' && !reviewed
-                        ? 'var(--bad-soft)'
-                        : 'var(--surface-2)',
-                    border: `1px solid ${
-                      sev.tone === 'bad' && !reviewed
-                        ? 'var(--bad)'
-                        : 'var(--border-soft)'
-                    }`,
-                    opacity: reviewed ? 0.6 : 1,
-                  }}
-                >
-                  <span
+          {panel === 'incidents' ? (
+            <>
+              <FilterChips options={TIER_FILTERS} value={tierFilter} onChange={setTierFilter} />
+              <div style={{ overflowY: 'auto', minHeight: 0 }}>
+                <IncidentFeed
+                  incidents={feed}
+                  role={role}
+                  token={token}
+                  onClosed={() => void refresh()}
+                  onShowOnMap={showOnMap}
+                  focusedAlertId={focus?.pinId ?? null}
+                  emptyLabel={
+                    tierFilter === 'all' ? 'No open incidents.' : 'No open incidents in this tier.'
+                  }
+                />
+              </div>
+            </>
+          ) : (
+            <div
+              style={{ display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto' }}
+              data-testid="active-routes"
+            >
+              {live.routes.map((r) => {
+                const pos = r.latest_position ? pointPosition(r.latest_position) : null
+                return (
+                  <div
+                    key={r.id_route}
+                    data-testid="active-route"
                     style={{
-                      width: 3,
-                      borderRadius: 2,
-                      flexShrink: 0,
-                      background: reviewed
-                        ? 'var(--good)'
-                        : toneColor[sev.tone],
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 4,
+                      padding: 10,
+                      borderRadius: 9,
+                      background: 'var(--surface-2)',
+                      border: '1px solid var(--border-soft)',
                     }}
-                  />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: 8,
-                      }}
-                    >
-                      <span style={{ fontSize: 12.5, fontWeight: 600 }}>
-                        {alert.alert_type}
-                      </span>
-                      <span
-                        style={{
-                          fontSize: 10.5,
-                          fontWeight: 600,
-                          color: reviewed
-                            ? 'var(--text-faint)'
-                            : toneColor[sev.tone],
-                        }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                      <Link
+                        to={`/routes/${r.id_route}/live`}
+                        className="mono"
+                        style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}
                       >
-                        {reviewed ? 'REVIEWED' : sev.label.toUpperCase()}
-                      </span>
+                        {r.truck_plate_number ?? '—'} · {r.driver_full_name ?? '—'}
+                      </Link>
+                      <StatusPill badge={incidentState[r.incident_state]} />
                     </div>
-                    <div
+                    <span style={{ fontSize: 11.5, color: 'var(--text-soft)' }}>
+                      {r.origin_name} → {r.destination_name}
+                    </span>
+                    <span
                       className="mono"
                       style={{
                         fontSize: 11,
-                        color: 'var(--text-soft)',
-                        marginTop: 3,
+                        color: pos && pos.kind === 'live' ? 'var(--text-faint)' : 'var(--warn)',
                       }}
                     >
-                      {plate ?? '—'} · {driverName ?? '—'}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 11,
-                        color: 'var(--text-faint)',
-                        marginTop: 1,
-                      }}
-                    >
-                      {originDestination ?? '—'} · {relativeTime(alert.timestamp)}
+                      {pos ? positionSummary(pos) : 'No position yet'}
+                    </span>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
+                      <Link
+                        to={`/routes/${r.id_route}/live`}
+                        className="btn btn--ghost"
+                        style={{ padding: '4px 10px', fontSize: 11.5 }}
+                      >
+                        View live
+                      </Link>
+                      <RouteEndActions
+                        route={r}
+                        role={role}
+                        token={token}
+                        onChanged={() => void refresh()}
+                        compact
+                      />
                     </div>
                   </div>
-                </Link>
-              )
-            })}
-            {feed.length === 0 && (
-              <div
-                style={{
-                  fontSize: 12,
-                  color: 'var(--text-faint)',
-                  padding: 12,
-                  textAlign: 'center',
-                }}
-              >
-                No alerts at this severity.
-              </div>
-            )}
-          </div>
+                )
+              })}
+              {live.routes.length === 0 && (
+                <div style={{ fontSize: 12, color: 'var(--text-faint)', padding: 12, textAlign: 'center' }}>
+                  No routes on the road.
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
+    </div>
+  )
+}
+
+function MapLegend() {
+  const items: { label: string; color: string; stale?: boolean }[] = [
+    { label: 'Normal', color: toneColor.good },
+    { label: 'Medium', color: toneColor.warn },
+    { label: 'Critical', color: toneColor.bad },
+    { label: 'Last known position', color: toneColor.neutral, stale: true },
+  ]
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: 12,
+        bottom: 12,
+        zIndex: 1000,
+        pointerEvents: 'none',
+        display: 'flex',
+        gap: 14,
+        background: 'oklch(1 0 0 / 0.85)',
+        padding: '7px 12px',
+        borderRadius: 8,
+        border: '1px solid var(--border-soft)',
+      }}
+    >
+      {items.map((i) => (
+        <span
+          key={i.label}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+            fontSize: 11,
+            color: 'oklch(0.28 0.02 258)',
+          }}
+        >
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              boxSizing: 'border-box',
+              background: i.stale ? 'transparent' : i.color,
+              border: i.stale ? `1.5px dashed ${i.color}` : 'none',
+            }}
+          />
+          {i.label}
+        </span>
+      ))}
     </div>
   )
 }

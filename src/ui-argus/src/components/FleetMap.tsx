@@ -1,60 +1,49 @@
-import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet'
+import { MapContainer, Marker, Polyline, Popup, TileLayer, useMap } from 'react-leaflet'
 import { divIcon, latLngBounds } from 'leaflet'
 import type { DivIcon } from 'leaflet'
 import { useEffect, useRef } from 'react'
-import { relativeTime } from '../utils/format'
+import { clock, relativeTime } from '../utils/format'
 import type { Tone } from '../utils/status'
+import type { FleetMapMarker, LatLng, MapPath, MapPin } from '../utils/mapLayers'
+
+export type { FleetMapMarker, MapPath, MapPin } from '../utils/mapLayers'
 
 /**
- * The Live operations fleet map. Replaces the earlier hand-drawn SVG projection
- * with a real Leaflet map (OpenStreetMap tiles). Presentational only — `LiveOps`
- * builds the marker array from fixtures; this component just renders it.
+ * The Leaflet map behind Live operations, the route view and route history (OpenStreetMap
+ * tiles). Presentational only: the screens build the layers with `utils/mapLayers.ts` from
+ * `/api/live` / `/track` data, and this component just draws them.
  *
- * `react-leaflet` 5.x (the React 19 line). `MapContainer` `center`/`zoom`/
- * `bounds` are init-only (not reactive); `Marker` `position` *is* reactive, so
- * when live data replaces the fixtures the markers move for free and only a
- * bounds re-fit needs a `useMap()` child effect.
+ * Layers:
+ * - **Truck markers** (`markers`), keyed by route id, coloured by the route's `incident_state`;
+ *   a last-known position (no current fix) gets a hollow, dashed "stale" dot.
+ * - **GPS paths** (`paths`), one polyline per route.
+ * - **Alert pins** (`pins`), small diamonds coloured by severity.
+ * - **Focus** (`focus`): "Show on map" on an alert card flies the camera to that alert and
+ *   highlights its pin. A new `nonce` re-flies even to the same point.
  *
- * Coordinates: the `{ lat, lon }` values in `src/data/fixtures.ts` are real
- * WGS84 decimal degrees — the cities (`CITY` table) are the actual positions of
- * real places in central Mexico; the per-truck `current_coordinates` and the
- * per-alert `coordinates` are hand-placed points along the real highway
- * corridors between them (invented demo telemetry, real coordinate system).
- * Leaflet orders pairs `[lat, lng]`; `LiveOps` converts each `Coordinates` with
- * `toLatLng` from `src/utils/geo.ts`, which is also where `normalizeCoordinates`
- * (the API-boundary adapter for GeoJSON / `{lat,lng}` / string payloads) lives.
- *
- * How Leaflet places geometry — anything geographic takes a "LatLngExpression"
- * (`L.latLng(lat,lng)`, `[lat,lng]`, or `{lat,lng}`):
- *   - `<Marker position icon>` — a pin. `icon` is `L.icon({iconUrl,…})` (image),
- *     `L.divIcon({html,className,…})` (HTML/CSS — used here, and it sidesteps the
- *     broken-default-marker-image bug), or the default teardrop if omitted.
- *   - `L.circleMarker` (pixel radius) / `L.circle` (metre radius) — vector dots.
- *   - `<Polyline positions>` — a line; this is how the OSRM route renders later.
- *   - `<Polygon>` / `L.rectangle` — areas (geofences).
- *   - `L.geoJSON(featureCollection)` — render a whole GeoJSON payload at once.
- *   - `map.setView` / `map.fitBounds(L.latLngBounds([...]))` / `map.flyTo` — move
- *     the camera; `fitBounds` is what frames the fleet on load below.
+ * `react-leaflet` 5.x (the React 19 line). `MapContainer` `center`/`zoom`/`bounds` are init-only
+ * (not reactive); `Marker`/`Polyline` positions *are* reactive, so markers move and paths grow on
+ * every poll without re-creating the map. Leaflet orders pairs `[lat, lng]`; the API's
+ * `{lat, lon}` is converted in `mapLayers.ts`. Markers are `divIcon`s (HTML/CSS), which also
+ * sidesteps Leaflet's broken-default-marker-image bug with bundlers.
  */
 
-export interface FleetMapMarker {
-  id: string
-  /** [lat, lng] — Leaflet's order, converted from the ER model's `{ lat, lon }`. */
-  position: [number, number]
-  plate: string
-  driver: string
-  origin: string
-  destination: string
-  speedKmh: number
-  vigilanceLabel: string
-  tone: Tone
-  /** ISO timestamp of the last position fix — shown as relative time in the popup. */
-  timestamp: string
+export interface MapFocus {
+  position: LatLng
+  /** Highlight this pin (an alert id). */
+  pinId?: string | null
+  /** Changes on every "Show on map" click, so clicking the same alert twice re-flies. */
+  nonce: number
 }
 
 /** Central-Mexico / Bajío fallback view, used only when there are no markers. */
-const FALLBACK_CENTER: [number, number] = [20.6, -100.4]
+const FALLBACK_CENTER: LatLng = [20.6, -100.4]
 const FALLBACK_ZOOM = 6
+/** How close "Show on map" zooms in (never zooms out a closer view). */
+const FOCUS_ZOOM = 14
+/** The GPS path colour (the accent token, as a literal: SVG stroke attributes can't read CSS
+ * variables). */
+const PATH_COLOR = '#47c1e6'
 
 const TONE_VAR: Record<Tone, string> = {
   good: 'var(--good)',
@@ -75,43 +64,40 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => HTML_ESCAPES[c])
 }
 
-/**
- * A custom `divIcon` per truck — a coloured dot + plate chip, matching the
- * approved mockup. Using `divIcon` (never a default `Marker` icon) also
- * sidesteps the well-known Leaflet-with-a-bundler broken-marker-image bug
- * entirely: Leaflet never tries to resolve `marker-icon.png` / `marker-shadow.png`.
- */
+/** A coloured dot + plate chip per truck; `--stale` for a last-known position. */
 function buildIcon(m: FleetMapMarker): DivIcon {
   const bad = m.tone === 'bad'
   return divIcon({
     className: 'fleet-marker',
     html:
-      `<span class="fleet-marker__dot fleet-marker__dot--${m.tone}"></span>` +
+      `<span class="fleet-marker__dot fleet-marker__dot--${m.tone}` +
+      `${m.lastKnown ? ' fleet-marker__dot--stale' : ''}"></span>` +
       `<span class="mono fleet-marker__plate${bad ? ' fleet-marker__plate--bad' : ''}">` +
-      `${escapeHtml(m.plate)}</span>`,
-    iconSize: [84, 34],
-    iconAnchor: [42, 8],
+      `${escapeHtml(m.plate)}${m.lastKnown ? ' · last known' : ''}</span>`,
+    iconSize: [104, 34],
+    iconAnchor: [52, 8],
+    popupAnchor: [0, -8],
+  })
+}
+
+function buildPinIcon(p: MapPin, focused: boolean): DivIcon {
+  return divIcon({
+    className: 'alert-pin-icon',
+    html: `<span class="alert-pin alert-pin--${p.tone}${focused ? ' alert-pin--focused' : ''}"></span>`,
+    iconSize: [16, 16],
+    iconAnchor: [8, 8],
     popupAnchor: [0, -8],
   })
 }
 
 /**
- * `MapContainer`'s `bounds`/`boundsOptions` only ever fit whatever `markers` existed on
- * `FleetMap`'s *very first* render — verified directly against `react-leaflet`'s own source
- * (`MapContainer.js`'s `mapRef` callback has an empty dependency array, so it constructs the
- * real Leaflet `Map` exactly once, using only the `bounds`/`center`/`zoom` values closed over at
- * that first call). `RouteLiveView`'s truck position loads asynchronously (`liveStatus` starts
- * `null`), so `markers` is empty on that first render every time — the map permanently locks
- * onto the wide `FALLBACK_CENTER`/`FALLBACK_ZOOM` view and never zooms to the truck at all, no
- * matter what `maxZoom` is passed, since `fitBounds` is simply never invoked again afterwards.
- * This component is therefore the *only* thing that ever zooms to a single followed marker —
- * not a follow-up to an initial framing `MapContainer` already did, since it usually didn't.
- * `mounted` distinguishes this marker's first appearance (snap instantly via `setView`, no
- * animation — there's nothing to animate *from* yet) from a later live-tracking update (ease via
- * `flyTo`, preserving the current zoom rather than resetting to `maxZoom`, so a user's manual
- * zoom survives across follow-updates).
+ * Zooms to a single followed marker. `MapContainer`'s `bounds` only fit whatever markers existed
+ * on the very first render (react-leaflet builds the Leaflet map once), and the route view's
+ * position loads asynchronously, so this is what actually frames the truck: the first appearance
+ * snaps with `setView`, later updates ease with `flyTo` at the current zoom (a manual zoom
+ * survives the follow).
  */
-function FollowMarker({ position, maxZoom }: { position: [number, number]; maxZoom: number }) {
+function FollowMarker({ position, maxZoom }: { position: LatLng; maxZoom: number }) {
   const map = useMap()
   const mounted = useRef(false)
   useEffect(() => {
@@ -121,34 +107,47 @@ function FollowMarker({ position, maxZoom }: { position: [number, number]; maxZo
       return
     }
     map.flyTo(position, map.getZoom(), { duration: 0.8 })
-    // `map`/`maxZoom` are stable per FleetMap instance; keying on the raw lat/lng (not
-    // `position`'s tuple identity) below is deliberate, not a missed dependency.
+    // Keyed on the raw lat/lng, not the tuple's identity; `map`/`maxZoom` are stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [position[0], position[1]])
   return null
 }
 
+/** Flies to a "Show on map" target. */
+function FocusOn({ focus }: { focus: MapFocus }) {
+  const map = useMap()
+  useEffect(() => {
+    map.flyTo(focus.position, Math.max(map.getZoom(), FOCUS_ZOOM), { duration: 0.8 })
+    // Re-fly on every click (nonce), even to the same point.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus.nonce])
+  return null
+}
+
 export default function FleetMap({
   markers,
+  paths = [],
+  pins = [],
+  focus = null,
   maxZoom = 9,
   follow = false,
 }: {
   markers: FleetMapMarker[]
-  /** Cap on how far `fitBounds` may zoom in when framing `markers` — 9 (fleet-wide default)
-   * suits the Live Operations map's multi-truck view; pass a tighter value (e.g. 14, a
-   * neighborhood/road-segment view — enough to see the truck's actual road context without
-   * zooming so far in that per-tick GPS jitter reads as the dot hopping around) for a
-   * single-marker close-up like `RouteLiveView`'s embedded location map. The map's own
-   * interactive ceiling (below) stays much higher, so a viewer can always zoom in tighter
-   * themselves. */
+  paths?: MapPath[]
+  pins?: MapPin[]
+  focus?: MapFocus | null
+  /** Cap on how far the first framing may zoom in: 9 suits the fleet-wide view; the route view
+   * passes 14 (enough road context without GPS jitter reading as the dot hopping). The map's
+   * own interactive ceiling stays higher. */
   maxZoom?: number
-  /** Keep the viewport centered on `markers[0]` as its position changes after mount (poll-driven
-   * live tracking). Only meaningful for a single-marker map — ignored otherwise. */
+  /** Keep the viewport on `markers[0]` as it moves (the route view). Single-marker maps only.
+   * Ignored while a "Show on map" focus is set, so the camera doesn't snap back to the truck. */
   follow?: boolean
 }) {
-  const bounds = markers.length
-    ? latLngBounds(markers.map((m) => m.position))
-    : undefined
+  const framing = markers.length
+    ? markers.map((m) => m.position)
+    : paths.flatMap((p) => p.positions)
+  const bounds = framing.length ? latLngBounds(framing) : undefined
 
   return (
     <MapContainer
@@ -168,12 +167,46 @@ export default function FleetMap({
         maxZoom={19}
       />
 
-      {follow && markers.length === 1 && (
+      {follow && !focus && markers.length === 1 && (
         <FollowMarker position={markers[0].position} maxZoom={maxZoom} />
       )}
+      {focus && <FocusOn focus={focus} />}
+
+      {paths.map((p) => (
+        <Polyline
+          key={`path-${p.id}`}
+          positions={p.positions}
+          pathOptions={{ color: PATH_COLOR, weight: 3, opacity: 0.75 }}
+        />
+      ))}
+
+      {pins.map((p) => (
+        <Marker
+          key={`pin-${p.id}`}
+          position={p.position}
+          icon={buildPinIcon(p, focus?.pinId === p.id)}
+          zIndexOffset={focus?.pinId === p.id ? 1000 : 0}
+        >
+          <Popup>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span style={{ fontWeight: 600, fontSize: 12.5, color: TONE_VAR[p.tone] }}>
+                {p.title}
+              </span>
+              <span className="mono" style={{ color: 'var(--text-faint)' }}>
+                {clock(p.timestamp)} · {relativeTime(p.timestamp)}
+              </span>
+              {p.notes.map((n) => (
+                <span key={n} style={{ color: 'var(--text-soft)' }}>
+                  {n}
+                </span>
+              ))}
+            </div>
+          </Popup>
+        </Marker>
+      ))}
 
       {markers.map((m) => (
-        <Marker key={m.id} position={m.position} icon={buildIcon(m)}>
+        <Marker key={m.id} position={m.position} icon={buildIcon(m)} zIndexOffset={500}>
           <Popup>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
               <div
@@ -187,22 +220,21 @@ export default function FleetMap({
                 <span className="mono" style={{ fontWeight: 600, fontSize: 12.5 }}>
                   {m.plate}
                 </span>
-                <span
-                  style={{
-                    fontSize: 10.5,
-                    fontWeight: 600,
-                    color: TONE_VAR[m.tone],
-                  }}
-                >
-                  {m.vigilanceLabel}
+                <span style={{ fontSize: 10.5, fontWeight: 600, color: TONE_VAR[m.tone] }}>
+                  {m.stateLabel}
                 </span>
               </div>
               <span style={{ color: 'var(--text-soft)' }}>{m.driver}</span>
               <span style={{ color: 'var(--text-faint)' }}>
                 {m.origin} → {m.destination}
               </span>
+              {m.positionLabel && (
+                <span style={{ color: 'var(--warn)', fontWeight: 500 }}>{m.positionLabel}</span>
+              )}
               <span className="mono" style={{ color: 'var(--text-faint)' }}>
-                {m.speedKmh} km/h · {relativeTime(m.timestamp)}
+                {m.speedKmh == null ? '— km/h' : `${m.speedKmh} km/h`}
+                {m.vigilanceLabel ? ` · ${m.vigilanceLabel}` : ''}
+                {m.timestamp ? ` · ${relativeTime(m.timestamp)}` : ''}
               </span>
             </div>
           </Popup>
