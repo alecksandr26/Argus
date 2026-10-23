@@ -26,8 +26,8 @@ cd src/tests/edge_chain && pytest
 ```
 
 It needs cv-argus and backend-argus from the same final-tweaks generation as the firmware (v2
-Pi server, report endpoint). Last run: 66 passed on a scratch merge of T1 (`3ceb5b6`) and T4
-(`7a389d3`) with this branch, 2026-10-23.
+Pi server, report endpoint). Last run: 66 passed on a scratch merge of T1 (`7de237d`) and T4
+(`b2c23a2`) with this branch, 2026-10-23, with `gdown` installed (no stand-in).
 
 ## What it covers
 

@@ -1,7 +1,10 @@
 # src/tests — cross-module checks, no Docker
 
 Everything here runs from **one Python venv** built from `requirements.txt` in this folder. No
-Docker, no MongoDB, no TensorFlow/MediaPipe. Use Python 3.12:
+Docker, no MongoDB, no TensorFlow/MediaPipe. It includes `gdown`, only because cv-argus's
+`model` package imports its model downloader when `edge_chain` loads the rule engine; nothing
+here downloads a model (`edge_chain/conftest.py` keeps an empty stand-in for an older venv
+without it). Use Python 3.12:
 
 ```sh
 python3.12 -m venv .venv && source .venv/bin/activate     # Windows: py -3.12 -m venv .venv; .venv\Scripts\activate
@@ -10,7 +13,7 @@ pip install -r src/tests/requirements.txt
 
 | What | Kind | Needs |
 |---|---|---|
-| `smoke_cv_argus.py` | script | nothing else |
+| `smoke_cv_argus.py` | script | nothing else (stdlib only) |
 | `smoke_backend.py` | script | a running backend (`src/esp32-argus/test/hil/bench_backend.py` is enough) |
 | `edge_chain/` | pytest suite, cv-argus → simulated ESP32 (Bluetooth v2 + the report sender) → backend, in one process | nothing else. See its README.md |
 
@@ -61,25 +64,41 @@ Point it at a different host/port or different root_admin credentials with env v
 `ARGUS_BACKEND_URL`, `ARGUS_ROOT_ADMIN_EMAIL`, `ARGUS_ROOT_ADMIN_PASSWORD` (see the script's own
 docstring). Exits `0` if every check passes, `1` otherwise.
 
-## `smoke_cv_argus.py` — confirms the real sender/ protocol code
+## `smoke_cv_argus.py` — confirms the real sender/ protocol code (Bluetooth v2)
 
 cv-argus has no network API by default (`OUTPUTS=logging` just prints text), so "confirm the
 connection" here means something more specific: cv-argus's one real **server** is
 `sender.server.SenderServer`, the Bluetooth SPP server the ESP32 firmware connects to as a
-client and polls with `PULL`/`ACK` (`src/cv-argus/src/sender/protocol.py`). Real Bluetooth
-hardware/passthrough isn't available in this environment, so this script runs that real
-`SenderServer` against cv-argus's own in-memory `FakeTransport`/`FakeListener` pair — the exact
-stand-in cv-argus's own unit tests use — seeds one real `Alert` into a real `Buffer`, and plays
-the client's side of the exchange by hand, printing every line exchanged. This proves the real
-server/buffer/alerts/protocol code works end to end; it does **not** prove real Bluetooth
-connectivity, which needs hardware no session has had access to.
+client. Real Bluetooth hardware/passthrough isn't available in this environment, so this script
+runs that real `SenderServer` against cv-argus's own in-memory `FakeTransport`/`FakeListener`
+pair (the stand-in cv-argus's own unit tests use), seeds real `Alert`s into a real `Buffer`, and
+plays the ESP32's side of **protocol v2** (`docs/designs/final-tweaks-contracts.md` C1) by hand,
+printing every line exchanged:
 
-**Needs nothing from `requirements.txt`.** `alerts/`/`buffer/`/`sender/` are pure stdlib (no numpy/mediapipe/
-tensorflow/opencv in that import chain at all), so this script registers `cv_argus` as a module
-pointing straight at `src/cv-argus/src/` itself (the same name mapping `setup.py`'s
-`package_dir={"cv_argus": "src"}` does for a real install, just done at runtime via `importlib`
-instead of setuptools) — a real `pip install -e src/cv-argus` would otherwise drag in the full
-heavy dependency list for nothing, since this script never touches `model/` or `pipeline/`.
+1. `PULL 8` serves a keepalive and a critical raise, then `END <dlq_waiting> <outbox_waiting>`;
+   the record carries `age_s` and its severity. `ACK` the keepalive (`ACKED 1`), `TAKEN` the
+   critical (`LEASED 1`: a 120 s lease), `DONE` → `OK acked= failed= leased= dlq= outbox=`.
+2. A **report session** (first line `FAIL`): `FAIL <id> no_network <event JSON>`, the critical's
+   live window ran out, so it moves to the DLQ as attempt 1 with its composed body.
+3. `DLQ 1` serves that one dead letter with its `dlq` block (`attempts: 1`, the stored body and
+   its event-time position, an int `queued_s`); `TAKEN` it.
+4. A report session `ACK <id>`: delivered on the replay.
+5. A medium alert `TAKEN` and then `FAIL <id> retry_window -` (its 30 s live window ran out): it
+   goes straight to the archive, never to the DLQ (the DLQ holds criticals only).
+
+It ends checking that nothing is unsent and only the medium was archived (`retry_window`). This
+proves the real server/buffer/alerts/protocol code works end to end; it does **not** prove real
+Bluetooth connectivity, which needs hardware.
+
+**It needs cv-argus with protocol v2** (the final-tweaks Pi messaging work, T1): against an
+older cv-argus it fails at the first `END`. Last run: all checks passed, 2026-10-23, on a scratch
+merge of T1 (`7de237d`) with this branch.
+
+**Needs nothing from `requirements.txt`.** `alerts/`/`buffer/`/`sender/` are pure stdlib (no
+numpy/mediapipe/tensorflow/opencv in that import chain), so this script registers `cv_argus` as a
+module pointing straight at `src/cv-argus/src/` (the same name mapping `setup.py`'s
+`package_dir={"cv_argus": "src"}` does for a real install, done at runtime via `importlib`); a
+real `pip install -e src/cv-argus` would drag in the full heavy dependency list for nothing.
 
 ```sh
 python src/tests/smoke_cv_argus.py
