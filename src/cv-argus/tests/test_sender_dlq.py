@@ -6,6 +6,7 @@ transitions, and the two Pi commands (`sender.inject`, `buffer.status`)."""
 import json
 import sqlite3
 import time
+from pathlib import Path
 
 import pytest
 
@@ -96,8 +97,9 @@ def test_event_rule(severity, previous, transition, expected):
 
 
 def test_sql_and_python_event_rules_agree(buf):
-    combos = [(s, p, t) for s in ("none", "low", "medium", "critical")
-              for p in (None, "none", "low", "medium", "critical") for t in (True, False)]
+    combos = [(s, p, t) for s in ("none", "low", "medium", "critical", "", "bogus")
+              for p in (None, "none", "low", "medium", "critical", "", "bogus")
+              for t in (True, False)]
     alerts = []
     for s, p, t in combos:
         a = Alert.new(AlertKind.DROWSINESS, level=1, source_id="c",
@@ -110,6 +112,37 @@ def test_sql_and_python_event_rules_agree(buf):
         f"SELECT id FROM alerts WHERE {store._CRITICAL_EVENT}")}
     assert sql_events == {a.id for a in alerts if event_kind(a.payload)}
     assert sql_critical == {a.id for a in alerts if is_critical_event(a)}
+
+
+# T3's shared C1.5 vectors (the ESP32 replays the same file in its host tests), so the Pi and the
+# ESP32 can't drift. Lives on T3's paths; skipped when this checkout doesn't have it.
+_EVENT_VECTORS = (Path(__file__).resolve().parents[2]
+                  / "esp32-argus" / "test" / "vectors" / "event_vectors.json")
+_VECTOR_EXPECT = {"alert_medium": "medium", "alert_critical": "critical", "ok": "ok", "none": None}
+
+
+@pytest.mark.skipif(not _EVENT_VECTORS.is_file(), reason="esp32-argus event_vectors.json absent")
+def test_shared_event_vectors_match_python_and_sql(buf):
+    from cv_argus.buffer import store
+    cases = json.loads(_EVENT_VECTORS.read_text())["cases"]
+    assert cases
+    ids = {}
+    for case in cases:
+        payload = {"transition": case["transition"], "severity": case["severity"]}
+        if case["previous_severity"] is not None:              # null = absent
+            payload["previous_severity"] = case["previous_severity"]
+        expected = _VECTOR_EXPECT[case["expect"]]
+        assert event_kind(payload) == expected, case["name"]
+        alert = Alert.new(AlertKind.DROWSINESS, level=2, source_id="c", payload=payload)
+        assert is_critical_event(alert) == (expected == "critical"), case["name"]
+        buf.enqueue(alert)
+        ids[alert.id] = (case["name"], expected)
+    sql_events = {r[0] for r in buf._conn.execute(f"SELECT id FROM alerts WHERE {store._EVENT}")}
+    sql_critical = {r[0] for r in buf._conn.execute(
+        f"SELECT id FROM alerts WHERE {store._CRITICAL_EVENT}")}
+    for alert_id, (name, expected) in ids.items():
+        assert (alert_id in sql_events) == (expected is not None), name
+        assert (alert_id in sql_critical) == (expected == "critical"), name
 
 
 # --- buffer: FAIL rules (C1.6) --------------------------------------------------------------

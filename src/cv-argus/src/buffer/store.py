@@ -163,7 +163,7 @@ _CRITICAL_EVENT = (
 # Medium alert, critical alert, or driver OK (the recovery from medium/critical).
 _EVENT = (
     f"(kind = 'drowsiness' AND {_TRANSITION} AND ("
-    f"({_SEV} = 'medium' AND {_PREV} IN ('none', 'low'))"
+    f"({_SEV} = 'medium' AND {_PREV} NOT IN ('medium', 'critical'))"
     f" OR ({_SEV} = 'critical' AND {_PREV} != 'critical')"
     f" OR ({_SEV} IN ('none', 'low') AND {_PREV} IN ('medium', 'critical'))))"
 )
@@ -180,13 +180,17 @@ _DEFAULT_FETCH_LIMIT = 50
 def event_kind(payload: dict) -> str | None:
     """Contract C1.5 in Python: `"medium"`/`"critical"` for an alert record, `"ok"` for a driver
     OK (the recovery), `None` for anything that never reaches the backend (keepalives,
-    `none<->low`, `critical->medium`, class-only changes)."""
+    `none<->low`, `critical->medium`, class-only changes).
+
+    An unknown or missing `previous_severity` ranks as `none` (the ESP32's reading too: T3's
+    shared vectors, `esp32-argus/test/vectors/event_vectors.json`, replayed in
+    `tests/test_sender_dlq.py`)."""
     if payload.get("transition") is not True:
         return None
     sev = payload.get("severity")
     prev = payload.get("previous_severity") or "none"
     # Written exactly like the SQL predicates above, so both always agree.
-    if sev == "medium" and prev in ("none", "low"):
+    if sev == "medium" and prev not in ("medium", "critical"):
         return "medium"
     if sev == "critical" and prev != "critical":
         return "critical"
