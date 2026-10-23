@@ -218,4 +218,33 @@ describe('TravelManagement trips', () => {
     expect(screen.queryByRole('button', { name: 'Complete trip' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Stop route' })).not.toBeInTheDocument()
   })
+
+  it('Stop route / Complete trip are disabled while a Start trip is in flight', async () => {
+    seedSession('admin')
+    const routes = [route('r-1', 'scheduled')]
+    const inner = mockBackend(routes)
+    let release!: () => void
+    const held = new Promise<void>((r) => {
+      release = r
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (init?.method === 'PUT') await held
+        return inner(url, init)
+      }),
+    )
+    const user = userEvent.setup()
+    renderPage()
+
+    const stop = await screen.findByRole('button', { name: 'Stop route' })
+    expect(stop).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'Start trip' }))
+    expect(screen.getByRole('button', { name: 'Start trip' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Stop route' })).toBeDisabled()
+
+    release()
+    expect(await screen.findByRole('button', { name: 'Complete trip' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Stop route' })).toBeEnabled()
+  })
 })

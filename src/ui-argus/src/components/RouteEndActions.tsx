@@ -8,6 +8,18 @@ import type { Role, Route } from '../types'
 
 type Pending = 'complete' | 'stop' | null
 
+/** C3.6 `[sync 3]`: `POST /stop` and the status-changing `PUT` take the route lock and answer 503
+ * under contention. The text is pinned; the dialog stays open so the user just presses again. */
+export const ROUTE_BUSY_MESSAGE = 'Route is busy, try again'
+
+/** The message a failed Complete/Stop shows. A 503 always reads as the retryable "busy" text
+ * (whatever body a proxy or Lambda put on it); anything else shows the server's own message
+ * (e.g. 409 for a route that has already ended). */
+function endRouteError(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) return err.status === 503 ? ROUTE_BUSY_MESSAGE : err.message
+  return fallback
+}
+
 /**
  * "Complete trip" and "Stop route" for one route, each behind a confirmation dialog, used by
  * Routes (TravelManagement), Live operations and the route view.
@@ -19,6 +31,11 @@ type Pending = 'complete' | 'stop' | null
  *   `cancelled` ("Stopped"). It's also offered for a scheduled route.
  * - Either way the route's open incidents stay open, and the backend rejects everything the
  *   truck's device sends for this route from then on.
+ * - A 503 ("Route is busy, try again": the backend's per-route lock was held) keeps the dialog
+ *   open with that text, so pressing the button again retries. Nothing here ever reopens a route
+ *   (the backend answers 409) or sends `resolved_at`.
+ * - `disabled` greys both buttons out while the caller has another request for this list in
+ *   flight (TravelManagement's Start trip).
  */
 export default function RouteEndActions({
   route,
@@ -26,6 +43,7 @@ export default function RouteEndActions({
   token,
   onChanged,
   compact = false,
+  disabled = false,
 }: {
   route: Route
   role: Role
@@ -33,6 +51,8 @@ export default function RouteEndActions({
   onChanged: (route: Route) => void
   /** Small ghost buttons for table rows and lists. */
   compact?: boolean
+  /** Disable both buttons (another request on this route list is in flight). */
+  disabled?: boolean
 }) {
   const [pending, setPending] = useState<Pending>(null)
   if (!canEndRoutes(role) || !canStopRoute(route)) return null
@@ -51,6 +71,7 @@ export default function RouteEndActions({
           type="button"
           className={btnClass}
           style={btnStyle}
+          disabled={disabled}
           onClick={(e) => {
             e.stopPropagation()
             setPending('complete')
@@ -63,6 +84,7 @@ export default function RouteEndActions({
         type="button"
         className={compact ? btnClass : 'btn btn--danger'}
         style={btnStyle}
+        disabled={disabled}
         onClick={(e) => {
           e.stopPropagation()
           setPending('stop')
@@ -113,7 +135,7 @@ export function CompleteRouteDialog({
         ),
       )
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to complete the trip')
+      setError(endRouteError(err, 'Failed to complete the trip'))
       setBusy(false)
     }
   }
@@ -167,7 +189,7 @@ export function StopRouteDialog({
     try {
       onDone(await stopRoute(route.id_route, reason.trim(), token))
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to stop the route')
+      setError(endRouteError(err, 'Failed to stop the route'))
       setBusy(false)
     }
   }

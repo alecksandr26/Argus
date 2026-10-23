@@ -207,6 +207,7 @@ export default function TravelManagement() {
             token={token}
             onChanged={replaceRoute}
             compact
+            disabled={busyRoute !== null}
           />
         </div>
       )
