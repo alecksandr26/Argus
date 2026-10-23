@@ -61,7 +61,7 @@ struct FailReport {
   std::string body;
 };
 // At most this many ids per ACK/TAKEN line, so no line grows past a few hundred bytes.
-const int kIdsPerLine = 12;
+constexpr int kIdsPerLine = 12;
 std::vector<ScriptLine> buildReportScript(const std::vector<std::string>& acks,
                                           const std::vector<FailReport>& fails,
                                           const std::vector<std::string>& taken);

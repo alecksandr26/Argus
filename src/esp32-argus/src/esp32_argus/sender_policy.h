@@ -100,8 +100,8 @@ enum class AttemptEnd : uint8_t { Delivered, Rejected, Failed, Preempted };
 
 class SenderPolicy {
  public:
-  static const int kLiveSlots = SENDER_LIVE_SLOTS;
-  static const int kOutcomeSlots = SENDER_OUTCOME_SLOTS;
+  static constexpr int kLiveSlots = SENDER_LIVE_SLOTS;
+  static constexpr int kOutcomeSlots = SENDER_OUTCOME_SLOTS;
 
   explicit SenderPolicy(const SenderTiming& timing = SenderTiming());
 

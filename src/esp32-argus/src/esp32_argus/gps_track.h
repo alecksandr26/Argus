@@ -18,7 +18,7 @@
 // drops them (user decision: the path has gaps after failures), a preempted one puts them back.
 class TrackBuffer {
  public:
-  static const int kCapacity = REPORT_MAX_POINTS;
+  static constexpr int kCapacity = REPORT_MAX_POINTS;
 
   void add(const TrackPoint& point);  // the oldest is dropped when full
   int size() const { return count_; }
