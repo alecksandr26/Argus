@@ -115,9 +115,9 @@ async def test_list_alerts_filters_by_severity(api_client, root_admin, sample_tr
 
 
 @pytest.mark.asyncio
-async def test_panic_button_alert_has_no_ai_metadata_or_grip_status(
-    api_client, root_admin, sample_truck
-):
+async def test_creating_a_panic_button_alert_is_422(api_client, root_admin, sample_truck):
+    """The panic button is retired (docs/designs/final-tweaks-contracts.md, C2.4): old panic
+    rows stay readable (test_alert_resolution.py), new ones are refused."""
     headers = auth_headers(root_admin)
     route_id = await _make_route(api_client, headers, str(sample_truck.id))
 
@@ -133,17 +133,13 @@ async def test_panic_button_alert_has_no_ai_metadata_or_grip_status(
         },
         headers=headers,
     )
-    assert resp.status_code == 201
-    body = resp.json()
-    assert body["ai_metadata"] is None
-    assert body["grip_status"] is None
-    assert body["source"] == "panic_button"
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_fusion_alert_without_ai_metadata_is_rejected(api_client, root_admin, sample_truck):
-    """The two branches of validate_source_ai_metadata (app/models/alert.py): `fusion` requires
-    both ai_metadata and grip_status."""
+async def test_fusion_alert_without_ai_metadata_is_accepted(api_client, root_admin, sample_truck):
+    """`fusion` no longer requires ai_metadata/grip_status (C3.2): the ESP32 sends no grip
+    reading any more, and the Pi has no scores on a No Face reading."""
     headers = auth_headers(root_admin)
     route_id = await _make_route(api_client, headers, str(sample_truck.id))
 
@@ -159,7 +155,9 @@ async def test_fusion_alert_without_ai_metadata_is_rejected(api_client, root_adm
         },
         headers=headers,
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 201
+    assert resp.json()["ai_metadata"] is None
+    assert resp.json()["grip_status"] is None
 
 
 @pytest.mark.asyncio
@@ -256,7 +254,7 @@ async def test_device_key_can_resolve_but_not_review(api_client, root_admin, sam
         headers={"X-Device-Api-Key": device_key},
     )
     assert resolve_resp.status_code == 200
-    assert resolve_resp.json()["resolved_at"] is not None
+    assert resolve_resp.json()["driver_ok_at"] is not None
 
     review_resp = await api_client.put(
         f"/api/alerts/{alert_id}",

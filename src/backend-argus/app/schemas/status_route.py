@@ -7,8 +7,8 @@ from pydantic import BaseModel, Field
 
 from app.geo import Coordinates
 from app.schemas.common import UtcDatetime
-from app.schemas.ingestion import IngestionProvenance, LocationSource, TimeSource
-from app.models.common import Severity
+from app.schemas.ingestion import IngestionProvenance, LocationSource, StoredTimeSource
+from app.models.common import Vigilance
 
 
 class StatusRouteCreate(IngestionProvenance):
@@ -16,12 +16,13 @@ class StatusRouteCreate(IngestionProvenance):
     `POST /api/routes/{id}/status`. Coordinates/speed/odometer are required here, not optional
     — cv-argus never produces geolocation itself (see the backend CLAUDE.md's "Coordination
     note"); the ESP32 is expected to have already attached its own GPS reading by the time this
-    request is made."""
+    request is made. Legacy: new firmware sends points in `POST /api/devices/me/report`.
+    A body without `vigilance` stores `unknown`, never `low`."""
 
     current_coordinates: Coordinates
     current_speed: float = Field(ge=0, allow_inf_nan=False)
     odometer: float = Field(ge=0, allow_inf_nan=False)
-    vigilance: Severity = Severity.LOW
+    vigilance: Vigilance = Vigilance.UNKNOWN
 
 
 class StatusRouteOut(BaseModel):
@@ -30,9 +31,11 @@ class StatusRouteOut(BaseModel):
     current_coordinates: Coordinates
     current_speed: float
     odometer: float
-    vigilance: Severity
+    vigilance: Vigilance
+    location_is_last_known: bool
+    location_age_s: Optional[float]
     timestamp: UtcDatetime
     received_at: UtcDatetime
-    time_source: TimeSource
+    time_source: StoredTimeSource
     location_source: LocationSource
     location_accuracy_m: Optional[float]

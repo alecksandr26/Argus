@@ -110,12 +110,52 @@ _SEVERITY_RANK = {Severity.LOW: 0, Severity.MEDIUM: 1, Severity.CRITICAL: 2}
 
 
 class AlertSource(str, Enum):
-    """Which decision path produced an `Alert`. Every alert is either the ESP32's fused
-    drowsy+grip evaluation, or the panic button (unconditional `critical`, no debounce) — see
-    `src/esp32-argus/README.md`'s fusion section and `src/cv-argus/src/orchestrator/
-    fusion_contract.py`'s reference decision logic. `ai_metadata`/`grip_status` on `Alert` are
-    required together when `source == FUSION`, and both `None` when `source == PANIC_BUTTON`.
-    """
+    """Which decision path produced an `Alert`. Every new alert is `fusion`: the Pi's
+    drowsiness rules, relayed by the ESP32 (`POST /api/devices/me/report`). `panic_button` is
+    the retired panic button: old rows keep it and stay readable, but creating one is a 422
+    (docs/designs/final-tweaks-contracts.md, C2.4)."""
 
     FUSION = "fusion"
     PANIC_BUTTON = "panic_button"
+
+
+class Vigilance(str, Enum):
+    """`StatusRoute.vigilance`: the `Severity` scale plus `unknown` (no recent Pi reading on the
+    ESP32, or a legacy status post without the field). `unknown` is the default and never counts
+    as "OK" for clearing a route's `incident_state` (C3.5)."""
+
+    CRITICAL = "critical"
+    MEDIUM = "medium"
+    LOW = "low"
+    UNKNOWN = "unknown"
+
+
+class IncidentState(str, Enum):
+    """`Route.incident_state`: drives the map marker colour (C3.1, C3.5)."""
+
+    FINE = "fine"
+    MEDIUM = "medium"
+    CRITICAL = "critical"
+
+    @property
+    def rank(self) -> int:
+        return _INCIDENT_STATE_RANK[self]
+
+    @classmethod
+    def from_severity(cls, severity: "Severity") -> "IncidentState":
+        if severity == Severity.CRITICAL:
+            return cls.CRITICAL
+        if severity == Severity.MEDIUM:
+            return cls.MEDIUM
+        return cls.FINE
+
+
+_INCIDENT_STATE_RANK = {IncidentState.FINE: 0, IncidentState.MEDIUM: 1, IncidentState.CRITICAL: 2}
+
+
+class Delivery(str, Enum):
+    """How an alert reached the backend: `live`, or `dlq` = replayed from the Pi's dead-letter
+    queue after a lost connection ("recovered after lost connection" in the UI)."""
+
+    LIVE = "live"
+    DLQ = "dlq"

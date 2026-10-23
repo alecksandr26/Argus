@@ -13,6 +13,14 @@ from app.auth.dependencies import (
 )
 from app.geo import to_geojson
 from app.ids import get_by_id, get_or_404
+from app.incidents import (
+    FINISHED_ROUTE_STATUSES,
+    as_utc,
+    ingest_alert,
+    mark_driver_ok,
+    recompute_incident,
+    route_lock,
+)
 from app.ingestion import INGESTION_ROLES, authorize_route_access, authorize_route_write
 from app.models.alert import Alert
 from app.models.common import AlertSource, Role, Severity
@@ -26,6 +34,7 @@ router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
 # How much earlier than the alert's own timestamp a resolved_at may be (device and server
 # clocks disagree a little); anything earlier is a bad value, not clock skew (BE-11).
+# `resolved_at` is the legacy request field; it now sets the alert's `driver_ok_at`.
 RESOLVE_CLOCK_SKEW = timedelta(seconds=60)
 
 
@@ -50,29 +59,37 @@ async def _check_related_alert(body: AlertCreate) -> None:
         )
 
 
-async def _resolve(alert: Alert, resolved_at: datetime) -> None:
-    """Marks `alert` resolved, then every earlier alert its escalation chain links back to.
+async def _resolve(alert: Alert, resolved_at: datetime, *, is_device: bool) -> None:
+    """The legacy "driver recovered" (`resolved_at`): sets `driver_ok_at` on `alert` and on
+    every earlier alert its escalation chain links back to (BE-12). It never closes anything;
+    closing is `POST /api/incidents/{id}/close` (docs/designs/final-tweaks-contracts.md, C2.4).
 
-    Idempotent: an alert already resolved keeps its first `resolved_at` (BE-10), so a device
-    retrying a resolve it already delivered changes nothing. Only the newest row of an escalated
-    incident gets the device's resolve; the originals it escalated from are closed with it here
-    (BE-12), so no row of a recovered incident shows as ongoing."""
+    Idempotent: an alert that already has `driver_ok_at` keeps it (BE-10). A device gets 409 on
+    a finished route (the backend rejects everything from a device for an ended route); a user
+    (manual correction) doesn't."""
     if resolved_at.tzinfo is None:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "resolved_at must include a timezone (UTC)"
         )
-    if resolved_at < _as_utc(alert.timestamp) - RESOLVE_CLOCK_SKEW:
+    if resolved_at < as_utc(alert.timestamp) - RESOLVE_CLOCK_SKEW:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "resolved_at is earlier than the alert itself"
         )
-    seen: set[str] = set()
-    current: Optional[Alert] = alert
-    while current is not None and str(current.id) not in seen:
-        seen.add(str(current.id))
-        if current.resolved_at is None:
-            current.resolved_at = resolved_at
-            await current.save()
-        current = await get_by_id(Alert, current.related_alert_id)
+    route = await get_by_id(Route, alert.id_route)
+    if is_device and route is not None and route.operative_status in FINISHED_ROUTE_STATUSES:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Route is {route.operative_status.value}; the device should fetch its active route",
+        )
+    async with route_lock(alert.id_route):
+        chain: list[Alert] = []
+        seen: set[str] = set()
+        current: Optional[Alert] = await get_by_id(Alert, alert.id)
+        while current is not None and str(current.id) not in seen:
+            seen.add(str(current.id))
+            chain.append(current)
+            current = await get_by_id(Alert, current.related_alert_id)
+        await mark_driver_ok(chain, as_utc(resolved_at))
 
 
 @router.get("", response_model=list[AlertOut], dependencies=[Depends(get_current_user)])
@@ -81,6 +98,7 @@ async def list_alerts(
     source: Optional[AlertSource] = Query(default=None),
     reviewed: Optional[bool] = Query(default=None),
     route_id: Optional[str] = Query(default=None),
+    incident_id: Optional[str] = Query(default=None),
 ) -> list[AlertOut]:
     query: dict = {}
     if severity is not None:
@@ -91,6 +109,8 @@ async def list_alerts(
         query["reviewed_by_operator"] = reviewed
     if route_id is not None:
         query["id_route"] = route_id
+    if incident_id is not None:
+        query["id_incident"] = incident_id
     alerts = await Alert.find(query).sort(-Alert.timestamp).to_list()
     return [alert_out(a) for a in alerts]
 
@@ -107,11 +127,11 @@ async def create_alert(
     user: User | None = Depends(get_current_user_optional),
     device_key: str | None = Depends(get_device_api_key),
 ) -> AlertOut:
-    """Ingestion endpoint the ESP32 calls with a fused (or panic) alert, its own GPS reading
-    attached. See `status_routes.py`'s `post_status` for the identical device-or-user
-    authorization shape, and the backend CLAUDE.md's "Coordination note" for exactly what
-    cv-argus's envelope does/doesn't carry. A retry with the same `client_event_id` returns the
-    stored alert with 200 instead of a duplicate (BE-06)."""
+    """Legacy ingestion endpoint (old firmware/simulator; new ones send events in
+    `POST /api/devices/me/report`). `source: panic_button` is a 422 (the panic button is
+    retired). A medium/critical alert is grouped into an incident and raises the route's
+    incident state like a report event; a `low` one gets no incident. A retry with the same
+    `client_event_id` returns the stored alert with 200 instead of a duplicate (BE-06)."""
     route = await get_or_404(Route, body.id_route, "Route")
     await authorize_route_write(route, device_key, user)
 
@@ -124,24 +144,27 @@ async def create_alert(
             return alert_out(existing)
     await _check_related_alert(body)
 
-    alert = Alert(
-        id_route=body.id_route,
-        alert_type=body.alert_type,
-        severity_level=body.severity_level,
-        source=body.source,
-        ai_metadata=body.ai_metadata,
-        grip_status=body.grip_status,
-        related_alert_id=body.related_alert_id,
-        media_url=body.media_url,
-        coordinates=to_geojson(body.coordinates),
-        speed_at_event=body.speed_at_event,
-        timestamp=body.event_time(),
-        time_source=body.time_source,
-        location_source=body.location_source,
-        location_accuracy_m=body.location_accuracy_m,
-        client_event_id=body.client_event_id,
+    alert, created = await ingest_alert(
+        Alert(
+            id_route=body.id_route,
+            alert_type=body.alert_type,
+            severity_level=body.severity_level,
+            source=body.source,
+            ai_metadata=body.ai_metadata,
+            grip_status=body.grip_status,
+            related_alert_id=body.related_alert_id,
+            media_url=body.media_url,
+            coordinates=to_geojson(body.coordinates),
+            speed_at_event=body.speed_at_event,
+            timestamp=body.event_time(),
+            time_source=body.time_source,
+            location_source=body.location_source,
+            location_accuracy_m=body.location_accuracy_m,
+            client_event_id=body.client_event_id,
+        )
     )
-    await alert.insert()
+    if not created:
+        response.status_code = status.HTTP_200_OK
     return alert_out(alert)
 
 
@@ -152,11 +175,10 @@ async def review_alert(
     user: User | None = Depends(get_current_user_optional),
     device_key: str | None = Depends(get_device_api_key),
 ) -> AlertOut:
-    """A guardian/root_admin can set `reviewed_by_operator`/`operator_notes` (human review) and/
-    or `resolved_at`. A device key (the ESP32 marking a fused incident's recovery — see
-    `fusion_contract.py`'s recovery window) may set **only** `resolved_at`, never the reviewer
-    fields — see the backend CLAUDE.md's "Coordination note" for why the ESP32, not a human, is
-    what detects recovery."""
+    """A guardian/root_admin can set `reviewed_by_operator`/`operator_notes` (human review;
+    closing is `POST /api/incidents/{id}/close`). The legacy device "resolve" (`resolved_at`,
+    device key of the alert's own truck, never the reviewer fields) sets `driver_ok_at`, and is
+    409 on a finished route. A user's `resolved_at` sets it too, as a manual correction."""
     alert = await _get_or_404(alert_id)
     is_device = await _is_alerts_own_device(alert, device_key)
     is_privileged_user = user is not None and user.role in INGESTION_ROLES
@@ -181,14 +203,16 @@ async def review_alert(
             "Requires a root_admin/guardian token to review an alert",
         )
 
-    if body.reviewed_by_operator is not None:
-        alert.reviewed_by_operator = body.reviewed_by_operator
-    if body.operator_notes is not None:
-        alert.operator_notes = body.operator_notes
-    await alert.save()
     if body.resolved_at is not None:
-        await _resolve(alert, body.resolved_at)
-    return alert_out(alert)
+        await _resolve(alert, body.resolved_at, is_device=is_device)
+    review: dict = {}
+    if body.reviewed_by_operator is not None:
+        review["reviewed_by_operator"] = body.reviewed_by_operator
+    if body.operator_notes is not None:
+        review["operator_notes"] = body.operator_notes
+    if review:
+        await Alert.get_motor_collection().update_one({"_id": alert.id}, {"$set": review})
+    return alert_out(await _get_or_404(alert_id))
 
 
 async def _is_alerts_own_device(alert: Alert, device_key: Optional[str]) -> bool:
@@ -208,15 +232,16 @@ async def resolve_alert(
     user: User | None = Depends(get_current_user_optional),
     device_key: str | None = Depends(get_device_api_key),
 ) -> AlertOut:
-    """The device marking a fused incident recovered: a POST twin of `PUT`'s `resolved_at`,
-    since the SIM800L's HTTP stack can't send PUT (BE-09). Same callers as that path: the
-    alert's own truck's device key, or a root_admin/guardian."""
+    """The legacy device "driver recovered": a POST twin of `PUT`'s `resolved_at`, since the
+    SIM800L's HTTP stack can't send PUT (BE-09). Sets `driver_ok_at`; 409 for a device on a
+    finished route. Same callers as that path: the alert's own truck's device key, or a
+    root_admin/guardian."""
     alert = await _get_or_404(alert_id)
     route = await get_by_id(Route, alert.id_route)
     if route is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Alert's route not found")
-    await authorize_route_access(route, device_key, user)
-    await _resolve(alert, body.resolved_at)
+    is_device = await authorize_route_access(route, device_key, user)
+    await _resolve(alert, body.resolved_at, is_device=is_device)
     return alert_out(await _get_or_404(alert_id))
 
 
@@ -237,15 +262,19 @@ async def deescalate_alert(
             f"Can only de-escalate to a lower severity than '{alert.severity_level.value}'",
         )
 
-    if alert.original_severity_level is None:
-        alert.original_severity_level = alert.severity_level
-    alert.severity_level = body.severity_level
-    alert.deescalated_by = str(user.id)
-    alert.deescalated_at = datetime.now(timezone.utc)
-    alert.deescalation_reason = body.reason
-    alert.reviewed_by_operator = True
-    await alert.save()
-    return alert_out(alert)
+    fields = {
+        "original_severity_level": (alert.original_severity_level or alert.severity_level).value,
+        "severity_level": body.severity_level.value,
+        "deescalated_by": str(user.id),
+        "deescalated_at": datetime.now(timezone.utc),
+        "deescalation_reason": body.reason,
+        "reviewed_by_operator": True,
+    }
+    async with route_lock(alert.id_route):
+        await Alert.get_motor_collection().update_one({"_id": alert.id}, {"$set": fields})
+        if alert.id_incident:
+            await recompute_incident(alert.id_incident)
+    return alert_out(await _get_or_404(alert_id))
 
 
 @router.delete(
@@ -254,6 +283,10 @@ async def deescalate_alert(
     dependencies=[Depends(require_role(Role.ROOT_ADMIN))],
 )
 async def delete_alert(alert_id: str) -> Message:
+    """Its incident is recomputed (and deleted if this was its last alert)."""
     alert = await _get_or_404(alert_id)
-    await alert.delete()
+    async with route_lock(alert.id_route):
+        await alert.delete()
+        if alert.id_incident:
+            await recompute_incident(alert.id_incident)
     return Message(detail="Alert deleted")

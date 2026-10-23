@@ -1,13 +1,19 @@
-"""Resolving, reviewing and de-escalating alerts, from the device and from humans.
+"""The legacy device "resolve" (now: driver OK), reviewing and de-escalating alerts.
 
-The SIM800L's HTTP stack has no PUT, so the device needs a POST to resolve (BE-09). See
+The SIM800L's HTTP stack has no PUT, so the device needs a POST to resolve (BE-09). A device
+resolve now only sets `driver_ok_at`; closing is `POST /api/incidents/{id}/close` by a guardian
+or root_admin (docs/designs/final-tweaks-contracts.md, C2.4). See
 docs/designs/edge-cloud-scenarios.md for the scenario IDs.
 """
 from __future__ import annotations
 
 import pytest
 
-from tests.conftest import auth_headers, fusion_alert_body
+from app.geo import GeoJSONPoint
+from app.models.alert import Alert
+from app.models.common import AlertSource, RouteStatus, Severity
+from app.models.route import Route
+from tests.conftest import auth_headers, fusion_alert_body, make_rig
 
 
 async def _alert(api_client, rig, **overrides) -> dict:
@@ -22,7 +28,12 @@ async def _get(api_client, user, alert_id) -> dict:
     return (await api_client.get(f"/api/alerts/{alert_id}", headers=auth_headers(user))).json()
 
 
-async def test_post_resolve_by_device_key(api_client, root_admin, rig_a):
+async def _finish(route_id: str, state: RouteStatus) -> None:
+    route = await Route.get(route_id)
+    await route.set({"operative_status": state})
+
+
+async def test_post_resolve_by_device_key_sets_driver_ok_at(api_client, root_admin, rig_a):
     alert = await _alert(api_client, rig_a)
     resp = await api_client.post(
         f"/api/alerts/{alert['id_alert']}/resolve",
@@ -30,7 +41,63 @@ async def test_post_resolve_by_device_key(api_client, root_admin, rig_a):
         headers=rig_a.headers,
     )
     assert resp.status_code == 200
-    assert (await _get(api_client, root_admin, alert["id_alert"]))["resolved_at"] is not None
+    after = await _get(api_client, root_admin, alert["id_alert"])
+    assert after["driver_ok_at"] is not None
+    assert "resolved_at" not in after
+
+
+async def test_device_resolve_never_closes_the_alert_or_its_incident(api_client, root_admin, rig_a):
+    alert = await _alert(api_client, rig_a)
+    await api_client.post(
+        f"/api/alerts/{alert['id_alert']}/resolve",
+        json={"resolved_at": "2030-01-01T09:00:00Z"},
+        headers=rig_a.headers,
+    )
+    after = await _get(api_client, root_admin, alert["id_alert"])
+    incident = (
+        await api_client.get(
+            f"/api/incidents/{after['id_incident']}", headers=auth_headers(root_admin)
+        )
+    ).json()
+    assert after["closed_at"] is None
+    assert incident["closed_at"] is None
+    assert incident["driver_ok_at"] is not None
+
+
+@pytest.mark.parametrize("finished", [RouteStatus.COMPLETED, RouteStatus.CANCELLED])
+async def test_device_post_resolve_on_finished_route_is_409(api_client, rig_a, finished):
+    alert = await _alert(api_client, rig_a)
+    await _finish(rig_a.route_id, finished)
+    resp = await api_client.post(
+        f"/api/alerts/{alert['id_alert']}/resolve",
+        json={"resolved_at": "2030-01-01T09:00:00Z"},
+        headers=rig_a.headers,
+    )
+    assert resp.status_code == 409
+
+
+async def test_device_put_resolved_at_on_finished_route_is_409(api_client, root_admin, rig_a):
+    alert = await _alert(api_client, rig_a)
+    await _finish(rig_a.route_id, RouteStatus.CANCELLED)
+    resp = await api_client.put(
+        f"/api/alerts/{alert['id_alert']}",
+        json={"resolved_at": "2030-01-01T09:00:00Z"},
+        headers=rig_a.headers,
+    )
+    assert resp.status_code == 409
+    assert (await _get(api_client, root_admin, alert["id_alert"]))["driver_ok_at"] is None
+
+
+async def test_guardian_review_on_finished_route_is_allowed(api_client, guardian, rig_a):
+    alert = await _alert(api_client, rig_a)
+    await _finish(rig_a.route_id, RouteStatus.COMPLETED)
+    resp = await api_client.put(
+        f"/api/alerts/{alert['id_alert']}",
+        json={"operator_notes": "called the driver"},
+        headers=auth_headers(guardian),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["operator_notes"] == "called the driver"
 
 
 async def test_post_resolve_with_other_trucks_key_is_401(api_client, rig_a, rig_b):
@@ -53,15 +120,15 @@ async def test_post_resolve_unknown_alert_is_404(api_client, rig_a):
     assert resp.json()["detail"] == "Alert not found"  # not a missing endpoint
 
 
-async def test_resolve_twice_keeps_first_resolved_at(api_client, root_admin, rig_a):
+async def test_resolve_twice_keeps_first_driver_ok_at(api_client, root_admin, rig_a):
     alert = await _alert(api_client, rig_a)
     for when in ("2030-01-01T09:00:00Z", "2030-01-01T10:00:00Z"):
         resp = await api_client.put(
             f"/api/alerts/{alert['id_alert']}", json={"resolved_at": when}, headers=rig_a.headers
         )
         assert resp.status_code == 200
-    resolved = (await _get(api_client, root_admin, alert["id_alert"]))["resolved_at"]
-    assert resolved.startswith("2030-01-01T09:00:00")
+    driver_ok_at = (await _get(api_client, root_admin, alert["id_alert"]))["driver_ok_at"]
+    assert driver_ok_at.startswith("2030-01-01T09:00:00")
 
 
 async def test_resolved_at_before_alert_timestamp_is_422(api_client, rig_a):
@@ -84,7 +151,7 @@ async def test_naive_resolved_at_is_422(api_client, rig_a):
     assert resp.status_code == 422
 
 
-async def test_resolving_escalation_closes_linked_original(api_client, root_admin, rig_a):
+async def test_resolving_escalation_marks_linked_original(api_client, root_admin, rig_a):
     original = await _alert(api_client, rig_a, severity_level="medium", grip_status="good")
     escalation = await _alert(api_client, rig_a, related_alert_id=original["id_alert"])
     await api_client.put(
@@ -92,7 +159,7 @@ async def test_resolving_escalation_closes_linked_original(api_client, root_admi
         json={"resolved_at": "2030-01-01T09:00:00Z"},
         headers=rig_a.headers,
     )
-    assert (await _get(api_client, root_admin, original["id_alert"]))["resolved_at"] is not None
+    assert (await _get(api_client, root_admin, original["id_alert"]))["driver_ok_at"] is not None
 
 
 async def test_device_cannot_set_review_fields(api_client, rig_a):
@@ -121,10 +188,25 @@ async def test_deescalate_then_resolve(api_client, guardian, root_admin, rig_a):
     assert (de.status_code, res.status_code) == (200, 200)
     assert after["severity_level"] == "medium"
     assert after["original_severity_level"] == "critical"
-    assert after["resolved_at"] is not None
+    assert after["driver_ok_at"] is not None
 
 
-async def test_resolve_then_deescalate_keeps_resolution(api_client, guardian, root_admin, rig_a):
+async def test_deescalate_recomputes_the_incident_severity(api_client, guardian, root_admin, rig_a):
+    alert = await _alert(api_client, rig_a)
+    await api_client.post(
+        f"/api/alerts/{alert['id_alert']}/de-escalate",
+        json={"severity_level": "medium", "reason": "called the driver"},
+        headers=auth_headers(guardian),
+    )
+    incident = (
+        await api_client.get(
+            f"/api/incidents/{alert['id_incident']}", headers=auth_headers(root_admin)
+        )
+    ).json()
+    assert incident["severity"] == "medium"
+
+
+async def test_resolve_then_deescalate_keeps_driver_ok(api_client, guardian, root_admin, rig_a):
     alert = await _alert(api_client, rig_a)
     await api_client.put(
         f"/api/alerts/{alert['id_alert']}",
@@ -138,23 +220,33 @@ async def test_resolve_then_deescalate_keeps_resolution(api_client, guardian, ro
     )
     after = await _get(api_client, root_admin, alert["id_alert"])
     assert de.status_code == 200
-    assert after["resolved_at"] is not None
+    assert after["driver_ok_at"] is not None
 
 
-async def test_panic_alert_can_be_resolved_by_guardian(api_client, guardian, root_admin, rig_a):
-    """PAN-05: a panic alert never gets a device-side resolve, so a human must be able to."""
-    alert = await _alert(
-        api_client,
-        rig_a,
-        alert_type="panic_button",
-        source="panic_button",
-        ai_metadata=None,
-        grip_status=None,
+async def test_old_panic_alert_is_still_readable(api_client, root_admin, rig_a):
+    """The panic button is retired: creating a panic alert is a 422 (test_alerts.py), but rows
+    stored before stay readable."""
+    stored = Alert(
+        id_route=rig_a.route_id,
+        alert_type="Panic button pressed",
+        severity_level=Severity.CRITICAL,
+        source=AlertSource.PANIC_BUTTON,
+        coordinates=GeoJSONPoint(coordinates=(-103.3, 20.6)),
+        speed_at_event=80.0,
     )
-    resp = await api_client.put(
-        f"/api/alerts/{alert['id_alert']}",
-        json={"resolved_at": "2030-01-01T09:00:00Z", "reviewed_by_operator": True},
-        headers=auth_headers(guardian),
+    await stored.insert()
+    listed = await api_client.get(
+        "/api/alerts", params={"source": "panic_button"}, headers=auth_headers(root_admin)
     )
-    assert resp.status_code == 200
-    assert (await _get(api_client, root_admin, alert["id_alert"]))["resolved_at"] is not None
+    one = await _get(api_client, root_admin, str(stored.id))
+    assert [a["id_alert"] for a in listed.json()] == [str(stored.id)]
+    assert one["source"] == "panic_button"
+    assert one["id_incident"] is None
+
+
+async def test_legacy_low_alert_gets_no_incident(api_client, root_admin, mongo_client):
+    rig = await make_rig("LOW-1")
+    alert = await _alert(api_client, rig, severity_level="low")
+    route = (await api_client.get(f"/api/routes/{rig.route_id}", headers=auth_headers(root_admin))).json()
+    assert alert["id_incident"] is None
+    assert route["incident_state"] == "fine"

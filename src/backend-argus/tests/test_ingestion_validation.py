@@ -159,11 +159,23 @@ async def test_status_unknown_vigilance_is_422(api_client, rig_a):
     assert resp.status_code == 422
 
 
-async def test_fusion_alert_without_grip_status_is_422(api_client, rig_a):
+async def test_status_vigilance_unknown_is_accepted(api_client, rig_a):
+    resp = await api_client.post(
+        f"/api/routes/{rig_a.route_id}/status",
+        json=status_body(vigilance="unknown"),
+        headers=rig_a.headers,
+    )
+    assert resp.status_code == 201
+    assert resp.json()["vigilance"] == "unknown"
+
+
+async def test_fusion_alert_without_grip_status_is_accepted(api_client, rig_a):
+    """The ESP32 no longer sends a grip reading (C3.2: `grip_status` is null on new alerts)."""
     body = fusion_alert_body(rig_a.route_id)
     del body["grip_status"]
     resp = await api_client.post("/api/alerts", json=body, headers=rig_a.headers)
-    assert resp.status_code == 422
+    assert resp.status_code == 201
+    assert resp.json()["grip_status"] is None
 
 
 async def _post_alert(api_client, rig, **overrides) -> dict:

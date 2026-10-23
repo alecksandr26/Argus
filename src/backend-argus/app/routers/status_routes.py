@@ -9,6 +9,7 @@ from app.ingestion import authorize_route_write
 from app.models.route import Route
 from app.models.status_route import StatusRoute
 from app.models.user import User
+from app.report import store_points
 from app.schemas.status_route import StatusRouteCreate, StatusRouteOut
 from app.serializers import status_route_out
 
@@ -42,10 +43,11 @@ async def post_status(
     user: User | None = Depends(get_current_user_optional),
     device_key: str | None = Depends(get_device_api_key),
 ) -> StatusRouteOut:
-    """Ingestion endpoint the ESP32 calls after polling a `route_status` record off the Pi's
-    Bluetooth buffer and attaching its own GPS reading. Also accepts a root_admin/guardian JWT
-    for manual testing/demo seeding without real hardware. A retry with the same
-    `client_event_id` returns the stored row with 200 instead of a duplicate."""
+    """Legacy ingestion endpoint (old firmware/simulator; new ones send points in
+    `POST /api/devices/me/report`). Also accepts a root_admin/guardian JWT for manual testing.
+    A retry with the same `client_event_id`, or a point at a time already stored for this
+    route, returns the stored row with 200 instead of a duplicate. No `vigilance` stores
+    `unknown`. Stored points update the route's incident state like report points."""
     route = await get_or_404(Route, route_id, "Route")
     await authorize_route_write(route, device_key, user)
 
@@ -70,5 +72,11 @@ async def post_status(
         location_accuracy_m=body.location_accuracy_m,
         client_event_id=body.client_event_id,
     )
-    await record.insert()
+    if not await store_points(route_id, [record]):
+        existing = await StatusRoute.find_one(
+            StatusRoute.id_route == route_id, StatusRoute.timestamp == record.timestamp
+        )
+        if existing is not None:
+            response.status_code = status.HTTP_200_OK
+            return status_route_out(existing)
     return status_route_out(record)

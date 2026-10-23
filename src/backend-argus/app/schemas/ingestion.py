@@ -19,6 +19,8 @@ MAX_FUTURE_SKEW = timedelta(minutes=5)
 MAX_EVENT_AGE = timedelta(days=7)
 
 TimeSource = Literal["gps", "network", "server"]
+# What a stored record may say; "relative" = computed from a report's `age_s` (never sent).
+StoredTimeSource = Literal["gps", "network", "server", "relative"]
 LocationSource = Literal["gps", "cell"]
 
 
