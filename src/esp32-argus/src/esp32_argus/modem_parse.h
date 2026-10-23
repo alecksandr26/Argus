@@ -52,4 +52,5 @@ LateAction lateActionVerdict(bool resultArrived, bool preempted, uint32_t sinceF
 
 // The next wait for that result: at most chunkMs, keeping reserveMs of the attempt for the
 // request itself; 0 = no more waiting.
-uint32_t lateActionChunkMs(uint32_t attemptLeftMs, uint32_t chunkMs = 500, uint32_t reserveMs = 1000);
+uint32_t lateActionChunkMs(uint32_t attemptLeftMs, uint32_t chunkMs = 500,
+                           uint32_t reserveMs = 1000);
