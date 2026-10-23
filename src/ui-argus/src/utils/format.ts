@@ -62,6 +62,15 @@ export function clock(iso: string | null, now: Date = new Date()): string {
   return `${shortDate(iso)} ${clockFmt.format(d)}`
 }
 
+/** "14:32" in Mexico City time, always without a day prefix — for something that just happened
+ * (the "Incident closed · Closed 14:32" confirmation), where `clock`'s "Yesterday"/date prefix
+ * would only appear across midnight or a clock skew and break the `Closed HH:MM` hook (C3.7).
+ * Accepts millisecond (or longer) ISO fractions like `clock`. */
+export function timeOfDay(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? '—' : clockFmt.format(d)
+}
+
 const dateFmt = new Intl.DateTimeFormat('en-US', {
   timeZone: MEXICO_TZ,
   day: '2-digit',

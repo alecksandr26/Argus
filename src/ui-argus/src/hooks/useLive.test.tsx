@@ -216,6 +216,52 @@ describe('useLive', () => {
     expect(fetchMock.mock.calls.filter(([u]) => String(u).includes('/track'))).toHaveLength(1)
   })
 
+  it('millisecond point times (C3.3 [sync 3]): the overlap re-send dedups, same-second points both stay', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const ms = (s: string) => `2026-10-23T12:00:${s}Z`
+    let livePolls = 0
+    const fetchMock = vi.fn(async (u: string) => {
+      const parsed = new URL(u)
+      if (parsed.pathname === '/api/routes/r-1/track') {
+        return ok({ id_route: 'r-1', downsampled: false, points: [makePoint({ t: ms('01.120') })] })
+      }
+      livePolls += 1
+      return ok(
+        livePolls === 1
+          ? makeLive({
+              server_time: ms('05.731'),
+              track: [makePoint({ t: ms('01.120') }), makePoint({ t: ms('01.870') })],
+            })
+          : makeLive({
+              server_time: ms('10.402'),
+              // LIVE_SINCE_OVERLAP re-sends the last points, one written with microseconds.
+              track: [
+                makePoint({ t: ms('01.870000') }),
+                makePoint({ t: ms('06.004') }),
+                makePoint({ t: ms('06.500') }),
+              ],
+            }),
+      )
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() => useLive('tok', 'r-1'))
+    await waitFor(() => expect(result.current.live.track['r-1']).toHaveLength(2))
+    await act(async () => {
+      vi.advanceTimersByTime(UI_POLL_MS)
+    })
+    await waitFor(() =>
+      expect(result.current.live.track['r-1'].map((p) => p.t)).toEqual([
+        ms('01.120'),
+        ms('01.870'),
+        ms('06.004'),
+        ms('06.500'),
+      ]),
+    )
+    // The cursor is passed back exactly as the server wrote it, milliseconds included.
+    expect(liveUrls(fetchMock)[1].searchParams.get('since')).toBe(ms('05.731'))
+  })
+
   it('route view: a failed seed is retried on the next poll', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     let trackCalls = 0

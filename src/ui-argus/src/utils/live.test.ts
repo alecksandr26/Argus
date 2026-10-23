@@ -46,6 +46,25 @@ describe('appendTrack', () => {
   it('skips a point with an unparseable time', () => {
     expect(appendTrack([], [makePoint({ t: 'garbage' })])).toEqual([])
   })
+
+  it('millisecond timestamps (C3.3 [sync 3]): distinct ms are distinct points, equal instants dedup', () => {
+    const out = appendTrack(
+      [makePoint({ t: '2026-10-23T12:00:00.250Z' })],
+      [
+        // The /api/live overlap re-sends the same point, written with more digits.
+        makePoint({ t: '2026-10-23T12:00:00.250000Z' }),
+        makePoint({ t: '2026-10-23T12:00:00.250+00:00' }),
+        // Same second, different ms: two real points (the backend no longer rounds to the second).
+        makePoint({ t: '2026-10-23T12:00:00.900Z' }),
+        makePoint({ t: '2026-10-23T12:00:00.100Z' }),
+      ],
+    )
+    expect(ts(out)).toEqual([
+      '2026-10-23T12:00:00.100Z',
+      '2026-10-23T12:00:00.250Z',
+      '2026-10-23T12:00:00.900Z',
+    ])
+  })
 })
 
 describe('mergeLive', () => {

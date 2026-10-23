@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest'
-import { relativeTime, clock, shortDate, pct, daysUntil, durationShort, coords } from './format'
+import {
+  relativeTime,
+  clock,
+  shortDate,
+  pct,
+  daysUntil,
+  durationShort,
+  coords,
+  timeOfDay,
+} from './format'
 
 const NOW = new Date('2026-08-24T12:00:00.000Z')
 
@@ -59,6 +68,26 @@ describe('clock', () => {
     // implementation (e.g. comparing raw UTC or the test runner's own local timezone) would
     // wrongly treat this as a different, older day instead of "today, 23:00".
     expect(clock('2026-08-25T05:00:00.000Z', NOW)).toBe('23:00')
+  })
+})
+
+describe('millisecond timestamps (C3.3 [sync 3])', () => {
+  it('clock and relativeTime read HH:MM:SS.mmmZ and longer fractions', () => {
+    expect(clock('2026-08-24T06:30:07.481Z', NOW)).toBe('00:30')
+    expect(clock('2026-08-24T06:30:07.481123Z', NOW)).toBe('00:30')
+    expect(relativeTime('2026-08-24T11:59:40.999Z', NOW)).toBe('19s ago')
+  })
+})
+
+describe('timeOfDay', () => {
+  it('is always a bare Mexico City HH:MM, even for another day', () => {
+    expect(timeOfDay('2026-08-24T06:30:07.481Z')).toBe('00:30')
+    expect(timeOfDay('2026-08-20T22:00:00.000Z')).toBe('16:00')
+    expect(timeOfDay('2026-08-24T20:32:00Z')).toMatch(/^\d{1,2}:\d{2}$/)
+  })
+
+  it('renders "—" for an unparseable time', () => {
+    expect(timeOfDay('garbage')).toBe('—')
   })
 })
 
