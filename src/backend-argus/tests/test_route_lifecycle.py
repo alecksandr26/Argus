@@ -123,6 +123,49 @@ async def test_explicit_actual_times_win(api_client, root_admin, mongo_client):
     assert resp.json()["actual_departure"].startswith("2030-01-01T08:00:00")
 
 
+@pytest.mark.parametrize("finished", [RouteStatus.COMPLETED, RouteStatus.CANCELLED])
+@pytest.mark.parametrize("target", ["in_progress", "in_progress_alert", "scheduled"])
+async def test_finished_route_cannot_be_reopened(api_client, root_admin, mongo_client, finished, target):
+    """C3.1 [sync 2]: reopening would leave the old actual_arrival in place, so every new device
+    event would match no route. Create a new route instead."""
+    rig = await make_rig(f"REOPEN-{finished.value}-{target}", route_status=finished)
+    before = await Route.get(rig.route_id)
+    resp = await api_client.put(
+        f"/api/routes/{rig.route_id}",
+        json={"operative_status": target},
+        headers=auth_headers(root_admin),
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "A finished route can't be restarted; create a new route"
+    after = await Route.get(rig.route_id)
+    assert after.operative_status == finished
+    assert after.actual_arrival == before.actual_arrival
+
+
+async def test_completed_route_cannot_become_cancelled(api_client, root_admin, mongo_client):
+    rig = await make_rig("REOPEN-X", route_status=RouteStatus.COMPLETED)
+    resp = await api_client.put(
+        f"/api/routes/{rig.route_id}",
+        json={"operative_status": "cancelled"},
+        headers=auth_headers(root_admin),
+    )
+    assert resp.status_code == 409
+
+
+@pytest.mark.parametrize("finished", [RouteStatus.COMPLETED, RouteStatus.CANCELLED])
+async def test_finished_route_other_edits_still_work(api_client, root_admin, mongo_client, finished):
+    rig = await make_rig(f"EDIT-{finished.value}", route_status=finished)
+    resp = await api_client.put(
+        f"/api/routes/{rig.route_id}",
+        # Re-sending the same status is not a change.
+        json={"origin_name": "Tepic", "operative_status": finished.value},
+        headers=auth_headers(root_admin),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["origin_name"] == "Tepic"
+    assert resp.json()["operative_status"] == finished.value
+
+
 async def test_route_put_does_not_overwrite_incident_state(api_client, root_admin, rig_a):
     await post_report(api_client, rig_a, event=report_event(age_s=5))
     resp = await api_client.put(

@@ -128,22 +128,38 @@ async def update_route(route_id: str, body: RouteUpdate) -> RouteOut:
     """Edits only the fields sent, as a `$set` (so it can't overwrite the incident state the
     ingest path keeps on the same document). "Start trip" (-> `in_progress`) sets
     `actual_departure = now` if it's still empty; "Complete trip" (-> `completed`) sets
-    `actual_arrival = now` likewise (C3.1)."""
+    `actual_arrival = now` likewise (C3.1).
+
+    A finished (`completed`/`cancelled`) route can't be reopened: changing its
+    `operative_status` is 409 (C3.1 [sync 2]); its other fields stay editable. A status change
+    runs under the route's lock, so it serializes with the device writes that re-check the
+    status under that lock (C2.2)."""
     route = await _get_or_404(route_id)
     data = body.model_dump(exclude_unset=True)
     await _check_refs(data.get("id_truck"), data.get("id_driver"))
     if "destination_coordinates" in data:
         data["destination_coordinates"] = to_geojson(body.destination_coordinates).model_dump()
-    new_status = data.get("operative_status")
-    now = utcnow()
-    if new_status in _ACTIVE_STATUSES and route.actual_departure is None:
-        data.setdefault("actual_departure", now)
-    if new_status == RouteStatus.COMPLETED and route.actual_arrival is None:
-        data.setdefault("actual_arrival", now)
     if not data:
         return route_out(route)
-    data["updated_at"] = now
-    await route.set(data)
+    if "operative_status" not in data:
+        data["updated_at"] = utcnow()
+        await route.set(data)
+        return route_out(await _get_or_404(route_id))
+
+    async with route_lock(route_id):
+        route = await _get_or_404(route_id)
+        new_status = data["operative_status"]
+        if route.operative_status in FINISHED_ROUTE_STATUSES and new_status != route.operative_status:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "A finished route can't be restarted; create a new route"
+            )
+        now = utcnow()
+        if new_status in _ACTIVE_STATUSES and route.actual_departure is None:
+            data.setdefault("actual_departure", now)
+        if new_status == RouteStatus.COMPLETED and route.actual_arrival is None:
+            data.setdefault("actual_arrival", now)
+        data["updated_at"] = now
+        await route.set(data)
     return route_out(await _get_or_404(route_id))
 
 
