@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../api/client'
+import { SIMULATOR_POLL_MS } from '../constants'
 import {
   getSimulatorStatus,
   startSimulator,
@@ -17,7 +18,7 @@ import type { Badge } from '../utils/status'
  * the backend 403s every other role anyway.
  */
 
-const POLL_MS = 10000
+const POLL_MS = SIMULATOR_POLL_MS
 
 const stateBadge: Record<SimulatorStatus['state'], Badge> = {
   stopped: { label: 'Off', tone: 'neutral' },

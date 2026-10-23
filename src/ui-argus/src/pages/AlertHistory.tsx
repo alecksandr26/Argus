@@ -12,9 +12,10 @@ import { listTrucks } from '../api/trucks'
 import { ApiError } from '../api/client'
 import { clock, relativeTime, shortDate } from '../utils/format'
 import { severity } from '../utils/status'
+import { ALERT_HISTORY_POLL_MS } from '../constants'
 import type { Alert, AlertSeverity, Driver, Route, Truck } from '../types'
 
-const POLL_MS = 7000
+const POLL_MS = ALERT_HISTORY_POLL_MS
 
 // No "Low" chip — see LiveOps.tsx's FILTERS comment: a real Alert row is never actually
 // severity_level "low" in practice.
