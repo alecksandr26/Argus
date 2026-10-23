@@ -36,6 +36,11 @@ deadline per request; C3.4 `closed_by` is `null` for migration closures; C3.6 st
 pinned, 503 on stop/complete; C3.7 UI test hooks (close confirmation, tier regions); C4 notebook-only
 constants note.
 
+**Sync 4 amendments** (after build round 3, the last one; marked `[sync 4]` below): no interface
+change. C4's `EYE_LABEL_MAX_FRAC` row names both notebook copies (notebook 12 cell 21 and its
+verbatim copy in notebook 14 cell 10). The sync 3 ownership items for T3 (`src/tests/smoke_cv_argus.py`
+on protocol v2, `gdown` in `src/tests/requirements.txt`) stand unchanged and are still open.
+
 Conventions used throughout:
 - Times on the wire between devices are **relative** (`age_s`, seconds, float, >= 0). Only the
   backend turns them into absolute times, with its own clock.
@@ -1035,7 +1040,7 @@ Position label: `position_unknown` -> "Position unknown"; `location_is_last_know
 | `SIMULATOR_REPORT_INTERVAL_S` | 5 | `simulator-argus` (T6) | mirrors `REPORT_INTERVAL_MS` |
 | `SIMULATOR_NORMAL_BLIP_CHANCE` | 0.5 | `simulator-argus` (T6) | `[sync 3]` per-route chance of one head_down medium blip on a `normal` route |
 | `SIMULATOR_MEDIUM_BLIP_PROBABILITY` | — | retired (T6) | `[sync 3]` read, ignored, logged as a warning; **not** aliased (a per-5 s rate has no per-route meaning) |
-| `EYE_LABEL_MAX_FRAC` | 0.30 | notebook 12 cell 21 (T2) | `[sync 3]` training-only label cleaning; must equal `PARTS_EYE_MAX_FRAC` |
+| `EYE_LABEL_MAX_FRAC` | 0.30 | notebook 12 tf.data cell (cell 21), copied verbatim into notebook 14 cell 10 (T2) | `[sync 3]` training-only label cleaning; must equal `PARTS_EYE_MAX_FRAC`; `[sync 4]` both notebook copies must stay equal |
 
 `[sync 3]` Notebook 12's other augmentation constants (`CLOSEUP_EYE_SIDE`, `CLOSEUP_MOUTH_SIDE`,
 the `CLOSEUP_*` centre bands, `ZOOM_OUT_P`, `ZOOM_OUT_SCALE`, `BG_NOISE_STD`) are notebook-internal
