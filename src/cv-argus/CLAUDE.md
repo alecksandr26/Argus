@@ -113,8 +113,8 @@ face; `FaceLock` decides which one is the driver's:
      the frame is flagged `reacquired`.
   2. Only bystanders visible: no face, and the **switch timer** runs. On the switch frame (timer
      `>= FACE_SWITCH_AFTER_S` = 5 s, on the rule engine's frame timestamps) the frame still reads
-     no face and is flagged `face_switched`. The lock moves to the largest bystander from the
-     next frame.
+     no face and is flagged `face_switched`. The lock moves to the largest face in view (all of
+     them bystanders by then), used from the next frame.
   3. Nothing visible: no face. The switch timer resets only when **no bystander is still inside
      its 1 s grace**. While one is, the timer keeps running, so a one-frame passenger miss doesn't
      restart the 5 s, and the switch waits for a frame with a face to move to.
@@ -122,7 +122,9 @@ face; `FaceLock` decides which one is the driver's:
   in view for 5 s next to the locked face, takes the lock. This is the driver taking it back from
   a passenger, including when the passenger was alone at boot. "In view" allows gaps of either
   face up to the 1 s grace; the timer runs from the larger face's first sighting and fires only on
-  a frame where both faces are visible. A smaller second face is ignored.
+  a frame where both faces are visible. The take-over frame still reads the old locked face and
+  is flagged `face_switched`; the new face is used from the next frame. A smaller second face is
+  ignored.
 - On a switch or take-over frame, `PartsInferenceStage` feeds the frame to the rules first, then
   calls `PartsRuleEngine.reset_signals()` and resets `PartsTracker`. The held severity is never
   reset (see the rules below).
@@ -535,9 +537,13 @@ four newer packages.
   and cv2).
 - `parts_tracker.py`: `PartsTracker`, a greedy per-kind IoU tracker with stable `E1`/`M1`/`H1`
   IDs. Tracks survive `PARTS_TRACK_MAX_MISSES` frames, and each track's state is a 3-frame vote
-  (with the head-down exception above).
+  (with the head-down exception above). `reset()` drops every track and restarts the IDs;
+  `PartsInferenceStage` calls it on a face switch, so the old face's eyes don't carry over.
 - `detector.py`: `DetectionResult` (level, probabilities, `extras`).
-- `downloader.py`: the gdown fetches above.
+- `downloader.py`: the gdown fetches above. `model/__init__.py` re-exports
+  `download_parts_int8_model` / `download_parts_float_model` **lazily** (a module
+  `__getattr__`), so `from cv_argus.model import DetectionResult` (the rule engine needs it)
+  doesn't import `gdown`. `tests/test_model_package_lazy.py` guards that.
 
 There's no `mediapipe` import anywhere under `model/`. That boundary is deliberate:
 `pipeline/` turns MediaPipe output into plain numbers (`face_bbox_raw`).
@@ -588,7 +594,7 @@ before each was replaced, and the parts pipeline reuses it unchanged:
   `FaceLock` picks the driver's (see "One face" in "Current status"). It publishes
   `face_bbox_raw` (the raw box `PartsInferenceStage` builds the square training crop from),
   `face_bbox` (margin-expanded, for the overlay), `face_lock` (`{faces, ignored, switch_s,
-  takeover_s, switched, reacquired}`), `face_switched` on a switch frame, and
+  takeover_s, switched, reacquired}`), `face_switched` on a switch or take-over frame, and
   `timing_ms["face"]`.
 - **`parts_stages.py`** — `PartsInferenceStage`: crop → detect → remap → track → rules in one
   stage, writing `ctx.detection`, `ctx.features["parts"]` and `ctx.features["timing_ms"]`.
@@ -1011,8 +1017,11 @@ drive.
 ## Tests
 
 `tests/` is a `pytest` suite mirroring `src/` (`test_model_*`, `test_pipeline_*`,
-`test_main.py`, `test_constants.py`) — about 540 tests as of 2026-10-23 (one skips when
-`src/esp32-argus/test/vectors/event_vectors.json` isn't in the checkout). Run it with `pytest` from
+`test_alerts_*`, `test_buffer_*`, `test_orchestrator_*`, `test_sender_*`, `test_main.py`,
+`test_constants.py`) — roughly 600 tests once the final-tweaks branches are merged (the face
+lock and eye-box filter added about 55 of them); `pytest` prints the current count. One skips
+when `src/esp32-argus/test/vectors/event_vectors.json` isn't in the checkout, and the Docker
+build test is deselected by default (below). Run it with `pytest` from
 `src/cv-argus/` after `pip install -e .`. Config lives in `pyproject.toml`'s
 `[tool.pytest.ini_options]`. **`pytest` itself is deliberately not in `requirements.txt`** —
 that file is the exact, pinned dependency list this image ships to the Pi, and a test runner has

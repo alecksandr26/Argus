@@ -352,7 +352,8 @@ for the head) doesn't reset a timer.
 - Other faces seen next to it are **bystanders** and are ignored. They're remembered for 1 s
   after they leave the frame, so a one-frame detector miss doesn't confuse them with a new face.
 - If the driver's face disappears and only a bystander is left, it reads as no face. That raises
-  the no-face CRITICAL at 5 s, and at 5 s the lock moves to the bystander. A new face that
+  the no-face CRITICAL at 5 s, and at 5 s the lock moves to the largest face left (used from
+  the next frame). A new face that
   matches no bystander (typically the driver coming back, or the box jumping) takes the lock at
   once.
 - A face at least 1.25x bigger than the locked one, next to it for 5 s, takes the lock. This is
@@ -588,7 +589,7 @@ stop the container instead.
 cd src/cv-argus
 pip install -e .          # once -- maps src/ to the cv_argus import name (see setup.py)
 pip install pytest        # not in requirements.txt on purpose -- see CLAUDE.md's "Tests"
-pytest                    # the full unit suite (about 540 tests)
+pytest                    # the full unit suite (roughly 600 tests; pytest prints the count)
 ```
 
 The default run is **hermetic** — no network, no camera, no Google Drive, no model download.
