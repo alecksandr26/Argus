@@ -26,6 +26,16 @@ the lock; C2.3 empty-points liveness report; C2.4 user `resolved_at` is a 422; C
 route can't be reopened; C3.2 `clip_seconds`; C3.4 severity floor; C3.6 `since` overlap and the
 route view's path; C4 new constants.
 
+**Sync 3 amendments** (after build round 2; marked `[sync 3]` below): section 0 ownership
+(notebook 14 whole to T2, `src/tests/smoke_cv_argus.py` + `src/tests/requirements.txt` to T3, the
+root compose `simulator-argus` service to T6); C1.5 an unknown/missing `previous_severity` ranks
+as `none`; C1.6 an ignored repeated FAIL still fills a NULL `dlq_body`; C1.7 bystander grace,
+switch-timer reset and take-over gaps as built, `face_lock` log fields; C2.1 point timestamps keep
+millisecond precision (no rounding) and the ESP32 measures `age_s` at send time; C2.3 one lock
+deadline per request; C3.4 `closed_by` is `null` for migration closures; C3.6 stop-route 422 text
+pinned, 503 on stop/complete; C3.7 UI test hooks (close confirmation, tier regions); C4 notebook-only
+constants note.
+
 Conventions used throughout:
 - Times on the wire between devices are **relative** (`age_s`, seconds, float, >= 0). Only the
   backend turns them into absolute times, with its own clock.
@@ -59,6 +69,17 @@ Conventions used throughout:
   `src/notebook/14_backbone_grid_detector.ipynb` **cell 26 only** (keep `grid_postprocess`
   verbatim with notebook 12's, eye filter included, and say so in its markdown).
 - **T3**: `src/tests/README.md` (the `smoke_backend.py` / `edge_chain` sections).
+
+`[sync 3]` Ownership changes:
+- **T2**: the **whole** `src/notebook/14_backbone_grid_detector.ipynb` (replaces "cell 26 only";
+  its grid-head copy is cells 11 markdown + 12 code). Use: mirror notebook 12's tf.data,
+  augmentation, eval-view, BN/int8 calibration and scoring changes verbatim where the cells are
+  shared copies, and label its comparison table. No other change of scope.
+- **T3**: `src/tests/smoke_cv_argus.py` (port it to protocol v2) and `src/tests/requirements.txt`
+  (add `gdown`, so `edge_chain` no longer needs its stub).
+- **T6**: the `simulator-argus` service block of the **root** `docker-compose.yml` (its
+  `environment:` names and defaults only), so it lands with T6's PR. The rest of that file stays
+  the lead's.
 
 `constants.py` is shared by T1 and T2 **by name prefix**: T1 adds/edits/removes only
 `RULE_*`, `ORCHESTRATOR_*`, `BUFFER_*`; T2 only `PARTS_*`, `FACE_*`. Put new constants in the
@@ -236,6 +257,14 @@ Let `rank(none)=0, rank(low)=1, rank(medium)=2, rank(critical)=3`, `prev = previ
 | **driver OK** | `rank(sev) <= 1` and `rank(prev) >= 2` | `kind: "ok"` |
 | *(no event)* | everything else: keepalives, `none<->low`, `critical->medium`, class-only changes | ESP32 ACKs it after using it for `vigilance` |
 
+`[sync 3]` An **unknown or missing** `previous_severity` (`null`, absent, `""`, or any value outside
+the four words) ranks as `none`: e.g. a medium after `"bogus"` is an alert medium. The Pi never
+emits such a value; the rule only keeps the Pi (Python and SQL) and the ESP32 from drifting on
+hand-made or corrupted rows. The shared vectors in `src/esp32-argus/test/vectors/event_vectors.json`
+(shape `{cases:[{name,transition,severity,previous_severity,expect}]}`, `expect` in
+`alert_medium|alert_critical|ok|none`) are the executable form of this table: T3 keeps the path
+and shape stable, T1's suite replays them.
+
 A **critical event row** (the only kind the DLQ holds) is a row with `kind='drowsiness'`,
 `payload.transition = true`, `payload.severity = 'critical'`, `COALESCE(payload.previous_severity,
 'none') != 'critical'`.
@@ -302,6 +331,12 @@ one attempt; 5 failures archive.
   after a broken session (C1.2) can never count an attempt twice. Rules 1-3 need no guard (an
   archived row ignores everything; rule 2 changes nothing countable). Consequence, accepted: a
   DLQ replay whose 120 s lease lapsed before its FAIL arrived is an uncounted attempt.
+- `[sync 3]` An ignored rule-4 FAIL still **fills `dlq_body` when it is NULL** and `<body>` is a
+  JSON object (`COALESCE(dlq_body, <body>)`); nothing else changes (no attempt, no `dlq_error`,
+  not counted in `failed`). Case: a live critical TAKEN by the ESP32 whose lease lapsed while the
+  Bluetooth link was down, so `expire_outbox` moved it to the DLQ as `esp32_unreachable` with no
+  body; the late dead-lettering `FAIL <id> <reason> <composed body>` must not lose the event-time
+  GPS position.
 - A critical FAILed with `retry_window` (its 60 s live window ended, possibly before any attempt
   was made) falls under rule 4: attempt 1, moved to `dlq`, body kept. Any token not named in
   rules 1-3 (`bad_response`, `http_<n>`, `no_network`, ...) is rule 4.
@@ -397,6 +432,26 @@ and ignored a returning driver for the rest of the trip after a switch to a pass
   (unchanged), including with one-frame passenger misses; driver returns 1.3x larger while the
   passenger is locked -> take-over after 5 s, held severity kept; a second face 1.1x larger is
   ignored.
+
+`[sync 3]` Face-lock readings confirmed as built (they replace the literal `[sync 2]` wording where
+they differ):
+- **Bystander grace also while the locked face matches.** On a frame where the locked face
+  matches, the other detections update/add bystanders; a bystander **not** seen on that frame is
+  kept until it has been unseen for `FACE_LOCK_MISS_GRACE_S`, not dropped at once. (Otherwise a
+  passenger missed on the frame right before the driver leaves would be a "new" face and be
+  re-acquired by rule 1.)
+- **Rule 3 (nothing visible)** resets the switch timer only when **no bystander is still inside
+  its miss grace**; while one is, the timer keeps running, and the switch itself waits for a
+  frame with a face to move to. (This is what makes "switch at 5 s including one-frame passenger
+  misses" hold.) The no-face timer still starts on or before the switch timer.
+- **Take-over "continuously visible"** allows gaps of either face up to `FACE_LOCK_MISS_GRACE_S`;
+  the take-over timer runs from the larger face's first sighting and fires only on a frame where
+  both faces are visible.
+- **Logs.** `ctx.features['face_lock']`, the metrics JSONL key `face_lock` and the per-frame line
+  carry `{faces, ignored, switch_s, takeover_s, switched, reacquired}` (`face_lock` is `null` when
+  the face stage did not run). Line tokens after `face=`: `faces=<n> ignored=<n>`, then
+  ` switch=<s>s` / ` takeover=<s>s` while those timers run, ` SWITCHED` on a switch or take-over
+  frame, ` REACQUIRED` on a rule-1 re-acquisition frame.
 
 ### C1.8 What the ESP32 does with records (T3, summary)
 
@@ -529,6 +584,19 @@ The backend computes: `received_at = now()` once per request; point `timestamp =
 round_to_second(received_at - age_s)`; event `occurred_at = received_at - age_s`
 (millisecond precision).
 
+`[sync 3]` **Point timestamps are not rounded to the second**: point `timestamp = received_at -
+age_s` truncated to milliseconds, exactly like `occurred_at`. (Rounding made the unique
+`(id_route, timestamp)` index silently drop distinct points whenever the request latency differed
+by about a second between two consecutive reports, which is normal on GPRS. The ESP32 never
+re-sends the points of a failed report, so second-level dedup protected nothing.) The unique index
+stays; it now only skips exact duplicates.
+
+`[sync 3]` **The ESP32 measures every `age_s` at send time**, not when it plans the attempt: the
+body (points and event) is composed right before `AT+HTTPDATA` on GPRS and right before
+`http.POST` on WiFi (after registration, bearer setup and the other AT steps), so only the
+request's own transit/TLS time is left unaccounted. `SenderPolicy`'s choice of event and points
+is still made when the attempt is planned; only the serialization (and the ages) move.
+
 ### C2.2 Response
 
 **401**: missing/unknown/revoked key. **413**: body too large. **422**: envelope invalid (body
@@ -614,6 +682,11 @@ route keep updating. With points, the cadence is unchanged (5 s, or 30 s while `
 `[sync 2]` The backend's per-route lock waits at most `ROUTE_LOCK_WAIT` (5 s, below both the 8 s
 attempt timeout and the 10 s Lambda timeout) and then answers 503 (a failed attempt, C2.3). Its
 lease `ROUTE_LOCK_LEASE` (10 s) must stay `>=` the Lambda timeout.
+
+`[sync 3]` The 5 s wait is **per request**, not per acquisition: a report that takes the route
+lock twice (points, then the event) shares one lock deadline, `received_at + ROUTE_LOCK_WAIT`,
+across both `route_lock` calls, so it still answers 503 within about 5 s plus the database
+round-trips.
 
 `GET /api/devices/me/active-route` stays (unchanged) but the ESP32 no longer needs it.
 
@@ -716,7 +789,8 @@ Indexes: unique partial `(id_route, timestamp)` (duplicates skipped with
 `insert_many(ordered=False)`); retention: `keep = true` for the first stored point of each
 `(id_route, UTC minute)`, TTL index on `timestamp` with `expireAfterSeconds = 604800` and
 `partialFilterExpression {keep: false}`. `StatusRouteOut` adds `location_is_last_known`,
-`location_age_s`.
+`location_age_s`. `[sync 3]` Report points keep millisecond timestamps (C2.1), so `TrackPoint.t`
+can carry milliseconds; the UI's `(id_route, t)` de-duplication is unchanged.
 
 ### C3.4 `Incident` (new collection `incidents`) and grouping
 
@@ -750,6 +824,15 @@ new incident is created. Joining updates `first_alert_at`/`last_alert_at` (min/m
 alerts. A de-escalation (`POST /api/alerts/{id}/de-escalate`, unchanged) recomputes its
 incident's `severity`. `[sync 2]` The incident severity never goes below `medium`: if every
 alert was de-escalated to `low`, the incident stays open with `severity: medium`.
+
+`[sync 3]` `closed_by` is a real user id or **`null`**. `null` means "closed by the system": every
+incident the data migration closes (alerts all reviewed, or `--close-ended-routes`) gets
+`closed_by: null` plus an explanatory `close_note`; no placeholder string such as `"migration"`
+is ever stored. The UI must not assume `closed_by` resolves to a user.
+
+`[sync 3]` Migration `--close-ended-routes` keeps its scope: it closes only the incidents created
+in the same run, so the choice is made before the first real run (deploy checklist, plan section
+6 step 1). No marker field is added.
 
 Tier at response time: `old` if `now - last_alert_at > OLD_INCIDENT_AFTER` (1 h), else its
 `severity`. Feed order: tier (`critical`, `medium`, `old`), then `last_alert_at` descending. The
@@ -847,6 +930,11 @@ strip; empty -> 422). Roles: **root_admin, admin** (guardian/truck_driver 403). 
 is null. Open incidents stay open. Returns `RouteOut`. From then on the device gets
 `points.status = route_finished` and events of that route `rejected route_finished`.
 
+`[sync 3]` Pinned texts and the lock: an empty/blank reason is 422 and the response body contains
+`"A reason is required to stop a route"`. `POST /stop` and a status-changing `PUT /api/routes/{id}`
+("Complete trip") take the per-route lock; under contention they answer **503 `"Route is busy, try
+again"`** — the UI shows it as a retryable error (dialog stays open), not as a failed stop.
+
 **Existing endpoints kept:** `GET /api/routes/active` (unchanged shape plus the C3.1 fields in
 each route; the UI moves to `/api/live`), `GET /api/alerts` (+ the C3.2 fields; new query param
 `incident_id`), `PUT /api/alerts/{id}` review (guardian/root_admin; notes only — closing is the
@@ -863,6 +951,24 @@ visible", plus `panic_button` "Panic button" for old rows; unknown values show t
 Position label: `position_unknown` -> "Position unknown"; `location_is_last_known` ->
 "Last known (N old)" with N formatted from `location_age_s`. Replayed badge when
 `delivery == 'dlq'` ("Recovered after lost connection").
+
+`[sync 3]` UI test hooks (it-argus relies on these; T5 keeps them, T6 uses them):
+- Tier sections are `role="region"` with accessible names `Critical incidents`, `Medium
+  incidents`, `Older than 1 h incidents` (the visible header may add a count, e.g. `Older than 1 h ·
+  1`, so tests use the region name, not exact header text).
+- After a successful **Close incident** (Live ops and the route view, with or without a focused
+  alert), the UI shows a confirmation in an element with `role="status"` whose text contains
+  `Closed HH:MM` (the close time, same format as the closed pill). It stays until the next close
+  or navigation (no auto-dismiss), and the incident leaves the Open list. The view does not switch
+  tabs on its own.
+- Close dialog: `role="dialog"` named `Close incident`, a textbox, confirm button `Close incident`;
+  error text `A note is required to close a critical incident`. Stop dialog: `role="dialog"` named
+  `Stop route`, a textbox, confirm button `Stop route`; error `A reason is required to stop a
+  route`; afterwards the status reads `Stopped`. Complete dialog: `role="dialog"` named `Complete
+  trip`.
+- Each incident card is a container a test can scope to (filter by its alert-type label), and holds
+  its own `Close incident` button; the route view's `Open`/`Closed` filter chips are buttons, not
+  incident state.
 
 ---
 
@@ -927,3 +1033,10 @@ Position label: `position_unknown` -> "Position unknown"; `location_is_last_know
 | `ALERT_HISTORY_POLL_MS` | 5000 | `ui-argus` (T5) | |
 | `SIMULATOR_POLL_MS` | 10000 | `ui-argus` (T5) | |
 | `SIMULATOR_REPORT_INTERVAL_S` | 5 | `simulator-argus` (T6) | mirrors `REPORT_INTERVAL_MS` |
+| `SIMULATOR_NORMAL_BLIP_CHANCE` | 0.5 | `simulator-argus` (T6) | `[sync 3]` per-route chance of one head_down medium blip on a `normal` route |
+| `SIMULATOR_MEDIUM_BLIP_PROBABILITY` | — | retired (T6) | `[sync 3]` read, ignored, logged as a warning; **not** aliased (a per-5 s rate has no per-route meaning) |
+| `EYE_LABEL_MAX_FRAC` | 0.30 | notebook 12 cell 21 (T2) | `[sync 3]` training-only label cleaning; must equal `PARTS_EYE_MAX_FRAC` |
+
+`[sync 3]` Notebook 12's other augmentation constants (`CLOSEUP_EYE_SIDE`, `CLOSEUP_MOUTH_SIDE`,
+the `CLOSEUP_*` centre bands, `ZOOM_OUT_P`, `ZOOM_OUT_SCALE`, `BG_NOISE_STD`) are notebook-internal
+tuning, not contract: no other module reads them. Notebook 14 mirrors them verbatim.

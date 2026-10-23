@@ -297,6 +297,11 @@ every suite at the end.
 
 ## 6. Steps only the user can do (after the PRs)
 1. **Deploy the backend** (`cdk deploy`), then run the migration on Atlas and create the TTL index.
+   Run the migration with `--dry-run` first and decide **before the first real run** whether to
+   pass `--close-ended-routes` (it only closes incidents created in that same run). Deploy the
+   backend before the new simulator image. (Before step 2, the sketch can be built from WSL with
+   `ARDUINO_CLI=".../Arduino IDE/resources/app/lib/backend/resources/arduino-cli.exe" sh
+   src/esp32-argus/test/compile.sh`, about 3 min the first time.)
 2. **Flash the ESP32** from the Arduino IDE (Windows, COM3) **and deploy the new Pi image together**: Bluetooth v2 is not compatible with v1.
 3. **Bench HIL:**
    - POST duration per transport;
