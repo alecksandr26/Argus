@@ -11,7 +11,7 @@ from app.models.route import Route
 from app.models.status_route import StatusRoute
 from app.report import store_points
 from app.geo import GeoJSONPoint
-from tests.conftest import post_report, report_event, report_point
+from tests.conftest import post_report, report_event, report_point, status_body
 
 T0 = datetime(2030, 1, 1, 8, tzinfo=timezone.utc)
 
@@ -113,6 +113,66 @@ async def test_late_points_never_extend_the_run(rig_a):
     # Points older than the newest OK point already counted can't make the run longer.
     await apply_points_to_route(rig_a.route_id, _ok_run(T0 - timedelta(hours=2), 120))
     assert await _state(rig_a.route_id) == "critical"
+
+
+async def test_late_low_point_is_ignored_for_the_ok_run(rig_a):
+    """A `low` point older than the newest OK point already counted doesn't restart or extend
+    the run (C3.5 [sync 2])."""
+    await _critical(rig_a.route_id)
+    run = _ok_run(T0 + timedelta(minutes=1), 30)
+    await apply_points_to_route(rig_a.route_id, run)
+    before = await Route.get(rig_a.route_id)
+    await apply_points_to_route(rig_a.route_id, [(T0 + timedelta(minutes=10, seconds=5), Vigilance.LOW)])
+    after = await Route.get(rig_a.route_id)
+    assert after.ok_since == before.ok_since
+    assert after.last_ok_point_at == before.last_ok_point_at
+
+
+async def test_late_non_low_point_before_the_run_does_not_break_it(rig_a):
+    """A `medium` point that happened before `ok_since` (it arrives late) leaves the run alone,
+    and still moves `last_not_ok_at` if it's the newest not-OK time."""
+    await _critical(rig_a.route_id)
+    run = _ok_run(T0 + timedelta(minutes=10), 30)
+    await apply_points_to_route(rig_a.route_id, run)
+    late = T0 + timedelta(minutes=5)
+    await apply_points_to_route(rig_a.route_id, [(late, Vigilance.MEDIUM)])
+    route = await Route.get(rig_a.route_id)
+    assert route.ok_since.replace(tzinfo=timezone.utc) == run[0][0]
+    assert route.last_not_ok_at.replace(tzinfo=timezone.utc) == late
+    # ...so the hour still completes.
+    await apply_points_to_route(rig_a.route_id, _ok_run(run[-1][0] + timedelta(seconds=30), 31))
+    assert await _state(rig_a.route_id) == "fine"
+
+
+async def test_late_non_low_point_inside_the_run_breaks_it(rig_a):
+    """A `medium`/`unknown` point at or after `ok_since` breaks the run, even arriving late."""
+    for vigilance in (Vigilance.MEDIUM, Vigilance.UNKNOWN):
+        await _critical(rig_a.route_id)
+        start = T0 + timedelta(hours=3 if vigilance == Vigilance.UNKNOWN else 0, minutes=10)
+        run = _ok_run(start, 30)
+        await apply_points_to_route(rig_a.route_id, run)
+        await apply_points_to_route(rig_a.route_id, [(run[0][0], vigilance)])
+        route = await Route.get(rig_a.route_id)
+        assert route.ok_since is None, vigilance
+
+
+async def test_legacy_status_points_feed_the_route_state(api_client, root_admin, rig_a):
+    """C3.5 [sync 2]: legacy `POST /status` points go through the same path as report points."""
+    await _critical(rig_a.route_id)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    # 59.5 min of OK points ending 40 s ago: not an hour yet.
+    await apply_points_to_route(
+        rig_a.route_id, _ok_run(now - timedelta(minutes=60, seconds=10), 59.5)
+    )
+    assert await _state(rig_a.route_id) == "critical"
+    # One legacy OK point now (server time) completes the hour.
+    resp = await api_client.post(
+        f"/api/routes/{rig_a.route_id}/status",
+        json=status_body(vigilance="low"),
+        headers=rig_a.headers,
+    )
+    assert resp.status_code == 201, resp.text
+    assert await _state(rig_a.route_id) == "fine"
 
 
 async def test_report_points_feed_the_route_state(api_client, rig_a):
