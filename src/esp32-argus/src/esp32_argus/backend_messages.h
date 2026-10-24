@@ -75,6 +75,11 @@ ReportEvent eventFromRecord(const PiRecord& record, PiEventKind kind,
                             const EventPosition& position, bool hasSpeed, float speedKmh);
 bool recordFitsEvent(const PiRecord& record);
 
+// The event's episode and alert type, as eventFromRecord() writes them: also what the buzzer and
+// the SMS key and word their decisions by (alarm_policy.h, sms_policy.h).
+const std::string& eventEpisode(const PiRecord& record);    // payload.episode, else the id
+const std::string& eventAlertType(const PiRecord& record);  // payload.reason, else class_name
+
 // A dead letter's stored event (`dlq.body`, as composeEventJson wrote it): false if it isn't a
 // usable one (then compose it from the record with no position, C1.8).
 bool eventFromStoredJson(const std::string& json, ReportEvent& out);

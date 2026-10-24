@@ -80,15 +80,23 @@ float roundAge(float seconds) {
   return std::round(seconds * 10.0f) / 10.0f;
 }
 
+const std::string& eventEpisode(const PiRecord& record) {
+  return record.episode.empty() ? record.id : record.episode;
+}
+
+const std::string& eventAlertType(const PiRecord& record) {
+  return record.reason.empty() ? record.className : record.reason;
+}
+
 ReportEvent eventFromRecord(const PiRecord& record, PiEventKind kind,
                             const EventPosition& position, bool hasSpeed, float speedKmh) {
   ReportEvent ev;
   ev.clientEventId = record.id;
-  ev.episode = record.episode.empty() ? record.id : record.episode;
+  ev.episode = eventEpisode(record);
   ev.isOk = kind == PiEventKind::DriverOk;
   if (!ev.isOk) {
     ev.severity = kind == PiEventKind::AlertCritical ? "critical" : "medium";
-    ev.alertType = record.reason.empty() ? record.className : record.reason;
+    ev.alertType = eventAlertType(record);
   }
   ev.position = position;
   ev.hasSpeed = hasSpeed;
@@ -101,7 +109,7 @@ ReportEvent eventFromRecord(const PiRecord& record, PiEventKind kind,
 }
 
 bool recordFitsEvent(const PiRecord& record) {
-  const std::string& alertType = record.reason.empty() ? record.className : record.reason;
+  const std::string& alertType = eventAlertType(record);
   return !record.id.empty() && record.id.size() <= IdString::kMaxLength &&
          record.episode.size() <= IdString::kMaxLength &&
          alertType.size() <= AlertTypeString::kMaxLength;

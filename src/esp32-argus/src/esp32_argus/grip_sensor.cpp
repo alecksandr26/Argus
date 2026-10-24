@@ -1,14 +1,22 @@
 #include "grip_sensor.h"
 
-#include "config.h"
+#include <Arduino.h>
+
+namespace {
+const int kPins[GRIP_SENSOR_COUNT] = GRIP_SENSOR_PINS;
+}  // namespace
 
 void gripSensorBegin() {
-  pinMode(GRIP_SENSOR_PIN, INPUT_PULLUP);
+  // As in the user's bench sketch: no pinMode, analogRead() sets the pin up itself. GPIO 34-39
+  // are input-only and have no pull-ups, which an analog read doesn't need.
+  analogReadResolution(12);
+  Serial.print("[grip] Wheel sensors on GPIO");
+  for (int pin : kPins) Serial.printf(" %d", pin);
+  Serial.printf(", pressure above %d (12-bit), alarm after %lu ms without it%s\n",
+                GRIP_PRESSURE_THRESHOLD, (unsigned long)GRIP_ALERT_MS,
+                GRIP_REQUIRE_MOVING ? " while the truck moves (GRIP_REQUIRE_MOVING)" : "");
 }
 
-GripState readGripState() {
-  // Active-low placeholder wiring: LOW = hand detected on the wheel = good grip. Swap
-  // this for whatever the real sensor's actual signal convention turns out to be once
-  // one is chosen -- see config.h's caveat.
-  return digitalRead(GRIP_SENSOR_PIN) == LOW ? GripState::GOOD : GripState::BAD;
+void gripSensorRead(int* raw) {
+  for (int i = 0; i < GRIP_SENSOR_COUNT; i++) raw[i] = analogRead(kPins[i]);
 }

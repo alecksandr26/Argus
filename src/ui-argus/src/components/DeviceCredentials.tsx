@@ -14,17 +14,21 @@ import type { Truck } from '../types'
  * Fleet's "Device credentials" block: issues, rotates and revokes the truck's edge-device key
  * (`POST /api/trucks/:id/rotate-key`, `DELETE /api/trucks/:id/device-key`). A fresh key is shown
  * exactly once, packaged as `argus-device.env` for the truck's Raspberry Pi — the backend keeps
- * only a hash, so closing the panel without saving it means rotating again.
+ * only a hash, so closing the panel without saving it means rotating again. The file also carries
+ * the truck's plate and SMS alert phone as saved at that moment.
  */
 export default function DeviceCredentials({
   truck,
   token,
   canWrite,
+  draftAlertPhone,
   onTruckChange,
 }: {
   truck: Truck
   token: string
   canWrite: boolean
+  /** The phone currently typed in the edit form; the file only ever carries the saved one. */
+  draftAlertPhone?: string
   onTruckChange: (t: Truck) => void
 }) {
   const [busy, setBusy] = useState(false)
@@ -81,9 +85,12 @@ export default function DeviceCredentials({
         plate: truck.plate_number,
         deviceApiKey: issued.key,
         backendUrl,
+        alertPhone: truck.alert_phone,
         issuedAt: issued.at,
       })
     : ''
+  const phoneUnsaved =
+    draftAlertPhone !== undefined && draftAlertPhone.trim() !== (truck.alert_phone ?? '').trim()
 
   function download() {
     const url = URL.createObjectURL(new Blob([envText], { type: 'text/plain' }))
@@ -162,6 +169,27 @@ export default function DeviceCredentials({
             docker-compose.yml on this truck's Raspberry Pi, then restart the container. The
             ESP32 picks the key up from the Pi over Bluetooth.
           </span>
+          <span data-testid="alert-phone-note" style={{ fontSize: 11.5, color: 'var(--text-soft)' }}>
+            {truck.alert_phone ? (
+              <>
+                Critical alerts are texted to <span className="mono">{truck.alert_phone}</span>.
+              </>
+            ) : (
+              'No SMS alert phone is set, so critical alerts send no SMS.'
+            )}{' '}
+            The file carries the phone as it is now: if you change it later, generate new
+            credentials, or edit the <span className="mono">ARGUS_ALERT_PHONE</span> line on the
+            Pi and restart the container.
+          </span>
+          {phoneUnsaved && (
+            <span
+              data-testid="alert-phone-unsaved"
+              style={{ fontSize: 11.5, color: 'var(--warn, #f5a524)' }}
+            >
+              The SMS alert phone in the form above isn't saved, so this file doesn't carry it.
+              Save the truck, then rotate the key to get a file with it.
+            </span>
+          )}
           <label className="field">
             <span className="field__label">Backend URL the truck uses</span>
             <input

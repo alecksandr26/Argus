@@ -74,7 +74,9 @@ bool modemTakeHttpActionUrc(String* line) {
   return true;
 }
 
-bool modemReadUntil(const char* expect, unsigned long timeoutMs, String* response) {
+namespace {
+// modemReadUntil(), optionally passing every byte through the late-"+HTTPACTION:" watch too.
+bool readUntil(const char* expect, unsigned long timeoutMs, String* response, bool keepUrcs) {
   String buf;
   unsigned long lastByteAt = millis();
   while (millis() - lastByteAt < timeoutMs && !pastDeadline()) {
@@ -83,7 +85,9 @@ bool modemReadUntil(const char* expect, unsigned long timeoutMs, String* respons
       continue;
     }
     while (modemSerial.available()) {
-      buf += (char)modemSerial.read();
+      char c = (char)modemSerial.read();
+      buf += c;
+      if (keepUrcs) noteFlushed(c);
       lastByteAt = millis();
       if (buf.indexOf(expect) != -1) {
         if (response) *response = buf;
@@ -99,12 +103,31 @@ bool modemReadUntil(const char* expect, unsigned long timeoutMs, String* respons
   return false;
 }
 
-bool modemSendAT(const String& cmd, const char* expect, unsigned long timeoutMs,
-                 String* response) {
+bool sendAT(const String& cmd, const char* expect, unsigned long timeoutMs, String* response,
+            bool keepUrcs) {
   modemFlush();
   modemSerial.print(cmd);
   modemSerial.print("\r\n");
-  return modemReadUntil(expect, timeoutMs, response);
+  return readUntil(expect, timeoutMs, response, keepUrcs);
+}
+}  // namespace
+
+bool modemReadUntil(const char* expect, unsigned long timeoutMs, String* response) {
+  return readUntil(expect, timeoutMs, response, /*keepUrcs=*/false);
+}
+
+bool modemReadUntilKeepingUrcs(const char* expect, unsigned long timeoutMs, String* response) {
+  return readUntil(expect, timeoutMs, response, /*keepUrcs=*/true);
+}
+
+bool modemSendAT(const String& cmd, const char* expect, unsigned long timeoutMs,
+                 String* response) {
+  return sendAT(cmd, expect, timeoutMs, response, /*keepUrcs=*/false);
+}
+
+bool modemSendATKeepingUrcs(const String& cmd, const char* expect, unsigned long timeoutMs,
+                            String* response) {
+  return sendAT(cmd, expect, timeoutMs, response, /*keepUrcs=*/true);
 }
 
 bool modemSendATWithin(const String& cmd, const char* expect, unsigned long totalMs,
@@ -146,6 +169,8 @@ String modemOneLine(const String& response) {
 
 void modemWrite(const String& data) { modemSerial.print(data); }
 
+void modemWriteByte(uint8_t b) { modemSerial.write(b); }
+
 String modemReadBytes(size_t n, unsigned long timeoutMs) {
   String buf;
   buf.reserve(n);
@@ -167,7 +192,9 @@ int modemRegistrationStat() {
   String resp;
   int stat = -1;
   CregResult creg;
-  if (modemSendAT("AT+CREG?", "OK", 2000UL, &resp) && parseCreg(resp.c_str(), creg)) {
+  // Polled between requests too (before a report, while an SMS waits), when a timed-out request's
+  // late "+HTTPACTION:" may arrive: kept for gprs_http rather than read past.
+  if (modemSendATKeepingUrcs("AT+CREG?", "OK", 2000UL, &resp) && parseCreg(resp.c_str(), creg)) {
     stat = creg.stat;
   }
   cachedStat = stat;

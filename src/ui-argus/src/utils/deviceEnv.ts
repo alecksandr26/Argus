@@ -1,8 +1,10 @@
 /**
  * The `argus-device.env` file a freshly-issued device key is handed out as. It's dropped next to
- * `src/cv-argus/docker-compose.yml` on the truck's Raspberry Pi; cv-argus reads these three
- * variables at container start and hands them to the ESP32 over Bluetooth (`CONFIG`), which is
- * the device that actually calls the backend with them. See `src/cv-argus/README.md`.
+ * `src/cv-argus/docker-compose.yml` on the truck's Raspberry Pi; cv-argus reads these variables
+ * at container start and hands them to the ESP32 over Bluetooth (`CONFIG`), which is the device
+ * that actually calls the backend with them. The first three are the credentials; the plate and
+ * the SMS alert phone (grip contracts C1) are what the ESP32's critical-alert SMS names and
+ * texts. See `src/cv-argus/README.md`.
  */
 
 export const DEVICE_ENV_FILENAME = 'argus-device.env'
@@ -12,6 +14,8 @@ export interface DeviceEnvInput {
   plate: string
   deviceApiKey: string
   backendUrl: string
+  /** The truck's SMS alert phone (E.164); null/empty writes the commented-out line instead. */
+  alertPhone?: string | null
   issuedAt: Date
 }
 
@@ -21,6 +25,7 @@ export function normalizeBackendUrl(url: string): string {
 }
 
 export function buildDeviceEnv(input: DeviceEnvInput): string {
+  const phone = input.alertPhone?.trim()
   return [
     `# Argus edge-device credentials — truck ${input.plate}`,
     `# Issued ${input.issuedAt.toISOString()}. Shown once: keep this file secret, never commit it.`,
@@ -29,6 +34,10 @@ export function buildDeviceEnv(input: DeviceEnvInput): string {
     `ARGUS_TRUCK_ID=${input.truckId}`,
     `ARGUS_DEVICE_API_KEY=${input.deviceApiKey}`,
     `ARGUS_BACKEND_URL=${normalizeBackendUrl(input.backendUrl)}`,
+    `ARGUS_TRUCK_PLATE=${input.plate}`,
+    phone
+      ? `ARGUS_ALERT_PHONE=${phone}`
+      : '# ARGUS_ALERT_PHONE=  (no SMS alert phone set for this truck)',
     '',
   ].join('\n')
 }

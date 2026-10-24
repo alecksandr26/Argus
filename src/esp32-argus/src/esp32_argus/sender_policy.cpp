@@ -41,7 +41,7 @@ SenderPolicy::SenderPolicy(const SenderTiming& timing) : timing_(timing) {}
 
 bool SenderPolicy::holds(const std::string& id) const {
   if (dlq_.used && dlq_.recordId == id) return true;
-  for (const HeldEvent& e : live_) {
+  for (const HeldEvent& e : live_) {  // the local slots too: their ids ("grip-...") never clash
     if (e.used && e.recordId == id) return true;
   }
   return false;
@@ -62,7 +62,7 @@ TakeResult SenderPolicy::takeLive(const std::string& id, const ReportEvent& even
   if (outcomePendingFor(id)) return TakeResult::AlreadyFinished;
   if (id.empty() || id.size() > IdString::kMaxLength) return TakeResult::Full;  // see recordFitsEvent
   int free = -1;
-  for (int i = 0; i < kLiveSlots; i++) {
+  for (int i = 0; i < kLiveSlots; i++) {  // the Pi's slots only: the local ones stay free for grip
     if (!live_[i].used) {
       free = i;
       break;
@@ -82,10 +82,66 @@ TakeResult SenderPolicy::takeLive(const std::string& id, const ReportEvent& even
                : tier == EventTier::Medium ? timing_.liveRetryMediumMs
                                            : timing_.liveRetryOkMs;
 
+  releaseDlqForLive();
+  return TakeResult::Queued;
+}
+
+void SenderPolicy::releaseDlqForLive() {
   // Any live event comes before a dead letter: one held but not on its way yet goes back now
   // (not an attempt). One in flight is preempted between AT steps (shouldPreempt).
   if (dlq_.used && inFlight_ != PlanKind::DlqEvent) finish(dlq_, false, "preempted", "");
+}
+
+TakeResult SenderPolicy::takeLocal(const ReportEvent& event, uint32_t nowMs) {
+  const int slot = event.isOk ? kLocalOkSlot : kLocalAlertSlot;
+  const EventTier tier = event.isOk ? EventTier::Ok : EventTier::Critical;
+  HeldEvent& e = live_[slot];
+  if (e.used && e.recordId == event.clientEventId) return TakeResult::AlreadyHeld;
+  if (e.used) {
+    if (inFlight_ == PlanKind::LiveEvent && inFlightSlot_ == slot) {
+      // The older one is on its way: it can't be dropped mid-attempt, so the new one is.
+      HeldEvent refused;
+      refused.recordId = event.clientEventId;
+      refused.tier = tier;
+      noteLocalDrop(refused, "slot_busy");
+      return TakeResult::Full;
+    }
+    noteLocalDrop(e, "replaced");  // a newer episode's event: the older unsent one goes
+  }
+  e = HeldEvent();
+  e.used = true;
+  e.local = true;
+  e.recordId = event.clientEventId;
+  e.event = event;
+  e.tier = tier;
+  e.takenAtMs = nowMs;  // age_s grows from the moment it was raised
+  e.windowMs = tier == EventTier::Critical ? timing_.liveRetryCriticalMs : timing_.liveRetryOkMs;
+  releaseDlqForLive();
   return TakeResult::Queued;
+}
+
+void SenderPolicy::noteLocalDrop(const HeldEvent& e, const char* why) {
+  if (localDropCount_ == kLocalDropSlots) {  // nobody logged them for a while: lose the oldest
+    localDropHead_ = (localDropHead_ + 1) % kLocalDropSlots;
+    localDropCount_--;
+    localDropsLost_++;
+  }
+  LocalDrop& d = localDrops_[(localDropHead_ + localDropCount_) % kLocalDropSlots];
+  d = LocalDrop();
+  d.clientEventId = e.recordId;
+  d.tier = e.tier;
+  d.why.assignTruncated(why);
+  d.attempts = e.attempts;
+  d.lastError = e.lastError;
+  localDropCount_++;
+}
+
+bool SenderPolicy::takeLocalDrop(LocalDrop& out) {
+  if (localDropCount_ == 0) return false;
+  out = localDrops_[localDropHead_];
+  localDropHead_ = (localDropHead_ + 1) % kLocalDropSlots;
+  localDropCount_--;
+  return true;
 }
 
 TakeResult SenderPolicy::takeDlq(const std::string& id, const ReportEvent& event, float ageS,
@@ -114,12 +170,16 @@ void SenderPolicy::noteActiveRoute(bool hasActiveRoute) {
 void SenderPolicy::forgetRoute() { route_ = RouteKnowledge::Unknown; }
 
 void SenderPolicy::expire(uint32_t nowMs) {
-  for (int i = 0; i < kLiveSlots; i++) {
+  for (int i = 0; i < kAllLiveSlots; i++) {
     HeldEvent& e = live_[i];
     if (!e.used) continue;
     if (inFlight_ == PlanKind::LiveEvent && inFlightSlot_ == i) continue;
     if ((uint32_t)(nowMs - e.takenAtMs) < e.windowMs) continue;
-    if (e.tier == EventTier::Critical) {
+    if (e.local) {
+      // There is no Pi DLQ for this device's own events (a known gap): dropped, and logged.
+      noteLocalDrop(e, "retry_window");
+      e = HeldEvent();
+    } else if (e.tier == EventTier::Critical) {
       // Dead-letter it with the event as composed (its position at the event): attempt 1 on the
       // Pi. The reason is the last failure; "retry_window" if it never got an attempt.
       std::string reason = e.lastError.empty() ? std::string("retry_window") : e.lastError.str();
@@ -137,7 +197,7 @@ bool SenderPolicy::eligible(const HeldEvent& e, uint32_t nowMs) const {
 
 int SenderPolicy::bestLive() const {
   int best = -1;
-  for (int i = 0; i < kLiveSlots; i++) {
+  for (int i = 0; i < kAllLiveSlots; i++) {  // a local event competes like a Pi one of its tier
     const HeldEvent& e = live_[i];
     if (!e.used) continue;
     if (best < 0 || e.tier > live_[best].tier) {
@@ -203,7 +263,7 @@ void SenderPolicy::beginAttempt(const SendPlan& plan, uint32_t /*nowMs*/) {
       plan.kind != PlanKind::DlqEvent) {
     return;
   }
-  if (plan.kind == PlanKind::LiveEvent && (plan.slot < 0 || plan.slot >= kLiveSlots ||
+  if (plan.kind == PlanKind::LiveEvent && (plan.slot < 0 || plan.slot >= kAllLiveSlots ||
                                            !live_[plan.slot].used)) {
     return;
   }
@@ -220,7 +280,7 @@ bool SenderPolicy::shouldPreempt(uint32_t nowMs) const {
     case PlanKind::LiveEvent: {
       const HeldEvent& current = live_[inFlightSlot_];
       if (current.tier == EventTier::Critical) return false;  // never preempted
-      for (int i = 0; i < kLiveSlots; i++) {
+      for (int i = 0; i < kAllLiveSlots; i++) {
         if (i == inFlightSlot_ || !live_[i].used) continue;
         if (live_[i].tier > current.tier && eligible(live_[i], nowMs)) return true;
       }
@@ -272,6 +332,10 @@ void SenderPolicy::endAttempt(AttemptEnd end, const std::string& reason, uint32_
 
 void SenderPolicy::finish(HeldEvent& e, bool ack, const std::string& reason,
                           const std::string& body) {
+  if (e.local) {  // this device's own event: nothing to tell the Pi (the attempt's log line says it)
+    e = HeldEvent();
+    return;
+  }
   PiOutcome o;
   o.recordId = e.recordId;
   o.ack = ack;

@@ -521,6 +521,213 @@ static void beginAttemptIgnoresPlansWithNothingToSend() {
   CHECK(s.outcomeCount() == 0);
 }
 
+// --- Local events: the grip sensor's own alert and OK (grip-alarm contracts C3) ---
+
+static ReportEvent gripEv(const char* episode, bool ok) {
+  ReportEvent e;
+  e.clientEventId = std::string(episode) + (ok ? "-ok" : "-a");
+  e.episode = episode;
+  e.isOk = ok;
+  if (!ok) {
+    e.severity = "critical";
+    e.alertType = "no_grip";
+  }
+  return e;
+}
+
+static int liveUsed(const SenderPolicy& s) {
+  int used = 0;
+  for (int i = 0; i < SenderPolicy::kAllLiveSlots; i++) used += s.liveSlot(i).used ? 1 : 0;
+  return used;
+}
+
+static void aGripCriticalIsALiveCriticalOldestFirst() {
+  SenderPolicy s;
+  CHECK(s.takeLive("m1", ev("m1", "medium"), EventTier::Medium, 0, 0) == TakeResult::Queued);
+  takeCritical(s, "c1", 100);
+  CHECK(s.takeLocal(gripEv("grip-1a2b3c4d-1", false), 200) == TakeResult::Queued);
+  CHECK(s.liveSlot(SenderPolicy::kLocalAlertSlot).tier == EventTier::Critical);
+  CHECK(s.liveSlot(SenderPolicy::kLocalAlertSlot).windowMs == LIVE_RETRY_CRITICAL_MS);
+  // Same tier as the Pi's critical: the one raised first goes first; both before the medium.
+  SendPlan p = s.plan(300, true);
+  CHECK(s.liveSlot(p.slot).recordId == "c1");
+  attempt(s, 300, AttemptEnd::Delivered);
+  p = s.plan(301, true);
+  CHECK(p.slot == SenderPolicy::kLocalAlertSlot);
+  CHECK(s.liveSlot(p.slot).recordId == "grip-1a2b3c4d-1-a");
+  CHECK(!p.retry);  // a first try: the short mobile timeout
+  attempt(s, 301, AttemptEnd::Delivered);
+  p = s.plan(302, true);
+  CHECK(s.liveSlot(p.slot).recordId == "m1");
+
+  // Raised before a Pi critical, it goes first.
+  SenderPolicy t;
+  CHECK(t.takeLocal(gripEv("grip-1a2b3c4d-2", false), 0) == TakeResult::Queued);
+  takeCritical(t, "c2", 50);
+  CHECK(t.plan(60, true).slot == SenderPolicy::kLocalAlertSlot);
+}
+
+static void aGripOkGoesAfterItsAlertAndBelowAPiMedium() {
+  SenderPolicy s;
+  CHECK(s.takeLocal(gripEv("grip-1a2b3c4d-1", false), 0) == TakeResult::Queued);
+  CHECK(s.takeLocal(gripEv("grip-1a2b3c4d-1", true), 3300) == TakeResult::Queued);
+  CHECK(s.liveSlot(SenderPolicy::kLocalOkSlot).tier == EventTier::Ok);
+  CHECK(s.liveSlot(SenderPolicy::kLocalOkSlot).windowMs == LIVE_RETRY_OK_MS);
+  CHECK(s.takeLive("m1", ev("m1", "medium"), EventTier::Medium, 0, 3400) == TakeResult::Queued);
+  CHECK(s.plan(3500, true).slot == SenderPolicy::kLocalAlertSlot);
+  attempt(s, 3500, AttemptEnd::Delivered);
+  CHECK(s.liveSlot(s.plan(3501, true).slot).recordId == "m1");
+  attempt(s, 3501, AttemptEnd::Delivered);
+  CHECK(s.plan(3502, true).slot == SenderPolicy::kLocalOkSlot);
+}
+
+static void aGripCriticalPreemptsLowerAttemptsButNotACritical() {
+  SenderPolicy s;  // a Pi medium on its way
+  CHECK(s.takeLive("m1", ev("m1", "medium"), EventTier::Medium, 0, 0) == TakeResult::Queued);
+  s.beginAttempt(s.plan(0, true), 0);
+  CHECK(s.takeLocal(gripEv("grip-1a2b3c4d-1", false), 10) == TakeResult::Queued);
+  CHECK(s.shouldPreempt(20));
+  s.endAttempt(AttemptEnd::Preempted, "", 20);
+  CHECK(s.plan(20, true).slot == SenderPolicy::kLocalAlertSlot);
+
+  SenderPolicy t;  // a Pi critical on its way: never pre-empted, not even by a grip critical
+  takeCritical(t, "c1", 0);
+  t.beginAttempt(t.plan(0, true), 0);
+  CHECK(t.takeLocal(gripEv("grip-1a2b3c4d-1", false), 10) == TakeResult::Queued);
+  CHECK(!t.shouldPreempt(20));
+
+  SenderPolicy u;  // a grip critical on its way isn't pre-empted by a Pi critical either
+  CHECK(u.takeLocal(gripEv("grip-1a2b3c4d-1", false), 0) == TakeResult::Queued);
+  u.beginAttempt(u.plan(0, true), 0);
+  takeCritical(u, "c1", 10);
+  CHECK(!u.shouldPreempt(20));
+
+  SenderPolicy v;  // a grip OK on its way is pre-empted by a Pi medium; a points-only report by it
+  CHECK(v.takeLocal(gripEv("grip-1a2b3c4d-1", true), 0) == TakeResult::Queued);
+  v.beginAttempt(v.plan(0, true), 0);
+  CHECK(v.takeLive("m1", ev("m1", "medium"), EventTier::Medium, 0, 10) == TakeResult::Queued);
+  CHECK(v.shouldPreempt(20));
+  SenderPolicy w;
+  w.beginAttempt(w.plan(0, true), 0);
+  CHECK(w.inFlightKind() == PlanKind::PointsOnly);
+  CHECK(w.takeLocal(gripEv("grip-1a2b3c4d-1", true), 10) == TakeResult::Queued);
+  CHECK(w.shouldPreempt(20));
+}
+
+static void localEventsNeverProduceOutcomesForThePi() {
+  SenderPolicy s;
+  CHECK(s.takeLocal(gripEv("grip-1a2b3c4d-1", false), 0) == TakeResult::Queued);
+  attempt(s, 0, AttemptEnd::Delivered);
+  CHECK(s.takeLocal(gripEv("grip-1a2b3c4d-1", true), 10) == TakeResult::Queued);
+  attempt(s, 10, AttemptEnd::Rejected, "route_finished");
+  CHECK(s.takeLocal(gripEv("grip-1a2b3c4d-2", false), 20) == TakeResult::Queued);
+  attempt(s, 20, AttemptEnd::Failed, "timeout", 8000);
+  s.expire(60020);  // the critical's window: dropped, not dead-lettered
+  CHECK(!s.livePending());
+  CHECK(s.outcomeCount() == 0);  // no ACK, no FAIL: there is no Pi row behind them
+  CHECK(s.outcomeSeqEnd() == 0);
+  CHECK(s.bodiesDropped() == 0);
+}
+
+static void aLocalEventIsDroppedAndLoggedWhenItsWindowRunsOut() {
+  SenderPolicy s;
+  CHECK(s.takeLocal(gripEv("grip-1a2b3c4d-1", false), 1000) == TakeResult::Queued);
+  CHECK(s.takeLocal(gripEv("grip-1a2b3c4d-1", true), 5000) == TakeResult::Queued);
+  attempt(s, 1000, AttemptEnd::Failed, "no_network", 100);
+  LocalDrop d;
+  CHECK(!s.takeLocalDrop(d));
+  s.expire(34999);  // the OK's 30 s from 5000
+  CHECK(!s.takeLocalDrop(d));
+  s.expire(35000);
+  CHECK(s.takeLocalDrop(d));
+  CHECK(d.clientEventId == "grip-1a2b3c4d-1-ok" && d.tier == EventTier::Ok);
+  CHECK(d.why == "retry_window" && d.attempts == 0 && d.lastError.empty());
+  CHECK(!s.takeLocalDrop(d));
+  s.expire(60999);  // the alert's 60 s from 1000
+  CHECK(s.livePending());
+  s.expire(61000);
+  CHECK(!s.livePending());
+  CHECK(s.takeLocalDrop(d));
+  CHECK(d.clientEventId == "grip-1a2b3c4d-1-a" && d.tier == EventTier::Critical);
+  CHECK(d.why == "retry_window" && d.attempts == 1 && d.lastError == "no_network");
+  CHECK(s.outcomeCount() == 0);
+}
+
+static void aLocalEventInFlightIsNotExpiredUntilItsAttemptEnds() {
+  SenderPolicy s;
+  CHECK(s.takeLocal(gripEv("grip-1a2b3c4d-1", false), 0) == TakeResult::Queued);
+  s.beginAttempt(s.plan(59000, true), 59000);
+  s.expire(61000);
+  CHECK(s.livePending());
+  s.endAttempt(AttemptEnd::Failed, "timeout", 62000);
+  s.expire(62000);
+  CHECK(!s.livePending());
+  LocalDrop d;
+  CHECK(s.takeLocalDrop(d) && d.lastError == "timeout");
+}
+
+static void aNewerGripEpisodeReplacesAnOlderUnsentOne() {
+  SenderPolicy s;
+  CHECK(s.takeLocal(gripEv("grip-1a2b3c4d-1", false), 0) == TakeResult::Queued);
+  CHECK(s.takeLocal(gripEv("grip-1a2b3c4d-2", false), 4000) == TakeResult::Queued);
+  CHECK(s.liveSlot(SenderPolicy::kLocalAlertSlot).recordId == "grip-1a2b3c4d-2-a");
+  CHECK(s.liveSlot(SenderPolicy::kLocalAlertSlot).takenAtMs == 4000);
+  LocalDrop d;
+  CHECK(s.takeLocalDrop(d) && d.clientEventId == "grip-1a2b3c4d-1-a" && d.why == "replaced");
+  CHECK(liveUsed(s) == 1);
+  // The same event again is held once.
+  CHECK(s.takeLocal(gripEv("grip-1a2b3c4d-2", false), 4100) == TakeResult::AlreadyHeld);
+  CHECK(s.liveSlot(SenderPolicy::kLocalAlertSlot).takenAtMs == 4000);
+
+  // On its way, the older one can't be dropped: the new one is.
+  s.beginAttempt(s.plan(4200, true), 4200);
+  CHECK(s.takeLocal(gripEv("grip-1a2b3c4d-3", false), 4300) == TakeResult::Full);
+  CHECK(s.takeLocalDrop(d) && d.clientEventId == "grip-1a2b3c4d-3-a" && d.why == "slot_busy");
+  CHECK(s.liveSlot(SenderPolicy::kLocalAlertSlot).recordId == "grip-1a2b3c4d-2-a");
+}
+
+static void localSlotsAreTheirOwn() {
+  SenderPolicy s;
+  for (int i = 0; i < SenderPolicy::kLiveSlots; i++) {
+    std::string id = "m" + std::to_string(i);
+    CHECK(s.takeLive(id, ev(id.c_str(), "medium"), EventTier::Medium, 0, i) == TakeResult::Queued);
+  }
+  CHECK(s.takeLive("c1", ev("c1"), EventTier::Critical, 0, 100) == TakeResult::Full);
+  CHECK(s.takeLocal(gripEv("grip-1a2b3c4d-1", false), 100) == TakeResult::Queued);  // still room
+  CHECK(s.takeLocal(gripEv("grip-1a2b3c4d-1", true), 100) == TakeResult::Queued);
+  CHECK(liveUsed(s) == SenderPolicy::kAllLiveSlots);
+  CHECK(s.holds("grip-1a2b3c4d-1-a"));
+  CHECK(s.plan(100, true).slot == SenderPolicy::kLocalAlertSlot);  // the critical, before mediums
+}
+
+static void aLocalEventComesBeforeADeadLetter() {
+  SenderPolicy s;
+  CHECK(s.takeDlq("d1", ev("d1"), 90, 30, 1, 0) == TakeResult::Queued);
+  CHECK(s.takeLocal(gripEv("grip-1a2b3c4d-1", false), 10) == TakeResult::Queued);
+  CHECK(!s.dlqHeld());  // not on its way yet: back to the Pi at once (not an attempt)
+  CHECK(s.outcomeCount() == 1 && s.outcome(0).recordId == "d1");
+  CHECK(s.outcome(0).reason == "preempted");
+  CHECK(!s.wantsDlq());  // no DLQ 1 while a local event is held
+
+  SenderPolicy t;  // a replay on its way is pre-empted between AT steps
+  CHECK(t.takeDlq("d1", ev("d1"), 90, 30, 1, 0) == TakeResult::Queued);
+  t.beginAttempt(t.plan(0, true), 0);
+  CHECK(t.takeLocal(gripEv("grip-1a2b3c4d-1", true), 10) == TakeResult::Queued);
+  CHECK(t.dlqHeld());
+  CHECK(t.shouldPreempt(20));
+}
+
+static void localDropsKeepTheNewestWhenNobodyReadsThem() {
+  SenderPolicy s;
+  for (int i = 1; i <= SenderPolicy::kLocalDropSlots + 2; i++) {
+    std::string episode = "grip-1a2b3c4d-" + std::to_string(i);
+    CHECK(s.takeLocal(gripEv(episode.c_str(), false), i * 4000) == TakeResult::Queued);
+  }
+  CHECK(s.localDropsLost() == 1);  // 5 replaced, 4 slots
+  LocalDrop d;
+  CHECK(s.takeLocalDrop(d) && d.clientEventId == "grip-1a2b3c4d-2-a");
+}
+
 static void logLines() {
   CHECK(attemptLogLine(true, "critical", "3f2a9c", 3, 5, "gprs", 7400, "failed", "http_503") ==
         "[dlq] critical 3f2a9c attempt 3/5 via gprs 7.4 s: failed (http_503)");
@@ -564,6 +771,16 @@ int main() {
   RUN(slotsAreStaticAndBounded);
   RUN(survivesMillisWrap);
   RUN(beginAttemptIgnoresPlansWithNothingToSend);
+  RUN(aGripCriticalIsALiveCriticalOldestFirst);
+  RUN(aGripOkGoesAfterItsAlertAndBelowAPiMedium);
+  RUN(aGripCriticalPreemptsLowerAttemptsButNotACritical);
+  RUN(localEventsNeverProduceOutcomesForThePi);
+  RUN(aLocalEventIsDroppedAndLoggedWhenItsWindowRunsOut);
+  RUN(aLocalEventInFlightIsNotExpiredUntilItsAttemptEnds);
+  RUN(aNewerGripEpisodeReplacesAnOlderUnsentOne);
+  RUN(localSlotsAreTheirOwn);
+  RUN(aLocalEventComesBeforeADeadLetter);
+  RUN(localDropsKeepTheNewestWhenNobodyReadsThem);
   RUN(logLines);
   return report("sender_policy_host_test");
 }

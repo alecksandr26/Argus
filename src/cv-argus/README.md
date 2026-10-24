@@ -106,6 +106,7 @@ including model-artifact overrides not covered here).
 | `BLUETOOTH_SECURITY` | `medium` | RFCOMM security the ESP32's link must meet: `medium` = paired + encrypted (required: `CONFIG` sends the device key), `high` = also MITM-protected pairing (an ESP32 without display/keypad can't do it), `low` = anything in range, bench only. |
 | `ESP32_BT_MAC` | unset | This truck's ESP32 Bluetooth MAC (the ESP32 prints it at boot). With `bluez`, the only device that may pair; with either transport, the only one that may connect. Unset = nothing new can pair, any already-paired device may connect. |
 | `ARGUS_TRUCK_ID` / `ARGUS_DEVICE_API_KEY` / `ARGUS_BACKEND_URL` | unset | This truck's backend credentials, from `argus-device.env` — see "Provisioning a truck" below. All three or none; a partial set stops startup. |
+| `ARGUS_TRUCK_PLATE` / `ARGUS_ALERT_PHONE` | unset | Also from `argus-device.env`, sent in `CONFIG`: the plate the ESP32's critical-alert SMS names, and the E.164 phone it goes to (`+523312345678`; unset = no SMS). Optional, outside the three above. A phone that isn't E.164 is logged (masked) and left out, never a startup error; the full number is never logged. |
 | `ARGUS_WIFI_SSID` / `ARGUS_WIFI_PASSWORD` | unset | The WiFi the ESP32 falls back to (phone hotspot / 4G MiFi, 2.4 GHz). Set in `.env`, sent in `CONFIG`; used verbatim (spaces included). Unset = the ESP32's WiFi stays off. |
 | `ARGUS_GPRS_APN` / `ARGUS_GPRS_USER` / `ARGUS_GPRS_PASSWORD` | unset | The SIM's mobile-data APN. Set in `.env`, sent in `CONFIG`. Set = the ESP32 uses mobile data first, WiFi second; unset = WiFi only. Carrier values in `.env.example`. |
 
@@ -130,6 +131,11 @@ is the one that actually calls the backend (one firmware image fits every truck)
    gitignored and dockerignored: loaded at runtime only, never baked into the image), then
    `docker compose up -d`. The log shows `Device credentials loaded for truck <id>` (never the
    key).
+   The same file carries the truck's plate and, when the truck has one in the dashboard, the
+   phone for critical-alert SMS (`ARGUS_TRUCK_PLATE`, `ARGUS_ALERT_PHONE`). The log shows
+   `Critical-alert SMS go to +52******5678` (masked) or `No SMS alert phone`; a malformed phone
+   is a warning and means no SMS, not a failed start. Changed the phone later → generate new
+   credentials, or edit that line here and `docker compose up -d`.
    **The ESP32's network goes in this directory's `.env`** (not in `argus-device.env`, which
    the dashboard regenerates on every key rotation): `ARGUS_WIFI_SSID`/`ARGUS_WIFI_PASSWORD`
    for WiFi and/or `ARGUS_GPRS_APN` (+ `_USER`/`_PASSWORD`) for the SIM's mobile data — see

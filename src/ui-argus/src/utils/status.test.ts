@@ -65,6 +65,7 @@ describe('alertTypeLabel', () => {
     ['head_down', 'Head down'],
     ['head_down_eyes_closed', 'Head down, eyes closed'],
     ['no_face', 'Driver not visible'],
+    ['no_grip', 'Hands off the wheel'],
     ['panic_button', 'Panic button'],
   ])('labels %s as "%s"', (type, label) => {
     expect(alertTypeLabel(type)).toBe(label)

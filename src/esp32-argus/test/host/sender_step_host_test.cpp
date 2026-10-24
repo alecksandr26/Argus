@@ -267,6 +267,61 @@ static void aDlqReplaysQueuedSecondsIsMeasuredAtSend() {
   CHECK(d["event"]["delivery"] == "dlq");
 }
 
+// A grip alert (grip-alarm contracts C3): composed like a Pi event, never ACKed/FAILed to the Pi,
+// logged with its whole id.
+static void aLocalGripAlertGoesWithoutAPiOutcome() {
+  SenderPolicy s;
+  TrackBuffer t;
+  addPoints(t, 1, 0);
+  ReportEvent g;
+  g.clientEventId = "grip-1a2b3c4d-1-a";
+  g.episode = "grip-1a2b3c4d-1";
+  g.severity = "critical";
+  g.alertType = "no_grip";
+  g.position.known = true;
+  g.position.lat = 20.6597;
+  g.position.lon = -103.3496;
+  g.hasSpeed = true;
+  g.speedKmh = 72.5f;
+  CHECK(s.takeLocal(g, 1000) == TakeResult::Queued);
+  PreparedReport rep;
+  CHECK(prepareReport(s, t, 1200, rep));
+  CHECK(rep.hasEvent && rep.local && !rep.dlq && rep.tier == EventTier::Critical);
+  JsonDocument d;
+  CHECK(deserializeJson(d, composePreparedReport(rep, 3500)) == DeserializationError::Ok);
+  CHECK(d["event"]["client_event_id"] == "grip-1a2b3c4d-1-a");
+  CHECK(d["event"]["episode"] == "grip-1a2b3c4d-1");
+  CHECK(d["event"]["kind"] == "alert");
+  CHECK(d["event"]["severity"] == "critical");
+  CHECK(d["event"]["alert_type"] == "no_grip");
+  CHECK(d["event"]["delivery"] == "live");
+  CHECK_NEAR(d["event"]["age_s"].as<float>(), 2.5, 1e-3);  // from the moment it was raised
+  CHECK_NEAR(d["event"]["position"]["lat"].as<double>(), 20.6597, 1e-6);
+  CHECK_NEAR(d["event"]["speed"].as<float>(), 72.5, 1e-3);
+  CHECK(d["event"]["ai_metadata"].isNull());
+  ReportResult r = finishReport(s, t, rep, false, answer(200, CREATED, true), 4000);
+  CHECK(std::string(r.result) == "delivered");
+  CHECK(!s.livePending());
+  CHECK(s.outcomeCount() == 0);  // nothing for the Pi
+  CHECK(reportLogLine(rep, "gprs", 2800, r) ==
+        "[live] critical grip-1a2b3c4d-1-a attempt 1 via gprs 2.8 s: delivered");
+
+  // A grip OK that keeps failing is dropped at the end of its 30 s, still with no outcome.
+  ReportEvent ok;
+  ok.clientEventId = "grip-1a2b3c4d-1-ok";
+  ok.episode = "grip-1a2b3c4d-1";
+  ok.isOk = true;
+  CHECK(s.takeLocal(ok, 5000) == TakeResult::Queued);
+  CHECK(prepareReport(s, t, 5000, rep));
+  finishReport(s, t, rep, false, answer(-1, "", true, "no_network"), 5100);
+  CHECK(!prepareReport(s, t, 35000, rep) || !rep.hasEvent);  // expired in prepareReport
+  CHECK(!s.livePending());
+  CHECK(s.outcomeCount() == 0);
+  LocalDrop drop;
+  CHECK(s.takeLocalDrop(drop) && drop.clientEventId == "grip-1a2b3c4d-1-ok");
+  CHECK(drop.why == "retry_window" && drop.lastError == "no_network");
+}
+
 int main() {
   RUN(nothingDueMeansNoAttempt);
   RUN(aPointsOnlyReportCarriesEveryPoint);
@@ -281,5 +336,6 @@ int main() {
   RUN(anAnswerWithoutTheEventIsAFailedAttempt);
   RUN(agesAreMeasuredAtSendNotAtPlan);
   RUN(aDlqReplaysQueuedSecondsIsMeasuredAtSend);
+  RUN(aLocalGripAlertGoesWithoutAPiOutcome);
   return report("sender_step_host_test");
 }

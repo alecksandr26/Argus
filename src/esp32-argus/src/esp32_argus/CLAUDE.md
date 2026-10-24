@@ -1,11 +1,32 @@
 # CLAUDE.md — `esp32_argus` sketch
 
 Build/toolchain notes for compiling this sketch. For what the firmware *does* (Bluetooth
-protocol v2 with the Pi, the three tasks and the sender's rules, the report endpoint and its
-field mapping, GPS, the fusion design), see `../../README.md`; this file only covers getting it to
-compile and flash, and what has been verified where.
+protocol v2 with the Pi, the four tasks and the sender's rules, the report endpoint and its
+field mapping, GPS, the grip sensor / buzzer / SMS, the fusion design), see `../../README.md`;
+this file only covers getting it to compile and flash, and what has been verified where.
 
 ## Status
+
+- **The grip sensor, the cabin buzzer and the critical-alert SMS
+  (`docs/designs/grip-alarm-contracts.md`, README section 6) are written and host-tested only
+  (2026-10-23), never compiled for the ESP32.** That session had no Arduino toolchain: the
+  Arduino-side files it touched (`esp32_argus.ino`, `sms_modem.cpp`, `modem.cpp`, `buzzer.cpp`,
+  `grip_sensor.cpp`, `credentials.cpp`, `device_config.cpp`) were only checked with
+  `g++ -fsyntax-only` against a throwaway mock of the Arduino/FreeRTOS API, which proves nothing
+  about the real core. Run `../../test/compile.sh` before flashing, and expect: a new `gripTask`
+  (4 KB stack, priority 2, core 1, like `gpsTask`; its stack comes from the heap the Bluetooth
+  stack needs, so watch `heap free` and `grip` in the `[health]` line, and lower
+  `GRIP_TASK_STACK` once its high-water mark is known), about 3.5 KB more static RAM (sizeof on
+  the host: +1.6 KB in `SenderPolicy` for the two grip slots and the drop log, `SmsPolicy` 1.3 KB,
+  `AlarmPolicy` 0.6 KB), no new library (the SMS is raw AT; no TinyGsm). Things the mock can't
+  vouch for: `analogReadResolution()`/`analogRead()` on GPIO 34-39 with Bluetooth + WiFi on,
+  `esp_random()` (from the core's `esp_system.h`), and the `.ino`'s generated prototypes (every
+  type the new `.ino` functions use comes from a header, e.g. `CabinSignals` from
+  `cabin_signals.h`, so they shouldn't matter). New files: `grip_policy.*`, `alarm_policy.*`,
+  `buzzer.*`, `sms_policy.*`, `sms_modem.*`, `cabin_signals.*`, `episode_ring.h`;
+  `grip_sensor.*` was rewritten (analog, GPIO 34/35/36/39) and `GRIP_SENSOR_PIN 19` removed.
+  Nothing of it has run on hardware: the RFP602 threshold (500) and the SIM800L SMS need a bench
+  run.
 
 - **This firmware (the final tweaks: Bluetooth v2, one combined report, three tasks, no panic
   button) compiles but has not been flashed.** Last build, 2026-10-23, `../../test/compile.sh`
@@ -33,8 +54,11 @@ compile and flash, and what has been verified where.
   report endpoint); its own README says what has and hasn't run. Real NEO-6M positions
   (`--expect-location`) aren't verified yet. It needs `BENCH_FAKE_GPS 1` in `config.h` indoors;
   set it back to `0` for a real truck.
-- The pure modules are covered on the PC by `../../test/host/run.sh` (17 suites, `g++` only),
-  and mirrored in Python by `src/tests/edge_chain/esp32_sim.py`.
+- The pure modules are covered on the PC by `../../test/host/run.sh` (21 suites, `g++` only;
+  the grip-alarm work added `grip_policy`, `alarm_policy`, `sms_policy` and `cabin_signals` and
+  extended `device_config`, `sender_policy` and `sender_step`), and mirrored in Python by
+  `src/tests/edge_chain/esp32_sim.py` (which doesn't model the grip events, the buzzer or the SMS
+  yet).
 
 ## Toolchain setup (Arduino IDE 2.x)
 
@@ -70,9 +94,11 @@ compile and flash, and what has been verified where.
    (`../Codigo_SMS_GPS/` is a separate SIM800L/GPS bring-up sketch, not part of this build.)
 7. Set the Pi's Bluetooth MAC (and GPIO pins, if wired differently) in `config.h` before
    flashing, and `PI_BT_CHANNEL` to the Pi's `BLUETOOTH_CHANNEL` (4; `0` for the Windows bench,
-   see `../../test/hil/`). There's no WiFi network, APN, backend URL, device key, or route id to
-   set: those come from the Pi over Bluetooth (`CONFIG`) and from every report's answer (see
-   `../../README.md` sections 1b and 2). Compiling doesn't need real values.
+   see `../../test/hil/`). There's no WiFi network, APN, backend URL, device key, SMS phone or
+   route id to set: those come from the Pi over Bluetooth (`CONFIG`) and from every report's
+   answer (see `../../README.md` sections 1b and 2). Compiling doesn't need real values. The wheel
+   sensors go on GPIO 34/35/36/39 (`GRIP_SENSOR_PINS`, ADC1 only: ADC2 pins stop reading once
+   WiFi is on) and the buzzer on GPIO 13 (`BUZZER_PIN`).
 
 ## Errors already hit, and what they mean
 

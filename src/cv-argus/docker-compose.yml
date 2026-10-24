@@ -39,7 +39,8 @@ services:
       # This truck's backend credentials (ARGUS_TRUCK_ID / ARGUS_DEVICE_API_KEY /
       # ARGUS_BACKEND_URL), downloaded from the dashboard: Fleet -> truck -> "Generate device
       # credentials". Runtime-only: never a build arg, so the key is never baked into the image.
-      # cv-argus hands them to the ESP32 over Bluetooth (CONFIG). Don't add these three to the
+      # It also has the optional ARGUS_TRUCK_PLATE / ARGUS_ALERT_PHONE (critical-alert SMS).
+      # cv-argus hands them to the ESP32 over Bluetooth (CONFIG). Don't add these to the
       # `environment:` block below -- it would override this file with empty values.
       - path: argus-device.env
         required: false

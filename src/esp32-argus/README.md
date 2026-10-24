@@ -1,15 +1,17 @@
 # esp32-argus
 
 Per the root `CLAUDE.md`, this is the **"Message Sender Orchestrator"**: the device in the truck
-cabin that owns the hardware the Pi doesn't (the GPS module, the SIM800L modem, later the
-steering-wheel grip sensor, the alarm speaker and the CAN bus/AEB actuator) and is the only
-device that talks to the cloud backend. It has two jobs: pull the camera's records off the
-Raspberry Pi over Bluetooth, and send the backend one combined **report** at a time (the GPS
-points since the last report plus at most one event), with its own GPS position attached.
+cabin that owns the hardware the Pi doesn't (the GPS module, the SIM800L modem, the
+steering-wheel grip sensor, the cabin buzzer, later the CAN bus/AEB actuator) and is the only
+device that talks to the cloud backend. Its jobs: pull the camera's records off the Raspberry Pi
+over Bluetooth, and send the backend one combined **report** at a time (the GPS points since the
+last report plus at most one event), with its own GPS position attached; watch the driver's
+hands on the wheel; sound the buzzer; and send one SMS per critical alert.
 
 The contracts it implements are `docs/designs/final-tweaks-contracts.md` **C1** (Pi ↔ ESP32
-Bluetooth protocol v2) and **C2** (`POST /api/devices/me/report`). Where this file and that one
-differ, the contracts file wins.
+Bluetooth protocol v2) and **C2** (`POST /api/devices/me/report`), and
+`docs/designs/grip-alarm-contracts.md` **C1.4–C5** (the grip sensor, the buzzer and the
+critical-alert SMS, section 6). Where this file and those differ, the contracts files win.
 
 ## 0. Status
 
@@ -27,19 +29,25 @@ Real firmware: an **Arduino IDE multi-tab sketch**, `src/esp32_argus/esp32_argus
   endpoints and the panic button; none of that is in this firmware.
 - **Bluetooth v2 is not compatible with v1**: flash this firmware and deploy the matching Pi
   image (`src/cv-argus` with protocol v2) together.
+- **The grip sensor, the buzzer and the critical-alert SMS (section 6) are written and
+  host-tested only** (2026-10-23): not compiled for the ESP32 yet (the build numbers above are
+  from before them), not flashed, and nothing of it has run on hardware. The RFP602 threshold
+  (500) is the user's bench value, not tuned on the real wheel, and the SIM800L SMS path has
+  never been exercised by this firmware.
 
 **Files:**
 
 | File | Responsibility |
 |---|---|
-| `esp32_argus.ino` | `setup()`, the three tasks (`loop()`, `gpsTask`, `senderTask`, section 0b), the shared state behind `stateMutex`, the per-record and per-session log lines, the `[health]` line |
-| `config.h` | every pin, timing and tuning constant (contracts C4), plus the Pi's Bluetooth MAC; nothing per-truck or per-network |
-| `device_config.*` | pure parser for the Pi's `CONFIG` reply (backend URL, device API key, truck id, WiFi, APN); `sameBackendIdentity()` |
-| `credentials.*` | the credentials in use, cached in NVS, re-fetched from the Pi at every boot, after a 401 and every 10 min (section 1b); thread-safe copies |
+| `esp32_argus.ino` | `setup()`, the four tasks (`loop()`, `gpsTask`, `gripTask`, `senderTask`, section 0b), the shared state behind `stateMutex`, the hook that feeds each pulled record to the buzzer and the SMS queue, the SMS service between report attempts, the per-record and per-session log lines, the `[health]` line |
+| `config.h` | every pin, timing and tuning constant (contracts C4; the grip/buzzer/SMS ones from the grip-alarm contracts), plus the Pi's Bluetooth MAC; nothing per-truck or per-network |
+| `device_config.*` | pure parser for the Pi's `CONFIG` reply (backend URL, device API key, truck id, WiFi, APN, and the optional truck plate and SMS phone); `sameBackendIdentity()`, `isE164Phone()`, `maskPhone()` |
+| `credentials.*` | the credentials in use, cached in NVS, re-fetched from the Pi at every boot, after a 401 and every 10 min (section 1b); the plate and the SMS phone in RAM only; thread-safe copies |
 | `root_ca.h` | Amazon Root CA 1, pinned for `https://` backends over WiFi (the AWS CloudFront deployment) |
 | `gps_module.*` | NEO-6M over `TinyGPSPlus`: position, speed, GPS UTC time, a `[gps]` status line; only `gpsTask` calls it |
 | `gps_track.*` | pure: the track buffer (the points since the last report, newest `REPORT_MAX_POINTS` kept), the last known position (NVS blob, its age across reboots) and each point's `vigilance` |
-| `modem.*` | the SIM800L's UART and raw AT helpers (no TinyGsm), with the attempt's deadline applied to every wait and a cached registration state |
+| `modem.*` | the SIM800L's UART and raw AT helpers (no TinyGsm), with the attempt's deadline applied to every wait and a cached registration state; reads that keep a late `+HTTPACTION:` for `gprs_http` (used by the SMS) |
+| `sms_modem.*` | one SMS in text mode with raw AT (`AT+CMGF=1`, `AT+CSCS="GSM"`, `AT+CMGS`, Ctrl-Z, `+CMGS:`); the sender task only, between report attempts |
 | `gprs_http.*` | the report POST over the SIM800L's mobile data (`AT+SAPBR` bearer, `AT+HTTP*` with `AT+HTTPSSL=1`): the **first-choice** transport. Pre-emptible between AT steps, drains a late `+HTTPACTION` |
 | `wifi_client.*` | the **fallback** transport (a phone hotspot or a 4G MiFi): radio off until mobile data fails, non-blocking reconnect |
 | `backend_api.*` | `backendPostReport()`: one attempt with a real deadline; picks GPRS or WiFi, composes the body as late as possible (right before `AT+HTTPDATA` / `http.POST`), logs the request and the answer |
@@ -47,19 +55,26 @@ Real firmware: an **Arduino IDE multi-tab sketch**, `src/esp32_argus/esp32_argus
 | `ack_policy.*` | pure: what one report's answer means (C2.3): delivered / rejected / attempt failed, the active route, re-CONFIG on 401 |
 | `transport_policy.*` | pure: GPRS first with a WiFi hold-off after a mobile transport failure; the attempt timeouts; the `Deadline` |
 | `modem_parse.*` | pure: SIM800L response parsers; the late-`+HTTPACTION` verdict (`modem_busy`) |
-| `sender_policy.*` | pure: what the sender sends next and what happens to each event after each attempt (priority, pre-emption, retry windows, DLQ one try, outcomes for the Pi), in static slots |
+| `sender_policy.*` | pure: what the sender sends next and what happens to each event after each attempt (priority, pre-emption, retry windows, DLQ one try, outcomes for the Pi), in static slots; the grip events in two local slots of their own (no Pi outcome, dropped and logged at the end of their window) |
 | `sender_step.*` | pure: one attempt minus the I/O (prepare under the mutex, compose at send time, finish under the mutex) and its `[live]`/`[dlq]` log line |
 | `pi_record.*` / `pi_event_policy.*` | pure: parse one Pi record (unusable ones are ACKed away by id); the C1.5 event rule |
 | `pi_protocol.*` / `pull_session.*` | pure: the v2 client grammar (`PULL`/`DLQ 1`, `END`, `ACK`/`TAKEN`/`FAIL`, `OK`); what to do with each served record |
 | `bluetooth_client.*` | the Bluetooth I/O (`BluetoothSerial`): one fresh RFCOMM connection per session; reads the whole batch before handling it |
+| `grip_sensor.*` | the four RFP602 wheel sensors as 12-bit analog reads on GPIO 34/35/36/39; only `gripTask` calls it |
+| `grip_policy.*` | pure: the grip rule (3 s without pressure starts an episode, 300 ms of pressure ends it, the optional moving gate, the episode counter) and the `no_grip` alert / OK events with their ids |
+| `alarm_policy.*` / `buzzer.*` | pure: when the buzzer sounds (the grip alarm or the vision alarm: a live critical that isn't `no_face`, until the driver OK or the 5 min cap, once per episode); the buzzer's GPIO write |
+| `sms_policy.*` | pure: which criticals get an SMS (one per episode), the queue of 4, the retries and the pending timeout, the exact text |
+| `cabin_signals.*` | pure: the hook that hands each pulled Pi record, once classified and taken, to the vision alarm and the SMS queue |
+| `episode_ring.h` | the last 8 episode ids, for "already sounded / already had its SMS" |
 | `bounded_string.h` / `rtos_lock.h` | fixed-capacity strings for the static slots; a scoped FreeRTOS mutex lock |
-| `fusion.*` | `FusionOrchestrator`, a 1:1 C++ port of `cv-argus`'s `fusion_contract.py` (section 5); **not used while there's no grip sensor** |
-| `grip_sensor.*` | debounced digital input on a placeholder GPIO; not used yet |
+| `fusion.*` | `FusionOrchestrator`, a 1:1 C++ port of `cv-argus`'s `fusion_contract.py` (section 5); **not used**: the grip sensor is its own critical source (grip-alarm contracts C2) |
 
 `src/Codigo_SMS_GPS/Codigo_SMS_GPS.ino` is the original standalone SIM800L + NEO-6M prototype
-this firmware grew out of. It isn't part of the deployed firmware (which sends no SMS). Keep it
-as a **hardware bring-up sketch**: flash it first on a new harness to confirm the modem, SIM and
-GPS wiring before debugging the full firmware. Its modem and GPS pins match `config.h`.
+this firmware grew out of, and `test/bench/grip_sms_reference.ino` is the user's bench sketch for
+the wheel sensors, the buzzer and the SMS (TinyGsm, 1 s) that section 6 ports. Neither is part of
+the deployed firmware. Keep `Codigo_SMS_GPS` as a **hardware bring-up sketch**: flash it first on a
+new harness to confirm the modem, SIM and GPS wiring before debugging the full firmware. Its modem
+and GPS pins match `config.h`.
 
 **Network-path decision (user decision):** mobile data over the SIM800L's GPRS is the
 first-choice transport for the report POST, and WiFi (e.g. a phone hotspot or a 4G MiFi in the
@@ -100,10 +115,12 @@ Bluetooth Classic don't fit the default dual-OTA layout (`src/esp32_argus/CLAUDE
 toolchain details and the errors already hit).
 
 **Tests** live in `test/`:
-- `test/host/run.sh` compiles every pure module with `g++` and runs its host test on the PC (17
+- `test/host/run.sh` compiles every pure module with `g++` and runs its host test on the PC (21
   suites: the C1 grammar and record handling, the C1.5 event rule, the sender's priority,
-  pre-emption, retry windows and DLQ attempts, the report body and the answer's handling, the
-  attempt deadlines, the last known GPS position, the modem parsers, fusion). Needs only `g++`.
+  pre-emption, retry windows and DLQ attempts (and the grip events' local slots), the report body
+  and the answer's handling, the attempt deadlines, the last known GPS position, the modem
+  parsers, the CONFIG plate/phone, the grip rule, the buzzer's decision, the SMS queue and its
+  exact texts, the Pi-record hook with real record lines, fusion). Needs only `g++`.
 - `test/vectors/` holds the vectors shared with other suites: `event_vectors.json` (C1.5; cv-argus
   and `src/tests/edge_chain` replay it too) and `fusion_vectors.json`.
 - `test/compile.sh` builds the whole sketch for the real target with `arduino-cli` and prints our
@@ -115,38 +132,46 @@ toolchain details and the errors already hit).
 - `src/tests/edge_chain/` mirrors this firmware module for module in Python
   (`esp32_sim.py`) and runs it between cv-argus's real Pi server and backend-argus's real app.
 
-## 0b. How the firmware is built: three tasks, one shared state
+## 0b. How the firmware is built: four tasks, one shared state
 
 ```
             Bluetooth (RFCOMM)                                  GPRS (SIM800L) / WiFi
  Pi ◀──── loop() ─────────────▶ ┌────────────── stateMutex ──────────────┐ ◀──── senderTask ────▶ backend
-          PULL 8 / DLQ 1        │ SenderPolicy (live slots, DLQ slot,     │       POST /api/devices/me/report
-          ACK / TAKEN / FAIL    │   outcomes for the Pi, known route)     │
-                                │ TrackBuffer (points since last report)  │
- NEO-6M ──── gpsTask ─────────▶ │ VigilanceTracker, LastKnownPosition,    │
-          a read every 1 s      │ the newest GPS read                     │
-                                └─────────────────────────────────────────┘
+          PULL 8 / DLQ 1        │ SenderPolicy (live slots, 2 grip slots, │       POST /api/devices/me/report
+          ACK / TAKEN / FAIL    │   DLQ slot, outcomes for the Pi, route) │
+                                │ TrackBuffer (points since last report)  │       SMS (AT+CMGS), between
+ NEO-6M ──── gpsTask ─────────▶ │ VigilanceTracker, LastKnownPosition,    │ ◀──── report attempts ──▶ phone
+          a read every 1 s      │   the newest GPS read                   │
+                                │ AlarmPolicy (grip or vision alarm)      │
+ RFP602 x4 ── gripTask ───────▶ │ SmsPolicy (SMS queue, episode ring)     │
+ buzzer ◀──  every 100 ms       └─────────────────────────────────────────┘
 ```
 
 - **`loop()`** (the Arduino loop task) talks to the Pi: every `PI_BT_POLL_INTERVAL_MS` (2 s) a
   `PULL 8` session, then `DLQ 1` when the Pi holds dead letters and no live event is pending
   (section 1). It fetches `CONFIG` when the credentials are stale. It never calls the backend:
-  a session takes well under a second, far inside the Pi's 30 s wait for the report lines.
+  a session takes well under a second, far inside the Pi's 30 s wait for the report lines. Each
+  record it classifies also goes to the vision alarm and the SMS queue (section 6).
 - **`gpsTask`** (priority 2, so its reads stay on time) drains the NEO-6M continuously and reads
   it every `GPS_READ_INTERVAL_MS` (1 s): one point per read into the track buffer (section 3).
   It saves the last known position to NVS.
+- **`gripTask`** (priority 2 too) reads the four wheel sensors every `GRIP_SAMPLE_INTERVAL_MS`
+  (100 ms), raises the grip episodes' events and SMS, and drives the buzzer (section 6).
 - **`senderTask`** is **the only code that touches the modem, WiFi or HTTP**. One report per
-  POST, by the rules below.
+  POST, by the rules below; between report attempts it sends the waiting SMS (section 6).
 
-The three share one state behind **one FreeRTOS mutex, `stateMutex`**, held only for short,
+The four share one state behind **one FreeRTOS mutex, `stateMutex`**, held only for short,
 I/O-free critical sections: no task holds it across a Bluetooth exchange, an NVS write or an
-HTTP attempt. The sender copies what it needs under the lock (`prepareReport()`), sends with the
-lock released, then applies the answer under the lock again (`finishReport()`); between AT
-steps it takes the lock briefly to ask whether a higher event pre-empts it. Everything the
-tasks share lives in **static slots** (fixed-capacity strings, `bounded_string.h`):
-`SENDER_LIVE_SLOTS` (8) live events, one DLQ slot, `SENDER_OUTCOME_SLOTS` (16) outcomes for the
-Pi, `REPORT_MAX_POINTS` (10) track points. A full live pool leaves a new event on the Pi (not
-TAKEN; it is served again). Every busy-wait yields (`vTaskDelay(1)`), and a `std::bad_alloc` ends
+HTTP attempt, an SMS or an ADC read. The sender copies what it needs under the lock
+(`prepareReport()`), sends with the lock released, then applies the answer under the lock again
+(`finishReport()`); between AT steps it takes the lock briefly to ask whether a higher event
+pre-empts it. The SMS goes the same way (copy the message, send, apply the result). The
+credentials have their own mutex, never taken while `stateMutex` is held. Everything the tasks
+share lives in **static slots** (fixed-capacity strings, `bounded_string.h`):
+`SENDER_LIVE_SLOTS` (8) live events from the Pi plus two for the grip events, one DLQ slot,
+`SENDER_OUTCOME_SLOTS` (6) outcomes for the Pi, `REPORT_MAX_POINTS` (10) track points,
+`SMS_QUEUE_SLOTS` (4) SMS. A full live pool leaves a new event on the Pi (not TAKEN; it is served
+again). Every busy-wait yields (`vTaskDelay(1)`), and a `std::bad_alloc` ends
 the attempt or session as not made instead of rebooting.
 
 **The sender's rules** (`sender_policy.h`, contracts C1.8/C2.3/C4):
@@ -160,7 +185,9 @@ the attempt or session as not made instead of rebooting.
 - **Priority.** live CRITICAL > live MEDIUM > live OK > the one DLQ critical, which goes only
   when no live event is held. Same tier: the one taken first. A live event whose attempt failed
   is retried no sooner than `MIN_SEND_GAP_MS` (1 s) after *its own* attempt ended; a brand-new
-  event goes at once; a DLQ replay waits 1 s after any failed attempt.
+  event goes at once; a DLQ replay waits 1 s after any failed attempt. A grip alert is a live
+  CRITICAL and a grip OK a live OK, ranked with the Pi's events by the moment they were raised
+  (section 6).
 - **Pre-emption, only between AT steps** (never after `AT+HTTPACTION` fired the request; a WiFi
   attempt is asked once, before it starts). A higher live event pre-empts a lower one; a
   critical is never pre-empted, not even by another critical; any live event pre-empts a
@@ -188,6 +215,7 @@ the attempt or session as not made instead of rebooting.
   | CRITICAL | `LIVE_RETRY_CRITICAL_MS` 60 s | to the Pi's DLQ: `FAIL <id> <last error> <event JSON>` (attempt 1 there; `retry_window` if it never got an attempt) |
   | MEDIUM | `LIVE_RETRY_MEDIUM_MS` 30 s | dropped: `FAIL <id> retry_window -` (the Pi archives it) |
   | OK | `LIVE_RETRY_OK_MS` 30 s | dropped: `FAIL <id> retry_window -` |
+  | grip alert / grip OK | 60 s / 30 s, from when it was raised | dropped with a `[live] ... dropped` line: no Pi row, so no DLQ (a known gap) |
 
 - **The GPS points of a failed report are dropped** (user decision: the path has gaps after
   failures). Only a *pre-empted* report gives them back.
@@ -213,7 +241,17 @@ the attempt or session as not made instead of rebooting.
 [live] critical 3f2a9c1d attempt 1 via gprs 5.1 s: delivered
 [live] points x5 attempt 1 via wifi 0.6 s: ok
 [dlq] critical 7b01e2aa attempt 3/5 via gprs 15.0 s: failed (timeout)
-[health] heap free 61234 B, min ever 40112 B, largest block 38900 B | stack left: sender 5120 B, loop 3010 B, gps 2100 B | held: 1 live, 0 dlq, 2 outcome(s) for the Pi (0 lost, 0 bodies cut) | route active
+[grip] S1=12 S2=0 S3=31 S4=7 (threshold 500) -> no pressure
+!!! No pressure on the steering wheel for 3.0 s -- episode grip-1a2b3c4d-1
+[grip] Grip alarm on; critical no_grip for the backend queued
+[sms] SMS queued for episode grip-1a2b3c4d-1
+[alarm] Buzzer ON (hands off the wheel)
+[live] critical grip-1a2b3c4d-1-a attempt 1 via gprs 4.8 s: delivered
+[sms] -> +52******5678 (attempt 1/3): ARGUS ALERTA CRITICA: manos fuera del volante. Camion JAL-123-A. https://maps.google.com/?q=20.659712,-103.349612
+[sms] Sent for episode grip-1a2b3c4d-1 in 4.1 s
+[grip] Pressure back -- episode grip-1a2b3c4d-1 over: grip alarm off; OK for the backend queued
+[alarm] Buzzer off
+[health] heap free 61234 B, min ever 40112 B, largest block 38900 B | stack left: sender 5120 B, loop 3010 B, gps 2100 B, grip 2600 B | held: 1 live + 0 grip, 0 dlq, 2 outcome(s) for the Pi (0 lost, 0 bodies cut) | route active | 0 SMS waiting | buzzer off
 ```
 
 - `[live]` / `[dlq]`: one line per attempt with what it carried (`critical`/`medium`/`ok`,
@@ -227,7 +265,10 @@ the attempt or session as not made instead of rebooting.
   show the camera's state every 2 s). `[bt]`: one line per session that did something, plus a
   link summary every 30 s. `[gps]`: the NEO-6M's state every 10 s. `[net]`: why there's no
   network, at most every 30 s. `[gprs]` / `[modem]`: the mobile-data steps and the modem's
-  state. `[creds]`: where the credentials came from (never the key itself).
+  state. `[creds]`: where the credentials came from (never the key itself; the SMS phone only
+  masked). `[grip]`: the four raw readings every 2 s and each episode's start and end. `[alarm]`:
+  the vision alarm and the buzzer turning on/off. `[sms]`: each SMS queued, sent, retried or
+  dropped (the phone masked).
 
 ## 1. Bluetooth SPP client: pulling from `cv-argus` (protocol v2, contracts C1)
 
@@ -331,7 +372,8 @@ it to this device over the same Bluetooth link, as a config session:
 you  -> Pi:   CONFIG\n
 Pi   -> you:  CONFIG {"truck_id":"...","device_api_key":"...","backend_url":"https://...",
                       "wifi_ssid":"...","wifi_password":"...","gprs_apn":"...",
-                      "gprs_user":"...","gprs_password":"..."}\n
+                      "gprs_user":"...","gprs_password":"...",
+                      "truck_plate":"JAL-123-A","alert_phone":"+523312345678"}\n
               or NOCONFIG\n                 (no argus-device.env on the Pi yet)
 ```
 
@@ -340,6 +382,16 @@ The five network fields are optional and come from the Pi's own `.env` (`ARGUS_W
 `argus-device.env`, which the dashboard regenerates on every key rotation. Absent WiFi = WiFi
 stays off; absent APN = no mobile data. Values are used verbatim (an SSID may end in a space).
 A new SSID makes `wifi_client.cpp` reconnect; a new APN makes `gprs_http.cpp` reopen the bearer.
+
+`truck_plate` and `alert_phone` (grip-alarm contracts C1.4) are optional too, from
+`argus-device.env` (`ARGUS_TRUCK_PLATE`, `ARGUS_ALERT_PHONE`, written by the dashboard): the
+plate names the truck in the SMS, the phone is where the critical-alert SMS goes (section 6). A
+plate longer than 16 chars, or a phone that isn't E.164 (`^\+[1-9][0-9]{7,14}$`), is **ignored,
+never a reason to reject the line**: the credentials still apply. Both are kept in **RAM only**
+(the phone is personal data): they never go to NVS, so after a reboot there is no SMS until the
+next `CONFIG` succeeds (it is fetched at every boot), and the phone is only ever logged masked
+(`+52******5678`). Neither is part of `sameBackendIdentity()`: a new plate or phone keeps the
+known route.
 
 When this device asks (`refreshCredentialsIfStale()` in the main sketch, before a pull):
 - **every boot**, so a key rotated in the dashboard reaches the truck after the Pi restarts;
@@ -394,15 +446,15 @@ still exists but isn't used).
 | `points[].last_known`, `.location_age_s` | `true` and the fix's age when there's no current fix; `false` and `0` for a live fix |
 | `points[].vigilance` | the Pi's latest severity at that read: `none`/`low` → `low`, `medium`, `critical`; `unknown` when no Pi record arrived for `PI_STALE_MS` (10 s) or none since boot |
 | `event` | at most one, from the sender's priority (section 0b); absent on a points-only or liveness report |
-| `event.client_event_id` | the Pi record's `id` (the backend's dedup key; the Pi's `ACK`/`FAIL` id) |
-| `event.episode` | `payload.episode`; the record id when the Pi sent none |
+| `event.client_event_id` | the Pi record's `id` (the backend's dedup key; the Pi's `ACK`/`FAIL` id); a grip event's `grip-<boot>-<n>-a` / `-ok` (section 6) |
+| `event.episode` | `payload.episode`; the record id when the Pi sent none; a grip event's `grip-<boot>-<n>` |
 | `event.kind` | `alert` or `ok`, by the C1.5 rule (section 1) |
-| `event.severity`, `event.alert_type` | alerts: `medium`/`critical` and `payload.reason` (its `class_name` when there's no reason); `null` for `ok` |
+| `event.severity`, `event.alert_type` | alerts: `medium`/`critical` and `payload.reason` (its `class_name` when there's no reason); a grip alert `critical` / `no_grip`; `null` for `ok` |
 | `event.age_s` | the record's `age_s` (from the Pi) plus the time held here until the body is composed |
 | `event.delivery`, `event.queued_seconds` | `live` and `0`; a replay: `dlq` and `dlq.queued_s` plus the time held here |
 | `event.position` | `{lat, lon, last_known, location_age_s}` when the event was first composed (the current fix, else the last known position), or `null` ("position unknown"); a replay keeps the stored one |
 | `event.speed` | km/h with a current fix at compose time, else `null` |
-| `event.ai_metadata` | `{model: payload.model, scores: {not_drowsy, drowsy}}` from `payload.probabilities`; `scores: null` when the Pi sent none (`No Face`) |
+| `event.ai_metadata` | `{model: payload.model, scores: {not_drowsy, drowsy}}` from `payload.probabilities`; `scores: null` when the Pi sent none (`No Face`); `null` for a grip event |
 
 **Response and reaction** (C2.2/C2.3; `ack_policy.cpp`). Once the key and the envelope are
 valid, the backend always answers **200** with a result per part: `{points: {stored, route,
@@ -449,24 +501,34 @@ got through.
 Per the root `CLAUDE.md` and `docs/designs/semantic-design`, this device owns:
 
 - **GPS** (NEO-6M): sections 3 and 0b.
-- **SIM800L modem**: mobile data only (`gprs_http.*`). It sends no SMS.
-- **Grip sensor** (steering wheel): would feed this device's own fusion decision loop (section
-  5). `grip_sensor.*` exists (a debounced digital input on `GRIP_SENSOR_PIN`), but the GPIO and
-  signal convention are a **placeholder**, not a verified mapping (see `config.h`; GPIO 34-39
-  are avoided because they have no internal pull-up). Not wired yet.
-- **CAN bus / AEB actuator** (preventive braking) and **alarm speaker**: **no code anywhere in
-  this repo** yet; out of scope so far.
+- **SIM800L modem**: mobile data (`gprs_http.*`) and the critical-alert SMS (`sms_modem.*`,
+  section 6).
+- **Grip sensor** (steering wheel): four RFP602 pressure sensors, analog, read by `gripTask`
+  (section 6). Grip is its own critical source; it doesn't feed `fusion.*` (section 5).
+- **Cabin buzzer**: an active buzzer on GPIO 13 (section 6).
+- **CAN bus / AEB actuator** (preventive braking): **no code anywhere in this repo** yet; out of
+  scope so far.
+
+| Pin | Use |
+|---|---|
+| 34, 35, 36, 39 | RFP602 wheel sensors (ADC1, analog input, 12-bit) |
+| 13 | buzzer (output, `BUZZER_ACTIVE_HIGH 1`) |
+| 26 / 27, 4, 5, 23 | SIM800L RX / TX, PWKEY, RST, POWER_ON |
+| 32 / 33 | NEO-6M RX / TX |
 
 The panic button and its SMS were removed (final-tweaks plan, section 1): its pins, its NVS queue
 and its alerts are gone from the firmware; `setup()` powers the modem directly
-(`modemBegin()`). At boot the firmware deletes the v1 NVS keys `episodes` and `panics`.
+(`modemBegin()`). At boot the firmware deletes the v1 NVS keys `episodes` and `panics`. The old
+digital `GRIP_SENSOR_PIN 19` is gone too (the grip sensor is analog now).
 
-## 5. Grip sensor + drowsiness fusion: the design for when the sensor is wired
+## 5. Grip sensor + drowsiness fusion: a design kept for later
 
-> **Not in use** (user decision, 2026-10-20): the grip sensor isn't wired, so events follow the
-> Pi's own severity (section 1, C1.5). This section is the design for when the sensor is added.
-> When it is, the fused decisions must map onto the same report events (`kind: alert` medium /
-> critical, `kind: ok`), not onto the retired per-message endpoints.
+> **Not in use** (user decisions, 2026-10-20 and 2026-10-23): camera events follow the Pi's own
+> severity (section 1, C1.5), and the grip sensor, now wired, is its own critical source by the
+> user's rule (section 6, grip-alarm contracts C2), not an input to this state machine. This
+> section is kept for a later decision on fusing the two. If that comes, the fused decisions must
+> map onto the same report events (`kind: alert` medium / critical, `kind: ok`), not onto the
+> retired per-message endpoints.
 
 This is the fused severity decision this device computes from two inputs it alone has both of:
 the Pi's relayed drowsiness classification and its own live grip-sensor reading. Modeled on
@@ -506,6 +568,106 @@ re-deriving them from the matrix below.
   dashboard.
 - **Failed sends are retried, never dropped**: a raise stays owed until it is confirmed sent,
   and a newer raise (an escalation) replaces an older owed one (`recordAlertPosted()`).
+
+## 6. Grip sensor, cabin buzzer and critical-alert SMS (grip-alarm contracts C2–C5)
+
+The user's rules, ported from their bench sketch (`test/bench/grip_sms_reference.ino`): no
+pressure on the wheel for 3 s is a critical (backend alert, buzzer, one SMS) and pressure back
+stops the grip alarm; a critical from the camera sounds the buzzer and sends one SMS, and the
+Pi's driver OK stops it; `no_face` never sounds the buzzer (it still gets its SMS); one SMS per
+critical alert, to the phone set in the dashboard (Fleet truck form → `argus-device.env` →
+the Pi → `CONFIG` → this device, RAM only, section 1b).
+
+**The grip sensor** (`grip_sensor.*`, `grip_policy.*`; `gripTask`):
+
+- Four RFP602 on GPIO 34/35/36/39 (ADC1, which keeps working with Bluetooth/WiFi on),
+  `analogReadResolution(12)`. **Pressure = any sensor above `GRIP_PRESSURE_THRESHOLD` (500)**.
+  Sampled every `GRIP_SAMPLE_INTERVAL_MS` (100 ms); the four raw readings go to Serial every
+  `GRIP_LOG_INTERVAL_MS` (2 s), not every sample.
+- **No pressure continuously for `GRIP_ALERT_MS` (3 s)** starts a grip episode: the grip alarm
+  turns on, one live critical goes to the sender, one SMS is queued.
+- **Pressure back for `GRIP_RECOVERY_MS` (300 ms)** ends it at once: the grip alarm turns off and
+  one live OK of the same episode goes. The next 3 s without pressure start a new episode.
+- `GRIP_REQUIRE_MOVING` (default `0`, the user's rule as given): with `1`, the 3 s timer only runs
+  while the GPS has a current fix with at least `GRIP_MIN_SPEED_KMH` (5 km/h), so a parked truck
+  doesn't alarm. A stop resets the timer; an episode already running still ends only on pressure.
+
+**Grip events to the backend** (C3; `sender_policy.*`'s local slots). Raised by this device, so
+they are **not Pi records**: no `TAKEN`/`ACK`/`FAIL` for them.
+
+| | Alert | OK |
+|---|---|---|
+| `kind`, `severity`, `alert_type` | `alert`, `critical`, `no_grip` | `ok`, `null`, `null` |
+| `episode` | `grip-<boot>-<n>` | the same |
+| `client_event_id` | `grip-<boot>-<n>-a` | `grip-<boot>-<n>-ok` |
+| sender tier, retry window | live CRITICAL, 60 s | live OK, 30 s |
+
+`<boot>` is 8 hex digits of `esp_random()` taken at boot (with the radio on), so ids never repeat
+across reboots; `<n>` counts episodes from 1. `age_s` grows from the moment the event was raised;
+`position`/`speed` are the GPS at that moment (the last known position without a fix, `null`
+with neither); `ai_metadata` is `null`. Two static slots, one alert and one OK: a newer episode's
+event replaces an older unsent one (dropped and logged); if the older one is on its way, the new
+one is the one dropped. **When the retry window runs out the event is dropped with a
+`[live] ... dropped` line**: there is no Pi DLQ behind it.
+
+**The buzzer** (`alarm_policy.*`, `buzzer.*`): GPIO 13, `BUZZER_ACTIVE_HIGH 1`, a continuous tone
+**while the grip alarm or the vision alarm is on**. `gripTask` applies it every 100 ms.
+
+- The **vision alarm** turns on when this device takes (`TAKEN`) a **live** Pi record classified
+  as a critical alert (C1.5) whose reason isn't `no_face` (`eyes_closed`, `yawn_eyes_closed`,
+  `head_down`, `head_down_eyes_closed`, or any other). It turns off on a live **driver OK** of
+  that episode (an older episode's OK served again doesn't silence a newer alarm), or after
+  `VISION_ALARM_MAX_MS` (5 min) as a safety cap if the Pi never sends one.
+- A **medium never sounds**; a **DLQ replay never sounds**. Each episode sounds **at most once**
+  (a ring of the last 8): a record the Pi serves again after its lease lapsed (same record, same
+  episode), or a second critical of the same episode, can't restart an alarm the driver OK (or
+  the cap) already ended.
+
+**The SMS** (`sms_policy.*`, `sms_modem.*`):
+
+- **One per critical episode**: each grip episode, and each Pi critical episode first taken live
+  (a ring of the last 8 Pi episodes dedupes a record served again and the episode's later
+  criticals). Not for a medium, an OK or a DLQ replay. `SMS_ON_NO_FACE 1`: a `no_face` critical
+  gets its SMS.
+- Only with an alert phone from `CONFIG`; without one the episode is logged once
+  (`[sms] No SMS alert phone set ...`) and skipped.
+- Text, plain GSM-7 ASCII, at most 160 chars:
+  `ARGUS ALERTA CRITICA: <motivo>. Camion <plate, else the truck id>. https://maps.google.com/?q=<lat>,<lon>`
+  (6 decimals, the event's position), or `... Camion <...>. Ubicacion desconocida.` with no
+  position (it never waits for a fix). Motivos: `eyes_closed` → `ojos cerrados`,
+  `yawn_eyes_closed` → `ojos cerrados tras bostezo`, `head_down` → `cabeza abajo`,
+  `head_down_eyes_closed` → `cabeza abajo y ojos cerrados`, `no_face` → `conductor no visible`,
+  `no_grip` → `manos fuera del volante`, anything else → the raw reason (a character that isn't
+  the same in GSM-7, like `_`, becomes a space). The vehicle is cut to 24 chars and the motive to
+  what then fits, so the link always fits whole.
+- **Sent by the sender task** (the only modem owner), between report attempts, never in the
+  middle of an HTTP request: `AT+CMGF=1`, `AT+CSCS="GSM"`, `AT+CMGS="<phone>"`, the text after
+  `>`, Ctrl-Z, then `+CMGS:` and `OK` (up to `SMS_SEND_TIMEOUT_MS`, 60 s). Its reads keep a late
+  `+HTTPACTION:` for `gprs_http`, so an SMS doesn't swallow a timed-out request's result.
+- Needs the modem **registered on the GSM network**, with or without an APN: `setup()` always
+  powers the SIM800L, which registers by itself, so a WiFi-only install still sends SMS when a
+  phone is set. The registration is checked (`AT+CREG?`, cached 10 s) only while an SMS waits.
+- A queue of `SMS_QUEUE_SLOTS` (4), deduped by episode; a new one when full drops the oldest
+  waiting one (logged). `SMS_MAX_ATTEMPTS` (3) tries, `SMS_RETRY_GAP_MS` (10 s) apart; a message
+  still unsent `SMS_PENDING_MAX_MS` (5 min) after it was queued (no registration, or retries) is
+  dropped (logged).
+
+**Known gaps** (none of this has run on hardware):
+
+- **Grip events have no DLQ**: a grip alert the backend couldn't get within 60 s is gone (only
+  its `[live] ... dropped` line remains). Its buzzer and SMS don't depend on the backend.
+- **The threshold (500) is untuned**: it is the bench sketch's value; the real wheel, the sensors'
+  mounting and gloves can move it a lot. Watch the `[grip]` readings on the bench and set
+  `GRIP_PRESSURE_THRESHOLD` from them.
+- **Nothing has run on hardware**: the four ADC reads with Bluetooth + WiFi on, the buzzer, the
+  SIM800L SMS (text mode, `+CMGS`), the SMS while GPRS data is in use, and `gripTask`'s stack
+  (watch `grip` in the `[health]` line). Not compiled for the ESP32 yet either.
+- An SMS holds the sender task while it goes (a few seconds, at most ~70 s): a live event raised
+  meanwhile waits for it.
+- After a reboot there is no SMS until the next `CONFIG` succeeds (the phone is RAM only, by
+  contract).
+- `src/tests/edge_chain/esp32_sim.py` (the Python mirror of this firmware) doesn't model the grip
+  events, the buzzer or the SMS.
 
 ## Why Bluetooth, not the CAN bus/UART, for the Pi link
 

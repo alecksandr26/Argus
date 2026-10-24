@@ -65,8 +65,9 @@
 #define LIVE_RETRY_CRITICAL_MS 60000UL
 #define LIVE_RETRY_MEDIUM_MS 30000UL
 #define LIVE_RETRY_OK_MS 30000UL
-// Live events held at once (static slots). One alert per incident keeps this far from full; when
-// it is full a new event isn't TAKEN and stays on the Pi, which serves it again.
+// Live events from the Pi held at once (static slots). One alert per incident keeps this far from
+// full; when it is full a new event isn't TAKEN and stays on the Pi, which serves it again. The
+// grip sensor's own events have two more slots of their own (one alert, one OK: sender_policy.h).
 #define SENDER_LIVE_SLOTS 8
 // Reports to the Pi (ACK/FAIL of finished events) waiting for the next Bluetooth session. Each
 // slot carries a 640 B event body, so 16 cost ~12 KB of RAM the Bluetooth stack needs; with one
@@ -159,8 +160,9 @@
 #define NET_STATUS_LOG_INTERVAL_MS 30000UL
 
 // =====================================================
-// Grip + drowsiness fusion (fusion.*) -- NOT USED while there's no grip sensor: alerts follow the
-// Pi's own severity (pi_event_policy.h). Kept for when the sensor is wired.
+// Grip + drowsiness fusion (fusion.*) -- NOT USED: camera alerts follow the Pi's own severity
+// (pi_event_policy.h), and the grip sensor is its own critical source (grip_policy.h, contracts
+// C2). Kept for a later decision on fusing the two.
 // DROWSY_PROBABILITY_THRESHOLD: cv-argus's RULE_P_DROWSY is built around it (LOW 0.30 below,
 // MEDIUM/CRITICAL 0.75/0.95 at or above; tests/test_constants.py guards that side).
 // =====================================================
@@ -179,8 +181,8 @@
 // Hardware pins
 // =====================================================
 
-// SIM800L -- mobile data only (gprs_http.h); the panic SMS is gone with the panic button. Pins as
-// originally wired.
+// SIM800L -- mobile data (gprs_http.h) and the critical-alert SMS (sms_modem.h; the old panic SMS
+// went with the panic button). Pins as originally wired.
 #define MODEM_RST 5
 #define MODEM_PWKEY 4
 #define MODEM_POWER_ON 23
@@ -202,8 +204,60 @@
 #define BENCH_GPS_LON -103.3496
 #define GPS_LOG_INTERVAL_MS 10000UL // gpsLogStatus() cadence on Serial
 
-// Grip sensor -- GPIO mapping not finalized against real hardware yet (src/esp32-argus/README.md
-// section 4). Wired as an active-low digital input with an internal pull-up. Not GPIO 34-39: those
-// pins are input-only and have no internal pull-up, so INPUT_PULLUP silently does nothing on them.
-// (The panic button and its SMS were removed: final-tweaks plan, section 1.)
-#define GRIP_SENSOR_PIN 19
+// =====================================================
+// Steering-wheel grip sensor (docs/designs/grip-alarm-contracts.md C2) -- four RFP602 pressure
+// sensors on the wheel, read as analog inputs (grip_sensor.h, grip_policy.h). ADC1 pins, which
+// keep working while Bluetooth/WiFi are on (ADC2 doesn't with WiFi). Input-only pins are fine
+// here: an analog read needs no pull-up. The old digital GRIP_SENSOR_PIN (19) is gone.
+// =====================================================
+#define GRIP_SENSOR_COUNT 4
+#define GRIP_SENSOR_PINS { 34, 35, 36, 39 }
+// Pressure = any sensor reads above this (12-bit ADC, 0..4095). From the user's bench sketch;
+// NOT tuned against the real wheel yet.
+#define GRIP_PRESSURE_THRESHOLD 500
+#define GRIP_SAMPLE_INTERVAL_MS 100UL
+// The four raw readings go to Serial at most this often, not every sample.
+#define GRIP_LOG_INTERVAL_MS 2000UL
+// No pressure continuously this long starts a grip episode: the buzzer, one live critical
+// ("no_grip") for the backend and one SMS.
+#define GRIP_ALERT_MS 3000UL
+// Pressure back this long ends the episode: the grip alarm stops at once, one live OK goes.
+#define GRIP_RECOVERY_MS 300UL
+// 1 = the GRIP_ALERT_MS timer only runs while the GPS speed is at least GRIP_MIN_SPEED_KMH (with
+// a current fix), so a parked truck doesn't alarm. 0 (the user's rule as given) = it always runs.
+#define GRIP_REQUIRE_MOVING 0
+#define GRIP_MIN_SPEED_KMH 5.0f
+#define GRIP_TASK_STACK 4096
+
+// =====================================================
+// Cabin buzzer (contracts C4) -- an active buzzer: a continuous tone while its pin is on. On
+// while the grip alarm or the vision alarm is (alarm_policy.h).
+// =====================================================
+#define BUZZER_PIN 13
+#define BUZZER_ACTIVE_HIGH 1
+// A vision alarm (a live critical from the camera, not no_face) stops on the Pi's driver OK, or
+// after this long as a safety cap if that OK never comes.
+#define VISION_ALARM_MAX_MS 300000UL
+
+// =====================================================
+// Critical-alert SMS (contracts C5) -- one SMS per critical episode (a grip episode, or a Pi
+// critical first taken live) to the phone the Pi sends in CONFIG (ARGUS_ALERT_PHONE, RAM only).
+// Sent by the sender task with raw AT on the SIM800L, between report attempts (sms_policy.h,
+// sms_modem.h). Needs the modem registered on the GSM network; no APN is needed.
+// =====================================================
+// 1 = a no_face critical gets its SMS too (it never sounds the buzzer).
+#define SMS_ON_NO_FACE 1
+// Messages waiting at once; a new one when full drops the oldest waiting one (logged).
+#define SMS_QUEUE_SLOTS 4
+// The last this many Pi episodes that got (or skipped) their SMS: a re-pulled record or the same
+// episode's later critical sends nothing.
+#define SMS_EPISODE_MEMORY 8
+#define SMS_MAX_ATTEMPTS 3
+#define SMS_RETRY_GAP_MS 10000UL
+// A message still unsent this long after it was queued (no GSM registration, or retries) is
+// dropped (logged): never wait forever.
+#define SMS_PENDING_MAX_MS 300000UL
+// The wait for "+CMGS:" after the text is submitted (Ctrl-Z).
+#define SMS_SEND_TIMEOUT_MS 60000UL
+// "[sms] waiting for the GSM network" at most this often while a message waits.
+#define SMS_WAIT_LOG_INTERVAL_MS 30000UL

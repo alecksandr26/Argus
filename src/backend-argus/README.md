@@ -27,6 +27,12 @@ creates are 422, a medium/critical alert joins an incident, a status without `vi
 `unknown`, a device "resolve" sets `driver_ok_at` (409 on a finished route), and a user sending
 `resolved_at` gets 422 (close the incident instead).
 
+**Trucks carry an optional `alert_phone`** (E.164, e.g. `+523312345678`; a bad format is 422,
+`""` or `null` means no phone), the number the ESP32 texts on every critical alert
+(`docs/designs/grip-alarm-contracts.md`, C1). It reaches the truck in the dashboard's
+`argus-device.env`, not through any device endpoint. The ESP32's hands-off-the-wheel alert
+arrives as an ordinary report event with `alert_type: "no_grip"`, `severity: "critical"`.
+
 ## Quick start (no Docker)
 
 ```sh
