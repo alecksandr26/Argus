@@ -202,6 +202,8 @@ class SenderPolicy {
   void pushOutcome(const PiOutcome& outcome);
   void finish(HeldEvent& e, bool ack, const std::string& reason, const std::string& body);
   void noteLocalDrop(const HeldEvent& e, const char* why);
+  void noteLocalDrop(const IdString& id, EventTier tier, int attempts,
+                     const ReasonString& lastError, const char* why);
   void releaseDlqForLive();
 
   SenderTiming timing_;
