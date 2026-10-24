@@ -29,11 +29,13 @@ Every screen calls the real `src/backend-argus` API through `src/api/*`:
   pins and alerts (each with "Show on map").
 - **Routes**, **Fleet**, **Drivers**, **Access** (user management, root_admin/admin) and
   **Profile** (self-service account edit). Fleet issues each truck's device key
-  (`argus-device.env`); root_admin also gets the cloud **Fleet simulator** switch on Live
-  operations.
+  (`argus-device.env`, which also carries the truck's plate and its optional **SMS alert
+  phone**, E.164 like `+523312345678`, the number the ESP32 texts once per critical alert);
+  root_admin also gets the cloud **Fleet simulator** switch on Live operations.
 
-The panic button and grip sensor were removed from the system, and from the UI; old panic alerts
-still read as "Panic button". UI copy is in English (the design canvas is in Spanish).
+The panic button was removed from the system, and from the UI; old panic alerts still read as
+"Panic button". The wheel's grip sensor is back as an ESP32-only critical source: its `no_grip`
+alerts read "Hands off the wheel" (see `docs/designs/grip-alarm-contracts.md`). UI copy is in English (the design canvas is in Spanish).
 **`INTEGRATION.md`** lists what's still open (OSRM, a push channel instead of polling,
 `Alert.media_url` storage).
 
