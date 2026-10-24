@@ -34,6 +34,7 @@
 #include "backend_api.h"
 #include "backend_messages.h"
 #include "bluetooth_client.h"
+#include "cabin_alarm.h"
 #include "config.h"
 #include "credentials.h"
 #include "gps_module.h"
@@ -350,7 +351,10 @@ bool runSession(bool dlq) {
         d = decidePulledRecord(parsed, r, dlq, sender, vigilance, hereNow(now), now);
       }
       addRecordDecision(report, r.id, d);
-      if (!dlq && parsed == ParseOutcome::Ok) bannerOnCritical(r);
+      if (!dlq && parsed == ParseOutcome::Ok) {
+        bannerOnCritical(r);
+        cabinAlarmOnPiRecord(d.kind, r.reason, r.episode);
+      }
       logRecord(r, parsed, d, dlq);
     }
     {
@@ -427,8 +431,9 @@ void setup() {
     Serial.println("[main] Restored the last known position from NVS (used once GPS time is back)");
   }
 
+  cabinAlarmBegin();  // first: the buzzer pin must be driven quiet before the slow modem bring-up
   gpsBegin();
-  modemBegin();        // the SIM800L carries mobile data only
+  modemBegin();       // the SIM800L carries mobile data only
   credentialsBegin();  // before wifiBegin(): the WiFi to join is in the NVS cache
   wifiBegin();
   bluetoothClientBegin();
@@ -436,6 +441,9 @@ void setup() {
   // Both on the Arduino core (1), like loop(); gpsTask a step higher so its 1 s reads stay on
   // time while a TLS handshake or a Bluetooth session keeps the others busy.
   xTaskCreatePinnedToCore(gpsTask, "gps", GPS_TASK_STACK, nullptr, 2, &gpsTaskHandle, 1);
+  // The grip sensors and buzzer: same priority as gpsTask, so a busy sender never delays them.
+  xTaskCreatePinnedToCore(cabinAlarmTask, "alarm", CABIN_ALARM_TASK_STACK, nullptr, 2, nullptr,
+                          1);
   xTaskCreatePinnedToCore(senderTask, "sender", SENDER_TASK_STACK, nullptr, 1, &senderTaskHandle,
                           1);
   logHealth();  // the heap left once everything is up, before the first Bluetooth connect

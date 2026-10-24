@@ -206,4 +206,23 @@
 // section 4). Wired as an active-low digital input with an internal pull-up. Not GPIO 34-39: those
 // pins are input-only and have no internal pull-up, so INPUT_PULLUP silently does nothing on them.
 // (The panic button and its SMS were removed: final-tweaks plan, section 1.)
-#define GRIP_SENSOR_PIN 19
+#define GRIP_SENSOR_PIN 19  // the old digital placeholder (grip_sensor.*, unused)
+
+// Steering-wheel grip: 4 RFP602 pressure sensors as analog inputs (cabin_alarm.*). ADC1 pins, so
+// they keep reading with Bluetooth/WiFi on. Pressure = any sensor above the threshold (12-bit
+// reading; tune against the real wheel). No pressure for GRIP_ALERT_MS sounds the buzzer.
+#define GRIP_SENSOR_PIN_1 34
+#define GRIP_SENSOR_PIN_2 35
+#define GRIP_SENSOR_PIN_3 36
+#define GRIP_SENSOR_PIN_4 39
+#define GRIP_PRESSURE_THRESHOLD 500
+#define GRIP_ALERT_MS 3000UL
+#define GRIP_SAMPLE_INTERVAL_MS 100UL
+#define GRIP_LOG_INTERVAL_MS 2000UL
+
+// Cabin buzzer: on while the grip alarm or the vision alarm is on (a live non-no_face critical
+// from the Pi, until its driver OK; VISION_ALARM_MAX_MS caps it if the OK never comes).
+#define BUZZER_PIN 13
+#define BUZZER_ACTIVE_HIGH 1
+#define VISION_ALARM_MAX_MS 300000UL
+#define CABIN_ALARM_TASK_STACK 3072
