@@ -94,6 +94,21 @@ async def test_create_with_empty_alert_phone_stores_none(api_client, root_admin)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("sent", "stored"),
+    [(" +523312345678\n", "+523312345678"), ("   ", None)],
+    ids=["outer_whitespace_stripped", "whitespace_only_is_none"],
+)
+async def test_alert_phone_is_stripped_before_the_check(api_client, root_admin, sent, stored):
+    resp = await api_client.post(
+        "/api/trucks", json={**TRUCK_BODY, "alert_phone": sent}, headers=auth_headers(root_admin)
+    )
+    assert resp.status_code == 201
+    assert resp.json()["alert_phone"] == stored
+    assert (await Truck.get(resp.json()["id_truck"])).alert_phone == stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "phone",
     [
         "523312345678",

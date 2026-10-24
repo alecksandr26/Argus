@@ -606,7 +606,7 @@ approximated there; the migration script has a hermetic test but hasn't run agai
 database yet, and none of this has been deployed to the AWS stack yet.
 
 **Grip-alarm work** (`Truck.alert_phone`, the `no_grip` report tests): hermetic suite at
-**381 passed, 3 xfailed** (2026-10-23, `pytest -q`).
+**383 passed, 3 xfailed** (2026-10-24, `pytest -q`).
 
 What genuinely hasn't been exercised: real concurrent load, and MongoDB running as anything other
 than a single local container (no replica set, no auth). An actual browser session driving this
