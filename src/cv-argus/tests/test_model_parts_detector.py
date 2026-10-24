@@ -110,3 +110,60 @@ def test_detector_thresholds_default_from_constants_and_env(monkeypatch):
     monkeypatch.setenv("PARTS_CLOSED_EYE_THRESHOLD", "")
     assert pd_.env_float("PARTS_HEAD_DOWN_THRESHOLD") == 0.2
     assert pd_.env_float("PARTS_CLOSED_EYE_THRESHOLD") == pd_.constants.PARTS_CLOSED_EYE_THRESHOLD
+
+
+# --- eye size/position filter (PARTS_EYE_MAX_FRAC / PARTS_EYE_CY_RANGE) --------------------------
+
+def test_eye_filter_constants_match_the_contract():
+    assert pd_.constants.PARTS_EYE_MAX_FRAC == 0.30
+    assert pd_.constants.PARTS_EYE_CY_RANGE == (0.15, 0.70)
+
+
+@pytest.mark.parametrize("cls", [pd_.OPEN_EYE, pd_.CLOSED_EYE])
+def test_head_sized_eye_box_is_dropped(cls):
+    raw = ideal_grid([[0.20, 0.20, 0.80, 0.70]], [cls])        # 0.6 x 0.5 "eye", centre y 0.45
+    assert len(pd_.decode_grid(raw)) == 0
+    assert pd_.decode_grid(raw, eye_max_frac=None).classes.tolist() == [cls]
+
+
+def test_eye_size_limit_uses_the_larger_side():
+    tall = ideal_grid([[0.40, 0.25, 0.48, 0.60]], [pd_.OPEN_EYE])     # 0.08 wide, 0.35 tall
+    assert len(pd_.decode_grid(tall)) == 0
+    ok = ideal_grid([[0.40, 0.30, 0.68, 0.50]], [pd_.OPEN_EYE])       # 0.28 x 0.20
+    assert pd_.decode_grid(ok).classes.tolist() == [pd_.OPEN_EYE]
+
+
+@pytest.mark.parametrize("cy,kept", [(0.10, False), (0.20, True), (0.65, True), (0.75, False)])
+def test_eye_centre_must_be_in_the_upper_middle_band(cy, kept):
+    raw = ideal_grid([[0.40, cy - 0.03, 0.52, cy + 0.03]], [pd_.CLOSED_EYE])
+    assert len(pd_.decode_grid(raw)) == (1 if kept else 0)
+    assert len(pd_.decode_grid(raw, eye_cy_range=None)) == 1
+
+
+def test_eye_filter_leaves_mouth_and_head_alone():
+    gt = [[0.05, 0.05, 0.95, 0.95], [0.35, 0.72, 0.65, 0.92]]        # head (big), yawn (low)
+    d = pd_.decode_grid(ideal_grid(gt, [pd_.HEAD_STRAIGHT, pd_.YAWN]))
+    assert sorted(d.classes.tolist()) == [pd_.YAWN, pd_.HEAD_STRAIGHT]
+
+
+def test_eye_filter_runs_before_nms():
+    """A slightly-too-big eye that scores higher would otherwise suppress the real eye under it
+    (IoU ~0.63 >= 0.5); filtered first, the real eye survives."""
+    good, bad = [0.31, 0.26, 0.59, 0.54], [0.34, 0.24, 0.66, 0.56]   # 0.28 vs 0.32 side
+    raw = ideal_grid([good, bad], [pd_.OPEN_EYE, pd_.OPEN_EYE])
+    raw[8, 9, 0] = 3.0                                                # the real eye scores lower
+    assert pd_.iou_xyxy(np.array([good]), np.array([bad]))[0, 0] >= 0.5
+    unfiltered = pd_.decode_grid(raw, eye_max_frac=None)
+    assert len(unfiltered) == 1 and pd_.iou_xyxy(np.array([bad]), unfiltered.boxes)[0, 0] > 0.99
+    filtered = pd_.decode_grid(raw)
+    assert len(filtered) == 1 and pd_.iou_xyxy(np.array([good]), filtered.boxes)[0, 0] > 0.99
+
+
+def test_detector_applies_the_eye_filter():
+    big_eye = [[0.20, 0.20, 0.80, 0.70]]
+    det = pd_.PartsDetector(lambda x: ideal_grid(big_eye, [pd_.CLOSED_EYE]), precision="int8")
+    assert det.eye_max_frac == 0.30 and det.eye_cy_range == (0.15, 0.70)
+    assert len(det.detect(np.zeros((1, 160, 160, 1), np.float32))) == 0
+    off = pd_.PartsDetector(lambda x: ideal_grid(big_eye, [pd_.CLOSED_EYE]), precision="int8",
+                            eye_max_frac=None, eye_cy_range=None)
+    assert len(off.detect(np.zeros((1, 160, 160, 1), np.float32))) == 1

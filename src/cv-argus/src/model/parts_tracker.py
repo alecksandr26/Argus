@@ -20,6 +20,9 @@ that:
 Part kinds: eye (`open_eye` / `closed_eye`), mouth (`yawn`), head (`head_straight` /
 `head_down`). Only the detector's classes exist, so a mouth track only appears while yawning.
 
+`reset()` drops every track; `PartsInferenceStage` calls it when the face lock switches to a
+different person.
+
 Pure numpy and testable; boxes are in whatever coordinates the caller uses (frame pixels here).
 """
 
@@ -84,6 +87,12 @@ class PartsTracker:
     @property
     def tracks(self) -> list[Track]:
         return list(self._tracks)
+
+    def reset(self) -> None:
+        """Forget every track and restart the IDs (`E1`, `M1`, `H1`…). Called on a face switch:
+        the old face's eyes must not carry their state over to the new face."""
+        self._tracks = []
+        self._next = Counter()
 
     def update(self, boxes: np.ndarray, scores: np.ndarray, classes: np.ndarray) -> list[Track]:
         boxes = np.asarray(boxes, np.float32).reshape(-1, 4)

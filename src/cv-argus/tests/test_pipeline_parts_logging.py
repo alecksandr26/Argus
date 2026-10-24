@@ -94,6 +94,146 @@ def test_metrics_log_writes_one_json_line_per_frame(tmp_path):
     assert recs[0]["eyes"] == ["open_eye"] and "infer" in recs[0]["timing_ms"]
 
 
+def _with_lock(ctx, **lock):
+    ctx.features["face_lock"] = {"faces": 1, "ignored": 0, "switch_s": None, "takeover_s": None,
+                                 "switched": False, "reacquired": False, **lock}
+    return ctx
+
+
+def test_frames_without_the_face_stage_have_no_face_lock_part():
+    rec = parts_frame_record(_run(pd_.OPEN_EYE, 1)[-1])
+    assert rec["face_lock"] is None
+    assert " faces=" not in format_parts_line(rec)
+
+
+def test_face_lock_fields_in_the_record_and_the_line():
+    stage = PartsInferenceStage(_StubDetector(pd_.OPEN_EYE))
+    ctx = stage.process_item(_with_lock(_ctx(0), faces=2, ignored=1))
+    rec = parts_frame_record(ctx)
+    assert rec["face_lock"] == {"faces": 2, "ignored": 1, "switch_s": None, "takeover_s": None,
+                                "switched": False, "reacquired": False}
+    assert "| face=yes faces=2 ignored=1 | eyes=open" in format_parts_line(rec)
+
+
+def test_face_lock_switch_timer_and_switch_frame_in_the_line():
+    stage = PartsInferenceStage(_StubDetector(pd_.OPEN_EYE))
+    ctx = stage.process_item(_with_lock(_ctx(0, face=False), faces=1, ignored=1, switch_s=4.2371))
+    rec = parts_frame_record(ctx)
+    assert rec["face_lock"]["switch_s"] == 4.24
+    assert "| face=no faces=1 ignored=1 switch=4.2s | eyes=-" in format_parts_line(rec)
+    ctx = _with_lock(_ctx(200, face=False), faces=1, ignored=1, switch_s=5.0, switched=True)
+    ctx.features["face_switched"] = True
+    line = format_parts_line(parts_frame_record(stage.process_item(ctx)))
+    assert "face=no faces=1 ignored=1 switch=5.0s SWITCHED |" in line
+
+
+def test_face_lock_takeover_timer_in_the_line():
+    stage = PartsInferenceStage(_StubDetector(pd_.OPEN_EYE))
+    ctx = stage.process_item(_with_lock(_ctx(0), faces=2, ignored=1, takeover_s=1.2))
+    assert "face=yes faces=2 ignored=1 takeover=1.2s |" in format_parts_line(parts_frame_record(ctx))
+
+
+def test_face_lock_from_the_real_face_stage_reaches_the_metrics_jsonl(tmp_path):
+    pytest.importorskip("mediapipe")
+    from types import SimpleNamespace
+
+    from cv_argus.pipeline.face_detector_stage import FaceDetectorCropStage
+
+    def det(box):
+        x, y, w, h = box
+        return SimpleNamespace(bounding_box=SimpleNamespace(origin_x=x, origin_y=y, width=w, height=h),
+                               categories=[SimpleNamespace(score=0.9)])
+
+    passenger = (40, 180, 80, 100)
+    frames = [[det(FACE), det(passenger)], [det(passenger)]]
+
+    class _Fake:
+        def detect_for_video(self, image, ts_ms):
+            return SimpleNamespace(detections=frames[ts_ms // 200])
+
+        def close(self):
+            pass
+
+    face = FaceDetectorCropStage(detector=_Fake())
+    parts = PartsInferenceStage(_StubDetector(pd_.OPEN_EYE))
+    sink = MetricsLogOutputStage(path=tmp_path / "m.jsonl")
+    for k in range(2):
+        sink.handle(parts.process_item(face.process_item(_ctx(k * 200, face=False))))
+    sink.close()
+    recs = [json.loads(line) for line in (tmp_path / "m.jsonl").read_text().splitlines()]
+    assert recs[0]["face_lock"] == {"faces": 2, "ignored": 1, "switch_s": None, "takeover_s": None,
+                                    "switched": False, "reacquired": False}
+    assert recs[1]["face_lock"] == {"faces": 1, "ignored": 1, "switch_s": 0.0, "takeover_s": None,
+                                    "switched": False, "reacquired": False}
+
+
+def test_face_lock_reacquired_in_the_record_and_the_line():
+    stage = PartsInferenceStage(_StubDetector(pd_.OPEN_EYE))
+    rec = parts_frame_record(stage.process_item(_with_lock(_ctx(0), reacquired=True)))
+    assert rec["face_lock"]["reacquired"] is True
+    assert "| face=yes faces=1 ignored=0 REACQUIRED | eyes=open" in format_parts_line(rec)
+    # A normally tracked frame carries no token.
+    rec = parts_frame_record(stage.process_item(_with_lock(_ctx(200))))
+    assert rec["face_lock"]["reacquired"] is False
+    assert "REACQUIRED" not in format_parts_line(rec)
+
+
+def test_face_lock_record_defaults_reacquired_to_false_for_older_dicts():
+    # A face_lock dict without the key (an older/other producer) still records a bool.
+    stage = PartsInferenceStage(_StubDetector(pd_.OPEN_EYE))
+    ctx = _ctx(0)
+    ctx.features["face_lock"] = {"faces": 1, "ignored": 0, "switch_s": None, "takeover_s": None,
+                                 "switched": False}
+    rec = parts_frame_record(stage.process_item(ctx))
+    assert rec["face_lock"]["reacquired"] is False
+    assert "REACQUIRED" not in format_parts_line(rec)
+
+
+def test_lone_driver_box_jump_is_logged_as_reacquired_through_the_real_face_stage(tmp_path):
+    """C1.7 rule 1 through the real `FaceDetectorCropStage`: a lone driver whose box jumps more
+    than 0.6 x side is re-acquired on the same frame (face found, no no-face frame), and that
+    frame is flagged `reacquired` in ctx.features, the metrics JSONL and the log line."""
+    pytest.importorskip("mediapipe")
+    from types import SimpleNamespace
+
+    from cv_argus.pipeline.face_detector_stage import FaceDetectorCropStage
+
+    def det(box):
+        x, y, w, h = box
+        return SimpleNamespace(bounding_box=SimpleNamespace(origin_x=x, origin_y=y, width=w, height=h),
+                               categories=[SimpleNamespace(score=0.9)])
+
+    jumped = (FACE[0] + 120, FACE[1], FACE[2], FACE[3])     # centre shift 120 px > 0.6 x 150
+    frames = [[det(FACE)], [det(jumped)], [det(jumped)]]
+
+    class _Fake:
+        def detect_for_video(self, image, ts_ms):
+            return SimpleNamespace(detections=frames[ts_ms // 200])
+
+        def close(self):
+            pass
+
+    face = FaceDetectorCropStage(detector=_Fake())
+    parts = PartsInferenceStage(_StubDetector(pd_.OPEN_EYE))
+    sink = MetricsLogOutputStage(path=tmp_path / "m.jsonl")
+    ctxs = []
+    for k in range(3):
+        ctx = parts.process_item(face.process_item(_ctx(k * 200, face=False)))
+        ctxs.append(ctx)
+        sink.handle(ctx)
+    sink.close()
+    assert [c.face_found for c in ctxs] == [True, True, True]
+    assert [c.features["face_lock"]["reacquired"] for c in ctxs] == [False, True, False]
+    assert ctxs[1].features["face_bbox_raw"] == jumped
+    recs = [json.loads(line) for line in (tmp_path / "m.jsonl").read_text().splitlines()]
+    assert recs[1]["face_lock"] == {"faces": 1, "ignored": 0, "switch_s": None, "takeover_s": None,
+                                    "switched": False, "reacquired": True}
+    assert [r["face_lock"]["reacquired"] for r in recs] == [False, True, False]
+    lines = [format_parts_line(r) for r in recs]
+    assert "face=yes faces=1 ignored=0 REACQUIRED |" in lines[1]
+    assert "REACQUIRED" not in lines[0] and "REACQUIRED" not in lines[2]
+
+
 def test_metrics_output_is_selectable(monkeypatch, tmp_path):
     from cv_argus import main as main_mod
     monkeypatch.setenv("OUTPUTS", "logging,metrics")

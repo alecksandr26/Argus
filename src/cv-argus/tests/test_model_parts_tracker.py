@@ -70,3 +70,14 @@ def test_head_down_votes_two_needs_a_majority():
     for c in (HEAD_STRAIGHT, HEAD_DOWN, HEAD_STRAIGHT):
         t = step(tr, [(HEAD, c)])
     assert t[0].label == "head_straight"
+
+
+def test_reset_forgets_tracks_and_restarts_ids():
+    """A face switch resets the tracker: the old face's closed eyes don't carry over."""
+    tr = PartsTracker()
+    for _ in range(3):
+        step(tr, [(L_EYE, CLOSED_EYE), (R_EYE, CLOSED_EYE)])
+    tr.reset()
+    assert tr.tracks == []
+    t = step(tr, [(L_EYE, OPEN_EYE)])
+    assert [(x.id, x.label) for x in t] == [("E1", "open_eye")]

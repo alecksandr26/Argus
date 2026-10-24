@@ -20,7 +20,19 @@ It writes:
   next to BlazeFace's `face`, for the metrics log.
 
 Frames **without** a face still tick the rule engine, because
-"face lost for 3 s" is itself a rule and timers need every timestamp.
+"face lost for 5 s" is itself a rule and timers need every timestamp.
+
+**Face switch and take-over** (contracts C1.7). `FaceDetectorCropStage` marks
+`ctx.features["face_switched"]` on two kinds of frame:
+- a **switch** frame: the locked face was gone and someone else stayed in view for
+  `FACE_SWITCH_AFTER_S`; the frame reads as no face;
+- a **take-over** frame: the locked face is still visible, but another face at least
+  `FACE_LOCK_TAKEOVER_SCALE` times its side stayed continuously in view for
+  `FACE_SWITCH_AFTER_S`; the frame still reads the old locked face.
+Either way the lock moves to the new face from the next frame. This stage feeds the flagged
+frame to the rule engine **first** (as no face, or as the old face), then calls
+`PartsRuleEngine.reset_signals()` (timers only; the held severity stays) and resets the
+`PartsTracker`, so the new face starts with fresh timers and tracks.
 """
 
 from __future__ import annotations
@@ -74,6 +86,9 @@ class PartsInferenceStage(Stage):
         timing["rules"] = 1000.0 * (time.perf_counter() - t2)
         timing["parts_stage"] = 1000.0 * (time.perf_counter() - t0)
 
+        if ctx.features.get("face_switched"):
+            tracks = self._on_face_switch()
+
         ctx.detection = to_detection(state) if (raw_box is not None or state.severity != "none") else None
         ctx.features["parts"] = {
             "tracks": tracks,
@@ -85,3 +100,11 @@ class PartsInferenceStage(Stage):
             "infer_ms": 1000.0 * self._detector.last_phase_seconds.get("infer", 0.0),
         }
         return ctx
+
+    def _on_face_switch(self) -> list:
+        """After a switch or take-over frame went through the rules: reset the rule timers (never
+        the held severity) and the tracker."""
+        self._rules.reset_signals()
+        self._tracker.reset()
+        logger.info("face switch: rule timers and part tracks reset for the new face")
+        return self._tracker.tracks

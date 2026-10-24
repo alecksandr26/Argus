@@ -24,6 +24,21 @@ FACE_DETECTOR_BUNDLE_FILENAME = "blaze_face_short_range.tflite"
 FACE_DETECTOR_MIN_DETECTION_CONFIDENCE = 0.5
 FACE_DETECTOR_BBOX_MARGIN_FRAC = 0.25
 
+# One face (pipeline/face_detector_stage.py `FaceLock`, contracts C1.7 [sync 2]): the largest
+# face is locked and followed. A detection matches a tracked box (the locked face or a bystander)
+# when its centre is within FACE_LOCK_MAX_SHIFT_FRAC x the tracked box's side and its side is
+# within a factor FACE_LOCK_MAX_SCALE of it (the tracked box follows every match). Bystanders (the
+# other faces seen next to the locked one) are kept FACE_LOCK_MISS_GRACE_S unseen. While the
+# locked face is missing, a face matching no bystander re-acquires the lock at once; with only
+# bystanders in view the lock switches to the largest after FACE_SWITCH_AFTER_S. A face with a
+# side >= FACE_LOCK_TAKEOVER_SCALE x the locked face's, in view for FACE_SWITCH_AFTER_S next to
+# it, takes the lock over (the driver taking it back from a passenger).
+FACE_SWITCH_AFTER_S = 5.0
+FACE_LOCK_MAX_SHIFT_FRAC = 0.6
+FACE_LOCK_MAX_SCALE = 1.6
+FACE_LOCK_MISS_GRACE_S = 1.0
+FACE_LOCK_TAKEOVER_SCALE = 1.25
+
 # --- The "parts" pipeline: tiny YOLO-style detector + rule engine ---
 # notebook/12_tiny_grid_detector.ipynb's model "tiny_yolo_w1" (46k params), the 2026-10-20 23:35
 # run. On notebook 12's test set (int8; float within 0.01): mAP@0.5 0.756 (0.63 for the
@@ -53,6 +68,13 @@ PARTS_CONF_THRESHOLD = 0.25         # detection score kept for tracking (= noteb
 PARTS_CLOSED_EYE_THRESHOLD = 0.40
 PARTS_HEAD_DOWN_THRESHOLD = 0.30
 PARTS_NMS_IOU = 0.5
+# Eye-box sanity filter, applied before NMS (model/parts_detector.py `decode_grid`, mirrored in
+# notebook 12's `grid_postprocess`): an eye detection is dropped when its larger side exceeds
+# PARTS_EYE_MAX_FRAC of the crop side, or its centre y (crop-normalised, 0 = top) is outside
+# PARTS_EYE_CY_RANGE. Real eyes on the square face crop are small and in the upper-middle band;
+# the head-sized "eyes" come from training on full-image eye close-ups.
+PARTS_EYE_MAX_FRAC = 0.30
+PARTS_EYE_CY_RANGE = (0.15, 0.70)
 PARTS_TFLITE_THREADS = 1            # measured fastest: 1.35 ms vs 1.69 ms at 4 threads
 
 # Tracker (model/parts_tracker.py). At SAMPLE_FPS=5 a frame is 0.2 s.
