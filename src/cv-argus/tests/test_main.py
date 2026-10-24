@@ -280,6 +280,18 @@ class TestDeviceConfigEnv:
         assert "t-1" in caplog.text
         assert "super-secret" not in caplog.text
 
+    def test_sms_phone_is_logged_masked(self, monkeypatch, caplog):
+        monkeypatch.setenv("ARGUS_TRUCK_ID", "t-1")
+        monkeypatch.setenv("ARGUS_DEVICE_API_KEY", "super-secret")
+        monkeypatch.setenv("ARGUS_BACKEND_URL", "https://x.example/")
+        monkeypatch.setenv("ARGUS_TRUCK_PLATE", "JAL-1234")
+        monkeypatch.setenv("ARGUS_ALERT_PHONE", "+523312345678")
+        with caplog.at_level(logging.INFO, logger=LOGGER):
+            config = main._device_config()
+        assert config.alert_phone == "+523312345678"
+        assert "+52******5678" in caplog.text and "JAL-1234" in caplog.text
+        assert "+523312345678" not in caplog.text
+
     def test_partial_set_exits(self, monkeypatch):
         monkeypatch.setenv("ARGUS_TRUCK_ID", "t-1")
         monkeypatch.delenv("ARGUS_DEVICE_API_KEY", raising=False)

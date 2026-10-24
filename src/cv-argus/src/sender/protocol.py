@@ -6,6 +6,7 @@ The first line the ESP32 sends decides the session:
 
     C: CONFIG                       config session (backend credentials, see device_config.py)
     S: CONFIG {"truck_id":..,"device_api_key":..,"backend_url":..} | NOCONFIG
+                                    plus wifi_*/gprs_*/truck_plate/alert_phone, each only if set
 
     C: PULL <n>                     live pull, n clamped to MAX_PULL_LIMIT (50)
     S: <record JSON line> x0..n     outbox rows, not leased, oldest first

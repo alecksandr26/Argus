@@ -13,7 +13,8 @@ throughout this design; a concurrent-client upgrade would be a change to this fi
 protocol itself, and isn't built speculatively here.
 
 **Sessions** (the first line decides): `CONFIG` answers with the truck's `DeviceConfig` — the
-backend credentials provisioned from the dashboard — or `NOCONFIG`; `PULL <n>` serves the live
+backend credentials provisioned from the dashboard, plus the optional network settings and SMS
+plate/phone — or `NOCONFIG`; `PULL <n>` serves the live
 outbox; `DLQ <k>` serves one dead letter (newest first, round-robin); a session that opens with
 `ACK`/`FAIL` reports on rows the ESP32 took in an earlier session. After a pull the ESP32 reports
 per row, in any order: `ACK` (delivered, or nothing to send) marks it sent; `FAIL <reason>
