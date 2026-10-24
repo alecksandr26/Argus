@@ -75,8 +75,13 @@ services:
       # "bluez" (the host's bluetoothd listens and pairs; the connection comes in over the host's
       # D-Bus socket, which that file mounts). "bluetooth" (a raw RFCOMM socket in this process)
       # can't work in a container on Docker's default network: Linux only creates Bluetooth
-      # sockets in the host's network namespace. Until the link is on, readings and heartbeats
-      # just queue in buffer/ -- nothing is lost.
+      # sockets in the host's network namespace. What happens to readings meanwhile:
+      # - "none" (this default): no sender runs, so nothing expires. Readings stay in buffer/'s
+      #   outbox, bounded by BUFFER_MAX_UNSENT_ROWS (src/constants.py): over it, keepalives are
+      #   dropped first, then the oldest rows are archived (reason cap_unsent).
+      # - "bluez"/"bluetooth" with no ESP32 connected: after 60 s unpicked, a critical goes to
+      #   the dead-letter queue, a medium or driver OK to the archive table, and keepalives are
+      #   dropped.
       - SENDER_TRANSPORT=${SENDER_TRANSPORT:-none}
       - BLUETOOTH_CHANNEL=${BLUETOOTH_CHANNEL:-4}
       # The link the ESP32 connects over must be paired + encrypted ("medium") -- CONFIG sends

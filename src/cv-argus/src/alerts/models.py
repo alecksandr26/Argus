@@ -3,13 +3,16 @@
 Design rationale (see the draw.io system diagram and `src/cv-argus/CLAUDE.md`'s "Planned module
 layout"): the diagram shows a single "Alert/RouteStatus Model" box feeding a single "Queue
 Message Local Buffer (SQLite)" box — one shared record shape, not two independently-serialized
-classes. Alert payloads are also expected to vary by type (a drowsiness alert and a route-status
-heartbeat don't share a rigid shape, and a future panic alert wouldn't either) — MongoDB was
-chosen backend-side partly for this reason (see
-`docs/document/borrador-proyecto-modular-argus.md`'s Parte 5). So this module defines one
-envelope dataclass, `Alert`, with a `kind` discriminator and a flexible `payload` dict, rather
-than a rigid dataclass per alert type. `route_status()` below is a convenience constructor, not
-a second class — `buffer/`/`sender/` only ever have to know about one type.
+classes. Alert payloads were expected to vary by type — MongoDB was chosen backend-side partly
+for this reason (see `docs/document/borrador-proyecto-modular-argus.md`'s Parte 5). So this
+module defines one envelope dataclass, `Alert`, with a `kind` discriminator and a flexible
+`payload` dict, rather than a rigid dataclass per alert type.
+
+Since the final tweaks (Bluetooth protocol v2, contract C1.4) the only kind is `drowsiness`: the
+60 s `route_status` heartbeat and its `route_status()` factory are gone (the ESP32 sends a GPS
+report every 5 s on its own). A legacy `route_status` row still in an old buffer file is moved to
+the `archive` table when the buffer opens (`buffer/store.py`), so it is never read back as an
+`Alert`.
 
 No logic, no I/O, no persistence here — see `buffer/` for storage and `sender/` for the wire
 protocol. This module deliberately has no dependency on numpy/mediapipe/sqlite/sockets, so
@@ -58,7 +61,7 @@ class AlertKind(str, enum.Enum):
     `AlertKind.DROWSINESS`) without extra conversion at the JSON boundary."""
 
     DROWSINESS = "drowsiness"
-    ROUTE_STATUS = "route_status"
+    # `route_status` (the heartbeat) was removed in protocol v2 (contract C1.4).
     # A panic alert is not produced by this module: the draw.io diagram wires the Panic Button
     # directly into the ESP32, bypassing the Pi's orchestrator entirely (see the root
     # CLAUDE.md). Left undefined here rather than reserved as a value nothing ever constructs.
@@ -81,7 +84,7 @@ class Alert:
 
     id: str
     kind: AlertKind
-    level: int | None  # 1 (Not Drowsy) / 2 (Drowsy) from DetectionResult; None for ROUTE_STATUS
+    level: int | None  # 1 (Not Drowsy) / 2 (Drowsy) from DetectionResult; None for No Face
     created_at_ms: int
     source_id: str
     payload: dict[str, Any] = field(default_factory=dict)
@@ -112,9 +115,3 @@ class Alert:
             clock_synced=clock_synced(),
         )
 
-
-def route_status(source_id: str, status: str = "OK") -> Alert:
-    """Build a RouteStatus heartbeat — just an `Alert` with `kind=ROUTE_STATUS` and no level,
-    not a second class (see the module docstring). `"OK"` is the only status value this project
-    currently produces anywhere; nothing else is defined."""
-    return Alert.new(AlertKind.ROUTE_STATUS, level=None, source_id=source_id, payload={"status": status})

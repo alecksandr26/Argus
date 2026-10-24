@@ -47,11 +47,14 @@ class _FailingOnceBuffer:
 
 def test_enqueue_error_does_not_kill_the_orchestrator_thread():
     buf = _FailingOnceBuffer()
-    orch = Orchestrator(buf, poll_seconds=0.02, heartbeat_interval_seconds=0.05)
+    orch = Orchestrator(buf, poll_seconds=0.02, warmup_frames=0, debounce_frames=1,
+                        keepalive_seconds=0.05)
     orch.start()
     try:
+        orch.input_queue.put_nowait(("cam0", None))   # the first reading: the write that fails
         deadline = time.monotonic() + 3.0
         while not buf.enqueued and time.monotonic() < deadline:
+            orch.input_queue.put_nowait(("cam0", None))
             time.sleep(0.02)
         assert orch.is_alive
         assert buf.enqueued, "nothing enqueued after the first failure"

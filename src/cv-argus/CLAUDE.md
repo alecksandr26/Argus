@@ -33,17 +33,20 @@ Done and running: the container (Dockerfile, compose files, entrypoint), the pac
 runnable as `python -m cv_argus`, the Dockerfile's `CMD`).
 
 ```
-camera (SAMPLE_FPS=5) → BlazeFace (FaceDetectorCropStage, sets face_bbox_raw)
+camera (SAMPLE_FPS=5) → BlazeFace (FaceDetectorCropStage: every face → FaceLock picks the
+                         driver's, sets face_bbox_raw + face_lock)
   → PartsInferenceStage:
       model/parts_geometry   square ×1.5 black-padded crop → gray → 160×160     [= training]
       model/parts_detector   notebook 12 tiny_yolo_w1 (46k params), int8 .tflite | float .keras
-                             → 20×20 grid decode + NMS (verbatim from notebook 12)
+                             → 20×20 grid decode + eye-box filter + NMS (as notebook 12)
                              → pair decision thresholds (closed eye / head down)
       model/parts_geometry   remap crop-normalised boxes → frame pixels
       model/parts_tracker    IoU tracker: stable IDs, survives 3 misses, 3-frame vote
       orchestrator/parts_rules   timers → severity + reason → DetectionResult (+ extras)
+                             (on a face switch: reset_signals() + tracker reset)
   → outputs: logging (one line per frame), metrics (JSONL per frame), mjpeg (overlay)
-  → orchestrator bridge → readings into buffer/ → sender/ (ESP32 Bluetooth PULL/ACK)
+  → orchestrator bridge → readings into buffer/ (SQLite outbox) → sender/ (ESP32 Bluetooth,
+    protocol v2: PULL / DLQ / report sessions)
 ```
 
 **Training fidelity (binding):**
@@ -53,8 +56,10 @@ camera (SAMPLE_FPS=5) → BlazeFace (FaceDetectorCropStage, sets face_bbox_raw)
   neither.
 - Inference only converts frames to gray. IR simulation is a training-time augmentation and is
   never applied here.
-- `decode_grid` / `nms_per_class` are verbatim from notebook 12. The one deliberate addition is
-  the **pair decision thresholds** (next paragraph); at 0.5 they equal the notebook's argmax.
+- `decode_grid` / `nms_per_class` are verbatim from notebook 12, including the **eye-box filter**
+  (below), which notebook 12's `grid_postprocess(eye_filter=True)` applies too. The one
+  deliberate addition is the **pair decision thresholds** (next paragraph); at 0.5 they equal the
+  notebook's argmax.
 - `PARTS_*` constants mirror the dataset's `DET_*` constants.
 
 **Decision thresholds (tunable, `constants.py` + env vars of the same name):**
@@ -91,6 +96,62 @@ The overlay draws on the same `frame_bgr` that inference used, at native resolut
 `DEMO_STREAM_WIDTH` resizes the *finished* image. So the boxes can't drift from the eyes. This is
 tested by a round trip including faces cut off at the frame edge, and seen on real frames.
 
+**One face (`FaceLock`, `pipeline/face_detector_stage.py`, contract C1.7).** A cab can hold a
+passenger, or someone leaning in at a stop, and only the driver counts. BlazeFace reports every
+face; `FaceLock` decides which one is the driver's:
+- With no lock, the **largest** face is locked (nearest the camera: the driver).
+- **Matching.** A detection matches a tracked box (the locked face or a bystander) when its centre
+  is within `FACE_LOCK_MAX_SHIFT_FRAC` (0.6) x the tracked box's side and its side is within a
+  factor `FACE_LOCK_MAX_SCALE` (1.6) of it. The tracked box then follows the detection.
+- **Bystanders** are the other faces seen next to the locked one. They're carried forward by
+  matching and dropped only after `FACE_LOCK_MISS_GRACE_S` (1 s) unseen, **also while the
+  driver's face matches**. So a passenger the detector missed for one frame isn't later taken for
+  a "new" face.
+- **While the locked face is missing**, per frame:
+  1. A face that matches no bystander (the driver's box jumped, or came back displaced after a
+     gap) **re-acquires** the lock on that same frame: face found, no switch, no rule reset, and
+     the frame is flagged `reacquired`.
+  2. Only bystanders visible: no face, and the **switch timer** runs. On the switch frame (timer
+     `>= FACE_SWITCH_AFTER_S` = 5 s, on the rule engine's frame timestamps) the frame still reads
+     no face and is flagged `face_switched`. The lock moves to the largest face in view (all of
+     them bystanders by then), used from the next frame.
+  3. Nothing visible: no face. The switch timer resets only when **no bystander is still inside
+     its 1 s grace**. While one is, the timer keeps running, so a one-frame passenger miss doesn't
+     restart the 5 s, and the switch waits for a frame with a face to move to.
+- **Take-over.** Another face at least `FACE_LOCK_TAKEOVER_SCALE` (1.25) x the locked face's side,
+  in view for 5 s next to the locked face, takes the lock. This is the driver taking it back from
+  a passenger, including when the passenger was alone at boot. "In view" allows gaps of either
+  face up to the 1 s grace; the timer runs from the larger face's first sighting and fires only on
+  a frame where both faces are visible. The take-over frame still reads the old locked face and
+  is flagged `face_switched`; the new face is used from the next frame. A smaller second face is
+  ignored.
+- On a switch or take-over frame, `PartsInferenceStage` feeds the frame to the rules first, then
+  calls `PartsRuleEngine.reset_signals()` and resets `PartsTracker`. The held severity is never
+  reset (see the rules below).
+- **Known limits (accepted):**
+  - A stranger never seen next to the driver looks exactly like the driver coming back, so they
+    re-acquire the lock at once (rule 1). The same goes for a passenger who was out of view for
+    more than 1 s.
+  - A passenger leaning in at 1.25x the driver's size or more for 5 s takes the lock.
+- The `FACE_LOCK_*` / `FACE_SWITCH_AFTER_S` values are **code constants** in `constants.py`, not
+  env vars.
+
+**Eye-box filter** (`model/parts_detector.py`, `implausible_eye_mask`). Before NMS, an eye box is
+dropped when its larger side is over `PARTS_EYE_MAX_FRAC` (0.30) of the crop side, or its centre
+y (crop-normalised, 0 = top) is outside `PARTS_EYE_CY_RANGE` (0.15-0.70). The test uses the
+unclipped box. The model had learned head-sized "eyes" from full-image eye labels, and those ghost
+boxes could out-vote the real eyes.
+- The same filter is in notebook 12's `grid_postprocess(eye_filter=True)` and in notebook 14's
+  copy of it, so the notebooks score what the Pi runs.
+- Notebook 12 also gained a close-up shrink, a zoom-out augmentation and training-label cleaning
+  (`EYE_LABEL_MAX_FRAC` = 0.30, which must equal `PARTS_EYE_MAX_FRAC`).
+- It now reports two scores: **"as deployed"** (with the filter) and **"like-for-like with
+  2026-10-20"**. Only the like-for-like one compares with the deployed model's figures in the
+  root `CLAUDE.md` (mAP@0.5 0.756, eye-state 0.920, head_down AP 0.743, head accuracy 0.994).
+- A Colab retrain with these changes is pending (the user runs it). Until then the deployed model
+  is still the 2026-10-20 one.
+- `PARTS_EYE_*` are **code constants**, not env vars.
+
 **Severity rules** (`orchestrator/parts_rules.py`; thresholds are `RULE_*` in `constants.py`, each
 overridable by env var):
 - **Eyes closed:** LOW 1 s / MEDIUM 2 s / **CRITICAL 3 s**. With the mouth open now or a yawn
@@ -98,10 +159,21 @@ overridable by env var):
 - **Head down + eyes closed or hidden:** CRITICAL at 3 s (2 s after a yawn).
 - **Head down with eyes open:** MEDIUM at 3 s.
 - **Yawning alone** (3 yawns ≥ 1.5 s within 5 min): never above LOW.
-- **No face** (after a face was seen): LOW at 3 s, MEDIUM at 5 s, **CRITICAL at 10 s**, reason
-  `no_face` (user decision 2026-10-20: a driver slumped out of frame must never read as fine).
-- **While the face is missing, nothing recovers:** a held severity only drops after 2 s of a
-  visible, clear face, so an incident stays open while the driver is out of frame.
+- **No face** (after a face was seen): **CRITICAL at `RULE_NO_FACE_CRITICAL_S` = 5 s**, reason
+  `no_face`, with no LOW/MEDIUM step (contract C1.5; the 3/5/10 s ladder is gone). A driver
+  slumped out of frame must never read as fine. The comparison is `elapsed >=
+  RULE_NO_FACE_CRITICAL_S` on purpose: with a passenger in view, the face switch (5 s) relies on
+  the no-face CRITICAL firing on or before the switch frame (C1.7).
+- **While the face is missing, nothing recovers:** a held severity only drops after
+  `RULE_RECOVERY_S` (2 s) of a visible, clear face, so an incident stays open while the driver is
+  out of frame. When it does drop, the orchestrator emits the recovery record **at once** (see
+  "Contract with the ESP32").
+- **Face switch: `reset_signals(self) -> None`** (contract C1.7; T2's face stage calls it once
+  per switch or take-over, after feeding that frame to the rules). It resets every running timer
+  (`_eyes`, `_head`, `_mouth`, `_noface`), the yawn history and the recovery timer. It never
+  touches the held severity, its reason, `_trigger` or `_seen_face`. So a held CRITICAL stays
+  held through a switch and needs 2 s of a clear new face to drop, and the switch itself never
+  emits a transition. Keep the signature: `PartsInferenceStage._on_face_switch` (`pipeline/parts_stages.py`) calls it directly.
 
 Escalation is immediate; recovery takes 2 s clear. A gap of no more than 0.4 s (1.0 s for the
 head timer) doesn't reset a timer. This needs an epsilon: a one-frame gap at 5 fps is
@@ -119,9 +191,23 @@ sensor yet, user decision 2026-10-20).
   `severity`, `reason` (as the alert's `alert_type`) and `model`.
 - The orchestrator emits a **severity change** as a `transition: true` reading at once (medium ->
   critical too, though both are `Drowsy`), with `previous_severity` and an `episode` id that
-  lasts from medium until the severity is back to none/low. The ESP32 raises an alert on a rise
-  to medium/critical (an escalation links to the episode's alert), resolves it on the fall back,
-  and does nothing for keepalives. See `src/esp32-argus/src/esp32_argus/pi_event_policy.h`.
+  lasts from medium until **and including** the record that drops back to none/low. That
+  recovery record is emitted immediately, not debounced behind the class debounce, and already
+  carries `Not Drowsy`.
+- **Which records are backend events** (contract C1.5; the Pi's Python and SQL and the ESP32's
+  `pi_event_policy` use the same rule). Only `transition: true` rows count, and an unknown or
+  missing `previous_severity` (null, absent, `""`, any other word) ranks as `none`:
+  - **alert medium**: severity `medium` from none/low;
+  - **alert critical**: severity `critical` from none/low/medium (a raise or an escalation);
+  - **driver OK**: severity none/low from medium/critical;
+  - everything else (keepalives, none<->low, critical -> medium, class-only changes) is not an
+    event: the ESP32 uses it only for the `vigilance` of its GPS points, then ACKs it.
+
+  `tests/test_sender_dlq.py` replays T3's shared vectors
+  (`src/esp32-argus/test/vectors/event_vectors.json`) through both the Python and the SQL form;
+  that test skips when the file isn't in the checkout.
+- Keepalives every `ORCHESTRATOR_KEEPALIVE_SECONDS` (2 s) never reach the backend. **There is no
+  heartbeat any more** (no `route_status` records): the ESP32 reports GPS every 5 s on its own.
 - A reading other than `No Face` always carries both probabilities: the ESP32 drops one without.
 - `ctx.detection` is `None` only when there's no face *and* no active rule. A frame with
   non-finite probabilities is treated like one with no face, and the wire JSON is strict (a
@@ -131,10 +217,18 @@ sensor yet, user decision 2026-10-20).
 - `OUTPUTS=logging` prints **one line per frame**, led by the **criticality** (not the binary
   class, which stays in the metrics record and the buffered reading):
   ```
-  [pi_camera] criticality=LOW (no_face 13.6s) | face=no | eyes=- mouth=- head=- | eyes_closed 0.0s
-  head_down 0.0s | ms blazeface 6.8 crop 0.6 infer 0.7 decode 0.3 track 0.1 rules 0.0 queue 0.3
-  e2e 7.2 | cpu 23% [12 30 25 26] proc 45% | ram 412MB sys 18%
+  [pi_camera] criticality=CRITICAL (no_face 5.0s) | face=no faces=1 ignored=1 switch=4.2s | eyes=-
+  mouth=- head=- | eyes_closed 0.0s head_down 0.0s | ms blazeface 6.8 crop 0.6 infer 0.7
+  decode 0.3 track 0.1 rules 0.0 queue 0.3 e2e 7.2 | cpu 23% [12 30 25 26] proc 45% | ram 412MB
+  sys 18%
   ```
+  The face-lock tokens after `face=` (contract C1.7): `faces=<n> ignored=<n>` on every frame the
+  face stage ran; ` switch=<s>s` while the switch timer runs; ` takeover=<s>s` while a larger
+  face waits to take the lock; ` SWITCHED` on a switch or take-over frame; ` REACQUIRED` on a
+  re-acquisition frame. Examples: `face=yes faces=2 ignored=1 takeover=1.2s`, `face=no faces=1
+  ignored=1 switch=4.2s SWITCHED`, `face=yes faces=1 ignored=0 REACQUIRED`. A passenger next to
+  the driver shows as `face=yes faces=2 ignored=1` with no `switch=` timer; that is how plan
+  step 6.5 is checked.
   `ms` lists every pipeline step in order, so the bottleneck is visible frame by frame.
   `queue` is end-to-end time minus the measured work, i.e. time spent waiting between stages.
   `cpu` is the board's busy % (all cores, then each core); `proc` is cv-argus's own CPU in % of
@@ -147,8 +241,9 @@ sensor yet, user decision 2026-10-20).
 - `OUTPUTS=metrics` (`MetricsLogOutputStage`) appends the same facts as one JSON object per frame
   to `METRICS_LOG_PATH`. That defaults to `$BUFFER_DIR/metrics.jsonl`, on the `buffer-data`
   volume. Each record also has every track (id, label, score), `timing_ms` with `face`,
-  `crop`, `infer`, `decode`, `track`, `rules` and `parts_stage`, plus `queue_ms`, `e2e_ms` and
-  `res` (the CPU/RAM sample above).
+  `crop`, `infer`, `decode`, `track`, `rules` and `parts_stage`, plus `queue_ms`, `e2e_ms`,
+  `res` (the CPU/RAM sample above) and `face_lock` = `{faces, ignored, switch_s, takeover_s,
+  switched, reacquired}` (`null` when the face stage didn't run).
 - `scripts/summarize_metrics.py metrics.jsonl [--csv out]` turns the log into:
   - latency mean / p50 / p95 / p99 / max per step, plus queueing and end to end;
   - CPU (board total, each core, cv-argus's own) and RAM mean / p95 / max over distinct
@@ -171,11 +266,12 @@ one thread). `head_down` is still the weakest class (AP@0.5 0.74, up from about 
 The decision thresholds and the tracker's head-down vote were tuned on the 2026-10-18 model and
 haven't been re-swept for the new one.
 
-`orchestrator/`, `buffer/`, `sender/` and `alerts/` are done too (see "`orchestrator/`,
-`buffer/`, `sender/`, `alerts/` — done" below). A thin, always-on bridge stage hands each frame's
-`DetectionResult` to the orchestrator's decision loop, which writes debounced readings (plus
-heartbeats) into `buffer/`'s WAL-mode SQLite queue; `sender/` answers the ESP32's Bluetooth
-PULL/ACK poll against that queue.
+`orchestrator/`, `buffer/`, `sender/` and `alerts/` are done too, on **Bluetooth protocol v2**
+(see "`orchestrator/`, `buffer/`, `sender/`, `alerts/` — done" below). A thin, always-on bridge
+stage hands each frame's `DetectionResult` to the orchestrator's decision loop. That loop writes
+readings (severity changes at once, debounced class changes, keepalives) into `buffer/`'s
+WAL-mode SQLite outbox. `sender/` answers the ESP32's Bluetooth sessions against it: live pulls,
+one-row dead-letter pulls, and reports of what the ESP32 delivered, failed or is still holding.
 
 ## Python packaging: `src/` on disk, `cv_argus` at import time
 
@@ -259,6 +355,14 @@ Env vars `main.py` reads (all optional, all with defaults):
 | `ARGUS_TRUCK_ID`/`ARGUS_DEVICE_API_KEY`/`ARGUS_BACKEND_URL` | unset | `sender/device_config.py`'s `DeviceConfig`, from the dashboard's `argus-device.env` (`docker-compose.yml` `env_file`, runtime only) |
 | `ARGUS_WIFI_SSID`/`ARGUS_WIFI_PASSWORD`/`ARGUS_GPRS_APN`/`ARGUS_GPRS_USER`/`ARGUS_GPRS_PASSWORD` | unset | optional `DeviceConfig` network fields, from `.env` (per installation), sent to the ESP32 in `CONFIG`; verbatim, not stripped |
 | model-artifact overrides | see `constants.py` | `MODEL_DIR`, `*_DRIVE_FILE_ID`, `*_FILENAME`, `*_BUNDLE_URL` — see "Model download strategy" |
+
+`RULE_*` timers and the `PARTS_*` decision thresholds read env vars of the same name. These are
+**code constants, not env vars**: `FACE_LOCK_MAX_SHIFT_FRAC` (0.6), `FACE_LOCK_MAX_SCALE` (1.6),
+`FACE_LOCK_MISS_GRACE_S` (1.0), `FACE_LOCK_TAKEOVER_SCALE` (1.25), `FACE_SWITCH_AFTER_S` (5.0),
+`PARTS_EYE_MAX_FRAC` (0.30), `PARTS_EYE_CY_RANGE` (0.15-0.70), and the protocol/buffer values
+(`BUFFER_LEASE_SECONDS`, `BUFFER_DLQ_MAX_ATTEMPTS`, `BUFFER_ARCHIVE_NOW_REASONS`,
+`BUFFER_MAX_UNSENT_ROWS`, `MAX_PULL_LIMIT`, `MAX_DLQ_LIMIT`), which are contract C4 values the
+ESP32 relies on.
 
 `docker compose` passes `/dev/video0` through by default — adjust the `devices:` entry to
 match your machine, or drop it when testing against a video file. `Dockerfile` sets
@@ -382,32 +486,27 @@ src/
 ├── pipeline/       # DONE — threaded Stage/Pipeline abstraction (stage.py), sources
 │                   # (camera/video file/Pi CSI), the BlazeFace stage, PartsInferenceStage,
 │                   # the logging/metrics/MJPEG sinks, the bundle download; wired into main.py
-├── alerts/         # DONE — Alert data model (models.py: AlertKind discriminator + one
-│                   # envelope dataclass, route_status() factory) + serialization
-│                   # (serialization.py: to/from dict/json) only — no logic, no persistence;
-│                   # orchestrator/, buffer/, and sender/ all depend on this, not vice versa
+├── alerts/         # DONE — Alert data model (models.py: AlertKind, only DROWSINESS in v2,
+│                   # one envelope dataclass) + serialization (serialization.py: to/from
+│                   # dict/json, and age_seconds() for the serve-time age_s) — no logic, no
+│                   # persistence; orchestrator/, buffer/ and sender/ all depend on this
 ├── orchestrator/   # DONE — OrchestratorBridgeOutputStage (bridge.py, a thin always-on
 │                   # pipeline sink) + Orchestrator (orchestrator.py, its own decision-loop
-│                   # thread): debounced class *readings* on every change plus
-│                   # keepalives, and a periodic RouteStatus("OK") heartbeat — the "Alert/RouteStatus
-│                   # Orchestration (Decision Making)" box in the design diagram. Builds
-│                   # records via alerts/ and calls buffer/.enqueue(). Also holds
-│                   # fusion_contract.py — the typed contract + reference decision logic for
-│                   # the ESP32's drowsy+grip fusion (matrix + debounce/escalation/recovery
-│                   # windows). A contract reference only: not wired into main.py, and
-│                   # Orchestrator itself is unchanged — it still only ever sees the camera
-│                   # signal. See that file's own docstring and the root CLAUDE.md's ESP32
-│                   # bullet.
-├── buffer/         # DONE — Buffer (store.py): a single SQLite table (WAL mode), enqueue/
-│                   # fetch_unsent/mark_sent/unsent_count/close — the "Queue Message Local
-│                   # Buffer (SQLite)" box in the design diagram, and the answer to "what
-│                   # happens when the truck goes offline". No communication logic of its own
-│                   # — sender/ dequeues from it.
-└── sender/         # DONE — a Bluetooth SPP *server* answering the ESP32's PULL/ACK poll
-                     # (protocol.py's grammar, server.py's SenderServer accept loop,
-                     # transport.py's Transport/Listener abstraction + FakeTransport/
-                     # FakeListener, bluetooth_transport.py's platform-gated real transport).
-                     # Not yet run against real ESP32 hardware/firmware — see "Open decisions".
+│                   # thread): severity changes at once, debounced class changes, keepalives
+│                   # (no heartbeat) — the "Alert Orchestration (Decision Making)" box in the
+│                   # design diagram. parts_rules.py is the severity rule engine (with
+│                   # reset_signals() for a face switch). fusion_contract.py is the typed
+│                   # reference for the ESP32's drowsy+grip fusion: not wired into main.py.
+├── buffer/         # DONE — Buffer (store.py): SQLite (WAL) with an `alerts` table (states
+│                   # outbox / dlq / sent, the TAKEN lease, the round-robin DLQ) and an
+│                   # `archive` table for everything given up on; status.py is the read-only
+│                   # `python -m cv_argus.buffer.status`. No communication logic of its own.
+└── sender/         # DONE — a Bluetooth SPP *server* for the ESP32's protocol v2 sessions
+                     # (protocol.py's grammar, server.py's SenderServer accept loop +
+                     # housekeeping, transport.py's Transport/Listener + fakes,
+                     # bluetooth_transport.py / bluez_profile.py the real transports,
+                     # device_config.py the CONFIG reply, inject.py a test reading).
+                     # v2 not yet run against the real ESP32 — see "Open decisions".
 ```
 
 See "`orchestrator/`, `buffer/`, `sender/`, `alerts/` — done" below for the full design of the
@@ -438,9 +537,13 @@ four newer packages.
   and cv2).
 - `parts_tracker.py`: `PartsTracker`, a greedy per-kind IoU tracker with stable `E1`/`M1`/`H1`
   IDs. Tracks survive `PARTS_TRACK_MAX_MISSES` frames, and each track's state is a 3-frame vote
-  (with the head-down exception above).
+  (with the head-down exception above). `reset()` drops every track and restarts the IDs;
+  `PartsInferenceStage` calls it on a face switch, so the old face's eyes don't carry over.
 - `detector.py`: `DetectionResult` (level, probabilities, `extras`).
-- `downloader.py`: the gdown fetches above.
+- `downloader.py`: the gdown fetches above. `model/__init__.py` re-exports
+  `download_parts_int8_model` / `download_parts_float_model` **lazily** (a module
+  `__getattr__`), so `from cv_argus.model import DetectionResult` (the rule engine needs it)
+  doesn't import `gdown`. `tests/test_model_package_lazy.py` guards that.
 
 There's no `mediapipe` import anywhere under `model/`. That boundary is deliberate:
 `pipeline/` turns MediaPipe output into plain numbers (`face_bbox_raw`).
@@ -487,15 +590,20 @@ before each was replaced, and the parts pipeline reuses it unchanged:
 - **`face_detector_stage.py`** (`FaceDetectorCropStage`, BlazeFace) — `VIDEO` running mode and
   `detect_for_video(mp_image, timestamp_ms)` with a monotonically increasing timestamp, matching
   the notebooks' live-simulation pattern (not MediaPipe's `LIVE_STREAM` callback API, a
-  different shape never validated in any notebook). Highest-confidence face when more than one
-  is found. It publishes `face_bbox_raw` (the raw box `PartsInferenceStage` builds the square
-  training crop from), `face_bbox` (margin-expanded, for the overlay) and `timing_ms["face"]`.
+  different shape never validated in any notebook). When more than one face is found,
+  `FaceLock` picks the driver's (see "One face" in "Current status"). It publishes
+  `face_bbox_raw` (the raw box `PartsInferenceStage` builds the square training crop from),
+  `face_bbox` (margin-expanded, for the overlay), `face_lock` (`{faces, ignored, switch_s,
+  takeover_s, switched, reacquired}`), `face_switched` on a switch or take-over frame, and
+  `timing_ms["face"]`.
 - **`parts_stages.py`** — `PartsInferenceStage`: crop → detect → remap → track → rules in one
   stage, writing `ctx.detection`, `ctx.features["parts"]` and `ctx.features["timing_ms"]`.
-  Frames without a face still tick the rules ("no face for 3 s" is a rule).
+  Frames without a face still tick the rules ("no face for 5 s" is a rule). On a
+  `face_switched` frame it runs the rules first, then `reset_signals()` and a tracker reset.
 - **`output_stages.py`** — `LoggingOutputStage` (one readable line per frame: severity, reason,
-  eye/mouth/head states, timers, timings) and `MetricsLogOutputStage` (`OUTPUTS=metrics`, one
-  JSON line per frame to `METRICS_LOG_PATH`). Both are built on `parts_frame_record(ctx)`.
+  face-lock tokens, eye/mouth/head states, timers, timings) and `MetricsLogOutputStage`
+  (`OUTPUTS=metrics`, one JSON line per frame to `METRICS_LOG_PATH`, with the `face_lock` key).
+  Both are built on `parts_frame_record(ctx)`.
 - **`mjpeg_output_stage.py`** — `MjpegStreamOutputStage`, a demo-only sink: draws
   `pipeline/parts_overlay.py`'s `draw_parts_overlay()` (part boxes with track IDs, the severity
   banner, timer bars, the thresholds/precision/ms footer), falling back to
@@ -542,7 +650,10 @@ BlazeFace → `PartsInferenceStage` → outputs + bridge; there is no `PIPELINE`
 Runs until a signal arrives or the source (e.g. a video file) ends on its own — see
 `Pipeline.is_alive()` in `stage.py`.
 
-### `orchestrator/`, `buffer/`, `sender/`, `alerts/` — done
+### `orchestrator/`, `buffer/`, `sender/`, `alerts/` — done (Bluetooth protocol v2)
+
+The exact rules live in `docs/designs/final-tweaks-contracts.md`, section C1 (C1.4 record JSON,
+C1.5 events, C1.6 buffer). Where that file and this text differ, the contract wins.
 
 Built as **three independent peer components** (Pipeline, `Orchestrator`, `SenderServer`),
 coupled only through `buffer/`'s SQLite file — not as more pipeline stages, and not as one
@@ -551,115 +662,209 @@ three; see its module docstring for the full picture and the shutdown-order rati
 
 Data flow: the pipeline's `PartsInferenceStage` → `OrchestratorBridgeOutputStage` (a thin,
 always-on sink — *not* one of `OUTPUTS=`'s demo/observability toggles) → `Orchestrator`'s own
-decision-loop thread → `alerts/`'s `Alert.new()`/`route_status()` → `buffer/`'s `Buffer.enqueue()`
-→ (later, asynchronously) `sender/`'s `SenderServer` answers an ESP32 Bluetooth poll by calling
-`Buffer.fetch_unsent()`, streaming rows, and only calling `Buffer.mark_sent()` once the ESP32
-actually ACKs them.
+decision-loop thread → `alerts/`'s `Alert.new()` → `buffer/`'s `Buffer.enqueue()` (state
+`outbox`) → (later, asynchronously) `sender/`'s `SenderServer` answers the ESP32's next Bluetooth
+session: it serves outbox rows, and applies what the ESP32 reports back (`ACK`, `FAIL`, `TAKEN`).
 
-**`alerts/` — the shared data model.** One envelope dataclass, not one class per alert type: the
-draw.io diagram shows a single "Alert/RouteStatus Model" box feeding a single "Queue Message
-Local Buffer (SQLite)" box, and alert payloads are expected to vary by type anyway (a drowsiness
-alert and a route-status heartbeat don't share a rigid shape — see the thesis draft's MongoDB
-justification). `models.py`'s `Alert` carries `id` (uuid4 hex), `kind` (`AlertKind.DROWSINESS` /
-`AlertKind.ROUTE_STATUS`), `level` (1/2, `None` for a heartbeat), `created_at_ms` (**wall clock**,
-`time.time()` — not `FrameContext.created_at`'s monotonic convention, since this value gets
-serialized and shown off-device), `source_id`, a flexible `payload` dict, and `geolocation`
-(**always `None`** — see below). `route_status()` is a factory returning an `Alert` with
-`kind=ROUTE_STATUS`, not a second class, so `buffer/`/`sender/` only ever handle one type.
-`serialization.py`'s `to_json()`/`from_json()` are compact and newline-free (required by
-`sender/`'s newline-delimited wire format); an unknown `kind` string raises a clear `ValueError`
-rather than silently defaulting.
+**`alerts/` — the shared data model.** One envelope dataclass, not one class per alert type
+(the draw.io diagram shows a single "Alert Model" box feeding a single "Queue Message Local
+Buffer (SQLite)" box). `models.py`'s `Alert` carries:
+- `id` (uuid4 hex; the backend dedups by it as `client_event_id`), `kind`, `level` (2 `Drowsy`,
+  1 `Not Drowsy`, `None` for `No Face`), `source_id`, a flexible `payload` dict and
+  `geolocation` (**always `None`**, see below);
+- `created_at_ms` (**wall clock**, `time.time()`), `mono_ms` (`time.monotonic()`), `boot_id`
+  and `clock_synced`, so the age of a row can be computed later without trusting the Pi's clock.
+
+`AlertKind` has only `DROWSINESS` in v2: the `route_status` heartbeat and its `route_status()`
+factory are gone (contract C1.4). `serialization.py`'s `to_json()`/`from_json()` are compact,
+newline-free and strict (a non-finite number becomes `null`); an unknown `kind` raises a clear
+`ValueError`.
+
+**`age_s`** (contract C1.4) is computed **at serve time, never stored**, by
+`alerts.serialization.age_seconds()`, and added to every served record line. It's the seconds
+from the event to the moment the line is written, rounded to 0.1 s:
+- same boot and a `mono_ms`: monotonic difference (immune to NTP steps and an unsynced clock);
+- else, when both the row's and the Pi's wall clock are synced: wall-clock difference, clamped
+  to >= 0;
+- else `null`: the age is unknowable, the ESP32 answers `FAIL <id> too_old -`, and the row is
+  archived.
+The ESP32 never sees absolute times; the backend turns `age_s` into a timestamp with its own
+clock. `src/tests/edge_chain` patches `serialization.time`, `models.time` and
+`orchestrator.time` to drive these clocks, so moving `age_seconds` or changing its time source
+breaks it: tell the lead first.
 
 **Geolocation is never populated by this module.** The draw.io diagram wires the geolocation
-module directly to the ESP32, not the Pi — this device has no GPS. The ESP32 attaches its own
-live GPS reading only when it relays a pulled record onward to the backend over HTTP; no
-reverse-direction Bluetooth message exists for this, and none is needed.
+module directly to the ESP32, not the Pi — this device has no GPS. The ESP32 adds its own GPS
+position (and keeps the event-time position in the body it composes) when it relays an event to
+the backend; nothing travels the other way.
 
-**Live first, dead-letter on failure (user decision 2026-10-20).** Every row has a `state`:
-`outbox` (just produced, live: written to disk at once but normally gone within seconds),
-`dlq` (the ESP32 reported it couldn't deliver it, or never picked it up within 60 s), `sent`.
-The ESP32 reports per record: `ACK` (delivered, or nothing to send) or `FAIL <reason> <the
-backend message it composed>`; only failed rows stay, with that message (so the GPS position and
-time of the event survive). `fetch_unsent()` serves the outbox; `fetch_dlq()` the dead letters,
-oldest first, which the ESP32 asks for (`DLQ <k>`) only once it can reach the backend. An older
-file migrates on open (unsent → `outbox`). The backend/UI side of these replayed "missing
-alerts" is not built yet: see the root `CLAUDE.md`, "Pending feature: Missing alerts".
-
-**`buffer/` — the SQLite queue, one shared table.** `store.py`'s `Buffer` opens with `PRAGMA
-journal_mode=WAL` + `synchronous=NORMAL` + `busy_timeout=5000`, and wraps every write
-(`enqueue`/`mark_sent`) in a `threading.Lock` — WAL lets `fetch_unsent()` (a pure reader) proceed
-without blocking on a writer, but doesn't by itself make two Python threads' *writes* atomic
-with each other, which is what the lock is for. One `Buffer` instance is constructed once in
-`main.py` and shared by `Orchestrator` and `SenderServer` — this is the project's actual
-"concurrencia real" argument (thesis draft, criterion 3.1.1), so the two threads have to
-genuinely share the same lock, not just point at the same file. `enqueue()` is idempotent
-(`INSERT OR IGNORE` on `id`); `fetch_unsent()` never mutates `sent` — the only method that does
-is `mark_sent()`, and `sender/` calls it exclusively after an ACK (see below), never right after
-handing rows over. `BUFFER_DIR`/`BUFFER_DB_FILENAME` env vars (already scaffolded in
-`.env.example`/`Dockerfile`/`docker-compose.yml` before this module existed) are read via
-`constants.BUFFER_DIR_DEFAULT`/`BUFFER_DB_FILENAME_DEFAULT`.
-
-**`orchestrator/` — one decision loop, not two independent timers.** `bridge.py`'s
+**`orchestrator/` — one decision loop, not several timers.** `bridge.py`'s
 `OrchestratorBridgeOutputStage` has zero decision logic — it only pushes `(source_id,
 detection)` onto a plain `queue.Queue` that `Orchestrator` owns, via `put_nowait`/drop-on-full
-(a dropped detection just costs one fewer sample toward the debounce counter, never blocks the
-pipeline). `orchestrator.py`'s `Orchestrator` runs a single `while` loop on its own thread,
-gated by `queue.get(timeout=ORCHESTRATOR_LOOP_POLL_SECONDS)`: every wake — a real detection or a
-timeout — checks both "is a reading due" and "is a heartbeat due", matching the draw.io
-diagram's one Orchestration box producing both message kinds.
+(a dropped detection just costs one sample, never blocks the pipeline). `orchestrator.py`'s
+`Orchestrator` runs a single `while` loop on its own thread, gated by
+`queue.get(timeout=ORCHESTRATOR_LOOP_POLL_SECONDS)`. Every wake — a detection or a timeout —
+checks for a class or severity change, for a due keepalive and for periodic buffer maintenance.
 
-It reports **readings, not sparse alerts**: one `drowsiness` record whenever the debounced class
-changes, plus a keepalive every `ORCHESTRATOR_KEEPALIVE_SECONDS` while it stays the same. That way
-the ESP32's fusion can see an incident end, not only start.
-- **Debounce** (`ORCHESTRATOR_DEBOUNCE_FRAMES = 3`, about 0.6 s at 5 fps) applies in **both**
-  directions.
-- The first `ORCHESTRATOR_WARMUP_FRAMES` are ignored.
-- `ORCHESTRATOR_HEARTBEAT_INTERVAL_SECONDS = 60.0` paces the `RouteStatus("OK")` heartbeat.
-- `DetectionResult.extras` (the parts pipeline's severity, reason and timers) is merged into the
-  payload *before* the three contract keys (`class_name`, `probabilities`, `transition`), so it can
-  never overwrite them.
+It reports **readings, not sparse alerts**; the ESP32 decides which are backend events (C1.5,
+see "Contract with the ESP32" above):
+- **Severity changes** are emitted at once as `transition: true`, with `previous_severity` and
+  the `episode` id. They aren't debounced again (the rules have their own hold and recovery),
+  and a severity change adopts this frame's class at once, so the recovery record says
+  `Not Drowsy` right away. A reason change at the same severity emits nothing.
+- **Class changes** (`Drowsy` / `Not Drowsy` / `No Face`) are debounced in both directions by
+  `ORCHESTRATOR_DEBOUNCE_FRAMES` (3, about 0.6 s at 5 fps). The first
+  `ORCHESTRATOR_WARMUP_FRAMES` (10) are ignored.
+- **Keepalives** every `ORCHESTRATOR_KEEPALIVE_SECONDS` (2 s) while nothing changes
+  (`transition: false`, `previous_severity` = `severity`), so a stalled pipeline is visible to
+  the ESP32. They never reach the backend.
+- **No heartbeat.** `ORCHESTRATOR_HEARTBEAT_INTERVAL_SECONDS` and the 60 s `RouteStatus("OK")`
+  are removed (contract C1.5); the ESP32 sends GPS every 5 s on its own.
+- `DetectionResult.extras` (the rules' severity, reason, timers) is merged into the payload
+  *before* the contract keys (`class_name`, `probabilities`, `transition`), so it can never
+  overwrite them.
+- Every `BUFFER_MAINTENANCE_INTERVAL_SECONDS` (600 s) the loop calls `prune_sent` (sent rows
+  older than `BUFFER_KEEP_SENT_SECONDS`, a day) and `cap_unsent` (below).
 
-The constants live in `constants.py` with their reasoning. The 30 s alert cooldown older docs
-mention was removed when readings replaced alerts. `start()`/`stop()`/`join()`/`is_alive` mirror
-`Pipeline`'s own method names (not by inheritance — `Orchestrator` isn't a `Stage`/`Pipeline`
-subclass) so `main.py` can treat all three top-level components uniformly.
+State is per camera `source_id`. `start()`/`stop()`/`join()`/`is_alive` mirror `Pipeline`'s
+method names (not by inheritance) so `main.py` treats all three components alike.
+`fusion_contract.py` is the typed reference for the ESP32's drowsy+grip fusion (ported to
+`fusion.cpp`); it isn't wired into `main.py`.
 
-**`sender/` — a custom Bluetooth SPP server, ESP32-initiated polling.** `protocol.py` defines a
-small, pure (no I/O) request/response grammar:
+**`buffer/` — the SQLite queue.** `store.py`'s `Buffer` opens with `PRAGMA journal_mode=WAL` +
+`synchronous=NORMAL` + `busy_timeout=5000`, and wraps every write in one `threading.Lock`: WAL
+lets readers run without blocking on a writer, but doesn't make two Python threads' *writes*
+atomic with each other. One `Buffer` is built in `main.py` and shared by `Orchestrator` and
+`SenderServer` — this is the project's actual "concurrencia real" argument (thesis draft,
+criterion 3.1.1), so the two threads genuinely share the same lock. `enqueue()` is idempotent
+(`INSERT OR IGNORE` on `id`). `BUFFER_DIR`/`BUFFER_DB_FILENAME` set the file
+(`constants.BUFFER_DIR_DEFAULT`/`BUFFER_DB_FILENAME_DEFAULT`).
+
+*Row states* in table `alerts` (user decision 2026-10-20, "live first, dead-letter on failure"):
+- `outbox`: just produced. Written to disk at once so a reboot can't lose it, but this is the
+  live path: rows normally leave it within seconds.
+- `dlq`: the dead-letter queue. It holds **critical event rows only** (`kind='drowsiness'`,
+  `transition` true, severity `critical`, previous severity not `critical`, missing counting as
+  `none`).
+- `sent`: delivered, or nothing to deliver (a keepalive, a non-event). Pruned after a day.
+
+*The `TAKEN` lease.* The ESP32's sender task holds the events it took and reports each later.
+`lease()` sets `lease_until_ms = now + BUFFER_LEASE_SECONDS` (120 s) on rows served **in the same
+session**. A leased row is skipped by `fetch_unsent`, `fetch_dlq`/`serve_dlq`, `expire_outbox`,
+`cap_unsent` and the waiting counts, so it isn't served twice, expired or capped while in flight.
+When the lease lapses the row becomes visible again in the state it had; that is not an attempt.
+`ACK` and `FAIL` clear the lease.
+
+*Live outbox expiry* (`expire_outbox`, run by `SenderServer`'s housekeeping every 5 s, so **only
+while a sender runs**): a non-leased outbox row older than `DEFAULT_OUTBOX_MAX_AGE_SECONDS`
+(60 s, by enqueue time) means the ESP32 isn't picking up. A critical event row moves to the DLQ
+as `esp32_unreachable` (no body, `attempts` stays 0); any other event (a medium, a driver OK) is
+archived as `esp32_unreachable`; non-events (keepalives) are deleted. With
+`SENDER_TRANSPORT=none` nothing expires; only `cap_unsent` bounds the outbox.
+
+*`FAIL <id> <reason> <body>`* (`apply_fail`, for a row in `outbox` or `dlq`):
+1. not a critical event row → archived at once with `<reason>` (normally `retry_window`: a
+   medium/OK whose live window ran out);
+2. a critical, reason `preempted` (a DLQ replay a live event pre-empted) → stays where it was
+   (an outbox row stays in the outbox), lease cleared, `attempts` and `dlq_round` unchanged;
+3. a critical, reason in `BUFFER_ARCHIVE_NOW_REASONS` (`route_finished`, `no_route`, `too_old`,
+   `wrong_truck`, `invalid`) → archived at once;
+4. any other reason (`no_network`, `timeout`, `http_503`, `retry_window`, `bad_response`, ...) →
+   `attempts += 1`; an outbox row moves to the DLQ in the current round; `dlq_error` = reason; the
+   body is stored only if none was stored yet (the first composed event, with the event-time GPS
+   position, wins). At `BUFFER_DLQ_MAX_ATTEMPTS` (5) the row is archived as `max_attempts`.
+The live failure that dead-letters a critical is attempt 1; each failed replay is one more.
+
+*Repeated-FAIL guard* (C1.6 `[sync 2]`). Rule 4 applies only to an `outbox` row (leased or not)
+or to a **leased** `dlq` row. A rule-4 FAIL for a non-leased dead letter is a resend of one
+already applied (every FAIL clears the lease): it's ignored, not counted in `failed`, and logged
+at debug. So the ESP32 resending outcomes it got no `OK` for can never count an attempt twice.
+Accepted cost: a replay whose 120 s lease lapsed before its FAIL arrived is an uncounted attempt.
+Rules 1-3 need no guard. **`[sync 3]` body fill:** an ignored FAIL still sets `dlq_body =
+COALESCE(dlq_body, <body>)` when the body is a JSON object, and changes nothing else (no attempt,
+no `dlq_error`, not counted). The case: a live critical the ESP32 had `TAKEN`, whose lease lapsed
+during a Bluetooth outage, so `expire_outbox` dead-lettered it as `esp32_unreachable` with no
+body; its late dead-lettering FAIL must not lose the event-time GPS position.
+
+*DLQ order: newest first, round-robin, one row per session.* `serve_dlq(limit=1)` (what a `DLQ`
+session calls) returns the non-leased dead letter with the smallest `dlq_round`, newest first
+(`rowid DESC`) on ties, and bumps its `dlq_round` at serve time, whether or not it's then TAKEN.
+A row entering the DLQ gets the current minimum round, so it goes out ahead of older rows but
+can't take several attempts in a row. `fetch_dlq()` is the read-only listing in the same order
+(tests, `buffer.status`); it never changes the order.
+
+*Archive.* Everything given up on moves to the `archive` table: every column of `alerts` plus
+`archived_at_ms` and `archive_reason`, as `INSERT` + `DELETE` in one transaction under the write
+lock. Archived rows are **never deleted, never served, never resent**. Reasons: the FAIL reason
+(rules 1 and 3), `max_attempts`, `esp32_unreachable`, `cap_unsent`, `migrated_v2`.
+
+*`cap_unsent`* (`BUFFER_MAX_UNSENT_ROWS` = 20000): over the cap, keepalives are deleted first,
+then the oldest remaining rows are **archived** as `cap_unsent` (no longer deleted). **Leased rows
+are spared** (neither deleted nor archived; they still count towards the total): the ESP32 may
+already have delivered them.
+
+*Migration on open* (`_init_schema` → `_migrate_v2`, idempotent): adds the `archive` table and
+the new columns (`lease_until_ms`, `dlq_round`, `last_error`, ...); moves every unsent
+`route_status` row and every non-critical dead letter to the archive as `migrated_v2`; archives a
+remaining dead letter already at 5 attempts as `max_attempts`. Before that, a file from before
+the dead-letter queue (no `state` yet) gets its unsent rows as `outbox`, its sent rows as `sent`.
+
+*`python -m cv_argus.buffer.status [--limit N] [--bodies]`* (read-only, never serves so it never
+changes the replay order): the outbox, the DLQ (attempts, round, lease, error, optionally the
+composed body) and the archive (count by reason plus the newest rows).
+
+**`sender/` — a custom Bluetooth SPP server; the ESP32 is the client.** `protocol.py` is a pure
+(no I/O) grammar; the ESP32 opens a fresh connection per session, one session at a time, and its
+first line decides the session:
 ```
-Client -> Server:  PULL <n>\n  |  DLQ <k>\n        (live outbox | dead letters, oldest first)
-Server -> Client:  one JSON line per record (a DLQ line also has "dlq": {error, body, ...})
-Server -> Client:  END <dead letters waiting>\n   (even if 0 rows)
-Client -> Server:  FAIL <id> <reason> <json|->\n   (0..n: couldn't deliver -> dead-letter queue)
-Client -> Server:  ACK <id1>,<id2>,...\n           (delivered, or nothing to send)
-Server -> Client:  ACKED <n>\n
-Client -> Server:  DONE\n
-Server -> Client:  OK acked=<a> failed=<f> dlq=<n>\n
+C: CONFIG                       S: CONFIG {json} | NOCONFIG
+C: PULL <n>                     live pull, n clamped to MAX_PULL_LIMIT (50); the ESP32 asks 8
+S: <record JSON line> x0..n     non-leased outbox rows, oldest first, each with age_s
+S: END <dlq_waiting> <outbox_waiting>
+C: ACK <ids> | FAIL <id> <reason> <body> | TAKEN <ids>   x0..m, any order
+C: DONE
+S: OK acked=<a> failed=<f> leased=<l> dlq=<d> outbox=<o>
+C: DLQ <k>                      dead-letter pull, k clamped to MAX_DLQ_LIMIT (1)
+S: <record JSON line with "dlq": {error, body, failed_at_ms, attempts, queued_s}> x0..1
+S: END ... / report lines / DONE / OK ...  as above
+C: ACK <ids> | FAIL ...         report session: outcomes for rows taken earlier
+C: <report lines> / DONE        S: OK ...
 ```
-The server waits up to 30 s for the report (the ESP32 may POST each record first) and logs every
-failure, a line per session that delivered or failed anything backend-bound, and the queue every
-30 s while anything waits. Two commands in the running container:
-`python -m cv_argus.sender.inject <severity> [--episode ID]` queues a fake reading (tests the
-link without the camera), and `python -m cv_argus.buffer.status [--bodies]` lists the queue and
-the dead letters (read-only).
-`server.py`'s `SenderServer` runs a single-session-at-a-time accept loop (matches the
-one-Pi-one-ESP32 topology assumed throughout this design) against a `Transport`/`Listener`
-pair (`transport.py`). **Critical invariant**: `buffer.mark_sent()` is called *only* after an
-`ACK` line actually arrives — a connection dropped between `END` and `ACK` leaves those rows
-`sent=0`, so the next `PULL` re-serves them verbatim. This makes an interrupted pull idempotent
-by construction: a duplicate delivery is possible (the ESP32 could receive the same alert
-twice), a *lost* one is not. Backend-side dedup by `Alert.id`, and what happens if the ESP32
-pulls successfully but then fails its own HTTP relay to the backend, are both explicitly out of
-scope for this repo — flagged, not solved. `bluetooth_transport.py`'s `BluetoothSppTransport`/
-`BluetoothSppListener` use stdlib `socket.AF_BLUETOOTH`/`BTPROTO_RFCOMM` (no PyBluez dependency)
-— `socket.AF_BLUETOOTH` is referenced only inside method bodies, never at class/module level, so
-*importing* this module never requires Bluetooth support; only *constructing* a
-`BluetoothSppListener` can fail, with a clear `OSError`, on a platform/build without it (verified
-directly: it raises immediately on a machine with no Bluetooth adapter, rather than hanging or
-silently no-opping). `sender/__init__.py` re-exports both lazily (mirrors `pipeline/__init__.py`'s
-`_LAZY` `__getattr__` pattern) for the same reason. `transport.py`'s `FakeTransport`/
-`FakeListener` (an in-memory, queue-backed duplex pair) are what every `sender/` test actually
-runs against — no real socket anywhere in the unit suite.
+- Replies: `ACK` → `ACKED <n>` (rows actually marked sent), `TAKEN` → `LEASED <n>` (only ids
+  served in **this** session count), `FAIL` → no reply. `ACK`/`FAIL` are honoured for any id in
+  `outbox` or `dlq`, leased or not; an id that's unknown, sent or archived is ignored.
+- **Report lines take effect the moment they're read** (`ACKED`/`LEASED` are sent at once).
+  `DONE` → `OK` is only a summary. A session that breaks before `OK` keeps every line already
+  applied, and the ESP32 may resend outcomes it has no `OK` for: safe, because ACK is
+  idempotent and a repeated FAIL is ignored (the guard above).
+- `END`/`OK` counts are rows not leased; `END` is always sent, even with 0 rows. The Pi waits up
+  to 30 s for the report, 1 s at a time; a disconnect or timeout leaves every unreported row where
+  it was. A served row the ESP32 neither ACKs, FAILs nor TAKEs is served again.
+- **Critical invariant:** `buffer.mark_sent()` is called **only** on an `ACK` line. A connection
+  dropped after `END` changes nothing, so the next pull re-serves the rows: a duplicate delivery
+  is possible (the backend dedups by `client_event_id` = the row id), a lost one is not.
+- What the ESP32 does (contract C1.8, T3's side, summarised): every `PULL` record updates its
+  latest severity; a non-event is ACKed in the same session; an event is `TAKEN` and queued for
+  its sender task, which posts it to the backend's report endpoint and later sends `ACK` or
+  `FAIL <id> <reason> <body>` (the composed event as `<body>` for the FAIL that first
+  dead-letters a critical). It asks `DLQ 1` only when `dlq_waiting > 0` and no live event is
+  pending; a replay carries `delivery: "dlq"` and `queued_seconds` to the backend.
+- `server.py`'s `SenderServer` runs a single-session-at-a-time accept loop (one Pi, one ESP32)
+  against a `Transport`/`Listener` pair (`transport.py`). Its housekeeping (every 5 s, between
+  sessions) runs `expire_outbox` and logs the queue. Logs: every FAIL as it happens, one line
+  per session that delivered, took or failed an event, the queue every 30 s while anything waits,
+  `ESP32 <mac> connected` / `link down?` transitions, and each change in the severity the ESP32
+  acked.
+- Two commands in the running container: `python -m cv_argus.sender.inject <severity> [--episode
+  ID]` queues a fake reading (tests the link without the camera; only a critical can end up in
+  the DLQ), and `python -m cv_argus.buffer.status` (above).
+- `bluetooth_transport.py`'s `BluetoothSppTransport`/`BluetoothSppListener` use stdlib
+  `socket.AF_BLUETOOTH`/`BTPROTO_RFCOMM` (no PyBluez). `AF_BLUETOOTH` is referenced only inside
+  method bodies, so *importing* the module never needs Bluetooth support; only *constructing* a
+  listener can fail, with a clear `OSError`. `sender/__init__.py` re-exports both lazily (the
+  same `_LAZY` `__getattr__` pattern as `pipeline/__init__.py`). `transport.py`'s
+  `FakeTransport`/`FakeListener` (an in-memory, queue-backed duplex pair) are what every
+  `sender/` test runs against — no real socket in the unit suite.
 
 **Device credentials — `CONFIG`.** This module never calls the backend, but it *holds* the
 truck's backend credentials: `sender/device_config.py`'s `DeviceConfig` (truck id, device API
@@ -696,14 +901,13 @@ the socket credentials, because the container's uid 0 is a different uid on the 
 restarted bluetoothd (`NameOwnerChanged` for `org.bluez`) or a lost bus re-registers everything
 with a backoff. `tests/test_sender_bluez_profile.py` runs it against a private `dbus-daemon` with
 a stand-in BlueZ: setup calls, agent accept/reject, trust, a real fd through `NewConnection`, a
-restart, close, and "no BlueZ" failing construction. Real pairing and the real bluetoothd are
-still unverified until the Pi + ESP32 run it.
+restart, close, and "no BlueZ" failing construction. On real hardware, the Pi + ESP32 paired
+through it and answered `CONFIG` on 2026-10-20 (under protocol v1).
 
 This satisfies the grading-criteria constraint behind all of it (3.2's "not a pre-built
-client/server service" note): the PULL/ACK grammar is a protocol this project defines and
-implements itself, not a call into someone else's client/server library — only the Pi side
-exists in this repo (no ESP32 firmware here), but the protocol design is what the criterion is
-actually asking for.
+client/server service" note): the PULL/DLQ/report grammar is a protocol this project defines and
+implements itself on both ends (this module's Pi side, `src/esp32-argus`'s client), not a call
+into someone else's client/server library.
 
 ## Open decisions that affect this module later
 
@@ -711,10 +915,13 @@ actually asking for.
   polling side** — `sender/`'s `SenderServer` (see "`orchestrator/`, `buffer/`, `sender/`,
   `alerts/` — done" above) is the server; the ESP32 periodically connects and pulls unsent
   records, never the reverse. What's still genuinely open, not just undocumented:
-  - **No ESP32 firmware or hardware exists in this repo/session**, so `BluetoothSppTransport`
-    has never run against a real device — only against `FakeTransport` in the unit suite. Don't
-    describe the Bluetooth path as validated end-to-end; it's a protocol design and a Pi-side
-    implementation, not a tested link.
+  - **Protocol v2 hasn't run on real hardware.** The v1 link paired and served `CONFIG` on the
+    real Pi + ESP32 (2026-10-20), and the ESP32's HIL tests passed over WiFi against a bench
+    backend under v1. v2 (TAKEN lease, one-row DLQ, report sessions, the archive) is tested here
+    only against `FakeTransport`, and end to end only in `src/tests/edge_chain` (a Python mirror
+    of the ESP32 client, run at integration). v2 is **not compatible** with v1: the Pi
+    image and the ESP32 firmware must be deployed together. Don't describe the v2 link as
+    validated on hardware.
   - **Container access: decided as the host's BlueZ over D-Bus** (`bluez_profile.py`,
     `SENDER_TRANSPORT=bluez`, set by `docker-compose.pi.yml` with the host's
     `/run/dbus/system_bus_socket` mounted), **not** a raw socket, `/dev/rfcommN` or
@@ -790,10 +997,10 @@ number**, not filename, when deciding whether to apply the original 1-6→3-clas
 |---|---|
 | `model/` | **done** — tiny YOLO parts detector (int8/float), crop geometry, IoU tracker, gdown download |
 | `pipeline/` | **done** — threaded Stage/Pipeline abstraction, BlazeFace stage, `PartsInferenceStage`, logging/metrics/MJPEG sinks; wired into `src/main.py` |
-| `alerts/` | **done** — `Alert`/`AlertKind` data model + `route_status()` factory + serialization, no logic/I/O |
-| `orchestrator/` | **done** — bridge stage + decision-loop thread (debounced readings + keepalives, heartbeat), plus `parts_rules.py` (the severity rule engine); not yet run against a real multi-hour drive |
-| `buffer/` | **done** — WAL-mode SQLite queue, enqueue/fetch_unsent/mark_sent, `tmp_path`-tested including a real two-thread concurrency smoke test |
-| `sender/` | **done** as a Pi-side implementation — custom Bluetooth SPP PULL/ACK protocol, unit-tested against `FakeTransport`; **not** run against real ESP32 hardware |
+| `alerts/` | **done** — `Alert`/`AlertKind` data model (only `drowsiness` in v2) + serialization + the serve-time `age_s`, no logic/I/O |
+| `orchestrator/` | **done** — bridge stage + decision-loop thread (immediate severity changes, debounced class readings, keepalives, no heartbeat), plus `parts_rules.py` (the severity rule engine, `reset_signals()`); not yet run against a real multi-hour drive |
+| `buffer/` | **done** — WAL-mode SQLite: outbox / critical-only round-robin DLQ / sent, the `TAKEN` lease, FAIL rules with the repeated-FAIL guard, the `archive` table + v2 migration, `buffer.status`; `tmp_path`-tested including a real two-thread concurrency smoke test |
+| `sender/` | **done** as a Pi-side implementation — custom Bluetooth SPP protocol v2 (PULL / DLQ 1 / report sessions), unit-tested against `FakeTransport`; v2 **not** run against real ESP32 hardware |
 
 What's otherwise in place: the container (Dockerfile, docker-compose.yml, two volumes for the
 model cache and the SQLite buffer — both artifacts baked in at build time, see "Model download
@@ -802,17 +1009,19 @@ subpackages registered in `packages=[...]`), and a real entry point (`src/main.p
 `src/__main__.py`, run via `python -m cv_argus`, `python -m cv_argus.main`, or the
 `cv-argus-run` console script) that builds and starts all three top-level components (Pipeline,
 `Orchestrator`, `SenderServer`) together — see `main.py`'s module docstring. **Real, stated
-limitations, not glossed over**: no ESP32 firmware/hardware exists anywhere in this project, so
-the Bluetooth link has never been exercised end to end against a real device (the Pi side,
-`SENDER_TRANSPORT=bluez`, is tested only against a stand-in BlueZ on a private bus — see "Open
-decisions"); and the
-debounce/keepalive/heartbeat constants in `constants.py` are reasoned-through defaults, not
-tuned against a real recorded drive.
+limitations, not glossed over**: protocol v2 hasn't run between the real Pi and ESP32 (only
+v1's pairing and `CONFIG` did, see "Open decisions"); and the debounce/keepalive/lease/attempt
+constants in `constants.py` are reasoned-through defaults, not tuned against a real recorded
+drive.
 
 ## Tests
 
 `tests/` is a `pytest` suite mirroring `src/` (`test_model_*`, `test_pipeline_*`,
-`test_main.py`, `test_constants.py`) — 324 tests as of this writing. Run it with `pytest` from
+`test_alerts_*`, `test_buffer_*`, `test_orchestrator_*`, `test_sender_*`, `test_main.py`,
+`test_constants.py`) — roughly 600 tests; `pytest` prints the exact count (the face lock and
+eye-box filter added about 55 of them). One skips
+when `src/esp32-argus/test/vectors/event_vectors.json` isn't in the checkout, and the Docker
+build test is deselected by default (below). Run it with `pytest` from
 `src/cv-argus/` after `pip install -e .`. Config lives in `pyproject.toml`'s
 `[tool.pytest.ini_options]`. **`pytest` itself is deliberately not in `requirements.txt`** —
 that file is the exact, pinned dependency list this image ships to the Pi, and a test runner has
@@ -855,6 +1064,14 @@ no business being part of it; install it separately (`pip install pytest`) for l
   rest. `test_model_parts_fallback.py` runs the probe in **real child processes** against tiny
   in-test models. That covers a working model, a corrupt file, the wrong output shape, a native
   crash (`os.abort()`) and a hang, plus both fallback paths.
+- The alert pipeline (`test_alerts_*`, `test_buffer_store.py`, `test_orchestrator_*`,
+  `test_sender_*`) uses a real SQLite file under `tmp_path`, the in-memory `FakeTransport`/
+  `FakeListener` and a duck-typed `DetectionResult`. `test_sender_dlq.py` is the protocol v2
+  suite: the C1.5 event rule (Python and SQL, plus T3's shared vectors), FAIL rules 1-4, the
+  repeated-FAIL guard and its `[sync 3]` body fill, the lease, the DLQ order, `cap_unsent`,
+  expiry, the v1 -> v2 migration, real server sessions (including a session that breaks before
+  `OK` and a resent FAIL), the orchestrator's severity transitions, `inject` and
+  `buffer.status`.
 - `test_pipeline_latency.py` covers `StageStats` — the aggregates/percentiles, the
   interval-gated `maybe_report`, the disabled-interval no-op, `wait`/`e2e`/phase/drop
   recording — with no native deps (it's stdlib-only, like `latency.py` itself).
@@ -904,9 +1121,9 @@ no business being part of it; install it separately (`pip install pytest`) for l
   the `model/` section) — `pipeline/` owns translating MediaPipe results into plain numbers.
 - Don't bring the CNN+LSTM pipeline back piecemeal. It lives whole on `archive/cnn-lstm-fused`;
   if it's ever needed again, restore it from there as a unit.
-- Don't move CAN-bus/alarm/panic-button/geolocation logic into this module — that's the ESP32's
-  job per the root `CLAUDE.md`. This module only decides and queues; `sender/` (once built) is
-  the boundary, not a place to reach across it.
+- Don't move CAN-bus/alarm/geolocation logic into this module — that's the ESP32's job per the
+  root `CLAUDE.md`. This module only decides and queues; `sender/` is the boundary, not a place
+  to reach across it.
 - `pipeline/`'s camera loop follows `08_deployment_export_lstm.ipynb`'s "End-to-End Live Stream
   Simulation" cell (`VIDEO` running mode, `detect_for_video` with a monotonically increasing
   wall-clock timestamp) — when adding a new MediaPipe-based stage, keep following that pattern;
@@ -921,6 +1138,17 @@ no business being part of it; install it separately (`pip install pytest`) for l
 - `orchestrator/`, `buffer/`, `sender/`, and `alerts/` are done (see their "done" section
   above) — don't reintroduce a simple push-based `Transport.send(alert) -> bool` shape if this
   is ever revisited; the ESP32 is the polling side, confirmed and implemented, not still open.
+- **Protocol v2 is a frozen contract** (`docs/designs/final-tweaks-contracts.md`, C1 + C4).
+  Changing the grammar, the record JSON, the event rule, the FAIL rules or a C4 value (e.g.
+  `BUFFER_LEASE_SECONDS`, `BUFFER_DLQ_MAX_ATTEMPTS`, `MAX_DLQ_LIMIT`) changes the ESP32 firmware
+  and `src/tests/edge_chain` too: do it through the contract, not here alone. Don't bring back the
+  heartbeat or the no-face LOW/MEDIUM ladder.
+- Keep `PartsRuleEngine.reset_signals(self) -> None` and the `>=` in the
+  `RULE_NO_FACE_CRITICAL_S` comparison: the face stage calls the first, and the face switch
+  timing relies on the second (C1.7).
+- Keep `age_s` computed in `alerts.serialization.age_seconds` with `time.monotonic()`/
+  `time.time()` looked up through the module's `time`: `src/tests/edge_chain` patches
+  `serialization.time`, `models.time` and `orchestrator.time`.
 - **Never call `buffer.mark_sent()` anywhere except `SenderServer`'s post-ACK line** — that's
   the one invariant the whole "never lose, duplicates are fine" design rests on (see the
   "done" section's `sender/` paragraph). A tempting-looking shortcut (e.g. marking sent right

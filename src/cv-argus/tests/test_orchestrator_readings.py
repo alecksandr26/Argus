@@ -79,7 +79,6 @@ def _orch(**overrides):
     kwargs = dict(
         debounce_frames=3,
         keepalive_seconds=2.0,
-        heartbeat_interval_seconds=60.0,
         warmup_frames=0,
     )
     kwargs.update(overrides)
@@ -222,14 +221,53 @@ def test_two_sources_keep_independent_state(clock):
     assert ("cam1", "Not Drowsy") in by_source
 
 
-def test_heartbeat_still_every_60s_alongside_readings(clock):
+def test_no_heartbeat_only_keepalive_readings(clock):
+    """The 60 s route_status heartbeat is gone (contract C1.5): over two minutes of polls the
+    orchestrator only ever writes drowsiness readings (the 2 s keepalives)."""
     orch, buf = _orch()
     _feed(orch, clock, [ND()] * 3)
-    for _ in range(61):
+    for _ in range(130):
         clock.now += 1.0
         orch._tick("cam0")
-    heartbeats = [a for a in buf.enqueued if a.kind == AlertKind.ROUTE_STATUS]
-    assert len(heartbeats) == 1
+    assert buf.enqueued and all(a.kind == AlertKind.DROWSINESS for a in buf.enqueued)
+    assert all(a.payload["transition"] is False for a in buf.enqueued[1:])
+    assert not hasattr(AlertKind, "ROUTE_STATUS")
+
+
+def _sev(severity, reason="eyes_closed"):
+    """A parts-rules detection: level/probabilities follow the severity, like to_detection()."""
+    p = {"none": 0.05, "low": 0.30, "medium": 0.75, "critical": 0.95}[severity]
+    d = _Det(2 if severity in ("medium", "critical") else 1, [round(1 - p, 4), p])
+    d.extras = {"severity": severity, "reason": reason}
+    return d
+
+
+def test_recovery_reading_carries_its_class_at_once(clock):
+    """Contract C1.5: when the held severity falls back to none, the recovery record is written
+    on that same frame with `Not Drowsy` (not the stale `Drowsy` of the debounced class), and no
+    class-only transition follows a few frames later."""
+    orch, buf = _orch(keepalive_seconds=999.0)
+    _feed(orch, clock, [_sev("none", "ok")] * 3 + [_sev("critical")] * 5)
+    before = len(buf.readings())
+    _feed(orch, clock, [_sev("none", "ok")])
+    recovery = buf.readings()[-1]
+    assert len(buf.readings()) == before + 1
+    assert recovery.payload["class_name"] == "Not Drowsy" and recovery.level == 1
+    assert (recovery.payload["previous_severity"], recovery.payload["severity"]) == ("critical", "none")
+    assert recovery.payload["transition"] is True and "episode" in recovery.payload
+    _feed(orch, clock, [_sev("none", "ok")] * 10)
+    assert len(buf.readings()) == before + 1       # no late class-only transition
+
+
+def test_raise_carries_drowsy_on_the_first_frame(clock):
+    orch, buf = _orch(keepalive_seconds=999.0)
+    _feed(orch, clock, [_sev("none", "ok")] * 3)
+    _feed(orch, clock, [_sev("medium")])
+    raise_ = buf.readings()[-1]
+    assert (raise_.payload["class_name"], raise_.level) == ("Drowsy", 2)
+    assert (raise_.payload["previous_severity"], raise_.payload["severity"]) == ("none", "medium")
+    _feed(orch, clock, [_sev("medium")] * 10)
+    assert len(buf.readings()) == 2                # the class debounce adds nothing after it
 
 
 # --- Edge cases from the chain audit (docs/designs/edge-cloud-scenarios.md) -----------------

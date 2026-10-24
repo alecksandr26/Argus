@@ -1,5 +1,5 @@
-"""`orchestrator/` — decision logic: given a `DetectionResult`, decides whether it's worth
-raising an Alert, and emits a periodic RouteStatus("OK") heartbeat otherwise. Builds records via
+"""`orchestrator/` — decision logic: turns each `DetectionResult` into readings for the ESP32
+(class/severity transitions plus 2 s keepalives; no heartbeat). Builds records via
 `alerts/` and hands them to `buffer/`. See `orchestrator.py`'s module docstring for the
 decision-loop design.
 

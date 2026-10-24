@@ -1,6 +1,8 @@
-"""`alerts/models.py` — `Alert.new()` and `route_status()`."""
+"""`alerts/models.py` — `Alert.new()`. (`route_status()` and the heartbeat kind were removed in
+protocol v2, contract C1.4.)"""
 
-from cv_argus.alerts import Alert, AlertKind, route_status
+import cv_argus.alerts as alerts_pkg
+from cv_argus.alerts import Alert, AlertKind
 
 
 def test_new_sets_a_uuid4_hex_id():
@@ -30,17 +32,10 @@ def test_two_new_alerts_get_different_ids():
     assert a.id != b.id
 
 
-def test_route_status_defaults_to_ok():
-    alert = route_status("cam0")
-    assert alert.kind == AlertKind.ROUTE_STATUS
-    assert alert.level is None
-    assert alert.payload == {"status": "OK"}
-    assert alert.geolocation is None
-
-
-def test_route_status_accepts_a_custom_status():
-    alert = route_status("cam0", status="DEGRADED")
-    assert alert.payload == {"status": "DEGRADED"}
+def test_drowsiness_is_the_only_kind():
+    """Contract C1.4: `kind` is always "drowsiness"; the route_status heartbeat is gone."""
+    assert [k.value for k in AlertKind] == ["drowsiness"]
+    assert not hasattr(alerts_pkg, "route_status")
 
 
 # --- Clock fields for fusion timing and ordering (CV-13) ----------------------------------------
@@ -48,12 +43,6 @@ def test_route_status_accepts_a_custom_status():
 # clock (`created_at_ms`) can jump (NTP) or be wrong (no network, no RTC battery), so each record
 # also needs a monotonic stamp, the boot it belongs to (monotonic resets on reboot), and whether
 # the wall clock was synced.
-
-import pytest  # noqa: E402
-
-from cv_argus.alerts import route_status  # noqa: E402
-
-
 
 def test_alert_carries_mono_ms_boot_id_and_clock_synced():
     alert = Alert.new(AlertKind.DROWSINESS, level=2, source_id="cam0", payload={})
@@ -64,7 +53,7 @@ def test_alert_carries_mono_ms_boot_id_and_clock_synced():
 
 def test_mono_ms_is_monotonic_across_alerts():
     a = Alert.new(AlertKind.DROWSINESS, level=1, source_id="cam0", payload={})
-    b = route_status("cam0")
+    b = Alert.new(AlertKind.DROWSINESS, level=None, source_id="cam0", payload={})
     assert b.mono_ms >= a.mono_ms
 
 

@@ -5,8 +5,9 @@
 
 It goes into the same SQLite queue the running pipeline writes (`BUFFER_DIR`), as a severity
 change (`transition: true`), so the ESP32 picks it up on its next poll and treats it like a real
-one: `medium`/`critical` raise an alert, and `none`/`low` with the alert's `--episode` resolve
-it. The id printed for a medium/critical reading is that episode. The reading says it was
+one (contract C1.5): `medium`/`critical` raise an alert, and `none`/`low` with the alert's
+`--episode` (previous severity `critical`) is the driver OK for it. Only a critical can end up
+in the dead-letter queue; a medium or OK the ESP32 can't deliver is archived. The id printed for a medium/critical reading is that episode. The reading says it was
 injected (`reason`, `source_id`), so it can't be mistaken for a detection.
 """
 
@@ -68,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"The ESP32 gets it on its next poll. Queue: outbox {counts['outbox']}, "
           f"dead-letter queue {counts['dlq']}.")
     if args.severity in _ALERTING:
-        print(f"Resolve it with: python -m cv_argus.sender.inject none --episode {episode}")
+        print(f"Driver OK for it: python -m cv_argus.sender.inject none --episode {episode}")
     return 0
 
 

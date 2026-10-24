@@ -4,8 +4,9 @@ Builds and starts **three independent peer components**, coupled only through `b
 SQLite file (see the approved alert-pipeline plan's "three independent peers" decision):
 
 1. **Pipeline** (`cv_argus.pipeline.stage`) — a `Source` stage reads frames, BlazeFace
-   (`FaceDetectorCropStage`) finds the face, `PartsInferenceStage` turns it into a
-   `DetectionResult`, and one or more output stages do something with it. `PartsInferenceStage`
+   (`FaceDetectorCropStage`) finds the faces and its face lock keeps the driver's,
+   `PartsInferenceStage` turns that face into a `DetectionResult`, and one or more output
+   stages do something with it. `PartsInferenceStage`
    runs notebook 12's tiny YOLO-style detector (eyes open/closed, yawn, head straight/down) on a
    square gray face crop, then an IoU tracker, then deterministic rules with timers and
    severities (`orchestrator/parts_rules.py`). (The earlier CNN+LSTM pipeline is preserved on
@@ -13,11 +14,12 @@ SQLite file (see the approved alert-pipeline plan's "three independent peers" de
 2. **Orchestrator** (`cv_argus.orchestrator`) — owns its own decision-loop thread, fed by a
    thin, always-on `OrchestratorBridgeOutputStage` sink wired into the pipeline above
    (structural, unlike the `OUTPUTS=` demo/observability toggles below). Turns `DetectionResult`s
-   into debounced class *readings* (one per change plus keepalives) and a periodic
-   RouteStatus("OK") heartbeat, enqueuing both into `buffer/`.
+   into *readings* (one per class or severity change, plus a keepalive every 2 s) and enqueues
+   them into `buffer/`.
 3. **Sender** (`cv_argus.sender`) — owns its own Bluetooth-accept-loop thread, answering the
-   ESP32's PULL/ACK protocol against the same `buffer/` (see `sender/server.py`'s module
-   docstring for the ack-only-marks-sent invariant).
+   ESP32's Bluetooth protocol v2 (`PULL`/`DLQ`/`CONFIG` sessions, `ACK`/`FAIL`/`TAKEN` report
+   lines) against the same `buffer/` (see `sender/server.py`'s module docstring for the
+   ack-only-marks-sent invariant).
 
 Env vars:
 
@@ -339,7 +341,7 @@ def main() -> None:
     finally:
         logger.info("Stopping...")
         # Shutdown order matters: pipeline first (stops producing detections) -> orchestrator
-        # (stops producing new Alerts/RouteStatus into the buffer) -> sender (stops reading/
+        # (stops producing new Alerts into the buffer) -> sender (stops reading/
         # acking the buffer) -> the buffer connection itself last, once both of its users are
         # confirmed joined. Each step only stops the thing that *feeds* the next, so nothing is
         # asked to read/write a resource that's already torn down.

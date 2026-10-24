@@ -4,7 +4,7 @@ smoke test. Always via `tmp_path` -- never a fixed path (this repo's hermetic-by
 
 import threading
 
-from cv_argus.alerts import Alert, AlertKind, route_status
+from cv_argus.alerts import Alert, AlertKind
 from cv_argus.buffer import open_buffer
 
 
@@ -40,9 +40,10 @@ def test_enqueue_then_fetch_unsent_round_trips_a_drowsiness_alert(tmp_path):
     buf.close()
 
 
-def test_enqueue_then_fetch_unsent_round_trips_a_route_status_alert(tmp_path):
+def test_enqueue_then_fetch_unsent_round_trips_a_no_face_reading(tmp_path):
     buf = open_buffer(tmp_path / "b.sqlite3")
-    alert = route_status("cam0")
+    alert = Alert.new(AlertKind.DROWSINESS, level=None, source_id="cam0",
+                      payload={"class_name": "No Face", "probabilities": None})
     buf.enqueue(alert)
     fetched = buf.fetch_unsent()
     assert fetched == [alert]
@@ -167,7 +168,8 @@ def test_fetch_unsent_keeps_insertion_order_when_clock_goes_backwards(tmp_path, 
     monkeypatch.setattr(store.time, "time", lambda: next(wall))
     buf.enqueue(first)
     buf.enqueue(second)
-    assert [a.id for a in buf.fetch_unsent()] == [first.id, second.id]
+    # (fetch_unsent reads the clock too, for leases: pass it, the fake clock has run out.)
+    assert [a.id for a in buf.fetch_unsent(now_ms=1_000_000_000)] == [first.id, second.id]
     buf.close()
 
 
@@ -293,19 +295,81 @@ def test_readers_and_writer_threads_stay_consistent(tmp_path):
 
 def test_unsent_backlog_stays_bounded_without_keepalives(tmp_path):
     """A permanent outage (a rotated device key the ESP32 never got, a dead ESP32) means nothing
-    is ever ACKed. Keepalives are dropped first, but once only transitions and heartbeats are
-    left the unsent backlog still has to stay under the cap on the Pi's SD card, keeping the
-    newest rows (they describe the present)."""
+    is ever ACKed. Keepalives are dropped first, but once only transitions are left the unsent
+    backlog still has to stay under the cap on the Pi's SD card, keeping the newest rows (they
+    describe the present). The overflow is archived, never deleted (contract C1.6)."""
     buf = open_buffer(tmp_path / "b.sqlite3")
-    rows = []
-    for i in range(15):
-        rows.append(_reading("Drowsy" if i % 2 else "Not Drowsy", transition=True))
-        rows.append(route_status("cam0"))
+    rows = [_reading("Drowsy" if i % 2 else "Not Drowsy", transition=True) for i in range(30)]
     for row in rows:
         buf.enqueue(row)
 
-    buf.cap_unsent(max_rows=10)
+    assert buf.cap_unsent(max_rows=10) == 20
     kept = [a.id for a in buf.fetch_unsent(limit=100)]
     assert buf.unsent_count() <= 10, f"{buf.unsent_count()} unsent rows kept, cap is 10"
-    assert kept[-1] == rows[-1].id
+    assert kept == [r.id for r in rows[-10:]]
+    archived = buf._conn.execute(
+        "SELECT id, archive_reason FROM archive ORDER BY rowid").fetchall()
+    assert archived == [(r.id, "cap_unsent") for r in rows[:20]]
+    assert buf.counts()["archive_reasons"] == {"cap_unsent": 20}
+    buf.close()
+
+
+def test_cap_unsent_deletes_keepalives_but_archives_alerts(tmp_path):
+    buf = open_buffer(tmp_path / "b.sqlite3")
+    alerts = [_reading("Drowsy", True) for _ in range(3)]
+    keepalives = [_reading("Drowsy", False) for _ in range(3)]
+    for a in alerts + keepalives:
+        buf.enqueue(a)
+    assert buf.cap_unsent(max_rows=2) == 4           # 3 keepalives deleted + 1 alert archived
+    assert [a.id for a in buf.fetch_unsent()] == [alerts[1].id, alerts[2].id]
+    assert [r[0] for r in buf._conn.execute("SELECT id FROM archive")] == [alerts[0].id]
+    buf.close()
+
+
+def test_archive_table_has_every_alerts_column_plus_its_own(tmp_path):
+    buf = open_buffer(tmp_path / "b.sqlite3")
+    alerts_cols = [r[1] for r in buf._conn.execute("PRAGMA table_info(alerts)")]
+    archive_cols = [r[1] for r in buf._conn.execute("PRAGMA table_info(archive)")]
+    assert archive_cols == alerts_cols + ["archived_at_ms", "archive_reason"]
+    for col in ("lease_until_ms", "dlq_round", "last_error", "attempts"):
+        assert col in alerts_cols
+    buf.close()
+
+
+def test_prune_sent_never_touches_the_archive(tmp_path):
+    buf = open_buffer(tmp_path / "b.sqlite3")
+    a = _reading("Drowsy", True)
+    buf.enqueue(a)
+    buf.cap_unsent(max_rows=0)
+    buf.prune_sent(older_than_ms=10**15)
+    assert buf._conn.execute("SELECT COUNT(*) FROM archive").fetchone()[0] == 1
+    buf.close()
+
+
+def test_cap_unsent_never_touches_leased_rows(tmp_path):
+    """Contract C1.6 [sync 2]: a leased row may already be delivered by the ESP32, so its later
+    ACK must still land. The cap skips it (neither deleted nor archived) and takes the next
+    oldest instead; leased rows still count towards the total."""
+    buf = open_buffer(tmp_path / "b.sqlite3")
+    leased_alert = _reading("Drowsy", True)
+    leased_keepalive = _reading("Drowsy", False)
+    rest = [_reading("Drowsy", True) for _ in range(3)]
+    for a in (leased_alert, leased_keepalive, *rest):
+        buf.enqueue(a)
+    now = 1_000_000
+    assert buf.lease([leased_alert.id, leased_keepalive.id], now_ms=now) == 2
+
+    assert buf.cap_unsent(max_rows=3, now_ms=now + 1) == 2      # 5 waiting, 2 over the cap
+    archived = [r[0] for r in buf._conn.execute("SELECT id FROM archive ORDER BY rowid")]
+    assert archived == [rest[0].id, rest[1].id]
+    still = {r[0] for r in buf._conn.execute("SELECT id FROM alerts WHERE sent = 0")}
+    assert still == {leased_alert.id, leased_keepalive.id, rest[2].id}
+    assert buf.mark_sent([leased_alert.id]) == 1                 # its ACK still lands
+
+    # Only leased rows left over the cap: the cap can't make room, and doesn't try.
+    assert buf.cap_unsent(max_rows=0, now_ms=now + 1) == 1       # rest[2] archived
+    assert buf.cap_unsent(max_rows=0, now_ms=now + 1) == 0       # the leased keepalive stays
+    assert buf.unsent_count() == 1
+    # Once the lease lapses the row is fair game again.
+    assert buf.cap_unsent(max_rows=0, now_ms=now + 10**9) == 1
     buf.close()
