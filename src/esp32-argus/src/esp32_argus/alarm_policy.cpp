@@ -29,7 +29,9 @@ VisionChange AlarmPolicy::onPiRecord(PiEventKind kind, bool dlq, bool taken,
 }
 
 bool AlarmPolicy::tick(uint32_t nowMs) {
-  if (!vision_ || (uint32_t)(nowMs - visionSinceMs_) < visionMaxMs_) return false;
+  // Wrap-safe "now is at or past since + max" (signed): a `nowMs` read a moment before the
+  // critical set visionSinceMs_ (another task's clock read) is "not yet", never ~49 days late.
+  if (!vision_ || (int32_t)(nowMs - (visionSinceMs_ + visionMaxMs_)) < 0) return false;
   vision_ = false;
   return true;
 }

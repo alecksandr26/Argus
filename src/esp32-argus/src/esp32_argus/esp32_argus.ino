@@ -114,15 +114,15 @@ HerePosition hereNow(uint32_t nowMs) {
 
 // Logs the grip events the sender gave up on (sender_policy.h takeLocalDrop()): copied under the
 // lock, printed outside it. Grip events have no DLQ, so this line is all that is left of them.
+// One at a time (one LocalDrop on the stack, not the whole ring): the grip task calls this too,
+// and its stack is small.
 void logLocalDrops() {
-  LocalDrop drops[SenderPolicy::kLocalDropSlots];
-  int n = 0;
-  {
-    RtosLock lock(stateMutex);
-    while (n < SenderPolicy::kLocalDropSlots && sender.takeLocalDrop(drops[n])) n++;
-  }
-  for (int i = 0; i < n; i++) {
-    const LocalDrop& d = drops[i];
+  for (int i = 0; i < SenderPolicy::kLocalDropSlots; i++) {
+    LocalDrop d;
+    {
+      RtosLock lock(stateMutex);
+      if (!sender.takeLocalDrop(d)) return;
+    }
     Serial.printf("[live] %s %s dropped: ", eventTierName(d.tier), d.clientEventId.c_str());
     if (d.why == "retry_window") {
       Serial.printf("not delivered within its retry window (%d attempt(s)%s%s; grip events have "
@@ -172,8 +172,10 @@ void logGripReadings(const int* raw, bool pressure) {
 }
 
 // A grip episode started or ended: its event for the sender (C3), the grip alarm, and on a start
-// its SMS (C5).
-void onGripChange(GripChange change, uint32_t nowMs) {
+// its SMS (C5). The event's time is read under the lock, like every other task does: a millis()
+// read before it could be older than latestGpsAt (the GPS task may write it meanwhile), and
+// hereNow()'s (nowMs - latestGpsAt) would wrap.
+void onGripChange(GripChange change) {
   bool started = change == GripChange::EpisodeStarted;
   uint32_t n = gripRule.episode();
   std::string episode = gripEpisodeId(bootTag, n);
@@ -182,6 +184,7 @@ void onGripChange(GripChange change, uint32_t nowMs) {
   SmsQueueResult queued;
   {
     RtosLock lock(stateMutex);
+    uint32_t nowMs = millis();
     HerePosition here = hereNow(nowMs);
     ReportEvent ev = started
                          ? gripAlertEvent(bootTag, n, here.position, here.hasSpeed, here.speedKmh)
@@ -206,12 +209,13 @@ void onGripChange(GripChange change, uint32_t nowMs) {
 }
 
 // The buzzer pin follows the alarm decision: the vision alarm's safety cap first, then
-// grip || vision.
-void applyBuzzer(uint32_t nowMs) {
+// grip || vision. The clock is read under the lock: one read before it could predate the
+// critical the loop task just took (alarm_policy.h tick()).
+void applyBuzzer() {
   bool capped, buzz, grip, vision;
   {
     RtosLock lock(stateMutex);
-    capped = cabinAlarm.tick(nowMs);
+    capped = cabinAlarm.tick(millis());
     buzz = cabinAlarm.buzzer();
     grip = cabinAlarm.gripAlarm();
     vision = cabinAlarm.visionAlarm();
@@ -235,23 +239,31 @@ void gripTask(void*) {
   uint32_t lastLogAt = millis();
   bool loggedOnce = false;
   for (;;) {
-    int raw[GRIP_SENSOR_COUNT];
-    gripSensorRead(raw);
-    uint32_t now = millis();
-    bool pressure = gripHasPressure(raw, GRIP_SENSOR_COUNT);
-    if (!loggedOnce || now - lastLogAt >= GRIP_LOG_INTERVAL_MS) {  // not every sample
-      loggedOnce = true;
-      lastLogAt = now;
-      logGripReadings(raw, pressure);
+    try {
+      int raw[GRIP_SENSOR_COUNT];
+      gripSensorRead(raw);
+      uint32_t now = millis();  // the grip rule's own clock (only this task uses it)
+      bool pressure = gripHasPressure(raw, GRIP_SENSOR_COUNT);
+      if (!loggedOnce || now - lastLogAt >= GRIP_LOG_INTERVAL_MS) {  // not every sample
+        loggedOnce = true;
+        lastLogAt = now;
+        logGripReadings(raw, pressure);
+      }
+      bool moving;
+      {
+        RtosLock lock(stateMutex);
+        moving = gripIsMoving(latestGps.hasFix, latestGps.speedKmh);
+      }
+      GripChange change = gripRule.onSample(pressure, moving, now);
+      if (change != GripChange::None) onGripChange(change);
+      applyBuzzer();
+    } catch (const std::bad_alloc&) {
+      // Like the sender and the loop task: never abort-and-reboot on a full heap (an episode id
+      // past 15 chars is a heap std::string). The buzzer keeps its last state until the next
+      // sample.
+      Serial.printf("[grip] Out of memory (free %u B, largest %u B) -- next sample\n",
+                    (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
     }
-    bool moving;
-    {
-      RtosLock lock(stateMutex);
-      moving = gripIsMoving(latestGps.hasFix, latestGps.speedKmh);
-    }
-    GripChange change = gripRule.onSample(pressure, moving, now);
-    if (change != GripChange::None) onGripChange(change, now);
-    applyBuzzer(now);
     vTaskDelay(pdMS_TO_TICKS(GRIP_SAMPLE_INTERVAL_MS));
   }
 }

@@ -46,7 +46,9 @@ class AlarmPolicy {
   VisionChange onPiRecord(PiEventKind kind, bool dlq, bool taken, const std::string& episode,
                           const std::string& alertType, uint32_t nowMs);
 
-  // The VISION_ALARM_MAX_MS cap: true when it just turned the vision alarm off.
+  // The VISION_ALARM_MAX_MS cap: true when it just turned the vision alarm off. A `nowMs` slightly
+  // before the critical's own time (read by another task before it took the lock) counts as no
+  // time elapsed, not as a wrapped-around eternity.
   bool tick(uint32_t nowMs);
 
   bool buzzer() const { return grip_ || vision_; }

@@ -99,11 +99,9 @@ TakeResult SenderPolicy::takeLocal(const ReportEvent& event, uint32_t nowMs) {
   if (e.used && e.recordId == event.clientEventId) return TakeResult::AlreadyHeld;
   if (e.used) {
     if (inFlight_ == PlanKind::LiveEvent && inFlightSlot_ == slot) {
-      // The older one is on its way: it can't be dropped mid-attempt, so the new one is.
-      HeldEvent refused;
-      refused.recordId = event.clientEventId;
-      refused.tier = tier;
-      noteLocalDrop(refused, "slot_busy");
+      // The older one is on its way: it can't be dropped mid-attempt, so the new one is. (No
+      // HeldEvent built for it: ~0.5 KB on the grip task's small stack.)
+      noteLocalDrop(event.clientEventId, tier, 0, ReasonString(), "slot_busy");
       return TakeResult::Full;
     }
     noteLocalDrop(e, "replaced");  // a newer episode's event: the older unsent one goes
@@ -121,18 +119,22 @@ TakeResult SenderPolicy::takeLocal(const ReportEvent& event, uint32_t nowMs) {
 }
 
 void SenderPolicy::noteLocalDrop(const HeldEvent& e, const char* why) {
+  noteLocalDrop(e.recordId, e.tier, e.attempts, e.lastError, why);
+}
+
+void SenderPolicy::noteLocalDrop(const IdString& id, EventTier tier, int attempts,
+                                 const ReasonString& lastError, const char* why) {
   if (localDropCount_ == kLocalDropSlots) {  // nobody logged them for a while: lose the oldest
     localDropHead_ = (localDropHead_ + 1) % kLocalDropSlots;
     localDropCount_--;
     localDropsLost_++;
   }
   LocalDrop& d = localDrops_[(localDropHead_ + localDropCount_) % kLocalDropSlots];
-  d = LocalDrop();
-  d.clientEventId = e.recordId;
-  d.tier = e.tier;
+  d.clientEventId = id;
+  d.tier = tier;
   d.why.assignTruncated(why);
-  d.attempts = e.attempts;
-  d.lastError = e.lastError;
+  d.attempts = attempts;
+  d.lastError = lastError;
   localDropCount_++;
 }
 

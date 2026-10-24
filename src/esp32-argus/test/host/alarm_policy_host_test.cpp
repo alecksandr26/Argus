@@ -136,6 +136,24 @@ static void theCapEndsAVisionAlarmTheOkNeverEnded() {
   CHECK(w.tick(0x000001E8u));   // 1000 ms
 }
 
+// The grip task reads millis() before it takes the lock; the loop task may set a vision alarm
+// with a later millis() in between. That stale, slightly earlier clock must not look like a cap
+// that ran out (unsigned now - since would be ~49 days) and silence the alarm at once.
+static void aClockReadJustBeforeTheCriticalDoesNotTripTheCap() {
+  AlarmPolicy a;
+  CHECK(critical(a, "ep1", 10000) == VisionChange::On);
+  CHECK(!a.tick(9999));
+  CHECK(!a.tick(9000));
+  CHECK(a.visionAlarm() && a.buzzer());
+  CHECK(!a.tick(309999));
+  CHECK(a.tick(310000));
+  // The same just across a millis() wrap.
+  AlarmPolicy w;
+  CHECK(critical(w, "ep1", 2) == VisionChange::On);
+  CHECK(!w.tick(0xFFFFFFFEu));  // 4 ms before it
+  CHECK(w.visionAlarm());
+}
+
 static void gripAndVisionAreOred() {
   AlarmPolicy a;
   a.setGripAlarm(true);
@@ -176,6 +194,7 @@ int main() {
   RUN(aNewEpisodeSoundsAgain);
   RUN(anOlderEpisodesOkDoesNotSilenceANewerAlarm);
   RUN(theCapEndsAVisionAlarmTheOkNeverEnded);
+  RUN(aClockReadJustBeforeTheCriticalDoesNotTripTheCap);
   RUN(gripAndVisionAreOred);
   RUN(theRingForgetsOnlyLongAgoEpisodes);
   return report("alarm_policy_host_test");
