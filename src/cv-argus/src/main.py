@@ -72,6 +72,9 @@ Env vars:
 - `ARGUS_TRUCK_ID`/`ARGUS_DEVICE_API_KEY`/`ARGUS_BACKEND_URL` (unset by default) — this truck's
   backend credentials, from the dashboard's `argus-device.env`. Served to the ESP32 on `CONFIG`;
   all three or none. See `cv_argus.sender.device_config`.
+- `ARGUS_TRUCK_PLATE`/`ARGUS_ALERT_PHONE` (unset by default) — also from `argus-device.env`:
+  the plate the ESP32's critical-alert SMS names and the E.164 phone it goes to (unset = no
+  SMS). Optional, outside the three above; an invalid phone is warned about and left out.
 """
 
 import cv_argus.bootstrap  # noqa: F401 -- MUST be first: sets thread env vars before tf/cv2 load
@@ -100,6 +103,7 @@ from cv_argus.pipeline import (
     download_face_detector_bundle,
 )
 from cv_argus.sender import BluetoothSppListener, DeviceConfig, SenderServer
+from cv_argus.sender.device_config import mask_phone
 from cv_argus.supervisor import exit_code, first_dead
 
 logger = logging.getLogger(__name__)
@@ -247,6 +251,15 @@ def _device_config() -> DeviceConfig | None:
         )
     else:
         logger.info("Device credentials loaded for truck %s (%s)", config.truck_id, config.backend_url)
+        if config.alert_phone is None:
+            logger.info("No SMS alert phone (ARGUS_ALERT_PHONE) -- the ESP32 sends no SMS")
+        else:
+            # Masked: the phone is personal data and never goes to the log in full.
+            logger.info(
+                "Critical-alert SMS go to %s (plate %s)",
+                mask_phone(config.alert_phone),
+                config.truck_plate or "not set",
+            )
     return config
 
 

@@ -353,6 +353,7 @@ Env vars `main.py` reads (all optional, all with defaults):
 | `BLUETOOTH_SECURITY` | `medium` | RFCOMM `BT_SECURITY` level set on the listening socket (`low`/`medium`/`high`) — see "Device credentials" below |
 | `ESP32_BT_MAC` | unset | peer allowlist for `SenderServer`; with `bluez` also the only MAC the pairing agent accepts (unset = nothing new pairs) |
 | `ARGUS_TRUCK_ID`/`ARGUS_DEVICE_API_KEY`/`ARGUS_BACKEND_URL` | unset | `sender/device_config.py`'s `DeviceConfig`, from the dashboard's `argus-device.env` (`docker-compose.yml` `env_file`, runtime only) |
+| `ARGUS_TRUCK_PLATE`/`ARGUS_ALERT_PHONE` | unset | optional `DeviceConfig` SMS fields, from `argus-device.env`, sent in `CONFIG` only when set; stripped; outside the all-three-or-none check; a non-E.164 phone is warned (masked) and dropped |
 | `ARGUS_WIFI_SSID`/`ARGUS_WIFI_PASSWORD`/`ARGUS_GPRS_APN`/`ARGUS_GPRS_USER`/`ARGUS_GPRS_PASSWORD` | unset | optional `DeviceConfig` network fields, from `.env` (per installation), sent to the ESP32 in `CONFIG`; verbatim, not stripped |
 | model-artifact overrides | see `constants.py` | `MODEL_DIR`, `*_DRIVE_FILE_ID`, `*_FILENAME`, `*_BUNDLE_URL` — see "Model download strategy" |
 
@@ -881,6 +882,17 @@ ESP32 stays on WiFi. Because that reply carries secrets, the link must be paired
 listening socket, and `BluezProfileListener` registers its profile with
 `RequireAuthentication`. `ESP32_BT_MAC` allowlists the peer. The key is never logged and
 `repr(DeviceConfig)` masks it. A partial `ARGUS_*` set is a `SystemExit` at startup.
+The reply also carries, when set, the truck's plate and the phone for the ESP32's
+critical-alert SMS (`truck_plate`/`alert_phone`, from `ARGUS_TRUCK_PLATE`/`ARGUS_ALERT_PHONE`
+in `argus-device.env`; `docs/designs/grip-alarm-contracts.md` C1.3). Both are optional and
+stripped, and neither takes part in the all-three-or-none check. The phone must match E.164
+(`E164_PHONE`, `^\+[1-9][0-9]{7,14}$`, the same regex the backend, UI and firmware use); one
+that doesn't is logged as a warning and dropped, never raised, so a typo costs the SMS and not
+the truck's alerts. The phone is personal data: `repr()` shows it through `mask_phone`
+(`+52******5678`, last 4 digits kept), the startup log line too, and nothing logs it in full.
+A plate longer than 16 characters is still sent but warned about: the ESP32 ignores it (C1.4)
+and its SMS names the truck id instead.
+An older ESP32 ignores the two extra JSON fields.
 `tests/test_sender_device_config.py` covers all of it over fakes (including the `setsockopt`
 call); the real RFCOMM security handshake is unverified until real Pi + ESP32 hardware runs it.
 
