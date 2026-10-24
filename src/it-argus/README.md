@@ -29,8 +29,13 @@ Needs Node 22+ and npm, plus Playwright's browsers installed once (`npx playwrig
 ```bash
 npm install
 npx playwright install --with-deps chromium
-IT_BASE_URL=http://localhost:5173 npm run test   # against the repo-root `docker compose up`
+npm run test   # against the repo-root `docker compose up`
 ```
+
+The defaults already match the repo-root stack: the UI at `http://localhost:5173` (`IT_BASE_URL`)
+and the backend at `http://localhost:8000` (`IT_BACKEND_URL`, used by the specs' REST setup and
+truck reports). Leave the root stack's `ROOT_ADMIN_EMAIL`/`ROOT_ADMIN_PASSWORD`/`CORS_ORIGINS` at
+their defaults; the specs log in with them.
 
 **Playwright UI mode from WSL.** `npm run test:ui` serves UI mode as a web page on port 8080
 instead of opening a Linux window through WSLg, which scales it up and blurs it. Open

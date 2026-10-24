@@ -111,13 +111,13 @@ export async function submitCreate(page: Page, buttonName: string, apiPath: stri
 }
 
 /**
- * `it-argus`'s own `docker-compose.yml` shares `ui-argus`'s network namespace (see that file's
- * `network_mode` comment), so the Docker-internal hostname `backend-argus` is reachable from
- * this test process directly — the same DNS visibility the browser under test already needs for
- * its own `fetch` calls. Override for a differently-shaped local run (e.g. the repo-root
- * `docker compose up` stack, which publishes the backend at `http://localhost:8000`).
+ * Defaults to the repo-root `docker compose up` stack, which publishes the backend at
+ * `http://localhost:8000`, so a local `npx playwright test` needs no env var. `it-argus`'s own
+ * `docker-compose.yml` sets `IT_BACKEND_URL=http://backend-argus:8000` instead: it shares
+ * `ui-argus`'s network namespace (see that file's `network_mode` comment), where `localhost:8000`
+ * is not the backend but the Docker-internal hostname `backend-argus` resolves.
  */
-export const BACKEND_URL = process.env.IT_BACKEND_URL ?? 'http://backend-argus:8000'
+export const BACKEND_URL = process.env.IT_BACKEND_URL ?? 'http://localhost:8000'
 
 /**
  * Every `password` field on the backend's API boundary (`LoginRequest`, `UserCreate`, ...)
