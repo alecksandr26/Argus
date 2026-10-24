@@ -62,6 +62,15 @@ export function clock(iso: string | null, now: Date = new Date()): string {
   return `${shortDate(iso)} ${clockFmt.format(d)}`
 }
 
+/** "14:32" in Mexico City time, always without a day prefix — for something that just happened
+ * (the "Incident closed · Closed 14:32" confirmation), where `clock`'s "Yesterday"/date prefix
+ * would only appear across midnight or a clock skew and break the `Closed HH:MM` hook (C3.7).
+ * Accepts millisecond (or longer) ISO fractions like `clock`. */
+export function timeOfDay(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? '—' : clockFmt.format(d)
+}
+
 const dateFmt = new Intl.DateTimeFormat('en-US', {
   timeZone: MEXICO_TZ,
   day: '2-digit',
@@ -88,6 +97,28 @@ export function longDay(d: Date = new Date()): string {
 
 export function pct(n: number): string {
   return `${Math.round(n * 100)}%`
+}
+
+/** A duration in seconds, compactly: "45s", "3 min", "2h 5m", "2h", "3d", "3d 4h". Used for
+ * "Last known (N old)" and "queued N". Negative or non-finite input reads as "0s". */
+export function durationShort(seconds: number): string {
+  const s = Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds) : 0
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m} min`
+  const h = Math.floor(m / 60)
+  if (h < 24) {
+    const rem = m % 60
+    return rem ? `${h}h ${rem}m` : `${h}h`
+  }
+  const d = Math.floor(h / 24)
+  const remH = h % 24
+  return remH ? `${d}d ${remH}h` : `${d}d`
+}
+
+/** "20.6597, -103.3496" — 4 decimals (about 11 m), for alert cards and history rows. */
+export function coords(c: { lat: number; lon: number }): string {
+  return `${c.lat.toFixed(4)}, ${c.lon.toFixed(4)}`
 }
 
 /** Days until an ISO date, relative to `now`. Negative = past. */

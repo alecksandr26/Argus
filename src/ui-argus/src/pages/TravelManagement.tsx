@@ -5,13 +5,14 @@ import SearchBox from '../components/SearchBox'
 import RecordTable, { type Column } from '../components/RecordTable'
 import StatusPill from '../components/StatusPill'
 import Icon from '../components/Icon'
+import RouteEndActions from '../components/RouteEndActions'
 import { useAuth } from '../context/AuthContext'
 import { createRoute as createRouteApi, listRoutes, updateRoute } from '../api/routes'
 import { listDrivers } from '../api/drivers'
 import { listTrucks } from '../api/trucks'
 import { ApiError } from '../api/client'
 import { clock } from '../utils/format'
-import { isActiveRoute, routeStatus } from '../utils/status'
+import { isActiveRoute, routeStatusBadge } from '../utils/status'
 import type { Driver, Route, Truck } from '../types'
 
 /**
@@ -22,7 +23,10 @@ import type { Driver, Route, Truck } from '../types'
  * stay stubbed on create, unchanged from before. The create panel is `root_admin`/`admin` only;
  * a `guardian` sees the route table read-only.
  *
- * Start trip / Complete trip move a route to `in_progress` / `completed`. A route is only
+ * Start trip moves a route to `in_progress`. Complete trip (`completed`) and Stop route
+ * (`POST /api/routes/{id}/stop`, a required reason, the route becomes `cancelled` / "Stopped") go
+ * through `RouteEndActions`' confirmation dialogs; both are root_admin/admin only and hidden once
+ * a route has ended. Open incidents stay open either way. A route is only
  * "active" (what the truck's ESP32 gets from `GET /api/devices/me/active-route`, and so what its
  * alerts are filed under) while `in_progress`; nothing on the backend changes that by itself.
  * Starting is refused while the same truck already has an active trip: the device follows one
@@ -144,32 +148,30 @@ export default function TravelManagement() {
     }
   }
 
-  async function setTrip(r: Route, next: 'in_progress' | 'completed') {
+  const replaceRoute = (updated: Route) =>
+    setList((prev) => prev.map((o) => (o.id_route === updated.id_route ? updated : o)))
+
+  async function startTrip(r: Route) {
     setError(null)
-    if (next === 'in_progress') {
-      const running = list.find(
-        (o) =>
-          o.id_truck === r.id_truck && o.id_route !== r.id_route && isActiveRoute(o.operative_status),
+    const running = list.find(
+      (o) =>
+        o.id_truck === r.id_truck && o.id_route !== r.id_route && isActiveRoute(o.operative_status),
+    )
+    if (running) {
+      const plate = truckById.get(r.id_truck)?.plate_number ?? 'This truck'
+      setError(
+        `${plate} already has a trip in progress (${running.origin_name} → ${running.destination_name}). Complete it first.`,
       )
-      if (running) {
-        const plate = truckById.get(r.id_truck)?.plate_number ?? 'This truck'
-        setError(
-          `${plate} already has a trip in progress (${running.origin_name} → ${running.destination_name}). Complete it first.`,
-        )
-        return
-      }
+      return
     }
     setBusyRoute(r.id_route)
     try {
-      const now = new Date().toISOString()
       const updated = await updateRoute(
         r.id_route,
-        next === 'in_progress'
-          ? { operative_status: 'in_progress', actual_departure: now }
-          : { operative_status: 'completed', actual_arrival: now },
+        { operative_status: 'in_progress', actual_departure: new Date().toISOString() },
         token,
       )
-      setList((prev) => prev.map((o) => (o.id_route === updated.id_route ? updated : o)))
+      replaceRoute(updated)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to update the trip')
     } finally {
@@ -180,23 +182,35 @@ export default function TravelManagement() {
   const tripColumn: Column<Route> = {
     header: 'Trip',
     cell: (r) => {
-      const button = (label: string, next: 'in_progress' | 'completed') => (
-        <button
-          type="button"
-          className="btn btn--ghost"
-          style={{ padding: '4px 10px', fontSize: 11.5 }}
-          disabled={busyRoute !== null}
-          onClick={(e) => {
-            e.stopPropagation()
-            void setTrip(r, next)
-          }}
-        >
-          {label}
-        </button>
+      if (r.operative_status === 'completed' || r.operative_status === 'cancelled') {
+        return <span style={{ color: 'var(--text-faint)', fontSize: 11.5 }}>—</span>
+      }
+      return (
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          {r.operative_status === 'scheduled' && (
+            <button
+              type="button"
+              className="btn btn--ghost"
+              style={{ padding: '4px 10px', fontSize: 11.5 }}
+              disabled={busyRoute !== null}
+              onClick={(e) => {
+                e.stopPropagation()
+                void startTrip(r)
+              }}
+            >
+              Start trip
+            </button>
+          )}
+          <RouteEndActions
+            route={r}
+            role={session!.user.role}
+            token={token}
+            onChanged={replaceRoute}
+            compact
+            disabled={busyRoute !== null}
+          />
+        </div>
       )
-      if (r.operative_status === 'scheduled') return button('Start trip', 'in_progress')
-      if (isActiveRoute(r.operative_status)) return button('Complete trip', 'completed')
-      return <span style={{ color: 'var(--text-faint)', fontSize: 11.5 }}>—</span>
     },
   }
 
@@ -226,7 +240,11 @@ export default function TravelManagement() {
     },
     {
       header: 'Status',
-      cell: (r) => <StatusPill badge={routeStatus[r.operative_status]} />,
+      cell: (r) => (
+        <span title={r.stop_reason ? `Stopped: ${r.stop_reason}` : undefined}>
+          <StatusPill badge={routeStatusBadge(r)} />
+        </span>
+      ),
     },
     {
       header: 'ETA',
@@ -239,16 +257,16 @@ export default function TravelManagement() {
     {
       header: 'Live',
       cell: (r) =>
-        isActiveRoute(r.operative_status) ? (
+        r.operative_status === 'scheduled' ? (
+          <span style={{ color: 'var(--text-faint)', fontSize: 11.5 }}>—</span>
+        ) : (
           <Link
             to={`/routes/${r.id_route}/live`}
             className="btn btn--ghost"
             style={{ padding: '4px 10px', fontSize: 11.5 }}
           >
-            <Icon name="eye" size={13} /> View live
+            <Icon name="eye" size={13} /> {isActiveRoute(r.operative_status) ? 'View live' : 'View route'}
           </Link>
-        ) : (
-          <span style={{ color: 'var(--text-faint)', fontSize: 11.5 }}>—</span>
         ),
     },
     ...(canWrite ? [tripColumn] : []),

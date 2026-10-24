@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import StatusPill from './StatusPill'
-import type { Badge } from '../utils/status'
+import { delivery, incidentState, vigilance, type Badge } from '../utils/status'
 
 describe('StatusPill', () => {
   it('renders the badge label as text', () => {
@@ -18,6 +18,19 @@ describe('StatusPill', () => {
     const badge: Badge = { label: 'x', tone }
     render(<StatusPill badge={badge} />)
     expect(screen.getByText('x')).toHaveClass('pill', expectedClass)
+  })
+
+  it('renders the incident-era badges: marker state, unknown vigilance, replayed', () => {
+    render(
+      <>
+        <StatusPill badge={incidentState.critical} />
+        <StatusPill badge={vigilance.unknown} />
+        <StatusPill badge={delivery.dlq!} />
+      </>,
+    )
+    expect(screen.getByText('Critical')).toHaveClass('pill--bad')
+    expect(screen.getByText('Unknown').className.trim()).toBe('pill')
+    expect(screen.getByText('Recovered after lost connection')).toHaveClass('pill--warn')
   })
 
   it('renders a neutral tone with no tone-specific class', () => {

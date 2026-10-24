@@ -1,0 +1,233 @@
+import { useState } from 'react'
+import Dialog from './Dialog'
+import { stopRoute, updateRoute } from '../api/routes'
+import { ApiError } from '../api/client'
+import { STOP_REASON_MAX_LEN, canEndRoutes, canStopRoute, stopReasonError } from '../utils/incidents'
+import { isActiveRoute } from '../utils/status'
+import type { Role, Route } from '../types'
+
+type Pending = 'complete' | 'stop' | null
+
+/** C3.6 `[sync 3]`: `POST /stop` and the status-changing `PUT` take the route lock and answer 503
+ * under contention. The text is pinned; the dialog stays open so the user just presses again. */
+export const ROUTE_BUSY_MESSAGE = 'Route is busy, try again'
+
+/** The message a failed Complete/Stop shows. A 503 always reads as the retryable "busy" text
+ * (whatever body a proxy or Lambda put on it); anything else shows the server's own message
+ * (e.g. 409 for a route that has already ended). */
+function endRouteError(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) return err.status === 503 ? ROUTE_BUSY_MESSAGE : err.message
+  return fallback
+}
+
+/**
+ * "Complete trip" and "Stop route" for one route, each behind a confirmation dialog, used by
+ * Routes (TravelManagement), Live operations and the route view.
+ *
+ * - Shown only to root_admin and admin (`canEndRoutes`), and only while the route hasn't ended:
+ *   nothing renders for a `completed`/`cancelled` route.
+ * - "Complete trip" (in-progress routes) is the existing `PUT` to `completed`.
+ * - "Stop route" (`POST /api/routes/{id}/stop`, C3.6) needs a reason; the route becomes
+ *   `cancelled` ("Stopped"). It's also offered for a scheduled route.
+ * - Either way the route's open incidents stay open, and the backend rejects everything the
+ *   truck's device sends for this route from then on.
+ * - A 503 ("Route is busy, try again": the backend's per-route lock was held) keeps the dialog
+ *   open with that text, so pressing the button again retries. Nothing here ever reopens a route
+ *   (the backend answers 409) or sends `resolved_at`.
+ * - `disabled` greys both buttons out while the caller has another request for this list in
+ *   flight (TravelManagement's Start trip).
+ */
+export default function RouteEndActions({
+  route,
+  role,
+  token,
+  onChanged,
+  compact = false,
+  disabled = false,
+}: {
+  route: Route
+  role: Role
+  token: string
+  onChanged: (route: Route) => void
+  /** Small ghost buttons for table rows and lists. */
+  compact?: boolean
+  /** Disable both buttons (another request on this route list is in flight). */
+  disabled?: boolean
+}) {
+  const [pending, setPending] = useState<Pending>(null)
+  if (!canEndRoutes(role) || !canStopRoute(route)) return null
+
+  const btnClass = compact ? 'btn btn--ghost' : 'btn'
+  const btnStyle = compact ? { padding: '4px 10px', fontSize: 11.5 } : undefined
+  const done = (r: Route) => {
+    setPending(null)
+    onChanged(r)
+  }
+
+  return (
+    <>
+      {isActiveRoute(route.operative_status) && (
+        <button
+          type="button"
+          className={btnClass}
+          style={btnStyle}
+          disabled={disabled}
+          onClick={(e) => {
+            e.stopPropagation()
+            setPending('complete')
+          }}
+        >
+          Complete trip
+        </button>
+      )}
+      <button
+        type="button"
+        className={compact ? btnClass : 'btn btn--danger'}
+        style={btnStyle}
+        disabled={disabled}
+        onClick={(e) => {
+          e.stopPropagation()
+          setPending('stop')
+        }}
+      >
+        Stop route
+      </button>
+      {pending === 'complete' && (
+        <CompleteRouteDialog
+          route={route}
+          token={token}
+          onCancel={() => setPending(null)}
+          onDone={done}
+        />
+      )}
+      {pending === 'stop' && (
+        <StopRouteDialog route={route} token={token} onCancel={() => setPending(null)} onDone={done} />
+      )}
+    </>
+  )
+}
+
+const routeName = (r: Route) => `${r.origin_name} → ${r.destination_name}`
+
+export function CompleteRouteDialog({
+  route,
+  token,
+  onCancel,
+  onDone,
+}: {
+  route: Route
+  token: string
+  onCancel: () => void
+  onDone: (route: Route) => void
+}) {
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  async function submit() {
+    setBusy(true)
+    setError(null)
+    try {
+      onDone(
+        await updateRoute(
+          route.id_route,
+          { operative_status: 'completed', actual_arrival: new Date().toISOString() },
+          token,
+        ),
+      )
+    } catch (err) {
+      setError(endRouteError(err, 'Failed to complete the trip'))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog title="Complete trip" onClose={onCancel} busy={busy}>
+      <p className="dialog__text">
+        Mark <strong>{routeName(route)}</strong> as completed? Open incidents stay open, and
+        anything the truck sends for this route from now on is rejected.
+      </p>
+      {error && (
+        <div role="alert" className="field__error">
+          {error}
+        </div>
+      )}
+      <div className="dialog__actions">
+        <button type="button" className="btn" onClick={onCancel} disabled={busy}>
+          Cancel
+        </button>
+        <button type="button" className="btn btn--accent" onClick={submit} disabled={busy}>
+          {busy ? 'Completing…' : 'Complete trip'}
+        </button>
+      </div>
+    </Dialog>
+  )
+}
+
+export function StopRouteDialog({
+  route,
+  token,
+  onCancel,
+  onDone,
+}: {
+  route: Route
+  token: string
+  onCancel: () => void
+  onDone: (route: Route) => void
+}) {
+  const [reason, setReason] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  async function submit() {
+    const invalid = stopReasonError(reason)
+    if (invalid) {
+      setError(invalid)
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      onDone(await stopRoute(route.id_route, reason.trim(), token))
+    } catch (err) {
+      setError(endRouteError(err, 'Failed to stop the route'))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog title="Stop route" onClose={onCancel} busy={busy}>
+      <p className="dialog__text">
+        Stop <strong>{routeName(route)}</strong> before it's completed? Open incidents stay
+        open, and anything the truck sends for this route from now on is rejected.
+      </p>
+      <label className="field">
+        <span className="field__label">Reason (required)</span>
+        <textarea
+          className="input"
+          rows={3}
+          maxLength={STOP_REASON_MAX_LEN}
+          placeholder="e.g. truck broke down, driver relieved, trip cancelled by the client"
+          value={reason}
+          onChange={(e) => {
+            setReason(e.target.value)
+            setError(null)
+          }}
+          disabled={busy}
+        />
+      </label>
+      {error && (
+        <div role="alert" className="field__error">
+          {error}
+        </div>
+      )}
+      <div className="dialog__actions">
+        <button type="button" className="btn" onClick={onCancel} disabled={busy}>
+          Cancel
+        </button>
+        <button type="button" className="btn btn--danger" onClick={submit} disabled={busy}>
+          {busy ? 'Stopping…' : 'Stop route'}
+        </button>
+      </div>
+    </Dialog>
+  )
+}

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import SimulatorControl from './SimulatorControl'
+import { SIMULATOR_POLL_MS } from '../constants'
 import type { SimulatorStatus } from '../api/simulator'
 
 const off: SimulatorStatus = {
@@ -75,6 +76,50 @@ describe('SimulatorControl', () => {
 
     expect(await screen.findByText('Off')).toBeInTheDocument()
     expect(fetchMock.mock.calls[1][0]).toMatch(/\/api\/simulator\/stop$/)
+  })
+
+  it('polls the status every SIMULATOR_POLL_MS (10 s) while a session is open', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const fetchMock = vi.fn().mockResolvedValue(ok(on()))
+      vi.stubGlobal('fetch', fetchMock)
+      render(<SimulatorControl token="tok" />)
+      await screen.findByText('Starting…')
+      // The poll interval starts in a passive effect after this render; flush it before
+      // advancing the fake clock, or the first advance can run before the interval exists.
+      await act(async () => {})
+      expect(SIMULATOR_POLL_MS).toBe(10000)
+      const statusCalls = () =>
+        fetchMock.mock.calls.filter(([url]) => /\/api\/simulator$/.test(url)).length
+      expect(statusCalls()).toBe(1)
+
+      await act(async () => {
+        vi.advanceTimersByTime(SIMULATOR_POLL_MS - 1000)
+      })
+      expect(statusCalls()).toBe(1)
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+      })
+      await waitFor(() => expect(statusCalls()).toBe(2))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not poll while it is off', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const fetchMock = vi.fn().mockResolvedValue(ok(off))
+      vi.stubGlobal('fetch', fetchMock)
+      render(<SimulatorControl token="tok" />)
+      await screen.findByText('Off')
+      await act(async () => {
+        vi.advanceTimersByTime(SIMULATOR_POLL_MS * 3)
+      })
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('is disabled when the monthly quota is used up', async () => {
