@@ -176,6 +176,9 @@ describe('Fleet SMS alert phone', () => {
       'Use the international format, e.g. +523312345678',
     )
     expect(phone).toHaveAttribute('aria-invalid', 'true')
+    expect(phone).toHaveAccessibleDescription(
+      'Use the international format, e.g. +523312345678',
+    )
     expect(sentBody(fetchMock, 'PUT')).toBeUndefined()
 
     // Editing the field clears the error.
@@ -359,6 +362,29 @@ describe('Fleet device credentials', () => {
       expect(screen.getByTestId('alert-phone-note')).toHaveTextContent(
         'No SMS alert phone is set',
       )
+    })
+
+    it('warns that a phone typed but not saved is not in the file', async () => {
+      seedSession('root_admin')
+      mockFetchDevice({ truck: { ...truckRow, alert_phone: null } })
+      const user = userEvent.setup()
+      renderFleet()
+
+      await user.click(await screen.findByText('ARG-001'))
+      await user.type(screen.getByLabelText('SMS alert phone (optional)'), '+523312345678')
+      await user.click(screen.getByRole('button', { name: 'Generate device credentials' }))
+
+      const env = await screen.findByTestId('device-env')
+      expect(env.textContent).toContain(
+        '# ARGUS_ALERT_PHONE=  (no SMS alert phone set for this truck)',
+      )
+      expect(env.textContent).not.toContain('ARGUS_ALERT_PHONE=+523312345678')
+      expect(screen.getByTestId('alert-phone-unsaved')).toHaveTextContent("isn't saved")
+    })
+
+    it('shows no unsaved warning when the form matches the saved phone', async () => {
+      await downloadEnv({ ...truckRow, alert_phone: '+523312345678' })
+      expect(screen.queryByTestId('alert-phone-unsaved')).not.toBeInTheDocument()
     })
   })
 })

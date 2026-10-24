@@ -462,15 +462,24 @@ function EditPanel({
           value={draft.alert_phone}
           disabled={readOnly}
           aria-invalid={phoneError ? true : undefined}
+          aria-describedby="alert-phone-help"
           onChange={(e) => set({ alert_phone: e.target.value })}
         />
       </label>
       {phoneError ? (
-        <div role="alert" className="field__error" style={{ marginTop: -10 }}>
+        <div
+          id="alert-phone-help"
+          role="alert"
+          className="field__error"
+          style={{ marginTop: -10 }}
+        >
           {phoneError}
         </div>
       ) : (
-        <span style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: -10 }}>
+        <span
+          id="alert-phone-help"
+          style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: -10 }}
+        >
           Texted once per critical alert. International format, e.g.{' '}
           <span className="mono">{ALERT_PHONE_EXAMPLE}</span>. Empty means no SMS.
         </span>
@@ -482,6 +491,7 @@ function EditPanel({
           truck={truck}
           token={token}
           canWrite={!readOnly}
+          draftAlertPhone={draft.alert_phone}
           onTruckChange={onTruckChange}
         />
       )}

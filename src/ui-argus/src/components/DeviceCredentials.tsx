@@ -21,11 +21,14 @@ export default function DeviceCredentials({
   truck,
   token,
   canWrite,
+  draftAlertPhone,
   onTruckChange,
 }: {
   truck: Truck
   token: string
   canWrite: boolean
+  /** The phone currently typed in the edit form; the file only ever carries the saved one. */
+  draftAlertPhone?: string
   onTruckChange: (t: Truck) => void
 }) {
   const [busy, setBusy] = useState(false)
@@ -86,6 +89,8 @@ export default function DeviceCredentials({
         issuedAt: issued.at,
       })
     : ''
+  const phoneUnsaved =
+    draftAlertPhone !== undefined && draftAlertPhone.trim() !== (truck.alert_phone ?? '').trim()
 
   function download() {
     const url = URL.createObjectURL(new Blob([envText], { type: 'text/plain' }))
@@ -176,6 +181,15 @@ export default function DeviceCredentials({
             credentials, or edit the <span className="mono">ARGUS_ALERT_PHONE</span> line on the
             Pi and restart the container.
           </span>
+          {phoneUnsaved && (
+            <span
+              data-testid="alert-phone-unsaved"
+              style={{ fontSize: 11.5, color: 'var(--warn, #f5a524)' }}
+            >
+              The SMS alert phone in the form above isn't saved, so this file doesn't carry it.
+              Save the truck, then rotate the key to get a file with it.
+            </span>
+          )}
           <label className="field">
             <span className="field__label">Backend URL the truck uses</span>
             <input
