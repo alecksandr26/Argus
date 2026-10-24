@@ -33,9 +33,64 @@ task, OSRM bucket, reaper), `ArgusApp` (Lambda, UI bucket, CloudFront), `ArgusGu
 | R5 | **Reaper Lambda every minute** stops any simulator task older than 10 minutes, whatever the backend thinks. | `lambda/reaper.py` |
 | R6 | **AWS Budget $3/month**: email at 50/80/100%; at 100% a budget action **denies `ecs:RunTask`** to the backend (no more simulator starts). | `lib/guardrails-stack.ts` |
 | R7 | **No always-on paid resources**: no NAT Gateway, load balancer, EC2, RDS/DocumentDB, Secrets Manager, WAF, API Gateway, ECS Service, EFS. `npm test` fails if one appears. | `test/guardrails.test.ts` |
-| R8 | Backend Lambda 512 MB / 10 s / concurrency 2; **> 20k invocations in an hour → kill switch** (backend throttled to 0, simulator stopped). | `lib/guardrails-stack.ts`, `lambda/kill_switch.py` |
+| R8 | Backend Lambda 512 MB / 10 s / concurrency 2; **> 20k invocations in an hour → kill switch** (backend throttled to 0, simulator stopped). 20k is sized from `DEMO_LOAD_PER_HOUR` (a busy demo hour ≈ 6,840 requests, see below). The 10 s timeout is tied to the backend's route lock (see below); `npm test` fails if they drift apart. | `lib/guardrails-stack.ts`, `lambda/kill_switch.py`, `lib/app-stack.ts` |
 | R9 | All logs kept 3 days. | CDK, tested |
 | R10 | Manual panic button: `npm run kill` / `npm run unkill`. | `scripts/` |
+
+### R8 in detail: demo load and the Lambda timeout
+
+**Demo load.** `DEMO_LOAD_PER_HOUR` (`lib/guardrails-stack.ts`) counts what a demo sends at the
+final-tweaks cadence: every device (the real ESP32 and each simulator truck) posts one
+`POST /api/devices/me/report` every 5 s (an event replaces the next report rather than adding
+one; the 60 s heartbeat is gone), and each open dashboard tab polls `/api/live` and alert history
+every 5 s and the simulator panel every 10 s.
+
+| Source | Requests/hour |
+|---|---|
+| One real truck, all hour | 720 |
+| One 10-minute simulator session, 6 trucks | 720 |
+| One dashboard tab (live 720 + history 720 + simulator 360) | 1,800 |
+| **Busy hour**: 1 truck + 1 session + 3 tabs | **6,840** |
+
+`KILL_SWITCH_INVOCATIONS_PER_HOUR` (20,000) leaves room for that about three times over, so only
+a runaway loop trips it. A test asserts the busy hour stays under half the threshold; if you
+change a cadence (`REPORT_INTERVAL_MS` on the ESP32, the simulator's `SIMULATOR_REPORT_INTERVAL_S`,
+the UI's `UI_POLL_MS`/`ALERT_HISTORY_POLL_MS`/`SIMULATOR_POLL_MS`), update `DEMO_LOAD_PER_HOUR` and re-check it.
+Up to 10 simulator trucks (the UI's maximum) still leave 2x headroom; a test checks that too.
+
+**Simulator task settings.** The Fargate task doesn't rely on the simulator image's built-in
+defaults: `SIMULATOR_TASK_SETTINGS` (`lib/simulator-stack.ts`) passes them explicitly, matching
+`src/simulator-argus`'s `.env.example` and the root `docker-compose.yml`:
+`SIMULATOR_REPORT_INTERVAL_S=5` (the cadence `DEMO_LOAD_PER_HOUR` assumes; `npm test` pins it),
+`SIMULATOR_SCENARIO_WEIGHTS=normal=0.45,drowsy_escalation=0.35,no_face=0.20`,
+`SIMULATOR_NORMAL_BLIP_CHANCE=0.5`, and the demo disruptions off (`SIMULATOR_OUTAGE_CHANCE=0`,
+`SIMULATOR_GPS_LOSS_CHANCE=0`, `SIMULATOR_OUTAGE_AROUND_CRITICAL=false`). For a dead-letter replay
+demo, set `SIMULATOR_OUTAGE_CHANCE` > 0 and `SIMULATOR_OUTAGE_AROUND_CRITICAL=true` there and
+redeploy; an outage sends nothing, so it can only lower the request count. The backend's
+`run_task` override adds the per-session values (`SIMULATOR_SESSION_MINUTES`, `SIMULATOR_TRUCK_COUNT`,
+`SIMULATOR_ROUTE_DURATION_MINUTES`, `BACKEND_BASE_URL`).
+
+**Lambda timeout ↔ route lock.** `backend-argus` serializes the writes of one route with a lock
+stored on the route document (`app/incidents.py` `route_lock`). A request waits at most
+`ROUTE_LOCK_WAIT` (5 s) for it and then answers **503 "Route is busy, try again"**. The wait is
+**per request**: a device report that takes the lock twice (its points, then its event) shares
+one deadline (`received_at + 5 s`). A holder keeps the lock at most `ROUTE_LOCK_LEASE` (10 s), so
+a holder that crashes or is killed frees it then. Three inequalities must hold:
+
+- `ROUTE_LOCK_WAIT` (5 s) < the Lambda timeout (10 s): a waiting request still has time to send
+  its 503 before Lambda kills it;
+- `ROUTE_LOCK_WAIT` (5 s) < the ESP32's 8 s attempt timeout (`ATTEMPT_TIMEOUT_WIFI_MS`,
+  `ATTEMPT_TIMEOUT_MOBILE_FIRST_MS`): the device sees the 503 (a failed attempt it retries)
+  rather than its own timeout;
+- `ROUTE_LOCK_LEASE` (10 s) >= the Lambda timeout: a holder killed at the timeout can't leave a
+  lock behind that outlives it.
+
+`test/guardrails.test.ts` reads `src/backend-argus/app/constants.py` and fails synth if the
+first or third breaks. **Raising the Lambda timeout above 10 s needs `ROUTE_LOCK_LEASE` raised
+with it** (in the backend, and redeployed together); lowering it to 5 s or less needs a shorter
+`ROUTE_LOCK_WAIT`. The ESP32 timeouts are checked by hand (they live in
+`src/esp32-argus/src/esp32_argus/config.h`). A 503 under contention is rare in practice: the
+lock is held only for the few database round-trips of one write, per route.
 
 ## Monthly cost (us-east-1 list prices; other regions ~10–20% more)
 

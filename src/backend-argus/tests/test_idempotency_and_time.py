@@ -37,6 +37,30 @@ async def test_same_client_event_id_twice_returns_existing_status(api_client, ri
     assert await StatusRoute.find(StatusRoute.id_route == rig_a.route_id).count() == 1
 
 
+async def test_status_at_an_already_stored_time_returns_the_stored_one(api_client, rig_a):
+    """The unique (id_route, timestamp) index (C3.3): a second point at the very same instant
+    is the same point, not a new one."""
+    at = _iso(datetime.now(timezone.utc) - timedelta(minutes=1))
+    url = f"/api/routes/{rig_a.route_id}/status"
+    first = await api_client.post(url, json=status_body(occurred_at=at), headers=rig_a.headers)
+    second = await api_client.post(
+        url, json=status_body(occurred_at=at, vigilance="critical"), headers=rig_a.headers
+    )
+    assert (first.status_code, second.status_code) == (201, 200)
+    assert second.json()["id_status_route"] == first.json()["id_status_route"]
+    assert await StatusRoute.find(StatusRoute.id_route == rig_a.route_id).count() == 1
+
+
+async def test_alert_unique_index_is_partial_on_string_ids(mongo_client):
+    from app.indexes import ALERT_EVENT_UNIQUE
+
+    info = await Alert.get_motor_collection().index_information()
+    spec = info[ALERT_EVENT_UNIQUE]
+    assert spec["unique"] is True
+    assert spec["key"] == [("id_route", 1), ("client_event_id", 1)]
+    assert spec["partialFilterExpression"] == {"client_event_id": {"$type": "string"}}
+
+
 async def test_different_client_event_ids_create_two_alerts(api_client, rig_a):
     for event_id in ("evt-a", "evt-b"):
         resp = await api_client.post(

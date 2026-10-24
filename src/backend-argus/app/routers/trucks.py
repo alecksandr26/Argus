@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.auth.dependencies import get_current_user, require_role
+from app.auth.dependencies import get_current_user, invalidate_device_cache, require_role
 from app.auth.security import generate_device_api_key, hash_secret, key_fingerprint
 from app.models.common import Role
 from app.models.truck import Truck
@@ -74,6 +74,7 @@ async def update_truck(truck_id: str, body: TruckUpdate) -> TruckOut:
 async def delete_truck(truck_id: str) -> Message:
     truck = await _get_or_404(truck_id)
     await truck.delete()
+    invalidate_device_cache(str(truck.id))
     return Message(detail="Truck deleted")
 
 
@@ -94,6 +95,7 @@ async def rotate_device_key(truck_id: str) -> DeviceKeyResponse:
     truck.device_key_issued_at = datetime.now(timezone.utc)
     truck.device_last_seen_at = None
     await truck.touch_and_save()
+    invalidate_device_cache(str(truck.id))
     return DeviceKeyResponse(id_truck=str(truck.id), device_api_key=plaintext)
 
 
@@ -111,4 +113,5 @@ async def revoke_device_key(truck_id: str) -> TruckOut:
     truck.device_key_issued_at = None
     truck.device_last_seen_at = None
     await truck.touch_and_save()
+    invalidate_device_cache(str(truck.id))
     return truck_out(truck)

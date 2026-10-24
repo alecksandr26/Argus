@@ -14,7 +14,8 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from mongomock_motor import AsyncMongoMockClient
 
-from app.auth.security import create_access_token, hash_secret
+from app.auth.dependencies import invalidate_device_cache
+from app.auth.security import create_access_token, hash_secret, key_fingerprint
 from app.database import init_db
 from app.main import app
 from app.models.common import Role
@@ -27,6 +28,14 @@ def sha256_hex(raw: str) -> str:
     (see `app/schemas/common.py`'s `Sha256HexDigest` docstring), not the raw password — tests
     that log in or create users need to send this instead of a literal password string."""
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_device_cache():
+    """The device-auth cache is process-wide; each test starts with it empty."""
+    invalidate_device_cache()
+    yield
+    invalidate_device_cache()
 
 
 @pytest_asyncio.fixture
@@ -123,7 +132,7 @@ async def sample_truck(mongo_client) -> Truck:
 # Two of them make cross-truck checks (key A on truck B's route) one-liners.
 
 from dataclasses import dataclass  # noqa: E402
-from datetime import date, datetime, timezone  # noqa: E402
+from datetime import date, datetime, timedelta, timezone  # noqa: E402
 
 from app.geo import GeoJSONPoint  # noqa: E402
 from app.models.common import RouteStatus, TruckStatus  # noqa: E402
@@ -142,7 +151,16 @@ class Rig:
         return {"X-Device-Api-Key": self.key}
 
 
-async def make_rig(plate: str, route_status: RouteStatus = RouteStatus.IN_PROGRESS) -> Rig:
+async def make_rig(
+    plate: str,
+    route_status: RouteStatus = RouteStatus.IN_PROGRESS,
+    *,
+    fingerprint: bool = True,
+    departed_ago: timedelta = timedelta(hours=1),
+) -> Rig:
+    """A truck with a device key, a driver and one route. A route that has started (in progress
+    or finished) departed `departed_ago` before now, and a finished one arrived a minute ago:
+    device events are matched to routes by these times (C2.2 rule 4)."""
     key = f"device-key-{plate}"
     truck = Truck(
         plate_number=plate,
@@ -151,6 +169,7 @@ async def make_rig(plate: str, route_status: RouteStatus = RouteStatus.IN_PROGRE
         company_number=f"UNIT-{plate}",
         operative_status=TruckStatus.ACTIVE,
         device_api_key_hash=hash_secret(key),
+        device_api_key_fingerprint=key_fingerprint(key) if fingerprint else None,
     )
     await truck.insert()
     driver = Driver(
@@ -164,6 +183,9 @@ async def make_rig(plate: str, route_status: RouteStatus = RouteStatus.IN_PROGRE
         blood_type="O+",
     )
     await driver.insert()
+    now = datetime.now(timezone.utc)
+    started = route_status != RouteStatus.SCHEDULED
+    finished = route_status in (RouteStatus.COMPLETED, RouteStatus.CANCELLED)
     route = Route(
         id_driver=str(driver.id),
         id_truck=str(truck.id),
@@ -171,6 +193,8 @@ async def make_rig(plate: str, route_status: RouteStatus = RouteStatus.IN_PROGRE
         destination_name="CDMX",
         destination_coordinates=GeoJSONPoint(coordinates=(-99.13, 19.43)),
         estimated_departure=datetime(2030, 1, 1, 8, tzinfo=timezone.utc),
+        actual_departure=now - departed_ago if started else None,
+        actual_arrival=now - timedelta(minutes=1) if finished else None,
         operative_status=route_status,
     )
     await route.insert()
@@ -213,3 +237,57 @@ def status_body(**overrides) -> dict:
     }
     body.update(overrides)
     return body
+
+
+# --- Report endpoint helpers (POST /api/devices/me/report, C2) ---------------------------------
+
+REPORT_URL = "/api/devices/me/report"
+
+
+def report_point(**overrides) -> dict:
+    """One GPS point as the ESP32 sends it."""
+    point = {
+        "age_s": 1.0,
+        "lat": 20.6597,
+        "lon": -103.3496,
+        "speed": 62.5,
+        "vigilance": "low",
+        "last_known": False,
+        "location_age_s": 0,
+    }
+    point.update(overrides)
+    return point
+
+
+def report_event(client_event_id: str = "evt-1", **overrides) -> dict:
+    """A live critical alert event as the ESP32 composes it from a Pi record."""
+    event = {
+        "client_event_id": client_event_id,
+        "episode": "a1b2c3d4e5f6",
+        "kind": "alert",
+        "severity": "critical",
+        "alert_type": "eyes_closed",
+        "age_s": 1.6,
+        "delivery": "live",
+        "queued_seconds": 0,
+        "position": {"lat": 20.6597, "lon": -103.3496, "last_known": False, "location_age_s": 0},
+        "speed": 62.5,
+        "ai_metadata": {"model": "parts-rules-v1", "scores": {"not_drowsy": 0.05, "drowsy": 0.95}},
+    }
+    event.update(overrides)
+    return event
+
+
+def ok_event(client_event_id: str = "ok-1", **overrides) -> dict:
+    """A driver-OK event (the episode ended): no severity, no alert_type."""
+    event = report_event(client_event_id, kind="ok")
+    del event["severity"], event["alert_type"]
+    event.update(overrides)
+    return event
+
+
+async def post_report(api_client, rig: Rig, points=None, event=None):
+    body: dict = {"points": points if points is not None else []}
+    if event is not None:
+        body["event"] = event
+    return await api_client.post(REPORT_URL, json=body, headers=rig.headers)

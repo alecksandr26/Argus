@@ -40,12 +40,14 @@ from app.models.common import (
     RouteStatus,
     Severity,
     TruckStatus,
+    Vigilance,
 )
 from app.models.driver import Driver
 from app.models.route import Route
 from app.models.status_route import StatusRoute
 from app.models.truck import Truck
 from app.models.user import User
+from scripts.migrate_final_tweaks import backfill_incidents
 
 DEMO_PASSWORD = "changeme123"
 
@@ -173,37 +175,43 @@ async def _seed_routes_and_alerts(trucks: list[Truck], drivers: list[Driver]) ->
         current_coordinates=to_geojson(Coordinates(lat=19.6, lon=-99.8)),
         current_speed=87.5,
         odometer=152340.2,
-        vigilance=Severity.LOW,
+        vigilance=Vigilance.LOW,
+        keep=True,
     ).insert()
 
-    # A recovered incident on route1: a fused medium alert (Drowsy + good grip, per
-    # fusion_contract.py's BASE_MATRIX) that escalated to critical once grip also went bad,
-    # then recovered — demonstrates `related_alert_id`/`resolved_at`, which the single-alert
-    # routes below don't exercise.
+    # A recovered incident on route1: a medium alert of one Pi episode that escalated to
+    # critical, then the driver recovered (`driver_ok_at`) — demonstrates `related_alert_id`
+    # and "Driver OK since", which the single-alert routes below don't exercise. The incident
+    # stays open: only a guardian closes it.
     medium_alert = Alert(
         id_route=str(route1.id),
-        alert_type="drowsiness",
+        alert_type="eyes_closed",
         severity_level=Severity.MEDIUM,
         source=AlertSource.FUSION,
-        ai_metadata=AlertAiMetadata(scores={"not_drowsy": 0.21, "drowsy": 0.79}),
-        grip_status="good",
+        episode="5eed00000001",
+        ai_metadata=AlertAiMetadata(model="parts-rules-v1", scores={"not_drowsy": 0.21, "drowsy": 0.79}),
         coordinates=to_geojson(Coordinates(lat=19.6, lon=-99.8)),
         speed_at_event=85.0,
+        timestamp=now - timedelta(minutes=30),
+        received_at=now - timedelta(minutes=30),
+        driver_ok_at=now - timedelta(minutes=20),
     )
     await medium_alert.insert()
     critical_alert = Alert(
         id_route=str(route1.id),
-        alert_type="drowsiness",
+        alert_type="head_down_eyes_closed",
         severity_level=Severity.CRITICAL,
         source=AlertSource.FUSION,
-        ai_metadata=AlertAiMetadata(scores={"not_drowsy": 0.08, "drowsy": 0.92}),
-        grip_status="bad",
+        episode="5eed00000001",
+        ai_metadata=AlertAiMetadata(model="parts-rules-v1", scores={"not_drowsy": 0.08, "drowsy": 0.92}),
         related_alert_id=str(medium_alert.id),
         coordinates=to_geojson(Coordinates(lat=19.6, lon=-99.8)),
         speed_at_event=83.0,
-        resolved_at=now - timedelta(minutes=20),
+        timestamp=now - timedelta(minutes=28),
+        received_at=now - timedelta(minutes=28),
+        driver_ok_at=now - timedelta(minutes=20),
         reviewed_by_operator=True,
-        operator_notes="Driver alert, grip recovered — pulled over briefly then resumed.",
+        operator_notes="Driver alert, pulled over briefly then resumed.",
     )
     await critical_alert.insert()
 
@@ -224,27 +232,26 @@ async def _seed_routes_and_alerts(trucks: list[Truck], drivers: list[Driver]) ->
         current_coordinates=to_geojson(Coordinates(lat=25.5, lon=-100.9)),
         current_speed=91.0,
         odometer=88210.4,
-        vigilance=Severity.CRITICAL,
+        vigilance=Vigilance.CRITICAL,
+        keep=True,
     ).insert()
+    # A critical replayed from the Pi's dead-letter queue after a lost connection, with the
+    # ESP32's last known position (no GPS fix at the time).
     await Alert(
         id_route=str(route2.id),
-        alert_type="drowsiness",
+        alert_type="no_face",
         severity_level=Severity.CRITICAL,
         source=AlertSource.FUSION,
-        ai_metadata=AlertAiMetadata(scores={"not_drowsy": 0.09, "drowsy": 0.91}),
-        grip_status="bad",
+        episode="5eed00000002",
         coordinates=to_geojson(Coordinates(lat=25.5, lon=-100.9)),
-        speed_at_event=91.0,
-    ).insert()
-    # A panic-button event on the same route — independent of the drowsiness pipeline entirely
-    # (no camera/grip evaluation), demonstrating `AlertSource.PANIC_BUTTON`.
-    await Alert(
-        id_route=str(route2.id),
-        alert_type="Panic button pressed",
-        severity_level=Severity.CRITICAL,
-        source=AlertSource.PANIC_BUTTON,
-        coordinates=to_geojson(Coordinates(lat=25.48, lon=-100.95)),
-        speed_at_event=88.0,
+        location_is_last_known=True,
+        location_age_s=95.0,
+        speed_at_event=0.0,
+        delivery="dlq",
+        queued_seconds=240.0,
+        timestamp=now - timedelta(minutes=8),
+        received_at=now - timedelta(minutes=4),
+        time_source="relative",
     ).insert()
 
     route3 = Route(
@@ -273,16 +280,23 @@ async def _seed_routes_and_alerts(trucks: list[Truck], drivers: list[Driver]) ->
     await route4.insert()
     await Alert(
         id_route=str(route4.id),
-        alert_type="drowsiness",
+        alert_type="yawn_eyes_closed",
         severity_level=Severity.MEDIUM,
         source=AlertSource.FUSION,
-        ai_metadata=AlertAiMetadata(scores={"not_drowsy": 0.21, "drowsy": 0.79}),
-        grip_status="good",
+        episode="5eed00000003",
+        ai_metadata=AlertAiMetadata(model="parts-rules-v1", scores={"not_drowsy": 0.21, "drowsy": 0.79}),
         coordinates=to_geojson(Coordinates(lat=32.6, lon=-115.4)),
         speed_at_event=82.0,
+        timestamp=now - timedelta(days=1, hours=1),
+        received_at=now - timedelta(days=1, hours=1),
         reviewed_by_operator=True,
         operator_notes="Checked footage, driver pulled over shortly after — false positive.",
     ).insert()
+
+    # Group the alerts into incidents exactly like the migration does for historical data: the
+    # route4 one (reviewed) is closed, the others stay open, and the routes' incident_state
+    # follows.
+    await backfill_incidents()
 
 
 def _write_credentials_file(path: str) -> None:

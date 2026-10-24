@@ -4,6 +4,7 @@ the full rationale.
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -13,6 +14,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.concurrency import run_in_threadpool
 
 from app.auth.security import decode_access_token, key_fingerprint, verify_secret
+from app.constants import DEVICE_AUTH_CACHE_TTL
 from app.models.common import Role
 from app.models.truck import Truck
 from app.models.user import User
@@ -68,14 +70,62 @@ async def get_device_api_key(
 DEVICE_LAST_SEEN_RESOLUTION = timedelta(seconds=60)
 
 
+# Warm-container cache: key fingerprint -> (truck id, monotonic expiry). An entry is only added
+# after a full bcrypt check of that exact key, and a hit still requires the truck's *current*
+# fingerprint to equal the key's, so a rotate/revoke takes effect at once on every container
+# (the fingerprint changes or disappears); the TTL just bounds how long an entry lives
+# (docs/designs/final-tweaks-contracts.md, C2: `DEVICE_AUTH_CACHE_TTL`). SHA-256 equality of
+# a 32-byte random key is proof of possession; bcrypt guards against a database leak, which a
+# cache hit can't weaken.
+_device_cache: dict[str, tuple[str, float]] = {}
+
+
+def invalidate_device_cache(truck_id: Optional[str] = None) -> None:
+    """Drops cached entries for `truck_id` (rotate/revoke), or all of them."""
+    if truck_id is None:
+        _device_cache.clear()
+        return
+    for fingerprint, (cached_truck, _) in list(_device_cache.items()):
+        if cached_truck == truck_id:
+            _device_cache.pop(fingerprint, None)
+
+
+def _cache_hit(fingerprint: str, truck: Optional[Truck]) -> bool:
+    entry = _device_cache.get(fingerprint)
+    if entry is None:
+        return False
+    truck_id, expires = entry
+    if expires <= time.monotonic():
+        _device_cache.pop(fingerprint, None)
+        return False
+    return (
+        truck is not None
+        and str(truck.id) == truck_id
+        and bool(truck.device_api_key_hash)
+        and truck.device_api_key_fingerprint == fingerprint
+    )
+
+
+def _remember(fingerprint: str, truck: Truck) -> None:
+    if truck.device_api_key_fingerprint == fingerprint:
+        _device_cache[fingerprint] = (
+            str(truck.id),
+            time.monotonic() + DEVICE_AUTH_CACHE_TTL.total_seconds(),
+        )
+
+
 async def device_key_matches(device_key: Optional[str], truck: Optional[Truck]) -> bool:
     """bcrypt-verifies `device_key` against `truck`'s stored hash, off the event loop (bcrypt is
-    deliberately slow and would otherwise stall every other request, BE-19). A match also
-    records the truck's device as seen (throttled, see `DEVICE_LAST_SEEN_RESOLUTION`)."""
+    deliberately slow and would otherwise stall every other request, BE-19) -- or skips bcrypt on
+    a warm-cache hit (see `_device_cache`). A match also records the truck's device as seen
+    (throttled, see `DEVICE_LAST_SEEN_RESOLUTION`)."""
     if not device_key or truck is None or not truck.device_api_key_hash:
         return False
-    if not await run_in_threadpool(verify_secret, device_key, truck.device_api_key_hash):
-        return False
+    fingerprint = key_fingerprint(device_key)
+    if not _cache_hit(fingerprint, truck):
+        if not await run_in_threadpool(verify_secret, device_key, truck.device_api_key_hash):
+            return False
+        _remember(fingerprint, truck)
     await _touch_device_last_seen(truck)
     return True
 
@@ -127,17 +177,26 @@ async def get_device_truck(
     device_key: Optional[str] = Depends(get_device_api_key),
 ) -> Truck:
     """The truck a device key belongs to, for endpoints where the device identifies itself by
-    key alone (no route id in the request). 401 for a missing or unknown key."""
+    key alone (no route id in the request). Device key only, never a JWT. One indexed lookup by
+    fingerprint, then one bcrypt check (none on a warm-cache hit). 401 for a missing or unknown
+    key."""
     if device_key:
-        truck = await Truck.find_one(Truck.device_api_key_fingerprint == key_fingerprint(device_key))
+        fingerprint = key_fingerprint(device_key)
+        truck = await Truck.find_one(Truck.device_api_key_fingerprint == fingerprint)
         if truck is not None and await device_key_matches(device_key, truck):
             return truck
-        # Keys issued before fingerprints existed: fall back to checking each such truck.
+        # Keys issued before fingerprints existed: fall back to checking each such truck, and
+        # store the fingerprint on a match so the next request takes the indexed path.
         legacy = await Truck.find(
             Truck.device_api_key_fingerprint == None,  # noqa: E711 (Beanie query syntax)
             Truck.device_api_key_hash != None,  # noqa: E711
         ).to_list()
         for truck in legacy:
             if await device_key_matches(device_key, truck):
+                await Truck.find_one(Truck.id == truck.id).update(
+                    {"$set": {"device_api_key_fingerprint": fingerprint}}
+                )
+                truck.device_api_key_fingerprint = fingerprint
+                _remember(fingerprint, truck)
                 return truck
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Requires a valid device API key")

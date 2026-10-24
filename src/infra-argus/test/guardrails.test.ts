@@ -1,7 +1,10 @@
+import * as fs from 'fs'
+import * as path from 'path'
 import * as cdk from 'aws-cdk-lib'
 import { Match, Template } from 'aws-cdk-lib/assertions'
 import { buildArgus } from '../lib/argus'
-import { KILL_SWITCH_INVOCATIONS_PER_HOUR } from '../lib/guardrails-stack'
+import { DEMO_LOAD_PER_HOUR, KILL_SWITCH_INVOCATIONS_PER_HOUR } from '../lib/guardrails-stack'
+import { SIMULATOR_TASK_SETTINGS } from '../lib/simulator-stack'
 
 /**
  * The hard cost requirements (README "Cost guardrails", R1–R10) as synth-time assertions: if a
@@ -74,6 +77,26 @@ describe('R1/R4: fixed 10-minute sessions on Fargate Spot', () => {
         }),
       ]),
     })
+  })
+
+  it('simulator task gets its settings explicitly, reporting every 5 s (the demo-load cadence)', () => {
+    const tasks = t.simulator.findResources('AWS::ECS::TaskDefinition')
+    const containers = Object.values(tasks).flatMap((r) => r.Properties.ContainerDefinitions)
+    const sim = containers.find((c: { Name: string }) => c.Name === 'simulator')
+    const envMap = Object.fromEntries(
+      (sim.Environment as { Name: string; Value: string }[]).map((e) => [e.Name, e.Value]),
+    )
+    expect(envMap).toMatchObject({
+      SIMULATOR_REPORT_INTERVAL_S: '5',
+      SIMULATOR_NORMAL_BLIP_CHANCE: '0.5',
+      SIMULATOR_OUTAGE_CHANCE: '0',
+      SIMULATOR_GPS_LOSS_CHANCE: '0',
+      SIMULATOR_OUTAGE_AROUND_CRITICAL: 'false',
+      SIMULATOR_SCENARIO_WEIGHTS: 'normal=0.45,drowsy_escalation=0.35,no_face=0.20',
+    })
+    // DEMO_LOAD_PER_HOUR.simulatorSession is 6 trucks x one report per 5 s for 10 minutes.
+    const intervalS = Number(SIMULATOR_TASK_SETTINGS.SIMULATOR_REPORT_INTERVAL_S)
+    expect(DEMO_LOAD_PER_HOUR.simulatorSession).toBe(6 * ((10 * 60) / intervalS))
   })
 
   it('a missing OSRM graph falls back to straight lines instead of killing the task', () => {
@@ -176,6 +199,40 @@ describe('R8: small backend + kill switch', () => {
       AlarmActions: Match.anyValue(),
     })
     t.guardrails.hasResourceProperties('AWS::SNS::Subscription', { Protocol: 'lambda' })
+  })
+  it('backend Lambda timeout fits the backend route lock (wait < timeout <= lease)', () => {
+    // src/backend-argus/app/constants.py: a request waits ROUTE_LOCK_WAIT for a route's lock,
+    // then answers 503; a holder killed by the Lambda timeout frees the lock after
+    // ROUTE_LOCK_LEASE. Read from the backend source so the two modules can't drift apart.
+    const constants = fs.readFileSync(
+      path.resolve(__dirname, '..', '..', 'backend-argus', 'app', 'constants.py'),
+      'utf8',
+    )
+    const seconds = (name: string) => {
+      const pattern = new RegExp(`^${name}\\s*=\\s*timedelta\\(seconds=(\\d+(?:\\.\\d+)?)\\)`, 'm')
+      const m = constants.match(pattern)
+      if (!m) throw new Error(`${name} = timedelta(seconds=...) not found in backend constants.py`)
+      return Number(m[1])
+    }
+    const fns = t.app.findResources('AWS::Lambda::Function', { Properties: { PackageType: 'Image' } })
+    const timeouts = Object.values(fns).map((fn) => fn.Properties.Timeout as number)
+    expect(timeouts).toHaveLength(1)
+    const [timeout] = timeouts
+    expect(timeout).toBeGreaterThan(seconds('ROUTE_LOCK_WAIT'))
+    expect(timeout).toBeLessThanOrEqual(seconds('ROUTE_LOCK_LEASE'))
+  })
+  it('a busy demo hour at the 5 s report/poll cadence stays far below the kill switch', () => {
+    // One real truck + one simulator session + three dashboard tabs, with 2x headroom: a normal
+    // demo must never trip the kill switch, only a runaway loop.
+    const busyHour =
+      DEMO_LOAD_PER_HOUR.realTruck +
+      DEMO_LOAD_PER_HOUR.simulatorSession +
+      3 * DEMO_LOAD_PER_HOUR.dashboardTab
+    expect(busyHour).toBe(6840)
+    expect(2 * busyHour).toBeLessThan(KILL_SWITCH_INVOCATIONS_PER_HOUR)
+    // The UI allows up to 10 simulator trucks (backend schemas/simulator.py): still 2x headroom.
+    const maxTrucksHour = busyHour + (DEMO_LOAD_PER_HOUR.simulatorSession / 6) * (10 - 6)
+    expect(2 * maxTrucksHour).toBeLessThan(KILL_SWITCH_INVOCATIONS_PER_HOUR)
   })
 })
 

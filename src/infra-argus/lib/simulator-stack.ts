@@ -17,6 +17,31 @@ const OSRM_GRAPH = '/data/mexico-latest.osrm'
 /** Written by the osrm container when it runs without a graph, so its health check passes. */
 const OSRM_OFF_MARKER = '/tmp/osrm-off'
 
+/**
+ * The simulator's behaviour settings, passed explicitly so a deployed session doesn't depend on
+ * whatever `src/simulator-argus/simulator_argus/config.py` defaults to at build time. Values match
+ * that module's `.env.example` / root `docker-compose.yml`. The backend's `run_task` override adds
+ * the per-session ones (`SIMULATOR_SESSION_MINUTES`, `SIMULATOR_TRUCK_COUNT`,
+ * `SIMULATOR_ROUTE_DURATION_MINUTES`, `BACKEND_BASE_URL`).
+ *
+ * `SIMULATOR_REPORT_INTERVAL_S` is a cost input: `DEMO_LOAD_PER_HOUR.simulatorSession`
+ * (guardrails-stack.ts) assumes one report per truck every 5 s, and `npm test` pins it here.
+ * Lowering it multiplies backend invocations; re-check the kill-switch margin if you do.
+ */
+export const SIMULATOR_TASK_SETTINGS = {
+  /** One points-only report per truck every 5 s (contracts C4, mirrors the ESP32's REPORT_INTERVAL_MS). */
+  SIMULATOR_REPORT_INTERVAL_S: '5',
+  SIMULATOR_SCENARIO_WEIGHTS: 'normal=0.45,drowsy_escalation=0.35,no_face=0.20',
+  /** Chance a `normal` route gets its one head_down medium blip. */
+  SIMULATOR_NORMAL_BLIP_CHANCE: '0.5',
+  /** Demo disruptions (outage = failed reports + dead-letter replay, GPS loss = last-known
+   * positions), off as in the simulator's own defaults. Outages send nothing, so turning them on
+   * only lowers the request count. */
+  SIMULATOR_OUTAGE_CHANCE: '0',
+  SIMULATOR_GPS_LOSS_CHANCE: '0',
+  SIMULATOR_OUTAGE_AROUND_CRITICAL: 'false',
+} as const
+
 export interface SimulatorStackProps extends cdk.StackProps {
   vpc: ec2.IVpc
   config: ArgusConfig
@@ -143,6 +168,7 @@ export class SimulatorStack extends cdk.Stack {
           `exec timeout "$m"m python -m simulator_argus`,
       ],
       environment: {
+        ...SIMULATOR_TASK_SETTINGS,
         SIMULATOR_SESSION_MINUTES: String(sessionMinutes),
         SIMULATOR_ROUTE_DURATION_MINUTES: String(sessionMinutes),
         SIMULATOR_ADMIN_EMAIL: config.rootAdminEmail,

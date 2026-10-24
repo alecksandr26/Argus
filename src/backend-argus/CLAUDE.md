@@ -8,7 +8,12 @@ this module fits the rest of Argus (the ER model, `cv-argus`, `ui-argus`, the pl
 
 The Argus cloud backend: a FastAPI service backed by MongoDB (via Beanie), covering exactly six
 of the ER diagram's nine entities — **User, Truck, Driver, Route, Status_Route, Alert** — plus
-login. `Report`, `Device`, and `Geofence` exist in the ER diagram
+login, and three collections that aren't ER entities: **`incidents`** (groups of alerts a
+guardian closes), **`driver_oks`** (the driver's "I'm OK" per episode) and `simulator_sessions`
+(cost guardrails). Since the final-tweaks work (`docs/designs/final-tweaks-plan.md`, wire
+details frozen in `docs/designs/final-tweaks-contracts.md`, which wins over this file on any
+detail) the device writes through one endpoint, `POST /api/devices/me/report`, and the
+dashboard reads through one poll, `GET /api/live` — see "The final-tweaks data model" below. `Report`, `Device`, and `Geofence` exist in the ER diagram
 (`docs/designs/ER-model.drawio.xml`) but are deliberately **out of scope for this pass**: no
 `ui-argus` screen consumes them and no endpoint for them was ever committed in the root
 `CLAUDE.md`'s API list, so building CRUD for them now would be unused scaffolding, not a real
@@ -17,7 +22,8 @@ deliverable. They're future work, not a spec.
 `ui-argus` (the React web frontend) is this backend's only consumer today; its `src/types.ts`
 was written to mirror the ER model field-for-field in anticipation of this backend, so most of
 the work here is making that anticipation correct rather than negotiating a new contract. The
-other real caller is the not-yet-built ESP32 firmware — see "Device auth" below — `cv-argus`
+other real callers are the ESP32 firmware (`src/esp32-argus`) and the fleet simulator
+(`src/simulator-argus`), both through the device key — see "Device auth" below. `cv-argus`
 itself never calls this backend directly (see "Coordination note" below).
 
 ## Field names: ER diagram typos fixed here
@@ -56,6 +62,12 @@ As of the severity-taxonomy unification, this field's enum is the same `Severity
 `app/models/common.py`'s `Severity` docstring for the retired `Vigilance` enum's old values and
 their mapping onto the new one (`normal -> low`, `low_vigilance -> medium`, `critical ->
 critical`).
+
+Since the final-tweaks work the field is its own `Vigilance` enum again, but only as the
+`Severity` scale **plus `unknown`**: the ESP32 sends `unknown` when it has had no Pi reading for
+10 s (or none since boot), and a legacy `POST /api/routes/{id}/status` without `vigilance` now
+stores `unknown` instead of silently defaulting to `low`. `unknown` never counts as "OK" when a
+route's `incident_state` is cleared (C3.5).
 
 ## Auth design
 
@@ -170,12 +182,19 @@ deliberate product decision (an operations role — schedules routes, manages th
 roster — distinct from `root_admin`'s full control and `guardian`'s read-only monitoring), not
 something any design doc anticipated in advance.
 
-| Role | Users | Trucks/Drivers | Routes | Status_Route | Alerts |
-|---|---|---|---|---|---|
-| `root_admin` | full CRUD (any role) | full CRUD | full CRUD | read | full CRUD |
-| `admin` | scoped: create/view/edit/deactivate **`guardian`-role accounts only** — see below | full CRUD | full CRUD | read | none |
-| `guardian` | none | read-only | read-only | read-only | read + review (`PUT`) + de-escalate only |
-| `truck_driver` | none | read | read | read | read |
+| Role | Users | Trucks/Drivers | Routes | Status_Route | Alerts | Incidents |
+|---|---|---|---|---|---|---|
+| `root_admin` | full CRUD (any role) | full CRUD | full CRUD + **stop route** | read | read + review + de-escalate + delete | read + **close** |
+| `admin` | scoped: create/view/edit/deactivate **`guardian`-role accounts only** — see below | full CRUD | full CRUD + **stop route** | read | read | read |
+| `guardian` | none | read-only | read-only | read-only | read + review (`PUT`, notes) + de-escalate | read + **close** |
+| `truck_driver` | none | read | read | read | read | read |
+
+"Read" for Routes/Status_Route/Alerts/Incidents includes `GET /api/live` and
+`GET /api/routes/{id}/track` (any authenticated user; a device key gets 401). Closing an incident
+(`POST /api/incidents/{id}/close`) is guardian + root_admin, `admin`/`truck_driver` 403. Stopping a
+route (`POST /api/routes/{id}/stop`) is root_admin + admin, guardian/truck_driver 403. Writing
+alerts and points is the device's job (device key), not a role's; the legacy JWT fallback on the
+old ingestion endpoints is root_admin/guardian (see "Device auth").
 
 Plus one resource outside the ER model: **`/api/simulator`** (cloud simulator on/off) is
 **`root_admin` only** for every method; every other role gets 403. See "Simulator control" below.
@@ -205,9 +224,8 @@ implemented now.
 
 ### Device (ESP32) auth — deliberately separate from user JWT
 
-`POST /api/alerts` and `POST /api/routes/{id}/status` are the two endpoints a logged-in operator
-never calls directly — per both this repo's root `CLAUDE.md` and `cv-argus`'s own `CLAUDE.md`,
-the real HTTP caller is ESP32 firmware relaying records off the Pi's Bluetooth buffer. Requiring
+A logged-in operator never writes alerts or GPS points: the real HTTP caller is the ESP32
+relaying the Pi's records off its Bluetooth link (and the simulator playing one). Requiring
 a full username/password login-plus-refresh flow on an embedded device is unneeded complexity:
 no secure token storage story on bare-metal, no session to refresh.
 
@@ -224,19 +242,193 @@ Instead, `Truck.device_api_key_hash` holds a bcrypt-hashed, per-truck static key
   A successful key match refreshes `device_last_seen_at` at most once a minute
   (`DEVICE_LAST_SEEN_RESOLUTION`, a targeted `$set`, not `truck.save()`); rotating or
   revoking resets it.
-- `GET /api/devices/me/active-route` resolves the truck from the key alone (indexed
-  `device_api_key_fingerprint`, then bcrypt), so the ESP32 needs no route id either.
-- Ingestion requests carry it as `X-Device-Api-Key`. `authorize_device_or_user()`
-  (`app/auth/dependencies.py`) checks it specifically against the truck that owns the target
-  route (resolved server-side from the route/alert body, not trusted from the header) — so a
-  compromised key can only write that one truck's data, not an arbitrary truck's.
-- Both endpoints also accept a `root_admin`/`guardian` JWT as a fallback (manual testing/demo
-  seeding without real hardware, e.g. `scripts/seed_dev_data.py`), via the same
-  `authorize_device_or_user()` call trying the device key first and the JWT second.
-- `PUT /api/alerts/{id}` (`review_alert`) accepts a device key too, but scoped to `resolved_at`
-  only — a device marking a fused incident's recovery (see `fusion_contract.py`'s recovery
-  window) is not the same authorization as a human review, so a device-key request that also
-  tries to set `reviewed_by_operator`/`operator_notes` gets a `403`, not silently ignored.
+- Sent as `X-Device-Api-Key`. The truck is resolved from the key alone (indexed
+  `device_api_key_fingerprint`, a SHA-256 of the key, then one bcrypt check), so the device
+  needs no route id: `POST /api/devices/me/report` and `GET /api/devices/me/active-route` both
+  work that way.
+- **Auth cache** (`app/auth/dependencies.py`, `_device_cache`): bcrypt is deliberately slow and
+  the device reports every 5 s, so a warm container remembers fingerprint -> truck id for
+  `DEVICE_AUTH_CACHE_TTL` (60 s) and skips bcrypt on a hit. An entry is only added after a full
+  bcrypt check of that exact key, and a hit still requires the truck's **current** fingerprint
+  (the truck document is read on every request anyway) to equal the key's, so a rotate or revoke
+  takes effect at once on every container, not after the TTL; the container that handled it also
+  drops its entries (`invalidate_device_cache`). SHA-256 equality of a 32-byte random key is
+  proof of possession; bcrypt's job is guarding a leaked database, which a cache hit doesn't
+  weaken.
+- **`POST /api/devices/me/report` is device-key only** (no JWT fallback): it's the one device
+  write of the new model, see "The final-tweaks data model" below.
+- On the **legacy** ingestion endpoints (see "Legacy device endpoints" below)
+  `authorize_device_or_user()` checks the key specifically against the truck that owns the
+  target route (resolved server-side from the route/alert, not trusted from the header), so a
+  compromised key can only write that one truck's data. `POST /api/alerts` and
+  `POST /api/routes/{id}/status` also accept a `root_admin`/`guardian` JWT as a fallback (manual
+  testing without hardware), the device key tried first and the JWT second.
+- `PUT /api/alerts/{id}` with a device key is scoped to `resolved_at` only (stored as
+  `driver_ok_at`): a device-key request that also tries to set `reviewed_by_operator`/
+  `operator_notes` gets a `403`, not silently ignored.
+
+## The final-tweaks data model
+
+Contracts C2/C3 in `docs/designs/final-tweaks-contracts.md` are the exact spec (field tables,
+every status code); this section says what exists, where it lives, and why. Constants are in
+`app/constants.py` (C4).
+
+### `POST /api/devices/me/report` — the one device write (C2)
+
+`app/routers/devices.py` + `app/report.py`. One request carries up to `REPORT_MAX_POINTS` (10)
+GPS points and at most one event (`kind: alert`, medium/critical, or `kind: ok`, the driver's
+"I'm OK"). A body over 16 KiB is 413, a bad envelope 422; otherwise it's **always 200 with a
+result per part**, so a rejected event never costs the device its points, nor the reverse:
+`points: {stored, route, status: ok|no_active_route|route_finished}`,
+`event: {status: created|duplicate|rejected, reason, id_alert}`, plus `active_route` (the
+truck's current route, which is why the ESP32 no longer needs `GET /api/devices/me/active-route`).
+
+- **Times are relative on the wire** (`age_s`): the device has no trustworthy clock, so the
+  backend takes `received_at` once per request and computes point `timestamp` and event
+  `occurred_at` as `received_at - age_s`, both at millisecond precision (C2.1 [sync 3]). Report
+  alerts get `time_source: relative`.
+- Points go to the truck's **current** active route (in progress; the newest
+  `actual_departure` wins). Each point is validated on its own; an invalid one is skipped, never
+  a 422.
+- The event goes to the route the truck was on **when it happened** (`actual_departure <=
+  occurred_at <= actual_arrival`), so a dead-letter replay is never stamped onto a route that
+  started after it. Rejections: `route_finished` (that route has ended, or the event came after
+  the truck's last route ended), `no_route` (no route had started yet), `too_old` (over 7 days),
+  `wrong_truck` (the id is already used by another truck's event), `invalid`.
+- `delivery: dlq` + `queued_seconds` mark an event replayed from the Pi's dead-letter queue —
+  the "missing alerts" of the root `CLAUDE.md`. They are stored and grouped like live ones (the
+  incident gets `has_replayed`), and the UI labels them "Recovered after lost connection". A
+  late event can't move the route's state backwards: alerts only raise it to the max (below).
+- An escalation (the same `(id_route, episode)` already has a medium alert) gets
+  `related_alert_id` pointing at it.
+
+### Incidents (C3.4) — `app/incidents.py`, `app/routers/incidents.py`
+
+Every medium/critical alert joins its route's **open** incident when it happened less than
+`INCIDENT_GROUP_WINDOW` (15 min) before that incident's first alert or after its last one
+(several match -> the newest); otherwise it opens a new one. `low` alerts get no incident. An
+incident's aggregates (`severity` = max of its alerts, never below medium; first/last alert
+time; `alert_count`; `driver_ok_at`; `has_replayed`) are recomputed from its alerts on every
+change, a de-escalation included. The dashboard tier is computed at response time: `old` once the
+last alert is more than `OLD_INCIDENT_AFTER` (1 h) ago, else the severity.
+
+`GET /api/incidents?route_id=&status=open|closed|all&limit=`, `GET /api/incidents/{id}`, and
+`POST /api/incidents/{id}/close` with `{note}`, **guardian and root_admin only**. A note is
+required to close a critical incident (422 without one) and optional for a medium one; 409 if
+already closed. Closing stamps `closed_at` and `reviewed_by_operator` on every alert of the
+incident and may lower the route state. A closed incident never gets new alerts. Migration
+closures store `closed_by: null` ("closed by the system") plus an explanatory note; otherwise
+`closed_by` is a real user id.
+
+Why incidents and not per-alert resolution: a drowsy episode is a burst of alerts, and a guardian
+acts on the episode, not on each alert. The old per-alert `resolved_at` mixed "the driver says
+OK" with "a guardian dealt with it"; those are now separate (`driver_ok_at` vs. closing).
+
+### Route `incident_state` (C3.5)
+
+`Route.incident_state` (`fine`/`medium`/`critical`) drives the map marker colour, alongside
+`last_not_ok_at`. Only alerts raise it (to the max of its current value and the alert's
+severity); points never do. It drops back to `fine` after `ROUTE_STATE_CLEAR_AFTER` (1 h) of
+only-`low` points with no gap over `OK_MAX_GAP` (60 s) — silence or `unknown` points clear
+nothing — or when closing incidents leaves no open incident at that severity (closing can only
+lower it). Internal fields `ok_since`/`last_ok_point_at` track the OK run. Route fields are
+written with targeted `$set`s, never a whole-document save, so a concurrent
+`PUT /api/routes/{id}` can't undo them.
+
+### `driver_ok_at` — the driver's OK, stored by episode
+
+A `kind: ok` event stores a `DriverOk` (`driver_oks`) and sets `driver_ok_at` on every alert of
+that `(id_route, episode)` that doesn't have one yet; an alert of that episode arriving later
+gets it too. It never closes anything and never changes `incident_state`: the guardian still
+decides. `driver_ok_at` replaces the retired `Alert.resolved_at` (gone from `AlertOut`).
+
+### Route lock (C2.3)
+
+Grouping and route-state work must not interleave across requests (possibly in two Lambda
+containers), so every write that touches them takes a per-route lock: an atomic
+`findOneAndUpdate` on the Route document with a lease (`route_lock`). A request waits at most
+`ROUTE_LOCK_WAIT` (5 s, **per request**: a report's two acquisitions share one deadline) and then
+answers **503 "Route is busy, try again"**; a crashed holder frees it after `ROUTE_LOCK_LEASE`
+(10 s). The route's status is re-read under the lock, so a stop that lands mid-request gives
+`route_finished` instead of a write onto a finished route. Both values are coupled to the ESP32's
+8 s attempt timeout and the 10 s Lambda timeout; `src/infra-argus`'s tests read
+`app/constants.py` and fail synth if the Lambda side drifts.
+
+### Stopping and finishing routes (C3.1, C3.6)
+
+`POST /api/routes/{id}/stop` with `{reason}` (required, 1..500 chars), **root_admin and admin**.
+From `scheduled`/`in_progress`/`in_progress_alert` it sets `cancelled`, `stop_reason`,
+`stopped_by`, `stopped_at`, and `actual_arrival` if the route had departed; a finished route is
+409. Open incidents stay open. From then on the device gets `route_finished` for points and
+events. `PUT /api/routes/{id}` sets `actual_departure`/`actual_arrival` on start/complete when
+they're empty (the event-to-route match relies on them), can't reopen a finished route (409), and
+takes the route lock when it changes the status, as stop does. `DELETE /api/routes/{id}` also
+deletes that route's incidents and driver-OKs.
+
+### `GET /api/live` and `GET /api/routes/{id}/track` (C3.6)
+
+`app/routers/live.py`: everything the dashboard polls every 5 s, in one request — the active
+routes (each with its newest position, plate and driver name), **every open incident** (an ended
+route's included, flagged `route_ended`), and the GPS track. Without `since` the track is the last
+`LIVE_TRACK_INITIAL_WINDOW` (15 min); with `since` (the previous `server_time`) it's the points
+received after `since - LIVE_SINCE_OVERLAP` (a 10 s overlap, so a point committed just after the
+previous query isn't lost; the UI de-duplicates by `(id_route, t)`). `?route=<id>` narrows all
+three to one route, any status. One poll instead of one fetch per route keeps the Lambda
+invocation count (the cost driver, `src/infra-argus`'s R8) proportional to open tabs, not to
+trucks.
+
+`GET /api/routes/{id}/track?max_points=` (`app/track.py`): a route's whole path, any status,
+downsampled above `max_points` (default 2000, max 10000), keeping the first and last points and
+the non-`low` ones first. `GET /api/routes/active` is still served (with the new route fields),
+but the UI has moved to `/api/live`.
+
+### Dedup indexes and GPS retention (C2.2, C3.3) — `app/indexes.py`
+
+- `alerts`: unique partial `(id_route, client_event_id)` where the id is a string;
+  `driver_oks`: unique `(id_route, client_event_id)`; `status_routes`: unique
+  `(id_route, timestamp)`. Concurrent duplicates are settled by the index (insert, catch the
+  duplicate-key error, answer `duplicate`); duplicate points are skipped.
+- **Retention**: the first stored point of each `(id_route, UTC minute)` gets `keep: true`; a TTL
+  index on `timestamp` with `partialFilterExpression {keep: false}` expires the rest after
+  `GPS_FULL_RETENTION` (7 days). A week of full 1 Hz history, then one point per route per
+  minute, which keeps the GPS collection small on a free-tier database.
+- These live outside Beanie's `Settings.indexes` because they can conflict with data already in
+  a database (duplicates from before the unique index, or the old plain index on the same keys),
+  and Beanie raises on a conflict, which would stop the backend from booting. `init_db` calls
+  `ensure_indexes(strict=False)` (a warning per failure; the application-level dedup checks
+  remain), and the migration script calls it with `strict=True`.
+
+### Migration script — `scripts/migrate_final_tweaks.py`
+
+One-off and idempotent, run once against an existing database after deploying this backend
+(`--dry-run` only counts). It moves `resolved_at` -> `driver_ok_at`, backfills
+`actual_departure`/`actual_arrival` on routes that predate them, builds incidents (and the
+implied `incident_state`) for historical medium/critical alerts, closes the incidents whose alerts
+were all reviewed already, sets `keep` and removes duplicate points, clears duplicate alert
+`client_event_id`s, then drops the old plain index and creates the unique/TTL ones strictly.
+`--close-ended-routes` (off by default; decide before the first real run, a later run has nothing
+left to group) also closes the incidents it creates on routes that already ended, so Live
+operations doesn't start full of old history. Setting `keep` is destructive once the TTL index
+exists: GPS history older than a week is thinned to one point per route-minute. The script's
+docstring lists every step.
+
+### Legacy device endpoints, kept for now (C2.4)
+
+`POST /api/alerts`, `POST /api/routes/{id}/status`, `PUT /api/alerts/{id}` (`resolved_at`, device
+key) and `POST /api/alerts/{id}/resolve` keep working for old firmware and the old simulator until
+every module has merged the new report; they're deleted in a later cleanup, not in this work.
+Their behaviour follows the new model:
+- `source: panic_button` on create is **422** (the panic button is retired; old `panic_button`
+  rows stay readable);
+- a created medium/critical alert is grouped into an incident and raises the route state like a
+  report event; a `low` one gets `id_incident: null` and touches nothing;
+- a status post without `vigilance` stores `unknown`, and its points take the same route-state
+  path as report points;
+- a device "resolve" (either path) sets `driver_ok_at` and is **409 on a finished route**; a user
+  (JWT) `resolved_at`, or a JWT `POST .../resolve`, is **422** ("resolved_at is retired; close
+  the incident with POST /api/incidents/{id}/close"). A guardian/root_admin `PUT` review (notes
+  only) on a finished route stays allowed;
+- `GET /api/devices/me/active-route` is unchanged.
 
 ## Simulator control — `/api/simulator` (root_admin only, cost-guarded)
 
@@ -288,11 +480,18 @@ Implementation is one query per route for the latest status (`app/routers/routes
 `$lookup` aggregation pipeline is the documented upgrade path if that ever stops being true,
 not something to build pre-emptively for a scale this project doesn't have yet.
 
+Still served, now with the new route fields (`incident_state`, `last_not_ok_at`, stop fields),
+but `ui-argus` has moved to `GET /api/live`, which returns the same per-route shape plus the open
+incidents and the GPS track in one poll (see "The final-tweaks data model").
+
 ## Coordination note — cv-argus's actual Alert envelope
 
 A peer session built `cv-argus`'s `alerts/` module in parallel with this backend. Its confirmed
 envelope: `{id, kind: "drowsiness"|"route_status", level, created_at_ms, source_id, payload,
-geolocation}`. Two things from that exchange shaped this backend's schema directly:
+geolocation}`. Two things from that exchange shaped this backend's schema directly. (This is
+the pre-final-tweaks history: the ESP32 now sends everything through
+`POST /api/devices/me/report`, and alert `coordinates` are nullable, `position_unknown` when the
+device had no fix. The two endpoints below survive as legacy ones, C2.4.)
 
 - `kind="drowsiness"` maps onto `POST /api/alerts`, `kind="route_status"` onto
   `POST /api/routes/{id}/status` — the ESP32/`sender/` module demuxes by `kind` into these two
@@ -312,13 +511,15 @@ geolocation}`. Two things from that exchange shaped this backend's schema direct
   is now one **input** to the ESP32's fusion decision (combined with its own live grip reading),
   not something relayed 1:1 into a backend `Alert` — see `src/esp32-argus/README.md`'s fusion
   section and `src/cv-argus/src/orchestrator/fusion_contract.py`'s reference decision logic.
-  `ai_metadata` and the new `grip_status` field are populated (and required) only when
+  `ai_metadata` and the then-new `grip_status` field were populated (and required) only when
   `source == "fusion"`; both are `null` for `panic_button`, which is unconditionally `critical`
   with no camera/grip evaluation at all. `related_alert_id` links an escalated alert back to the
-  incident it escalated from (a new row, not a mutation — `Alert` stays append-only), and
-  `resolved_at` records recovery — settable via `PUT /api/alerts/{id}` by either a
-  guardian/root_admin (who may also set `reviewed_by_operator`/`operator_notes`) or, for
-  `resolved_at` only, the device key for the alert's own truck.
+  incident it escalated from (a new row, not a mutation — `Alert` stays append-only).
+  `resolved_at` (recovery, once settable by a guardian or the device) is **retired**: the
+  driver's OK is now `driver_ok_at` and a guardian closes the incident instead (see "The
+  final-tweaks data model"). Since then `panic_button` is read-only (creating one is a 422), and
+  `ai_metadata`/`grip_status` are no longer required for `fusion` alerts: report alerts carry
+  `ai_metadata` when the Pi has scores and never `grip_status`.
 
   **Manual de-escalation** (`POST /api/alerts/{id}/de-escalate`, body `{severity_level,
   reason}`) is the one path that rewrites `severity_level` in place. The ESP32's fusion loop
@@ -328,7 +529,8 @@ geolocation}`. Two things from that exchange shaped this backend's schema direct
   otherwise) and `reason` is required. The first de-escalation copies the device-reported value
   into `original_severity_level`. Each one records `deescalated_by` (user id),
   `deescalated_at`, and `deescalation_reason`, and sets `reviewed_by_operator`. Device keys get
-  `401` and `admin` gets `403`, the same roles as reviewing.
+  `401` and `admin` gets `403`, the same roles as reviewing. A de-escalation recomputes the
+  alert's incident severity (never below medium).
 
 ## Docker build test gate
 
@@ -385,6 +587,13 @@ not stale claims to reconcile against each other. `ui-argus` is well past its "f
 toolchain run" too — every screen now calls this backend for real, not just field-name-verified
 against it; see that module's own `CLAUDE.md` for its current status.
 
+**Final-tweaks work** (report endpoint, incidents, route state, `/api/live`, track, stop route,
+dedup/TTL indexes, auth cache, migration script, legacy endpoints per C2.4): hermetic suite at
+**362 passed, 3 xfailed** (2026-10-23, `pytest -q`). Hermetic means `mongomock-motor`: the unique
+and partial TTL indexes, and the route lock's `findOneAndUpdate` under real concurrency, are only
+approximated there; the migration script has a hermetic test but hasn't run against a real
+database yet, and none of this has been deployed to the AWS stack yet.
+
 What genuinely hasn't been exercised: real concurrent load, and MongoDB running as anything other
 than a single local container (no replica set, no auth). An actual browser session driving this
 backend through the UI (rather than `curl`) is now real too, but only for the login flow —
@@ -397,16 +606,18 @@ what's actually been run.
 
 ## Future work (explicitly out of scope for this pass)
 
-- **"Missing alerts" — must be planned and groomed before building.** Alerts and statuses the
-  ESP32 replays from the Pi's dead-letter queue after a lost connection arrive late and need to
-  be stored as recovered events, kept out of Live operations and shown in history. Full brief in
-  the root `CLAUDE.md`, section "Pending feature: Missing alerts".
+- **"Missing alerts"** (root `CLAUDE.md`, "Pending feature"): the backend side is now built by
+  the final-tweaks work — a replayed event carries `delivery: dlq` + `queued_seconds`, is routed
+  by the time it happened, never lowers or overwrites newer route state, and marks its incident
+  `has_replayed`. What's left there is the root brief's own wording (it predates incidents) and
+  any reporting on replays.
+- Delete the legacy device endpoints (C2.4) once every module has merged the report endpoint.
 - `Report`, `Device`, `Geofence` — modeled in the ER diagram, no consumer yet.
 - Refresh tokens / session revocation.
 - Real per-user "own truck/route only" scoping for the `truck_driver` role — needs a schema
   link this pass doesn't add (see "Known RBAC gap" above).
 - A real-time push strategy (WebSocket/SSE) for the live dashboard, instead of polling
-  `GET /api/routes/active` — `ui-argus/INTEGRATION.md` already tracks this as an open decision;
+  `GET /api/live` every 5 s — `ui-argus/INTEGRATION.md` already tracks this as an open decision;
   it isn't decided here either.
 - Verifying `docker-compose.pi.yml`-equivalent concerns don't apply here (this module has no
   hardware dependency, unlike `cv-argus`) — noted only for completeness, not an actual gap.

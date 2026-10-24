@@ -15,6 +15,7 @@ from app.models.truck import Truck
 from app.models.user import User
 from app.schemas.alert import AlertOut
 from app.schemas.driver import DriverOut
+from app.schemas.live import LivePosition, TrackPoint
 from app.schemas.route import RouteOut, RouteWithStatus
 from app.schemas.status_route import StatusRouteOut
 from app.schemas.truck import TruckOut
@@ -84,6 +85,11 @@ def route_out(doc: Route) -> RouteOut:
         actual_departure=doc.actual_departure,
         actual_arrival=doc.actual_arrival,
         operative_status=doc.operative_status,
+        incident_state=doc.incident_state,
+        last_not_ok_at=doc.last_not_ok_at,
+        stop_reason=doc.stop_reason,
+        stopped_by=doc.stopped_by,
+        stopped_at=doc.stopped_at,
         created_at=doc.created_at,
         updated_at=doc.updated_at,
     )
@@ -97,6 +103,8 @@ def status_route_out(doc: StatusRoute) -> StatusRouteOut:
         current_speed=doc.current_speed,
         odometer=doc.odometer,
         vigilance=doc.vigilance,
+        location_is_last_known=doc.location_is_last_known,
+        location_age_s=doc.location_age_s,
         timestamp=doc.timestamp,
         received_at=doc.received_at,
         time_source=doc.time_source,
@@ -127,16 +135,24 @@ def alert_out(doc: Alert) -> AlertOut:
         alert_type=doc.alert_type,
         severity_level=doc.severity_level,
         source=doc.source,
+        episode=doc.episode,
+        id_incident=doc.id_incident,
+        delivery=doc.delivery,
+        queued_seconds=doc.queued_seconds,
+        driver_ok_at=doc.driver_ok_at,
+        closed_at=doc.closed_at,
         ai_metadata=doc.ai_metadata,
         grip_status=doc.grip_status,
         related_alert_id=doc.related_alert_id,
-        resolved_at=doc.resolved_at,
         original_severity_level=doc.original_severity_level,
         deescalated_by=doc.deescalated_by,
         deescalated_at=doc.deescalated_at,
         deescalation_reason=doc.deescalation_reason,
         media_url=doc.media_url,
-        coordinates=to_latlon(doc.coordinates),
+        coordinates=to_latlon(doc.coordinates) if doc.coordinates is not None else None,
+        position_unknown=doc.coordinates is None,
+        location_is_last_known=doc.location_is_last_known,
+        location_age_s=doc.location_age_s,
         speed_at_event=doc.speed_at_event,
         timestamp=doc.timestamp,
         received_at=doc.received_at,
@@ -147,3 +163,20 @@ def alert_out(doc: Alert) -> AlertOut:
         reviewed_by_operator=doc.reviewed_by_operator,
         operator_notes=doc.operator_notes,
     )
+
+
+def live_position_out(doc: StatusRoute) -> LivePosition:
+    coordinates = to_latlon(doc.current_coordinates)
+    return LivePosition(
+        t=doc.timestamp,
+        lat=coordinates.lat,
+        lon=coordinates.lon,
+        speed=doc.current_speed,
+        vigilance=doc.vigilance,
+        last_known=doc.location_is_last_known,
+        location_age_s=doc.location_age_s,
+    )
+
+
+def track_point_out(doc: StatusRoute) -> TrackPoint:
+    return TrackPoint(id_route=doc.id_route, **live_position_out(doc).model_dump())

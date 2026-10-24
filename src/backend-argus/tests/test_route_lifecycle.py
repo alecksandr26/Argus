@@ -4,11 +4,187 @@ See docs/designs/edge-cloud-scenarios.md for the scenario IDs.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from app.models.common import RouteStatus, TruckStatus
+from app.models.incident import DriverOk, Incident
+from app.models.route import Route
 from app.models.truck import Truck
-from tests.conftest import auth_headers, fusion_alert_body, make_rig, status_body
+from tests.conftest import (
+    auth_headers,
+    fusion_alert_body,
+    make_rig,
+    ok_event,
+    post_report,
+    report_event,
+    status_body,
+)
+
+
+def _utc(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
+
+
+# --- Stop route (C3.6) --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "state", [RouteStatus.SCHEDULED, RouteStatus.IN_PROGRESS, RouteStatus.IN_PROGRESS_ALERT]
+)
+async def test_stop_route(api_client, admin_user, mongo_client, state):
+    rig = await make_rig(f"STOP-{state.value}", route_status=state)
+    before = datetime.now(timezone.utc)
+    resp = await api_client.post(
+        f"/api/routes/{rig.route_id}/stop",
+        json={"reason": "  truck broke down  "},
+        headers=auth_headers(admin_user),
+    )
+    body = resp.json()
+    assert resp.status_code == 200, resp.text
+    assert body["operative_status"] == "cancelled"
+    assert body["stop_reason"] == "truck broke down"
+    assert body["stopped_by"] == str(admin_user.id)
+    assert _utc(body["stopped_at"]) >= before - timedelta(seconds=1)
+    if state == RouteStatus.SCHEDULED:
+        assert body["actual_arrival"] is None  # never departed
+    else:
+        assert _utc(body["actual_arrival"]) >= before - timedelta(seconds=1)
+
+
+@pytest.mark.parametrize("finished", [RouteStatus.COMPLETED, RouteStatus.CANCELLED])
+async def test_stop_finished_route_is_409(api_client, root_admin, mongo_client, finished):
+    rig = await make_rig("STOP-DONE", route_status=finished)
+    resp = await api_client.post(
+        f"/api/routes/{rig.route_id}/stop", json={"reason": "x"}, headers=auth_headers(root_admin)
+    )
+    assert resp.status_code == 409
+
+
+@pytest.mark.parametrize("reason", ["", "   ", "x" * 501], ids=["empty", "blank", "too_long"])
+async def test_stop_needs_a_reason(api_client, root_admin, rig_a, reason):
+    resp = await api_client.post(
+        f"/api/routes/{rig_a.route_id}/stop", json={"reason": reason}, headers=auth_headers(root_admin)
+    )
+    assert resp.status_code == 422
+    if reason.strip() == "":
+        # Pinned text (C3.6 [sync 3]): the UI and it-argus match on it.
+        assert "A reason is required to stop a route" in resp.text
+    assert (await Route.get(rig_a.route_id)).operative_status == RouteStatus.IN_PROGRESS
+
+
+async def test_stop_roles(api_client, guardian, truck_driver_user, rig_a):
+    url = f"/api/routes/{rig_a.route_id}/stop"
+    assert (await api_client.post(url, json={"reason": "x"})).status_code == 401
+    assert (await api_client.post(url, json={"reason": "x"}, headers=rig_a.headers)).status_code == 401
+    for user in (guardian, truck_driver_user):
+        resp = await api_client.post(url, json={"reason": "x"}, headers=auth_headers(user))
+        assert resp.status_code == 403
+
+
+async def test_stop_unknown_route_is_404(api_client, root_admin):
+    resp = await api_client.post(
+        "/api/routes/64b0a00000000000000000aa/stop", json={"reason": "x"}, headers=auth_headers(root_admin)
+    )
+    assert resp.status_code == 404
+
+
+async def test_stop_keeps_open_incidents_open(api_client, root_admin, rig_a):
+    await post_report(api_client, rig_a, event=report_event(age_s=5))
+    await api_client.post(
+        f"/api/routes/{rig_a.route_id}/stop", json={"reason": "x"}, headers=auth_headers(root_admin)
+    )
+    incidents = await Incident.find(Incident.id_route == rig_a.route_id).to_list()
+    assert len(incidents) == 1 and incidents[0].closed_at is None
+
+
+# --- Actual departure / arrival -----------------------------------------------------------------
+
+
+async def test_start_and_complete_trip_set_actual_times(api_client, root_admin, mongo_client):
+    rig = await make_rig("TRIP-1", route_status=RouteStatus.SCHEDULED)
+    url = f"/api/routes/{rig.route_id}"
+    headers = auth_headers(root_admin)
+    started = (await api_client.put(url, json={"operative_status": "in_progress"}, headers=headers)).json()
+    assert started["actual_departure"] is not None
+    assert started["actual_arrival"] is None
+    again = (await api_client.put(url, json={"operative_status": "in_progress_alert"}, headers=headers)).json()
+    assert again["actual_departure"] == started["actual_departure"]  # kept, not reset
+    done = (await api_client.put(url, json={"operative_status": "completed"}, headers=headers)).json()
+    assert done["actual_arrival"] is not None
+    assert done["actual_departure"] == started["actual_departure"]
+
+
+async def test_explicit_actual_times_win(api_client, root_admin, mongo_client):
+    rig = await make_rig("TRIP-2", route_status=RouteStatus.SCHEDULED)
+    resp = await api_client.put(
+        f"/api/routes/{rig.route_id}",
+        json={"operative_status": "in_progress", "actual_departure": "2030-01-01T08:00:00Z"},
+        headers=auth_headers(root_admin),
+    )
+    assert resp.json()["actual_departure"].startswith("2030-01-01T08:00:00")
+
+
+@pytest.mark.parametrize("finished", [RouteStatus.COMPLETED, RouteStatus.CANCELLED])
+@pytest.mark.parametrize("target", ["in_progress", "in_progress_alert", "scheduled"])
+async def test_finished_route_cannot_be_reopened(api_client, root_admin, mongo_client, finished, target):
+    """C3.1 [sync 2]: reopening would leave the old actual_arrival in place, so every new device
+    event would match no route. Create a new route instead."""
+    rig = await make_rig(f"REOPEN-{finished.value}-{target}", route_status=finished)
+    before = await Route.get(rig.route_id)
+    resp = await api_client.put(
+        f"/api/routes/{rig.route_id}",
+        json={"operative_status": target},
+        headers=auth_headers(root_admin),
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "A finished route can't be restarted; create a new route"
+    after = await Route.get(rig.route_id)
+    assert after.operative_status == finished
+    assert after.actual_arrival == before.actual_arrival
+
+
+async def test_completed_route_cannot_become_cancelled(api_client, root_admin, mongo_client):
+    rig = await make_rig("REOPEN-X", route_status=RouteStatus.COMPLETED)
+    resp = await api_client.put(
+        f"/api/routes/{rig.route_id}",
+        json={"operative_status": "cancelled"},
+        headers=auth_headers(root_admin),
+    )
+    assert resp.status_code == 409
+
+
+@pytest.mark.parametrize("finished", [RouteStatus.COMPLETED, RouteStatus.CANCELLED])
+async def test_finished_route_other_edits_still_work(api_client, root_admin, mongo_client, finished):
+    rig = await make_rig(f"EDIT-{finished.value}", route_status=finished)
+    resp = await api_client.put(
+        f"/api/routes/{rig.route_id}",
+        # Re-sending the same status is not a change.
+        json={"origin_name": "Tepic", "operative_status": finished.value},
+        headers=auth_headers(root_admin),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["origin_name"] == "Tepic"
+    assert resp.json()["operative_status"] == finished.value
+
+
+async def test_route_put_does_not_overwrite_incident_state(api_client, root_admin, rig_a):
+    await post_report(api_client, rig_a, event=report_event(age_s=5))
+    resp = await api_client.put(
+        f"/api/routes/{rig_a.route_id}", json={"origin_name": "Tepic"}, headers=auth_headers(root_admin)
+    )
+    assert resp.json()["origin_name"] == "Tepic"
+    assert resp.json()["incident_state"] == "critical"
+
+
+async def test_delete_route_cascades_incidents_and_driver_oks(api_client, root_admin, rig_a):
+    await post_report(api_client, rig_a, event=report_event(age_s=5))
+    await post_report(api_client, rig_a, event=ok_event(age_s=1))
+    resp = await api_client.delete(f"/api/routes/{rig_a.route_id}", headers=auth_headers(root_admin))
+    assert resp.status_code == 200
+    assert await Incident.find_all().count() == 0
+    assert await DriverOk.find_all().count() == 0
 
 
 @pytest.mark.parametrize("finished", [RouteStatus.COMPLETED, RouteStatus.CANCELLED])
