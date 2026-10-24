@@ -359,7 +359,28 @@ motion-blurred and worth skipping). Add `--save-video` to keep the whole stream 
   `/dev/video*` means "cannot open camera"). Without the `[collect]` extra there's no preview
   window; the prompts print in the terminal instead (with a beep on each pose change).
 
-**From stills to training data** (the same path as any other Roboflow source, section 7b):
+**From stills to training data, no labelling: `scripts/add_own_captures.py`.** For guided
+sessions (or `--from-file` videos tagged `head_down` / `head_down_eyes_closed`), the tag plus the
+landmarks are enough:
+
+```bash
+python scripts/add_own_captures.py                   # -> raw/roboflow/own-captures/v1/ + manifest entry
+python scripts/build_detection_dataset.py --zip      # the new source is picked up like any other
+```
+
+- A still tagged head-down gets a `head_down` box (the BlazeFace face box) when its pitch is at
+  least `OWN_HEAD_DOWN_MIN_PITCH_DEG` (15°; pitch alone only says `head_down` from 20°) or the
+  landmarks are lost. Below that it's dropped, because the person hadn't lowered their head yet.
+- Every other still gets no label: eyes, yawns and the head come from the landmarks.
+- The output prints `pitch_by_tag`. On a new camera, check that the `straight` p95 sits below
+  `--min-pitch` before trusting the floor.
+- All of one subject's stills form **one group**: files are named `subject_NN_jpg.rf.<hash>.jpg`,
+  so they never straddle train and test.
+- The folder is rebuilt on every run, and the script needs no Docker, only this module's venv.
+- With few subjects, a whole subject lands in a single split. Check `index.csv` (project
+  `own-captures`) to see which one.
+
+**Or label by hand** (any pose, the same path as any other Roboflow source, section 7b):
 
 1. Create a private Roboflow project, upload the session folders, and box `open_eye`,
    `closed_eye`, `yawn`, `head_straight`, `head_down` (head boxes around the whole face; no head
@@ -369,10 +390,10 @@ motion-blurred and worth skipping). Add `--save-video` to keep the whole stream 
    `ROBOFLOW_CLASS_MAP`.
 3. `fetch_roboflow_parts.py --projects <project>`, then `build_detection_dataset.py` as above.
 
-**Before trusting test numbers from it:** the build groups images by Roboflow stem and exact
-duplicates, so stills taken a second apart of the same person are separate groups and can land
-in train *and* test. Those stills should be grouped by the `subject_NN_` filename prefix first
-(not done yet).
+**Before trusting test numbers from the hand-labelled path:** the build groups images by Roboflow
+stem and exact duplicates, so stills taken a second apart of the same person are separate groups
+and can land in train *and* test. Those stills should be grouped by the `subject_NN_` filename
+prefix first (not done for this path; `add_own_captures.py` does it).
 
 ---
 
