@@ -47,6 +47,7 @@ def truck_out(doc: Truck) -> TruckOut:
         raspberry_pi_mac=doc.raspberry_pi_mac,
         esp32_id=doc.esp32_id,
         operative_status=doc.operative_status,
+        alert_phone=doc.alert_phone,
         has_device_key=bool(doc.device_api_key_hash),
         device_key_issued_at=doc.device_key_issued_at,
         device_last_seen_at=doc.device_last_seen_at,

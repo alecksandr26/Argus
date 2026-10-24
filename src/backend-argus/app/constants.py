@@ -40,6 +40,11 @@ DEVICE_AUTH_CACHE_TTL = timedelta(seconds=60)
 CLOSE_NOTE_MAX_LEN = 1000
 STOP_REASON_MAX_LEN = 500
 
+# A truck's SMS alert phone (`Truck.alert_phone`), E.164 (docs/designs/grip-alarm-contracts.md,
+# C1). Must match the UI's form check, cv-argus's `ARGUS_ALERT_PHONE` check and the ESP32's
+# `CONFIG` parser.
+ALERT_PHONE_PATTERN = r"^\+[1-9][0-9]{7,14}$"
+
 # Per-route lock (app/incidents.py `route_lock`, C2.3 [sync 2]). A request waits at most
 # ROUTE_LOCK_WAIT for it, then answers 503 (the device counts a failed attempt and retries).
 # The wait is per request, not per acquisition (C2.3 [sync 3]): a report that takes the lock

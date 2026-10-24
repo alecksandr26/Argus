@@ -442,6 +442,62 @@ async def test_escalation_links_to_the_medium_of_its_episode(api_client, rig_a):
     assert escalation.id_incident == original.id_incident
 
 
+def _grip_event(suffix: str, **overrides) -> dict:
+    """The ESP32's own hands-off-the-wheel event (docs/designs/grip-alarm-contracts.md, C3): no
+    Pi record behind it, so no ai_metadata."""
+    event = report_event(
+        f"grip-0a1b2c3d-1-{suffix}",
+        episode="grip-0a1b2c3d-1",
+        alert_type="no_grip",
+        ai_metadata=None,
+    )
+    event.update(overrides)
+    return event
+
+
+async def test_no_grip_critical_opens_and_joins_incidents_like_any_critical(
+    api_client, root_admin, rig_a
+):
+    grip = (await post_report(api_client, rig_a, event=_grip_event("a", age_s=180))).json()
+    assert grip["event"]["status"] == "created", grip
+    alert = await Alert.get(grip["event"]["id_alert"])
+    assert alert.alert_type == "no_grip"
+    assert alert.severity_level == "critical"
+    assert alert.episode == "grip-0a1b2c3d-1"
+    assert alert.id_incident
+    incident = (
+        await api_client.get(f"/api/incidents/{alert.id_incident}", headers=auth_headers(root_admin))
+    ).json()
+    assert incident["severity"] == "critical"
+    assert incident["alert_count"] == 1
+    assert (await Route.get(rig_a.route_id)).incident_state == "critical"
+
+    # A vision critical two minutes later joins the same open incident.
+    vision = (await post_report(api_client, rig_a, event=report_event("v1", age_s=60))).json()
+    assert (await Alert.get(vision["event"]["id_alert"])).id_incident == alert.id_incident
+    incident = (
+        await api_client.get(f"/api/incidents/{alert.id_incident}", headers=auth_headers(root_admin))
+    ).json()
+    assert incident["alert_count"] == 2
+
+    # The grip episode's OK (pressure back) marks the driver OK, as a Pi OK would.
+    grip_ok = ok_event("grip-0a1b2c3d-1-ok", episode="grip-0a1b2c3d-1", ai_metadata=None)
+    ok = (await post_report(api_client, rig_a, event=grip_ok)).json()
+    assert ok["event"] == {"status": "created", "reason": None, "id_alert": str(alert.id)}
+    assert (await Alert.get(alert.id)).driver_ok_at is not None
+
+
+async def test_no_grip_critical_joins_an_open_vision_incident(api_client, rig_a):
+    vision = (await post_report(api_client, rig_a, event=report_event("v1", age_s=120))).json()
+    grip = (await post_report(api_client, rig_a, event=_grip_event("a", age_s=30))).json()
+    assert grip["event"]["status"] == "created", grip
+    vision_alert = await Alert.get(vision["event"]["id_alert"])
+    grip_alert = await Alert.get(grip["event"]["id_alert"])
+    assert grip_alert.id_incident == vision_alert.id_incident
+    # Its own episode, so not an escalation of the vision alert.
+    assert grip_alert.related_alert_id is None
+
+
 # --- Driver OK ----------------------------------------------------------------------------------
 
 
