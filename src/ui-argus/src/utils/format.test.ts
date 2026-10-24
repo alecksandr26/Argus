@@ -3,7 +3,6 @@ import {
   relativeTime,
   clock,
   shortDate,
-  pct,
   daysUntil,
   durationShort,
   coords,
@@ -88,14 +87,6 @@ describe('timeOfDay', () => {
 
   it('renders "—" for an unparseable time', () => {
     expect(timeOfDay('garbage')).toBe('—')
-  })
-})
-
-describe('pct', () => {
-  it('renders a 0-1 fraction as a rounded percentage', () => {
-    expect(pct(0.7321)).toBe('73%')
-    expect(pct(1)).toBe('100%')
-    expect(pct(0)).toBe('0%')
   })
 })
 

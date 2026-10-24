@@ -18,7 +18,3 @@ export function updateDriver(
 ): Promise<Driver> {
   return apiFetch<Driver>(`/api/drivers/${id}`, { method: 'PUT', body: input, token })
 }
-
-export function deleteDriver(id: string, token: string): Promise<{ detail: string }> {
-  return apiFetch(`/api/drivers/${id}`, { method: 'DELETE', token })
-}

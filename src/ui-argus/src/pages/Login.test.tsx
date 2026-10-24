@@ -51,13 +51,10 @@ describe('Login', () => {
     expect(email).toHaveValue('someone@example.com')
   })
 
-  it('toggles "keep me signed in"', async () => {
-    const user = userEvent.setup()
+  it('has no inert "keep me signed in" or "forgot password" controls', () => {
     renderLogin()
-    const checkbox = screen.getByRole('checkbox', { name: /keep me signed in/i })
-    expect(checkbox).toBeChecked()
-    await user.click(checkbox)
-    expect(checkbox).not.toBeChecked()
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(screen.queryByText(/forgot your password/i)).not.toBeInTheDocument()
   })
 
   it('on successful login, navigates to the dashboard and stores the session', async () => {

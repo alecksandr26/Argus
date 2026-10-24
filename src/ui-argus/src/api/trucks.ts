@@ -33,10 +33,6 @@ export function updateTruck(
   return apiFetch<Truck>(`/api/trucks/${id}`, { method: 'PUT', body: input, token })
 }
 
-export function deleteTruck(id: string, token: string): Promise<{ detail: string }> {
-  return apiFetch(`/api/trucks/${id}`, { method: 'DELETE', token })
-}
-
 export function getTruck(id: string, token: string): Promise<Truck> {
   return apiFetch<Truck>(`/api/trucks/${id}`, { token })
 }

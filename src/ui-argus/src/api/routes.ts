@@ -33,10 +33,6 @@ export function listRoutes(token: string, status?: Route['operative_status']): P
 // `GET /api/routes/active` and `GET /api/routes/{id}/status` are no longer called: Live
 // operations and the route view read `GET /api/live` (`api/live.ts`) instead (C3.6).
 
-export function getRoute(id: string, token: string): Promise<Route> {
-  return apiFetch<Route>(`/api/routes/${id}`, { token }).then(normalizeRoute)
-}
-
 
 export function createRoute(input: RouteInput, token: string): Promise<Route> {
   return apiFetch<Route>('/api/routes', { method: 'POST', body: input, token }).then(
@@ -72,8 +68,4 @@ export function stopRoute(id: string, reason: string, token: string): Promise<Ro
 export function getRouteTrack(id: string, token: string, maxPoints?: number): Promise<RouteTrack> {
   const qs = maxPoints !== undefined ? `?max_points=${maxPoints}` : ''
   return apiFetch<RouteTrack>(`/api/routes/${id}/track${qs}`, { token })
-}
-
-export function deleteRoute(id: string, token: string): Promise<{ detail: string }> {
-  return apiFetch(`/api/routes/${id}`, { method: 'DELETE', token })
 }

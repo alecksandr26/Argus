@@ -12,7 +12,7 @@ import { useLive } from '../hooks/useLive'
 import { deescalateAlert, getAlert, reviewAlert } from '../api/alerts'
 import { listIncidents } from '../api/incidents'
 import { ApiError } from '../api/client'
-import { clock, pct, relativeTime, shortDate } from '../utils/format'
+import { clock, relativeTime, shortDate } from '../utils/format'
 import {
   REPLAYED_LABEL,
   alertTypeLabel,
@@ -348,13 +348,6 @@ export default function RouteLiveView() {
   const routeName = `${route.origin_name} → ${route.destination_name}`
   const state = incidentState[route.incident_state]
   const head = focusedAlert ? severity[focusedAlert.severity_level] : state
-  const aiScores = focusedAlert?.ai_metadata?.scores ?? null
-  const scores = aiScores
-    ? [
-        { label: 'Not drowsy', value: aiScores.not_drowsy, color: 'var(--good)' },
-        { label: 'Drowsy', value: aiScores.drowsy, color: 'var(--bad)' },
-      ]
-    : []
   const focusedPos = focusedAlert ? alertPosition(focusedAlert) : null
   const truckPos = position ? pointPosition(position) : null
   const statusBadge = routeStatusBadge(route)
@@ -518,7 +511,7 @@ export default function RouteLiveView() {
       </div>
 
       <div style={{ flex: 1, display: 'flex', gap: 18, minHeight: 0 }}>
-        {/* map + (when focused) model output */}
+        {/* map */}
         <div style={{ flex: 1.3, display: 'flex', flexDirection: 'column', gap: 14, minHeight: 0 }}>
           <div
             style={{
@@ -551,43 +544,6 @@ export default function RouteLiveView() {
             )}
           </div>
 
-          {focusedAlert && (
-            <div className="panel" style={{ padding: '14px 16px' }}>
-              {aiScores ? (
-                <>
-                  <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>
-                    Model output ({focusedAlert.ai_metadata?.model ?? 'unknown'})
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {scores.map((s) => (
-                      <div key={s.label}>
-                        <div
-                          style={{
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            fontSize: 11.5,
-                            color: 'var(--text-soft)',
-                            marginBottom: 3,
-                          }}
-                        >
-                          <span>{s.label}</span>
-                          <span>{pct(s.value)}</span>
-                        </div>
-                        <div style={{ height: 6, borderRadius: 4, background: 'var(--surface-3)', overflow: 'hidden' }}>
-                          <div style={{ width: pct(s.value), height: '100%', background: s.color }} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <div style={{ fontSize: 12, color: 'var(--text-soft)' }}>
-                  <span style={{ fontWeight: 600 }}>{SOURCE_LABEL[focusedAlert.source]}</span> — no
-                  model scores were recorded for this alert.
-                </div>
-              )}
-            </div>
-          )}
         </div>
 
         {/* right panel */}
@@ -672,26 +628,6 @@ export default function RouteLiveView() {
                         >
                           Close incident
                         </button>
-                      </div>
-                    )}
-
-                    {canReview && (
-                      <div>
-                        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Immediate actions</div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                          <button className="btn btn--danger" style={{ justifyContent: 'flex-start' }}>
-                            <Icon name="siren" size={16} strokeWidth={1.8} />
-                            Trigger in-cab alarm
-                          </button>
-                          <button className="btn" style={{ justifyContent: 'flex-start' }}>
-                            <Icon name="phone" size={16} />
-                            Contact the driver
-                          </button>
-                          <button className="btn" style={{ justifyContent: 'flex-start' }}>
-                            <Icon name="building" size={16} />
-                            Notify logistics
-                          </button>
-                        </div>
                       </div>
                     )}
 

@@ -18,7 +18,6 @@ export default function Login() {
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [keepSignedIn, setKeepSignedIn] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -146,36 +145,6 @@ export default function Login() {
               {error}
             </div>
           )}
-
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              marginTop: -4,
-            }}
-          >
-            <label
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                fontSize: 12,
-                color: 'var(--text-faint)',
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={keepSignedIn}
-                onChange={(e) => setKeepSignedIn(e.target.checked)}
-                style={{ accentColor: 'var(--accent)', width: 14, height: 14 }}
-              />
-              Keep me signed in
-            </label>
-            <a href="#" style={{ fontSize: 12 }}>
-              Forgot your password?
-            </a>
-          </div>
 
           <button
             type="submit"

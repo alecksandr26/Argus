@@ -95,10 +95,6 @@ export function longDay(d: Date = new Date()): string {
   return dayFmt.format(d)
 }
 
-export function pct(n: number): string {
-  return `${Math.round(n * 100)}%`
-}
-
 /** A duration in seconds, compactly: "45s", "3 min", "2h 5m", "2h", "3d", "3d 4h". Used for
  * "Last known (N old)" and "queued N". Negative or non-finite input reads as "0s". */
 export function durationShort(seconds: number): string {

@@ -209,7 +209,7 @@ describe('RouteLiveView', () => {
       grip_status: 'bad',
       delivery: 'dlq',
       driver_ok_at: '2026-10-23T12:03:00Z',
-      ai_metadata: { model: 'tiny_yolo_w1', scores: { not_drowsy: 0.12, drowsy: 0.88 } },
+      ai_metadata: { model: 'tiny_yolo_w1' },
     })
     const incident = makeIncident({ severity: 'critical', tier: 'critical', alerts: [alert] })
     const fetchMock = mockBackend({ alert, lives: [{ incidents: [incident] }] })
@@ -218,7 +218,8 @@ describe('RouteLiveView', () => {
 
     expect(await screen.findByRole('heading', { name: 'Driver not visible' })).toBeInTheDocument()
     expect(screen.getByText('CRITICAL SEVERITY')).toBeInTheDocument()
-    expect(screen.getByText('88%')).toBeInTheDocument()
+    expect(screen.queryByText(/drowsy/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('Immediate actions')).not.toBeInTheDocument()
     expect(screen.queryByText('Steering-wheel grip')).not.toBeInTheDocument()
     expect(screen.queryByText(/grip sensor/)).not.toBeInTheDocument()
     expect(screen.queryByText(/panic/i)).not.toBeInTheDocument()

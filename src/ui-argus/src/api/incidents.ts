@@ -29,10 +29,6 @@ export function listIncidents(token: string, filters: IncidentFilters = {}): Pro
   )
 }
 
-export function getIncident(id: string, token: string): Promise<Incident> {
-  return apiFetch<Incident>(`/api/incidents/${id}`, { token }).then(normalizeIncident)
-}
-
 /** `POST /api/incidents/{id}/close` — guardian + root_admin only. Closes every alert of the
  * incident. A critical incident needs a non-empty note (the backend 422s otherwise; check it
  * client-side first with `closeNoteError` from `utils/incidents.ts`); 409 if already closed. */

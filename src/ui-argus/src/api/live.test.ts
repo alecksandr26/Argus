@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { getLive } from './live'
-import { closeIncident, getIncident, listIncidents } from './incidents'
+import { closeIncident, listIncidents } from './incidents'
 import { getRouteTrack, stopRoute } from './routes'
 import { listAlerts } from './alerts'
 import { makeAlert, makeIncident, makeLive, makePoint, makeRoute, makeRouteLive } from '../test/fixtures'
@@ -71,12 +71,6 @@ describe('incidents API', () => {
     expect(url.searchParams.get('status')).toBe('closed')
     expect(url.searchParams.get('limit')).toBe('50')
     expect(out).toHaveLength(1)
-  })
-
-  it('gets one incident', async () => {
-    const fetchMock = mockFetch(makeIncident())
-    await getIncident('i-1', 'tok')
-    expect(fetchMock.mock.calls[0][0]).toMatch(/\/api\/incidents\/i-1$/)
   })
 
   it('closes an incident with its note', async () => {

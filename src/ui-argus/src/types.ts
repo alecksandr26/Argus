@@ -265,12 +265,8 @@ export interface AlertAiMetadata {
   /** Which model produced the classification, for the triage readout. Nullable: the deployed
    * cv-argus pipeline doesn't always expose a per-alert model-version string. */
   model: string | null
-  /** Probability of Drowsy vs Not Drowsy — the project's binary scheme (root CLAUDE.md's
-   * drowsiness-class migration). May be `null` (no scores for this alert). */
-  scores: { not_drowsy: number; drowsy: number } | null
-  /** No discrete clip duration in the current pipeline (a rolling window, not a fixed-length
-   * clip); absent or `null` on report-endpoint alerts. */
-  clip_seconds?: number | null
+  // The backend also sends `scores` ({not_drowsy, drowsy}). Not typed on purpose: cv-argus
+  // fills them with a fixed value per severity (RULE_P_DROWSY), not a model probability.
 }
 
 export interface Alert {

@@ -92,8 +92,8 @@ this side:
   the nav item). Creating other accounts is now a real screen too — `Access.tsx`
   (`root_admin`/`admin`, root_admin sees/creates any role, `admin` is scoped server-side to
   guardian accounts only) — no more curl/Swagger required.
-- **Still not done**: the "keep me signed in" checkbox is inert UI (not wired to a
-  session/localStorage-vs-sessionStorage split).
+- **Removed (2026-10-23)**: the inert "Keep me signed in" checkbox and the `href="#"` "Forgot
+  your password?" link. Neither had anything behind it; add them back only with a real flow.
 
 ## Docker architecture
 
@@ -179,7 +179,7 @@ Vite app.
   hands it (`markers`, `paths`, `pins`, `focus`). The layer builders are pure and tested in
   `utils/mapLayers.test.ts`. What Leaflet then draws (icons, polylines, `flyTo`, following) is
   only checked in a real browser.
-- **What's covered (30 files, 246 tests):** the C3 logic as pure functions —
+- **What's covered (31 files, 248 tests):** the C3 logic as pure functions —
   `utils/live.test.ts` (the `/api/live` merge, `(id_route, t)` dedup including millisecond
   times, the per-route cap, dropping the track of routes that left the active set),
   `utils/incidents.test.ts` (tier order, route grouping, note/reason rules),
@@ -241,8 +241,8 @@ with `unknown`, `IncidentState`, `TimeSource` with `relative`). Timing constants
 - **Route view** (`pages/RouteLiveView.tsx`, `/routes/:id/live[?alert=]`, and the legacy
   `/alerts/:alertId`): `/api/live?route=` plus the `/track` seed; the map follows the truck.
   "Show on map" pauses following to fly to an alert; a **Follow truck** button on the map clears
-  that focus and resumes following. Tabs: "This alert" (when focused: position, model output,
-  Close incident for the alert's open incident, notes, de-escalation) and "Incidents" (Open /
+  that focus and resumes following. Tabs: "This alert" (when focused: position, Close incident
+  for the alert's open incident, notes, de-escalation) and "Incidents" (Open /
   Closed filter chips; the closed list is `GET /api/incidents?route_id=&status=closed`). A trend
   pill (improving/worsening/steady) compares the newest point's vigilance between polls;
   `unknown` breaks it.
@@ -312,7 +312,19 @@ Keep these stable; `src/it-argus` selects on them:
 The panic button and the steering-wheel grip sensor were removed from the system, and so was
 their UI: no grip panel, no panic filter or badge, no grip status on alert cards. `panic_button`
 stays only as a label ("Panic button"), as an `alert_type` and as a `source`, so old rows still
-read. `grip_status` stays in `types.ts` because old rows carry it; it is never shown.
+read. `grip_status` stays in `types.ts` because old rows carry it, and a new grip sensor is in
+the works; it is never shown or requested until that lands.
+
+### Removed: dead UI (2026-10-23)
+
+- The route view's **"Model output" panel** (Drowsy / Not drowsy bars). cv-argus's parts
+  pipeline fills `ai_metadata.scores` with a fixed value per severity (`RULE_P_DROWSY`: medium
+  0.75, critical 0.95), so the bars only restated the severity as a fake probability.
+  `AlertAiMetadata` no longer types `scores`/`clip_seconds`; the backend still sends them.
+- The route view's **"Immediate actions"** buttons (Trigger in-cab alarm, Contact the driver,
+  Notify logistics): mockup leftovers with no handler.
+- Unused API wrappers `deleteDriver`, `deleteTruck`, `deleteRoute`, `getRoute`, `getIncident`,
+  and `utils/format.ts`'s `pct`.
 
 ### Known limits
 
@@ -334,7 +346,7 @@ All screens call the real backend; `src/data/fixtures.ts` is long gone. The fina
 per-alert review-to-close with incidents, and removed the panic/grip UI. `api/routes.ts` no
 longer wraps `/api/routes/active` or `/api/routes/{id}/status`.
 
-**Verified** (from a native Linux copy, Node 24): `npm ci`, `npm test` (30 files, 246 tests),
+**Verified** (from a native Linux copy, Node 24): `npm ci`, `npm test` (31 files, 248 tests),
 `npm run build` (`tsc -b && vite build`), and `eslint .` (one pre-existing `AuthContext.tsx`
 fast-refresh warning). **Not verified here:** a real-browser click-through of the reworked
 screens and the Leaflet layers. That is `src/it-argus`'s Playwright suite against the real
