@@ -1,9 +1,10 @@
 // Argus ESP32 — "Message Sender Orchestrator" (see the root CLAUDE.md and this module's own
 // README.md). The only device in the cabin that talks to the cloud backend. The contracts it
 // implements are docs/designs/final-tweaks-contracts.md C1 (Bluetooth v2 with the Pi) and C2
-// (POST /api/devices/me/report).
+// (POST /api/devices/me/report), and docs/designs/grip-alarm-contracts.md (the grip sensor, the
+// cabin buzzer and the critical-alert SMS).
 //
-// Three tasks, one shared state behind one mutex (stateMutex, short critical sections only):
+// Four tasks, one shared state behind one mutex (stateMutex, short critical sections only):
 //
 //   - loop() (the Arduino loop task): every PI_BT_POLL_INTERVAL_MS, a Bluetooth session with the
 //     Pi. `PULL 8`: every record updates the vigilance; a keepalive or non-event is ACKed; an event
@@ -11,18 +12,27 @@
 //     device's position and TAKEN for the sender. Then `DLQ 1` when the Pi holds dead letters and
 //     no live event is pending. Each session also carries the ACK/FAIL of every event the sender
 //     finished. No backend call ever happens inside a session. CONFIG (credentials.h) is fetched
-//     here too: at boot, after a 401, and every 10 minutes.
+//     here too: at boot, after a 401, and every 10 minutes. A live critical it takes also starts
+//     the vision alarm (not for no_face) and queues one SMS per episode; a driver OK stops the
+//     vision alarm (alarm_policy.h, sms_policy.h).
 //   - gpsTask: drains the NEO-6M and reads it every GPS_READ_INTERVAL_MS into the track buffer (a
 //     point per read: the current fix, else the last known position). The last known position
 //     is kept in NVS ("lastpos").
+//   - gripTask: every GRIP_SAMPLE_INTERVAL_MS reads the four wheel sensors (grip_policy.h): 3 s
+//     without pressure starts a grip episode (the grip alarm, a live critical "no_grip" for the
+//     sender, one SMS), 300 ms of pressure ends it (one live OK). It also drives the buzzer:
+//     grip alarm || vision alarm, with the vision alarm's 5-minute cap.
 //   - senderTask: the only code that touches the modem, WiFi or HTTP. One report per POST: the
 //     points since the last report plus at most one event, by priority (live critical > medium >
-//     OK > one dead letter); live events retry within their windows, then a critical goes back to
-//     the Pi's DLQ and a medium/OK is dropped (sender_policy.h). Mobile data first, WiFi as the
-//     fallback, a real deadline per attempt, and a live event pre-empts a lower attempt between
-//     AT steps. One [live]/[dlq] line per attempt, and heap + stack high-water marks.
+//     OK > one dead letter; the grip events rank as live ones of their tier); live events retry
+//     within their windows, then a Pi critical goes back to the Pi's DLQ, a medium/OK is dropped,
+//     and a grip event is dropped (sender_policy.h). Mobile data first, WiFi as the fallback, a
+//     real deadline per attempt, and a live event pre-empts a lower attempt between AT steps. One
+//     [live]/[dlq] line per attempt, and heap + stack high-water marks. Between attempts it sends
+//     the waiting SMS (sms_modem.h), never in the middle of an HTTP request.
 //
-// There is no grip sensor yet, so fusion.* stays unused; alerts follow the Pi's own severity.
+// fusion.* stays unused: camera alerts follow the Pi's own severity, and the grip sensor is its
+// own critical source (grip-alarm contracts C2).
 
 #include <Preferences.h>
 
@@ -31,13 +41,18 @@
 #include <vector>
 
 #include "ack_policy.h"
+#include "alarm_policy.h"
 #include "backend_api.h"
 #include "backend_messages.h"
 #include "bluetooth_client.h"
+#include "buzzer.h"
+#include "cabin_signals.h"
 #include "config.h"
 #include "credentials.h"
 #include "gps_module.h"
 #include "gps_track.h"
+#include "grip_policy.h"
+#include "grip_sensor.h"
 #include "modem.h"
 #include "pi_event_policy.h"
 #include "pi_protocol.h"
@@ -46,11 +61,13 @@
 #include "rtos_lock.h"
 #include "sender_policy.h"
 #include "sender_step.h"
+#include "sms_modem.h"
+#include "sms_policy.h"
 #include "wifi_client.h"
 
 namespace {
 
-// ---- Shared by the three tasks: guarded by stateMutex ----
+// ---- Shared by the four tasks: guarded by stateMutex ----
 SemaphoreHandle_t stateMutex = nullptr;
 SenderPolicy sender;
 TrackBuffer track;
@@ -59,6 +76,8 @@ LastKnownPosition lastKnown;
 GpsSnapshot latestGps;      // the newest GPS read, for events composed in a Bluetooth session
 uint64_t latestGpsEpoch = 0;
 uint32_t latestGpsAt = 0;
+AlarmPolicy cabinAlarm;     // the buzzer's decision: grip alarm || vision alarm
+SmsPolicy smsQueue;         // the critical-alert SMS waiting for the sender task
 
 // NVS "argus-state": the last known position. setup() and then gpsTask only.
 Preferences state;
@@ -66,12 +85,176 @@ Preferences state;
 TaskHandle_t loopTaskHandle = nullptr;
 TaskHandle_t senderTaskHandle = nullptr;
 TaskHandle_t gpsTaskHandle = nullptr;
+TaskHandle_t gripTaskHandle = nullptr;
+
+// ---- The grip task only ----
+GripPolicy gripRule;
+uint32_t bootTag = 0;  // esp_random() at boot (set before the tasks start): grip event ids
+
+// ---- The sender task only ----
+bool smsWaitLogged = false;
+unsigned long smsWaitLoggedAt = 0;
 
 // ---- The loop task only ----
 PiSeverity bannerSeverity = PiSeverity::Unknown;
 unsigned long lastBtPollAt = 0;
 unsigned long lastLinkLogAt = 0;
 EndLine lastEnd;  // the Pi's waiting counts from the last session
+
+// Where the truck is right now, for an event composed now (a Pi record in a Bluetooth session, a
+// grip episode): the current fix, else the last known position, else unknown. Under stateMutex.
+HerePosition hereNow(uint32_t nowMs) {
+  uint64_t epochNow = latestGpsEpoch ? latestGpsEpoch + (nowMs - latestGpsAt) / 1000 : 0;
+  HerePosition h;
+  h.position = eventPosition(latestGps, lastKnown, epochNow, nowMs);
+  h.hasSpeed = latestGps.hasFix;
+  h.speedKmh = latestGps.speedKmh;
+  return h;
+}
+
+// Logs the grip events the sender gave up on (sender_policy.h takeLocalDrop()): copied under the
+// lock, printed outside it. Grip events have no DLQ, so this line is all that is left of them.
+void logLocalDrops() {
+  LocalDrop drops[SenderPolicy::kLocalDropSlots];
+  int n = 0;
+  {
+    RtosLock lock(stateMutex);
+    while (n < SenderPolicy::kLocalDropSlots && sender.takeLocalDrop(drops[n])) n++;
+  }
+  for (int i = 0; i < n; i++) {
+    const LocalDrop& d = drops[i];
+    Serial.printf("[live] %s %s dropped: ", eventTierName(d.tier), d.clientEventId.c_str());
+    if (d.why == "retry_window") {
+      Serial.printf("not delivered within its retry window (%d attempt(s)%s%s; grip events have "
+                    "no DLQ)\n",
+                    d.attempts, d.lastError.empty() ? "" : ", last: ", d.lastError.c_str());
+    } else if (d.why == "replaced") {
+      Serial.println("still unsent when the next grip episode's event came");
+    } else {
+      Serial.println("the previous grip event was still on its way");
+    }
+  }
+}
+
+// What a queued SMS means for the log (sms_policy.h); quiet for duplicates and non-criticals.
+void logSmsQueued(const SmsQueueResult& r, const std::string& episode) {
+  if (r.evicted) {
+    Serial.printf("[sms] Queue full (%d): dropped the waiting SMS for episode %s\n",
+                  SmsPolicy::kSlots, r.evictedEpisode.c_str());
+  }
+  switch (r.result) {
+    case SmsQueued::Queued:
+      Serial.printf("[sms] SMS queued for episode %s\n", episode.c_str());
+      break;
+    case SmsQueued::NoPhone:
+      Serial.printf("[sms] No SMS alert phone set (ARGUS_ALERT_PHONE on the Pi) -- no SMS for "
+                    "episode %s\n",
+                    episode.c_str());
+      break;
+    case SmsQueued::NoFace:
+      Serial.println("[sms] no_face critical: no SMS (SMS_ON_NO_FACE is 0)");
+      break;
+    case SmsQueued::Duplicate:
+    case SmsQueued::Ignored:
+      break;
+  }
+}
+
+// =====================================================================================
+// gripTask: the wheel sensors and the buzzer
+// =====================================================================================
+
+void logGripReadings(const int* raw, bool pressure) {
+  Serial.print("[grip]");
+  for (int i = 0; i < GRIP_SENSOR_COUNT; i++) Serial.printf(" S%d=%d", i + 1, raw[i]);
+  Serial.printf(" (threshold %d) -> %s\n", GRIP_PRESSURE_THRESHOLD,
+                pressure ? "pressure" : "no pressure");
+}
+
+// A grip episode started or ended: its event for the sender (C3), the grip alarm, and on a start
+// its SMS (C5).
+void onGripChange(GripChange change, uint32_t nowMs) {
+  bool started = change == GripChange::EpisodeStarted;
+  uint32_t n = gripRule.episode();
+  std::string episode = gripEpisodeId(bootTag, n);
+  bool hasPhone = started && credentialsHasAlertPhone();  // its own lock, never inside stateMutex
+  TakeResult took = TakeResult::Queued;
+  SmsQueueResult queued;
+  {
+    RtosLock lock(stateMutex);
+    HerePosition here = hereNow(nowMs);
+    ReportEvent ev = started
+                         ? gripAlertEvent(bootTag, n, here.position, here.hasSpeed, here.speedKmh)
+                         : gripOkEvent(bootTag, n, here.position, here.hasSpeed, here.speedKmh);
+    took = sender.takeLocal(ev, nowMs);
+    cabinAlarm.setGripAlarm(started);
+    if (started) queued = smsQueue.onGripEpisode(episode, here.position, hasPhone, nowMs);
+  }
+  const char* queuedText = took == TakeResult::Full ? "dropped (see below)" : "queued";
+  if (started) {
+    Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+    Serial.printf("!!! No pressure on the steering wheel for %.1f s -- episode %s\n",
+                  GRIP_ALERT_MS / 1000.0, episode.c_str());
+    Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+    Serial.printf("[grip] Grip alarm on; critical no_grip for the backend %s\n", queuedText);
+  } else {
+    Serial.printf("[grip] Pressure back -- episode %s over: grip alarm off; OK for the backend %s\n",
+                  episode.c_str(), queuedText);
+  }
+  logLocalDrops();
+  if (started) logSmsQueued(queued, episode);
+}
+
+// The buzzer pin follows the alarm decision: the vision alarm's safety cap first, then
+// grip || vision.
+void applyBuzzer(uint32_t nowMs) {
+  bool capped, buzz, grip, vision;
+  {
+    RtosLock lock(stateMutex);
+    capped = cabinAlarm.tick(nowMs);
+    buzz = cabinAlarm.buzzer();
+    grip = cabinAlarm.gripAlarm();
+    vision = cabinAlarm.visionAlarm();
+  }
+  if (capped) {
+    Serial.printf("[alarm] Vision alarm off: no driver OK from the Pi in %lu s (safety cap)\n",
+                  (unsigned long)(VISION_ALARM_MAX_MS / 1000));
+  }
+  if (buzz == buzzerIsOn()) return;
+  buzzerSet(buzz);
+  if (buzz) {
+    Serial.printf("[alarm] Buzzer ON (%s)\n", grip && vision ? "hands off the wheel + camera"
+                                              : grip         ? "hands off the wheel"
+                                                             : "camera critical");
+  } else {
+    Serial.println("[alarm] Buzzer off");
+  }
+}
+
+void gripTask(void*) {
+  uint32_t lastLogAt = millis();
+  bool loggedOnce = false;
+  for (;;) {
+    int raw[GRIP_SENSOR_COUNT];
+    gripSensorRead(raw);
+    uint32_t now = millis();
+    bool pressure = gripHasPressure(raw, GRIP_SENSOR_COUNT);
+    if (!loggedOnce || now - lastLogAt >= GRIP_LOG_INTERVAL_MS) {  // not every sample
+      loggedOnce = true;
+      lastLogAt = now;
+      logGripReadings(raw, pressure);
+    }
+    bool moving;
+    {
+      RtosLock lock(stateMutex);
+      moving = gripIsMoving(latestGps.hasFix, latestGps.speedKmh);
+    }
+    GripChange change = gripRule.onSample(pressure, moving, now);
+    if (change != GripChange::None) onGripChange(change, now);
+    applyBuzzer(now);
+    vTaskDelay(pdMS_TO_TICKS(GRIP_SAMPLE_INTERVAL_MS));
+  }
+}
 
 // =====================================================================================
 // gpsTask
@@ -133,29 +316,123 @@ bool preemptCheck() {
 UBaseType_t stackLeft(TaskHandle_t task) { return task ? uxTaskGetStackHighWaterMark(task) : 0; }
 
 void logHealth() {
-  int live = 0;
-  bool dlq;
+  int live = 0, local = 0, smsWaiting = 0;
+  bool dlq, buzz;
   int outcomes;
   uint32_t lost, dropped;
   RouteKnowledge route;
   {
     RtosLock lock(stateMutex);
-    for (int i = 0; i < SenderPolicy::kLiveSlots; i++) live += sender.liveSlot(i).used ? 1 : 0;
+    for (int i = 0; i < SenderPolicy::kAllLiveSlots; i++) {
+      if (!sender.liveSlot(i).used) continue;
+      if (sender.liveSlot(i).local) {
+        local++;
+      } else {
+        live++;
+      }
+    }
     dlq = sender.dlqHeld();
     outcomes = sender.outcomeCount();
     lost = sender.outcomesLost();
     dropped = sender.bodiesDropped();
     route = sender.route();
+    for (int i = 0; i < SmsPolicy::kSlots; i++) smsWaiting += smsQueue.slot(i).used ? 1 : 0;
+    buzz = cabinAlarm.buzzer();
   }
   Serial.printf(
       "[health] heap free %u B, min ever %u B, largest block %u B | stack left: sender %u B, "
-      "loop %u B, gps %u B | held: %d live, %d dlq, %d outcome(s) for the Pi (%u lost, %u bodies "
-      "cut) | route %s\n",
+      "loop %u B, gps %u B, grip %u B | held: %d live + %d grip, %d dlq, %d outcome(s) for the "
+      "Pi (%u lost, %u bodies cut) | route %s | %d SMS waiting | buzzer %s\n",
       (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(), (unsigned)ESP.getMaxAllocHeap(),
       (unsigned)stackLeft(senderTaskHandle), (unsigned)stackLeft(loopTaskHandle),
-      (unsigned)stackLeft(gpsTaskHandle), live, dlq ? 1 : 0, outcomes, (unsigned)lost,
-      (unsigned)dropped,
-      route == RouteKnowledge::Active ? "active" : route == RouteKnowledge::None ? "none" : "unknown");
+      (unsigned)stackLeft(gpsTaskHandle), (unsigned)stackLeft(gripTaskHandle), live, local,
+      dlq ? 1 : 0, outcomes, (unsigned)lost, (unsigned)dropped,
+      route == RouteKnowledge::Active ? "active" : route == RouteKnowledge::None ? "none" : "unknown",
+      smsWaiting, buzz ? "on" : "off");
+}
+
+// The waiting SMS (sms_policy.h), one per call, between report attempts: drops what waited too
+// long, then sends the oldest due one if the modem is on the GSM network (no APN needed).
+void serviceSms() {
+  SmsMessage expired[SmsPolicy::kSlots];
+  int nExpired = 0;
+  SmsMessage msg;
+  bool have = false;
+  {
+    RtosLock lock(stateMutex);
+    uint32_t now = millis();
+    while (nExpired < SmsPolicy::kSlots && smsQueue.expireOne(now, expired[nExpired])) nExpired++;
+    int i = smsQueue.due(now);
+    if (i >= 0) {
+      msg = smsQueue.slot(i);
+      have = true;
+    }
+  }
+  for (int i = 0; i < nExpired; i++) {
+    Serial.printf("[sms] Gave up on the SMS for episode %s: still unsent %lu s after it was queued "
+                  "(%d failed attempt(s))\n",
+                  expired[i].episode.c_str(), (unsigned long)(SMS_PENDING_MAX_MS / 1000),
+                  expired[i].attempts);
+  }
+  if (!have) {
+    smsWaitLogged = false;
+    return;
+  }
+
+  String phone, vehicle;
+  if (!credentialsSmsTarget(phone, vehicle)) {  // the Pi's CONFIG dropped the phone meanwhile
+    {
+      RtosLock lock(stateMutex);
+      smsQueue.drop(msg.episode.str());
+    }
+    Serial.printf("[sms] No SMS alert phone any more -- dropping the SMS for episode %s\n",
+                  msg.episode.c_str());
+    return;
+  }
+  int stat = modemRegistrationCached(MODEM_REG_CACHE_MS);
+  if (!modemStatRegistered(stat)) {
+    if (!smsWaitLogged || millis() - smsWaitLoggedAt >= SMS_WAIT_LOG_INTERVAL_MS) {
+      smsWaitLogged = true;
+      smsWaitLoggedAt = millis();
+      Serial.printf("[sms] Waiting for the GSM network to send the SMS for episode %s: %s\n",
+                    msg.episode.c_str(), modemRegistrationText(stat));
+    }
+    return;  // it waits (not an attempt), up to SMS_PENDING_MAX_MS
+  }
+  smsWaitLogged = false;
+
+  std::string text = composeSmsText(msg.alertType.str(), vehicle.c_str(), msg.position);
+  Serial.printf("[sms] -> %s (attempt %d/%d): %s\n", maskPhone(phone).c_str(), msg.attempts + 1,
+                SMS_MAX_ATTEMPTS, text.c_str());
+  String error;
+  uint32_t startedAt = millis();
+  bool sent = smsSendText(phone, String(text.c_str()), error);
+  uint32_t endedAt = millis();
+  if (!sent) modemForgetRegistration();  // check the network again before the next try
+  SmsAttemptEnd end;
+  {
+    RtosLock lock(stateMutex);
+    end = smsQueue.attemptEnded(msg.episode.str(), sent, endedAt);
+  }
+  float secs = (endedAt - startedAt) / 1000.0f;
+  switch (end) {
+    case SmsAttemptEnd::Sent:
+      Serial.printf("[sms] Sent for episode %s in %.1f s\n", msg.episode.c_str(), secs);
+      break;
+    case SmsAttemptEnd::Retry:
+      Serial.printf("[sms] Failed for episode %s after %.1f s (%s) -- retrying in %lu s\n",
+                    msg.episode.c_str(), secs, error.c_str(),
+                    (unsigned long)(SMS_RETRY_GAP_MS / 1000));
+      break;
+    case SmsAttemptEnd::GaveUp:
+      Serial.printf("[sms] Failed for episode %s (%s) -- giving up after %d attempts\n",
+                    msg.episode.c_str(), error.c_str(), SMS_MAX_ATTEMPTS);
+      break;
+    case SmsAttemptEnd::Gone:
+      Serial.printf("[sms] %s for episode %s (it had already left the queue)\n",
+                    sent ? "Sent" : "Failed", msg.episode.c_str());
+      break;
+  }
 }
 
 PreparedReport rep;  // static: the sender task's one report in the making
@@ -177,6 +454,7 @@ void senderOnce() {
     RtosLock lock(stateMutex);
     due = prepareReport(sender, track, millis(), rep);
   }
+  logLocalDrops();  // grip events whose window prepareReport's expire() just closed
   if (!due) {
     uint32_t waitMs = rep.plan.kind == PlanKind::Wait ? rep.plan.waitMs : 100;
     if (waitMs > 100) waitMs = 100;  // stay responsive to new events
@@ -215,6 +493,7 @@ void senderTask(void*) {
         logHealth();
       }
       senderOnce();
+      serviceSms();  // between report attempts: never inside an HTTP request
     } catch (const std::bad_alloc&) {
       // Never abort-and-reboot on a full heap (commit f4da937): end the attempt as not made.
       {
@@ -232,15 +511,6 @@ void senderTask(void*) {
 // =====================================================================================
 // The loop task: Bluetooth sessions with the Pi
 // =====================================================================================
-
-HerePosition hereNow(uint32_t nowMs) {  // under stateMutex
-  uint64_t epochNow = latestGpsEpoch ? latestGpsEpoch + (nowMs - latestGpsAt) / 1000 : 0;
-  HerePosition h;
-  h.position = eventPosition(latestGps, lastKnown, epochNow, nowMs);
-  h.hasSpeed = latestGps.hasFix;
-  h.speedKmh = latestGps.speedKmh;
-  return h;
-}
 
 void bannerOnCritical(const PiRecord& r) {
   PiSeverity s = parsePiSeverity(r.severity);
@@ -330,6 +600,26 @@ void logSession(bool dlq, size_t records, const SessionReport& report, bool gotO
   }
 }
 
+// What cabinSignalsFor() (cabin_signals.h) did with a pulled record: the vision alarm and the SMS.
+void logCabinSignals(const PiRecord& r, const CabinSignals& s) {
+  const std::string& episode = eventEpisode(r);
+  switch (s.vision) {
+    case VisionChange::On:
+      Serial.printf("[alarm] Vision alarm ON: \"%s\" (episode %s)\n", eventAlertType(r).c_str(),
+                    episode.c_str());
+      break;
+    case VisionChange::Off:
+      Serial.printf("[alarm] Vision alarm off: the driver is OK (episode %s)\n", episode.c_str());
+      break;
+    case VisionChange::NoFace:
+      Serial.println("[alarm] no_face critical: no buzzer for a driver out of view");
+      break;
+    case VisionChange::None:
+      break;
+  }
+  logSmsQueued(s.sms, episode);
+}
+
 // One PULL or DLQ session. False when it didn't complete (no link, protocol error, no OK).
 bool runSession(bool dlq) {
   try {
@@ -339,19 +629,27 @@ bool runSession(bool dlq) {
       return false;
     }
     lastEnd = end;
+    bool hasPhone = credentialsHasAlertPhone();  // its own lock, never inside stateMutex
     SessionReport report;
     for (const std::string& line : lines) {
       PiRecord r;
       ParseOutcome parsed = parsePiRecord(line, r);
       RecordDecision d;
+      CabinSignals signals;
       {
         RtosLock lock(stateMutex);
         uint32_t now = millis();
-        d = decidePulledRecord(parsed, r, dlq, sender, vigilance, hereNow(now), now);
+        HerePosition here = hereNow(now);
+        d = decidePulledRecord(parsed, r, dlq, sender, vigilance, here, now);
+        // The hook: a live critical taken here starts the vision alarm and queues its SMS; a
+        // driver OK stops the vision alarm.
+        signals = cabinSignalsFor(r, parsed, d, dlq, here.position, hasPhone, cabinAlarm,
+                                  smsQueue, now);
       }
       addRecordDecision(report, r.id, d);
       if (!dlq && parsed == ParseOutcome::Ok) bannerOnCritical(r);
       logRecord(r, parsed, d, dlq);
+      logCabinSignals(r, signals);
     }
     {
       RtosLock lock(stateMutex);
@@ -417,6 +715,7 @@ void setup() {
   if (BENCH_FAKE_GPS) {
     Serial.println("[main] WARNING: BENCH_FAKE_GPS is on -- reporting a fixed bench position");
   }
+  buzzerBegin();  // the pin driven off before anything else can take time
   stateMutex = xSemaphoreCreateMutex();
   loopTaskHandle = xTaskGetCurrentTaskHandle();
 
@@ -428,14 +727,22 @@ void setup() {
   }
 
   gpsBegin();
-  modemBegin();        // the SIM800L carries mobile data only
+  gripSensorBegin();
+  modemBegin();        // mobile data and the SMS; it registers on GSM with or without an APN
   credentialsBegin();  // before wifiBegin(): the WiFi to join is in the NVS cache
   wifiBegin();
   bluetoothClientBegin();
 
-  // Both on the Arduino core (1), like loop(); gpsTask a step higher so its 1 s reads stay on
-  // time while a TLS handshake or a Bluetooth session keeps the others busy.
+  // With the Bluetooth radio on, esp_random() is a true random number: grip event ids
+  // ("grip-<boot>-<n>", contracts C3) never repeat across reboots.
+  bootTag = esp_random();
+  Serial.printf("[grip] This boot's grip episodes: grip-%08lx-<n>\n", (unsigned long)bootTag);
+
+  // All on the Arduino core (1), like loop(); gpsTask and gripTask a step higher so the 1 s GPS
+  // reads and the 100 ms wheel samples (and the buzzer) stay on time while a TLS handshake or a
+  // Bluetooth session keeps the others busy.
   xTaskCreatePinnedToCore(gpsTask, "gps", GPS_TASK_STACK, nullptr, 2, &gpsTaskHandle, 1);
+  xTaskCreatePinnedToCore(gripTask, "grip", GRIP_TASK_STACK, nullptr, 2, &gripTaskHandle, 1);
   xTaskCreatePinnedToCore(senderTask, "sender", SENDER_TASK_STACK, nullptr, 1, &senderTaskHandle,
                           1);
   logHealth();  // the heap left once everything is up, before the first Bluetooth connect

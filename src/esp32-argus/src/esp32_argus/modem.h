@@ -5,14 +5,18 @@
 #include "transport_policy.h"
 
 // The SIM800L's UART and raw AT-command helpers for gprs_http (mobile-data HTTP to
-// backend-argus). Raw AT commands, not TinyGsm: the firmware needs a handful of commands, and
-// TinyGsm's general TCP/GPRS layer was mostly flash-size overhead.
+// backend-argus) and sms_modem (the critical-alert SMS). Raw AT commands, not TinyGsm: the
+// firmware needs a handful of commands, and TinyGsm's general TCP/GPRS layer was mostly
+// flash-size overhead.
 //
 // modemBegin() runs in setup(); after that only the sender task touches the modem (it owns every
-// transport to the backend), so nothing here needs a lock. Every wait yields (vTaskDelay(1)) while
-// no byte is waiting, so the other tasks on the core keep running.
+// transport to the backend, and sends the SMS between report attempts), so nothing here needs a
+// lock. Every wait yields (vTaskDelay(1)) while no byte is waiting, so the other tasks on the core
+// keep running.
 
-// Powers the modem on and opens its UART. Call once from setup().
+// Powers the modem on and opens its UART. Call once from setup(). The SIM800L then registers on
+// the GSM network by itself (automatic operator selection), with or without a mobile-data APN:
+// the SMS needs only that registration.
 void modemBegin();
 
 // The current attempt's deadline (transport_policy.h): while one is set, every wait below also
@@ -48,8 +52,19 @@ bool modemSendATWithin(const String& cmd, const char* expect, unsigned long tota
 // A modem reply on one line for logs: CR/LF runs become " | ", ends trimmed.
 String modemOneLine(const String& response);
 
-// Raw write, for payloads the modem asked for (HTTP data after "DOWNLOAD").
+// Like modemReadUntil / modemSendAT, but every byte read also goes through the watch for a late
+// "+HTTPACTION:" that modemFlush() keeps (modemTakeHttpActionUrc()), so the result of a request
+// whose attempt timed out isn't lost when it arrives in the middle of another exchange (an SMS).
+// gprs_http doesn't use these: it waits for that result itself.
+bool modemReadUntilKeepingUrcs(const char* expect, unsigned long timeoutMs,
+                               String* response = nullptr);
+bool modemSendATKeepingUrcs(const String& cmd, const char* expect, unsigned long timeoutMs,
+                            String* response = nullptr);
+
+// Raw write, for payloads the modem asked for (HTTP data after "DOWNLOAD", an SMS text after
+// '>').
 void modemWrite(const String& data);
+void modemWriteByte(uint8_t b);  // Ctrl-Z (0x1A) submits an SMS text, ESC (0x1B) cancels it
 
 // Reads exactly n bytes (idle timeout, like modemReadUntil). For length-prefixed payloads such
 // as +HTTPREAD, where the body itself may contain "OK"/"ERROR" and must not end the read.

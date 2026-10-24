@@ -3,6 +3,7 @@
 bool prepareReport(SenderPolicy& sender, TrackBuffer& track, uint32_t nowMs, PreparedReport& out) {
   out.hasEvent = false;
   out.dlq = false;
+  out.local = false;
   out.recordId.clear();
   out.tier = EventTier::Ok;
   out.attemptNo = 1;
@@ -26,6 +27,7 @@ bool prepareReport(SenderPolicy& sender, TrackBuffer& track, uint32_t nowMs, Pre
   if (held) {
     out.hasEvent = true;
     out.dlq = held->dlq;
+    out.local = held->local;
     out.recordId = held->recordId;
     out.tier = held->tier;
     out.attemptNo = held->dlq ? held->priorAttempts + 1 : held->attempts + 1;
@@ -99,7 +101,9 @@ std::string reportLogLine(const PreparedReport& rep, const char* transport, uint
   } else {
     what = "liveness";
   }
-  std::string id = rep.recordId.str().substr(0, 8);
+  // A Pi record id is a 32-char uuid: its first 8 are enough. A local id is short and says what it
+  // is ("grip-1a2b3c4d-1-a"): kept whole.
+  std::string id = rep.local ? rep.recordId.str() : rep.recordId.str().substr(0, 8);
   int of = rep.dlq ? DLQ_MAX_ATTEMPTS : 0;
   return attemptLogLine(rep.dlq, what.c_str(), id, rep.attemptNo, of, transport, durationMs,
                         result.result, result.detail);

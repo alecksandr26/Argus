@@ -24,7 +24,9 @@ struct PreparedReport {
   SendPlan plan;
   bool hasEvent = false;
   bool dlq = false;
-  IdString recordId;            // the event's Pi record id ("" for a points-only report)
+  bool local = false;           // a grip event this device raised (no Pi record behind it)
+  IdString recordId;            // the event's Pi record id, or a local event's client_event_id
+                                // ("" for a points-only report)
   EventTier tier = EventTier::Ok;
   int attemptNo = 0;            // 1-based: live, this device's tries; DLQ, the Pi's count + 1
   int pointCount = 0;
@@ -59,6 +61,8 @@ ReportResult finishReport(SenderPolicy& sender, TrackBuffer& track, const Prepar
 
 // "[live] critical 3f2a9c1b attempt 2 via gprs 7.4 s: failed (http_503)",
 // "[dlq] critical 3f2a9c1b attempt 3/5 via wifi 1.1 s: delivered",
+// "[live] critical grip-1a2b3c4d-1-a attempt 1 via gprs 5.1 s: delivered" (a local event: its
+// whole id, which says where it came from),
 // "[live] points x5 attempt 1 via wifi 0.8 s: ok", "[live] liveness attempt 1 via none 0.0 s:
 // failed (no_network)".
 std::string reportLogLine(const PreparedReport& rep, const char* transport, uint32_t durationMs,
