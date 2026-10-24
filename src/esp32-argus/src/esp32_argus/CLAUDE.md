@@ -10,13 +10,19 @@ compile and flash, and what has been verified where.
 - **This firmware (the final tweaks: Bluetooth v2, one combined report, three tasks, no panic
   button) compiles but has not been flashed.** Last build, 2026-10-23, `../../test/compile.sh`
   (the `arduino-cli` bundled with the Windows Arduino IDE, run from WSL; core 3.3.12, Huge APP,
-  `--warnings all`): 1,825,248 bytes (**58% flash**), 84,404 bytes of globals (**25% RAM**).
+  `--warnings all`): 1,825,880 bytes (**58% flash**), 76,852 bytes of globals (**23% RAM**; was 25% before the heap fix: 6 outcome slots instead of 16).
   The only warning from our files is `BluetoothSerial` being marked deprecated by core 3.x
   (`bluetooth_client.cpp`; still supported until core 4.0). Not verified on hardware yet:
   protocol v2 with the real Pi, the report endpoint from the device, the GPRS and AWS/HTTPS
   paths, the 1 s GPS reads, and the heap/stack headroom of the three tasks with classic BT +
   WiFi + TLS running (watch the `[health]` lines). Flash it together with the v2 Pi image: v1
   and v2 don't talk to each other.
+- **First flash (2026-10-23) rebooted in a loop**: right after a failed connect to the Pi,
+  `assert failed: fixed_queue_new fixed_queue.c:52 ((ret->lock) != NULL)` inside the Bluetooth
+  stack, i.e. the heap was exhausted. Fixed (not yet re-flashed): the WiFi radio stays off unless
+  it's actually needed as the fallback, Bluetooth starts classic-only (BLE memory released), 6
+  outcome slots instead of 16 (-7.5 KB static), a Pi connect is skipped when the heap is low, and
+  an unreachable Pi is retried with a backoff. A `[health]` line now prints at boot too.
 - **The previous (v1) firmware** compiled and flashed (2026-10-16, Arduino IDE 2.x on Windows,
   core 3.3.12, Huge APP: 56% flash, 19% RAM) to a real ESP32-D0WD-V3, and on 2026-10-17
   `../../test/hil/` passed on real hardware (Bluetooth pull from the PC acting as the Pi, HTTP to

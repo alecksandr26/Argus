@@ -149,8 +149,10 @@ ReportSend backendPostReport(ReportComposer compose, bool retry, bool (*preempt)
     return r;
   }
   if (tryGprs && !useGprs) {
-    // Not registered: WiFi carries this attempt, with WiFi's budget from the same start (the
+    // Not registered: mobile data is failing too, so the WiFi fallback starts (backendPoll), and
+    // WiFi carries this attempt if it is already up, with WiFi's budget from the same start (the
     // registration check was its first step).
+    transport.report(Transport::Gprs, false, millis());
     deadline = Deadline(startedAt, attemptTimeoutMs(timeouts, Transport::Wifi, retry, false));
   }
   if (preempt && preempt()) {
@@ -204,6 +206,10 @@ ReportSend backendPostReport(ReportComposer compose, bool retry, bool (*preempt)
 }
 
 void backendPoll() {
-  wifiEnsureConnected();
+  credentialsCopyIfChanged(creds, credsGeneration);
+  // WiFi is only the fallback: on when the Pi gives no mobile data APN (then it's the only path),
+  // or while mobile data is failing; off again once a mobile request works.
+  bool wifiWanted = !creds.useGprs() || transport.gprsFailing();
+  wifiEnsureConnected(wifiWanted);
   gprsPoll();
 }

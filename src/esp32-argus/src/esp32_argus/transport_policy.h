@@ -22,6 +22,9 @@ class TransportSelector {
     return Transport::Gprs;
   }
   bool inHoldOff(uint32_t now) const { return _gprsFailed && now - _gprsFailedAt < _holdOffMs; }
+  // The last mobile-data attempt failed, and none has worked since (the hold-off may be over).
+  // While this holds, the WiFi fallback stays on.
+  bool gprsFailing() const { return _gprsFailed; }
 
   void report(Transport transport, bool transportOk, uint32_t now) {
     if (transport != Transport::Gprs) return;

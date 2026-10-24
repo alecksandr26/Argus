@@ -48,6 +48,21 @@ static void holdOffNeedsWifiActuallyUp() {
   CHECK(!t.inHoldOff(61001));
 }
 
+static void gprsFailingKeepsWifiFallbackUntilGprsWorks() {
+  // The WiFi radio runs only while this holds (backend_api.cpp's backendPoll): from a mobile-data
+  // failure until a mobile request works again -- past the end of the hold-off too.
+  TransportSelector t(60000);
+  CHECK(!t.gprsFailing());  // boot: mobile data first, WiFi off
+  t.report(Transport::Gprs, false, 1000);
+  CHECK(t.gprsFailing());
+  CHECK(!t.inHoldOff(61001));
+  CHECK(t.gprsFailing());  // hold-off over, but mobile data hasn't worked yet
+  t.report(Transport::Wifi, true, 62000);  // WiFi results don't count
+  CHECK(t.gprsFailing());
+  t.report(Transport::Gprs, true, 63000);  // a mobile request worked: WiFi can go off
+  CHECK(!t.gprsFailing());
+}
+
 static void deadlineCapsEachStep() {
   Deadline d(1000, 8000);
   CHECK(!d.expired(1000));
@@ -92,6 +107,7 @@ int main() {
   RUN(failedRetryExtendsHoldOff);
   RUN(holdOffSurvivesMillisWrap);
   RUN(holdOffNeedsWifiActuallyUp);
+  RUN(gprsFailingKeepsWifiFallbackUntilGprsWorks);
   RUN(deadlineCapsEachStep);
   return report("transport_policy_host_test");
 }

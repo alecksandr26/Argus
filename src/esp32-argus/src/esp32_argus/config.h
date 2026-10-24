@@ -10,9 +10,10 @@
 // =====================================================
 // WiFi -- the fallback transport to backend-argus (mobile data goes first). The network
 // (ARGUS_WIFI_SSID / ARGUS_WIFI_PASSWORD) comes from the Pi; a phone hotspot or a 4G MiFi router
-// in the truck works. 2.4 GHz only.
+// in the truck works. 2.4 GHz only. The radio stays OFF until it's needed (no APN from the Pi, or
+// mobile data failing) and goes off again once mobile data works: its driver's heap is what
+// classic Bluetooth needs (wifi_client.h).
 // =====================================================
-#define WIFI_CONNECT_TIMEOUT_MS 20000UL
 #define WIFI_RETRY_INTERVAL_MS 10000UL
 
 // =====================================================
@@ -67,8 +68,11 @@
 // Live events held at once (static slots). One alert per incident keeps this far from full; when
 // it is full a new event isn't TAKEN and stays on the Pi, which serves it again.
 #define SENDER_LIVE_SLOTS 8
-// Reports to the Pi (ACK/FAIL of finished events) waiting for the next Bluetooth session.
-#define SENDER_OUTCOME_SLOTS 16
+// Reports to the Pi (ACK/FAIL of finished events) waiting for the next Bluetooth session. Each
+// slot carries a 640 B event body, so 16 cost ~12 KB of RAM the Bluetooth stack needs; with one
+// alert per incident a handful is plenty. When full, the oldest falls off: the Pi's lease then
+// expires and it serves that row again (the backend de-duplicates it).
+#define SENDER_OUTCOME_SLOTS 6
 // The Pi archives a dead letter after this many failed attempts (cv-argus
 // BUFFER_DLQ_MAX_ATTEMPTS; the Pi does the counting, this copy is only for the "attempt n/5" log).
 #define DLQ_MAX_ATTEMPTS 5
@@ -126,6 +130,14 @@
 // Every poll pulls the live outbox (`PULL`); the Pi's keepalives come every 2 s, so this keeps
 // what the camera sees and what this device logs about 2 s apart.
 #define PI_BT_POLL_INTERVAL_MS 2000UL
+// While the Pi doesn't answer, the connect is retried at 2 s, 4 s, 8 s ... up to this, instead of
+// every poll: each failed connect costs the Bluetooth stack heap.
+#define PI_BT_RETRY_MAX_MS 30000UL
+// A connect is only attempted with this much heap free (and a free block this large): the
+// Bluetooth stack aborts the whole board (assert in fixed_queue_new) when a connect can't
+// allocate. Below it the attempt is skipped and logged.
+#define PI_BT_MIN_FREE_HEAP 20480UL
+#define PI_BT_MIN_HEAP_BLOCK 4096UL
 // At most this many records per poll (the Pi allows 50). The whole batch is held in memory before
 // any of it is handled (bluetoothOpenSession), so a small batch keeps the heap safe. 8 every
 // PI_BT_POLL_INTERVAL_MS is still well above the Pi's one keepalive per 2 s. Nothing in a session

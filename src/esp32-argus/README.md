@@ -41,7 +41,7 @@ Real firmware: an **Arduino IDE multi-tab sketch**, `src/esp32_argus/esp32_argus
 | `gps_track.*` | pure: the track buffer (the points since the last report, newest `REPORT_MAX_POINTS` kept), the last known position (NVS blob, its age across reboots) and each point's `vigilance` |
 | `modem.*` | the SIM800L's UART and raw AT helpers (no TinyGsm), with the attempt's deadline applied to every wait and a cached registration state |
 | `gprs_http.*` | the report POST over the SIM800L's mobile data (`AT+SAPBR` bearer, `AT+HTTP*` with `AT+HTTPSSL=1`): the **first-choice** transport. Pre-emptible between AT steps, drains a late `+HTTPACTION` |
-| `wifi_client.*` | the **fallback** transport (a phone hotspot or a 4G MiFi), non-blocking reconnect |
+| `wifi_client.*` | the **fallback** transport (a phone hotspot or a 4G MiFi): radio off until mobile data fails, non-blocking reconnect |
 | `backend_api.*` | `backendPostReport()`: one attempt with a real deadline; picks GPRS or WiFi, composes the body as late as possible (right before `AT+HTTPDATA` / `http.POST`), logs the request and the answer |
 | `backend_messages.*` | pure: composes the report body and the event object (also the `<body>` of the FAIL that dead-letters a critical), parses the 200 answer |
 | `ack_policy.*` | pure: what one report's answer means (C2.3): delivered / rejected / attempt failed, the active route, re-CONFIG on 401 |
@@ -370,7 +370,14 @@ still exists but isn't used).
 
 - **Auth**: `X-Device-Api-Key: <key>` on every request (per truck, issued from the dashboard,
   handed over by the Pi, section 1b). Device key only, no user login.
-- **Transport**: GPRS first, WiFi as the fallback (section 0). Over WiFi, `https://` URLs use
+- **Transport**: GPRS first, WiFi as the fallback (section 0). The WiFi radio is **off** at boot
+  and only runs while it's needed: when the Pi gives no APN (WiFi is then the only path), or from
+  a mobile-data failure (including "not registered") until a mobile request works again, then
+  it's turned off. Its driver holds tens of KB of heap that classic Bluetooth needs: with WiFi up
+  for nothing, the Bluetooth stack ran out of heap on a reconnect and rebooted the board (assert
+  `fixed_queue_new ... lock != NULL`). Bluetooth also starts classic-only (BLE memory released),
+  a Pi connect is skipped below `PI_BT_MIN_FREE_HEAP`, and an unreachable Pi is retried with a
+  backoff up to `PI_BT_RETRY_MAX_MS`. Over WiFi, `https://` URLs use
   `WiFiClientSecure` with Amazon Root CA 1 pinned (`root_ca.h`); `http://` (a LAN bench backend)
   uses plain `WiFiClient`. The timeouts are the per-attempt deadlines of section 0b.
 - **Times are relative.** Every `age_s` is seconds before the request, measured when the body is

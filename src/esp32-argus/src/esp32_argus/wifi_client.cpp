@@ -14,6 +14,10 @@ uint32_t credsGeneration = 0;
 // SSID/password in its .env reaches this device without a reflash.
 String targetSsid;
 String targetPassword;
+// Whether the WiFi driver is running. It starts off and only runs while WiFi is needed: the
+// driver holds tens of KB of heap, which classic Bluetooth needs (an exhausted heap aborts in
+// the Bluetooth stack, assert "fixed_queue_new ... lock != NULL").
+bool radioOn = false;
 
 void refreshCredentials() { credentialsCopyIfChanged(creds, credsGeneration); }
 
@@ -24,50 +28,60 @@ void startConnect() {
   if (targetSsid.length() == 0) return;
   WiFi.begin(targetSsid.c_str(), targetPassword.c_str());
 }
+
+void radioUp(const char* why) {
+  Serial.printf("[wifi] Turning WiFi on (%s) -- heap free %u B before\n", why,
+                (unsigned)ESP.getFreeHeap());
+  WiFi.mode(WIFI_STA);
+  radioOn = true;
+  lastRetryAt = millis();
+  startConnect();
+}
+
+void radioDown(const char* why) {
+  WiFi.disconnect(/*wifioff=*/true);
+  WiFi.mode(WIFI_OFF);
+  radioOn = false;
+  targetSsid = "";
+  targetPassword = "";
+  Serial.printf("[wifi] WiFi off (%s) -- heap free %u B after\n", why,
+                (unsigned)ESP.getFreeHeap());
+}
 }  // namespace
 
 void wifiBegin() {
-  WiFi.mode(WIFI_STA);
   refreshCredentials();
-  lastRetryAt = millis();
   if (creds.wifiSsid.length() == 0) {
-    Serial.println("[wifi] No WiFi configured yet -- waiting for the Pi's CONFIG");
-    return;
-  }
-  startConnect();
-
-  Serial.print("[wifi] Connecting to \"");
-  Serial.print(targetSsid);
-  Serial.print("\"");
-  unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
-    delay(250);
-    Serial.print(".");
-  }
-  Serial.println();
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("[wifi] Connected, IP: ");
-    Serial.println(WiFi.localIP());
+    Serial.println("[wifi] No WiFi configured -- radio off (mobile data only)");
+  } else if (creds.useGprs()) {
+    Serial.print("[wifi] \"");
+    Serial.print(creds.wifiSsid);
+    Serial.println("\" is the fallback -- radio off until mobile data fails");
   } else {
-    Serial.println("[wifi] Not connected yet -- the sender task keeps retrying");
+    Serial.println("[wifi] No mobile data APN -- WiFi is the only path, the sender starts it");
   }
-  lastRetryAt = millis();
 }
 
-void wifiEnsureConnected() {
+void wifiEnsureConnected(bool wanted) {
   refreshCredentials();
+  if (!wanted || creds.wifiSsid.length() == 0) {
+    if (radioOn) radioDown(creds.wifiSsid.length() == 0 ? "the Pi no longer configures WiFi"
+                                                        : "mobile data works again");
+    return;
+  }
+  if (!radioOn) {
+    radioUp(creds.useGprs() ? "mobile data failed" : "no mobile data APN");
+    return;
+  }
+
   unsigned long now = millis();
   if (creds.wifiSsid != targetSsid || creds.wifiPassword != targetPassword) {
-    Serial.println(creds.wifiSsid.length() > 0
-                       ? "[wifi] New WiFi settings from the Pi -- reconnecting"
-                       : "[wifi] The Pi no longer configures WiFi -- disconnecting");
+    Serial.println("[wifi] New WiFi settings from the Pi -- reconnecting");
     startConnect();
     lastRetryAt = now;
     return;
   }
-  if (targetSsid.length() == 0 || WiFi.status() == WL_CONNECTED) return;
-
+  if (WiFi.status() == WL_CONNECTED) return;
   if (now - lastRetryAt < WIFI_RETRY_INTERVAL_MS) return;
   lastRetryAt = now;
 
@@ -75,6 +89,6 @@ void wifiEnsureConnected() {
   startConnect();
 }
 
-bool wifiIsConnected() { return WiFi.status() == WL_CONNECTED; }
+bool wifiIsConnected() { return radioOn && WiFi.status() == WL_CONNECTED; }
 
-bool wifiConfigured() { return targetSsid.length() > 0; }
+bool wifiIsOn() { return radioOn; }

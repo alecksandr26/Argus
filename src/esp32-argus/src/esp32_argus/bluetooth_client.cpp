@@ -27,9 +27,34 @@ void printPiAddress() {
   Serial.print(PI_BT_CHANNEL);
 }
 
+// Retry pacing while the Pi doesn't answer: 2 s, 4 s, 8 s ... up to PI_BT_RETRY_MAX_MS, back to
+// every poll as soon as it answers. Each failed connect still costs the Bluetooth stack heap.
+uint32_t retryDelayMs = 0;
+unsigned long nextTryAt = 0;
+unsigned long lastLowHeapLogAt = 0;
+
+// The Bluetooth stack aborts (assert in fixed_queue_new) when it can't allocate during a
+// connect, which reboots the board. So a connect is only attempted with heap to spare.
+bool heapAllowsConnect() {
+  uint32_t freeHeap = ESP.getFreeHeap();
+  uint32_t block = ESP.getMaxAllocHeap();
+  if (freeHeap >= PI_BT_MIN_FREE_HEAP && block >= PI_BT_MIN_HEAP_BLOCK) return true;
+  if (millis() - lastLowHeapLogAt >= 10000UL) {
+    lastLowHeapLogAt = millis();
+    Serial.printf("[bt] Skipping the Pi connect: heap too low (free %u B, largest block %u B; "
+                  "need %u / %u) -- retrying shortly\n",
+                  (unsigned)freeHeap, (unsigned)block, (unsigned)PI_BT_MIN_FREE_HEAP,
+                  (unsigned)PI_BT_MIN_HEAP_BLOCK);
+  }
+  return false;
+}
+
 // One connection attempt per session. Logs only the up/down transitions, so a steady link stays
 // quiet and a lost one says so once.
 bool connectToPi() {
+  unsigned long now = millis();
+  if (retryDelayMs > 0 && (long)(now - nextTryAt) < 0) return false;  // backing off
+  if (!heapAllowsConnect()) return false;
   bool ok = SerialBT.connect(piMac, PI_BT_CHANNEL);
   if (ok && !linkUp) {
     Serial.print("[bt] CONNECTED to the Pi (");
@@ -40,12 +65,19 @@ bool connectToPi() {
     printPiAddress();
     Serial.println(") -- is its Bluetooth sender running, and are the two paired?");
   }
-  linkUp = ok;
-  linkEverTried = true;
   if (ok) {
+    retryDelayMs = 0;
     lastAnsweredAt = millis();
     sessions++;
+  } else {
+    retryDelayMs = retryDelayMs == 0 ? PI_BT_POLL_INTERVAL_MS : retryDelayMs * 2;
+    if (retryDelayMs > PI_BT_RETRY_MAX_MS) retryDelayMs = PI_BT_RETRY_MAX_MS;
+    nextTryAt = millis() + retryDelayMs;
+    Serial.printf("[bt] Pi not answering -- next try in %u s (heap free %u B)\n",
+                  (unsigned)(retryDelayMs / 1000), (unsigned)ESP.getFreeHeap());
   }
+  linkUp = ok;
+  linkEverTried = true;
   return ok;
 }
 
@@ -104,7 +136,10 @@ void logOutOfMemory() {
 }  // namespace
 
 void bluetoothClientBegin() {
-  SerialBT.begin("ESP32-Argus", /*isMaster=*/true);
+  // Classic Bluetooth only: this firmware never uses BLE, and disableBLE makes the core start the
+  // controller in classic mode and release the BLE controller's memory (btMemRelease), which
+  // leaves more heap for the classic stack.
+  SerialBT.begin("ESP32-Argus", /*isMaster=*/true, /*disableBLE=*/true);
   // This is the value the Pi needs in its .env (ESP32_BT_MAC): its pairing agent accepts only
   // this address. Not the MAC esptool or the upload log prints -- that's the WiFi base MAC.
   String mac = SerialBT.getBtAddressString();

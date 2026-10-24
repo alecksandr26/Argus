@@ -438,6 +438,7 @@ void setup() {
   xTaskCreatePinnedToCore(gpsTask, "gps", GPS_TASK_STACK, nullptr, 2, &gpsTaskHandle, 1);
   xTaskCreatePinnedToCore(senderTask, "sender", SENDER_TASK_STACK, nullptr, 1, &senderTaskHandle,
                           1);
+  logHealth();  // the heap left once everything is up, before the first Bluetooth connect
 }
 
 void loop() {
