@@ -85,7 +85,7 @@ async def reset_previous_run(client: BackendClient, token: str) -> None:
 
 async def provision_fleet(client: BackendClient, settings: Settings) -> list[VirtualTruckSpec]:
     """Logs in as root_admin ONCE, to create the fleet and mint each truck's own device key --
-    every subsequent status/alert write uses that truck's key instead, never this admin token
+    every subsequent report uses that truck's key instead, never this admin token
     again. See CLAUDE.md's "Auth" section for why this scoping matters and how it's enforced."""
     token = await client.login(settings.simulator_admin_email, settings.simulator_admin_password)
 

@@ -13,7 +13,22 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
+def warn_retired_settings(s=settings) -> list[str]:
+    """Settings that are still read but no longer do anything; returns the warnings it logged."""
+    warnings: list[str] = []
+    if s.simulator_medium_blip_probability is not None:
+        warnings.append(
+            "SIMULATOR_MEDIUM_BLIP_PROBABILITY is retired and ignored: `normal` routes now get at "
+            "most one blip each, with probability SIMULATOR_NORMAL_BLIP_CHANCE "
+            f"(now {s.simulator_normal_blip_chance})"
+        )
+    for message in warnings:
+        logger.warning(message)
+    return warnings
+
+
 async def run() -> None:
+    warn_retired_settings()
     async with BackendClient(settings.backend_base_url) as client:
         specs = await provision_fleet(client, settings)
         logger.info(
@@ -24,8 +39,11 @@ async def run() -> None:
             VirtualTruck(
                 client,
                 spec,
-                settings.simulator_status_interval_seconds,
-                settings.simulator_medium_blip_probability,
+                report_interval_seconds=settings.simulator_report_interval_s,
+                blip_chance=settings.simulator_normal_blip_chance,
+                outage_chance=settings.simulator_outage_chance,
+                gps_loss_chance=settings.simulator_gps_loss_chance,
+                outage_around_critical=settings.simulator_outage_around_critical,
             )
             for spec in specs
         ]

@@ -3,10 +3,12 @@ import {
   ROOT_ADMIN_EMAIL,
   ROOT_ADMIN_PASSWORD,
   BACKEND_URL,
+  gotoLoadedList,
   login,
   logout,
   uniqueSuffix,
   sha256Hex,
+  submitCreate,
 } from './helpers'
 
 /**
@@ -30,12 +32,13 @@ async function createUserViaAccessPanel(
     password: string
   },
 ) {
-  // Skip the navigation if we're already there — a caller may have just landed on /access via
-  // login()'s own redirect (see helpers.ts), and an unnecessary extra full-page reload right on
-  // top of that turned out to be a real source of flakiness running this for real.
-  if (!page.url().endsWith('/access')) {
-    await page.goto('/access')
-  }
+  // Always a fresh navigation that waits for the user list to load (gotoLoadedList), even when
+  // login() just landed on /access: Access prepends the created row locally, and an initial
+  // `GET /api/users` still in flight when the create lands would overwrite the list without it.
+  // (An earlier version skipped this navigation when already on /access, to avoid an extra
+  // reload racing the login; login() now waits for the redirect, and the list wait covers the
+  // rest.)
+  await gotoLoadedList(page, '/access', '/api/users')
   await page.getByRole('button', { name: opts.addButtonName }).click()
   await page.getByLabel('First name').fill(opts.firstName)
   await page.getByLabel('Last name').fill(opts.lastName)
@@ -45,12 +48,12 @@ async function createUserViaAccessPanel(
     await page.getByLabel('Role').selectOption(opts.role)
   }
   await page.getByLabel('Password').fill(opts.password)
-  await page.getByRole('button', { name: 'Create user' }).click()
-  // Wait for the create to actually round-trip before returning — a caller that immediately
-  // signs out (as several specs here do, to test the new account) can otherwise race the
-  // `POST /api/users` fetch and abort it before the backend ever sees it, a real bug hit
-  // running this for real (see users.spec.ts's git history / the account "created" here
-  // silently never existing, then 401ing on the very next login).
+  // Wait for the create to actually round-trip (201) before returning — a caller that
+  // immediately signs out (as several specs here do, to test the new account) can otherwise race
+  // the `POST /api/users` fetch and abort it before the backend ever sees it, a real bug hit
+  // running this for real (the account "created" here silently never existing, then 401ing on
+  // the very next login). Then the row itself, prepended to the already-loaded list.
+  await submitCreate(page, 'Create user', '/api/users')
   await expect(page.getByText(opts.email, { exact: true })).toBeVisible()
 }
 

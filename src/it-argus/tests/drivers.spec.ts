@@ -1,5 +1,13 @@
 import { test, expect, type Page } from '@playwright/test'
-import { ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD, login, logout, uniqueSuffix } from './helpers'
+import {
+  ROOT_ADMIN_EMAIL,
+  ROOT_ADMIN_PASSWORD,
+  gotoLoadedList,
+  login,
+  logout,
+  submitCreate,
+  uniqueSuffix,
+} from './helpers'
 
 /**
  * Exercises `POST /api/drivers` through the real Drivers screen, and the same write-gating
@@ -33,7 +41,7 @@ test('root_admin creates a driver via the Drivers screen', async ({ page }) => {
   await page.goto('/login')
   await login(page, ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD)
 
-  await page.goto('/drivers')
+  await gotoLoadedList(page, '/drivers', '/api/drivers')
   await page.getByRole('button', { name: 'Add driver' }).click()
   await fillDriverForm(page, {
     firstName: 'Dana',
@@ -41,7 +49,7 @@ test('root_admin creates a driver via the Drivers screen', async ({ page }) => {
     license,
     phone: '5552223333',
   })
-  await page.getByRole('button', { name: 'Create driver' }).click()
+  await submitCreate(page, 'Create driver', '/api/drivers')
 
   await expect(page.getByText(license, { exact: true })).toBeVisible()
 })
@@ -58,7 +66,7 @@ test('a guardian sees Drivers read-only: no create button, existing driver field
   await login(page, ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD)
 
   // Seed a driver this guardian will view.
-  await page.goto('/drivers')
+  await gotoLoadedList(page, '/drivers', '/api/drivers')
   await page.getByRole('button', { name: 'Add driver' }).click()
   await fillDriverForm(page, {
     firstName: 'Dana',
@@ -66,11 +74,11 @@ test('a guardian sees Drivers read-only: no create button, existing driver field
     license,
     phone: '5552223333',
   })
-  await page.getByRole('button', { name: 'Create driver' }).click()
+  await submitCreate(page, 'Create driver', '/api/drivers')
   await expect(page.getByText(license, { exact: true })).toBeVisible()
 
   // Seed the guardian account itself via Access.
-  await page.goto('/access')
+  await gotoLoadedList(page, '/access', '/api/users')
   await page.getByRole('button', { name: 'Add user' }).click()
   await page.getByLabel('First name').fill('Gary')
   await page.getByLabel('Last name').fill('Guardian')
@@ -78,13 +86,13 @@ test('a guardian sees Drivers read-only: no create button, existing driver field
   await page.getByLabel('Phone').fill('5559876543')
   await page.getByLabel('Role').selectOption('guardian')
   await page.getByLabel('Password').fill(guardianPassword)
-  await page.getByRole('button', { name: 'Create user' }).click()
-  await expect(page.getByText(guardianEmail)).toBeVisible()
+  await submitCreate(page, 'Create user', '/api/users')
+  await expect(page.getByText(guardianEmail, { exact: true })).toBeVisible()
 
   await logout(page)
   await login(page, guardianEmail, guardianPassword)
 
-  await page.goto('/drivers')
+  await gotoLoadedList(page, '/drivers', '/api/drivers')
   await expect(page.getByRole('button', { name: 'Add driver' })).toHaveCount(0)
 
   await page.getByText(license, { exact: true }).click()

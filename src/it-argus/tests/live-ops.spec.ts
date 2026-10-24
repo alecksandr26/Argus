@@ -1,184 +1,59 @@
-import { test, expect, type APIRequestContext } from '@playwright/test'
+import { test, expect } from '@playwright/test'
 import {
   ROOT_ADMIN_EMAIL,
   ROOT_ADMIN_PASSWORD,
   BACKEND_URL,
-  login,
-  restLogin,
+  CLOSED_AT,
+  FINAL_TWEAKS_UI,
+  NEEDS_FINAL_TWEAKS_UI,
+  alertEvent,
   authHeaders,
-  sha256Hex,
+  closeConfirmation,
+  closeDialog,
+  closeIncident,
+  createDriver,
+  createTruck,
+  createUserAndLogin,
+  getAlert,
+  incidentCard,
+  incidentOwnText,
+  listIncidents,
+  login,
+  postReportOk,
+  reportPoint,
+  restLogin,
+  rotateDeviceKey,
+  setupActiveTruck,
+  tierRegion,
   uniqueSuffix,
 } from './helpers'
 
 /**
- * Exercises the two screens neither `it-argus`'s own auth/users/trucks/drivers specs nor
- * `ui-argus`'s Vitest suite touch: Live operations (`LiveOps.tsx`) and Alert triage
- * (`AlertTriage.tsx`). Real ESP32 firmware doesn't exist yet (root CLAUDE.md), so
- * `Status_Route`/`Alert` records here are POSTed directly against the backend using a
- * root_admin JWT — the exact fallback `authorize_device_or_user()` documents for manual
- * testing/demo seeding without real hardware (see backend-argus's CLAUDE.md's "Device (ESP32)
- * auth"), the same path `scripts/seed_dev_data.py` and `src/simulator-argus` use. The route
- * itself is created through the real Routes screen (`TravelManagement.tsx`) for the one test
- * that exercises it — that screen always creates a route as `scheduled`, so it's promoted to
- * `in_progress` afterward via a REST `PUT`, standing in for a "trip started" event this UI has
- * no control for yet.
+ * Live operations (`LiveOps.tsx`) and the route/alert view (`RouteLiveView.tsx`), fed the way a
+ * real truck feeds them: every alert here is reported by the truck itself through
+ * `POST /api/devices/me/report` with its own device key (contracts C2), the only device write
+ * after the final tweaks. The panic button is gone, and so is the per-alert "review": a guardian
+ * closes the alert's *incident*, with a note when it's critical (C3.6).
+ *
+ * The UI half of some tests needs ui-argus's final-tweaks screens (incident feed, close dialog,
+ * alert-type labels), which merge after this spec; those parts are skipped unless
+ * `IT_FINAL_TWEAKS_UI=1` (see helpers.ts). The API checks always run.
  */
 
-async function createTruck(request: APIRequestContext, token: string, plate: string) {
-  const res = await request.post(`${BACKEND_URL}/api/trucks`, {
-    headers: authHeaders(token),
-    data: {
-      plate_number: plate,
-      brand: 'Kenworth',
-      model: 'T680',
-      company_number: `UNIT-${plate}`,
-      operative_status: 'active',
-    },
-  })
-  expect(res.status()).toBe(201)
-  return (await res.json()) as { id_truck: string; plate_number: string }
-}
-
-async function createDriver(request: APIRequestContext, token: string, license: string) {
-  const res = await request.post(`${BACKEND_URL}/api/drivers`, {
-    headers: authHeaders(token),
-    data: {
-      first_name: 'Dana',
-      last_name: 'Driver',
-      license_number: license,
-      license_expiration: '2030-01-01',
-      phone_number: '5552223333',
-      emergency_contact_name: 'Emergency Contact',
-      emergency_contact_phone: '5550001111',
-      blood_type: 'O+',
-      operative_status: 'on_route',
-    },
-  })
-  expect(res.status()).toBe(201)
-  return (await res.json()) as { id_driver: string; first_name: string; last_name: string }
-}
-
-async function createRouteRest(
-  request: APIRequestContext,
-  token: string,
-  opts: { driverId: string; truckId: string; origin: string; destination: string },
-) {
-  const res = await request.post(`${BACKEND_URL}/api/routes`, {
-    headers: authHeaders(token),
-    data: {
-      id_driver: opts.driverId,
-      id_truck: opts.truckId,
-      origin_name: opts.origin,
-      destination_name: opts.destination,
-      destination_coordinates: { lat: 19.04, lon: -98.2 },
-      estimated_departure: new Date().toISOString(),
-      operative_status: 'in_progress',
-    },
-  })
-  expect(res.status()).toBe(201)
-  return (await res.json()) as { id_route: string }
-}
-
-async function postStatus(
-  request: APIRequestContext,
-  token: string,
-  routeId: string,
-  vigilance: 'low' | 'medium' | 'critical',
-) {
-  const res = await request.post(`${BACKEND_URL}/api/routes/${routeId}/status`, {
-    headers: authHeaders(token),
-    data: {
-      current_coordinates: { lat: 19.05, lon: -98.25 },
-      current_speed: 85,
-      odometer: 1234.5,
-      vigilance,
-    },
-  })
-  expect(res.status()).toBe(201)
-  return await res.json()
-}
-
-async function postFusionAlert(
-  request: APIRequestContext,
-  token: string,
-  routeId: string,
-  opts: { alertType: string; severity: 'low' | 'medium' | 'critical' },
-) {
-  const res = await request.post(`${BACKEND_URL}/api/alerts`, {
-    headers: authHeaders(token),
-    data: {
-      id_route: routeId,
-      alert_type: opts.alertType,
-      severity_level: opts.severity,
-      source: 'fusion',
-      ai_metadata: { scores: { not_drowsy: 0.12, drowsy: 0.88 } },
-      grip_status: 'bad',
-      coordinates: { lat: 19.05, lon: -98.25 },
-      speed_at_event: 82,
-    },
-  })
-  expect(res.status()).toBe(201)
-  return (await res.json()) as { id_alert: string }
-}
-
-async function postPanicButtonAlert(
-  request: APIRequestContext,
-  token: string,
-  routeId: string,
-  opts: { alertType: string; severity: 'low' | 'medium' | 'critical' },
-) {
-  const res = await request.post(`${BACKEND_URL}/api/alerts`, {
-    headers: authHeaders(token),
-    data: {
-      id_route: routeId,
-      alert_type: opts.alertType,
-      severity_level: opts.severity,
-      source: 'panic_button',
-      coordinates: { lat: 19.05, lon: -98.25 },
-      speed_at_event: 60,
-    },
-  })
-  expect(res.status()).toBe(201)
-  return (await res.json()) as { id_alert: string }
-}
-
-async function createUserRest(
-  request: APIRequestContext,
-  token: string,
-  opts: { email: string; password: string; role: 'guardian' | 'admin' },
-) {
-  const res = await request.post(`${BACKEND_URL}/api/users`, {
-    headers: authHeaders(token),
-    data: {
-      email: opts.email,
-      password: sha256Hex(opts.password),
-      role: opts.role,
-      first_name: 'Test',
-      last_name: opts.role === 'guardian' ? 'Guardian' : 'Admin',
-      phone_number: '5551110000',
-    },
-  })
-  expect(res.status()).toBe(201)
-}
-
-test('root_admin creates a route via the Routes screen, and a fused critical alert shows live on the dashboard and in triage', async ({
+test('root_admin creates a route via the Routes screen, and a critical alert the truck reports shows live on the dashboard', async ({
   page,
   request,
 }) => {
   const suffix = uniqueSuffix()
   const plate = `LIVE-${suffix}`
-  const license = `LIC-${suffix}`
   const origin = `Origin-${suffix}`
   const destination = `Dest-${suffix}`
-  const alertType = `Fused drowsiness event ${suffix}`
 
   const rootToken = await restLogin(request, ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD)
   const truck = await createTruck(request, rootToken, plate)
-  const driver = await createDriver(request, rootToken, license)
+  const driver = await createDriver(request, rootToken, `LIC-${suffix}`)
 
-  // The route itself goes through the real Routes screen — this is the one test in this suite
-  // that exercises TravelManagement.tsx, since the other tests below are really about
-  // LiveOps/AlertTriage rather than route creation.
+  // The route itself goes through the real Routes screen (TravelManagement.tsx).
   await page.goto('/login')
   await login(page, ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD)
   await page.goto('/routes')
@@ -189,9 +64,8 @@ test('root_admin creates a route via the Routes screen, and a fused critical ale
   await page.getByRole('button', { name: 'Create route' }).click()
   await expect(page.getByText(`${origin} → ${destination}`, { exact: true })).toBeVisible()
 
-  // TravelManagement.tsx always creates a route as `scheduled` (OSRM-driven confirm is
-  // deferred, per that file's own comment) — promote it to `in_progress` via REST, standing in
-  // for a "trip started" event, so it shows up in `GET /api/routes/active`.
+  // The Routes screen creates the route `scheduled`; "start the trip" over REST, which sets
+  // `actual_departure = now` (C3.1): device events are matched to the route by that time.
   const listRes = await request.get(`${BACKEND_URL}/api/routes`, {
     headers: authHeaders(rootToken),
   })
@@ -205,141 +79,150 @@ test('root_admin creates a route via the Routes screen, and a fused critical ale
   })
   expect(putRes.status()).toBe(200)
 
-  await postStatus(request, rootToken, routeId, 'critical')
-  const alert = await postFusionAlert(request, rootToken, routeId, {
-    alertType,
-    severity: 'critical',
+  // The truck reports a GPS point and a critical "eyes closed" alert in one report.
+  const deviceKey = await rotateDeviceKey(request, rootToken, truck.id_truck)
+  const result = await postReportOk(request, deviceKey, {
+    points: [reportPoint({ age_s: 1, vigilance: 'critical' })],
+    event: alertEvent({ severity: 'critical', alert_type: 'eyes_closed' }),
   })
+  expect(result.points).toMatchObject({ stored: 1, route: routeId, status: 'ok' })
+  expect(result.event).toMatchObject({ status: 'created', reason: null })
+  expect(result.active_route).toBe(routeId)
 
-  // Live operations: the map marker, the alert feed entry, and severity filtering.
+  const alert = await getAlert(request, rootToken, result.event!.id_alert!)
+  expect(alert).toMatchObject({
+    id_route: routeId,
+    source: 'fusion',
+    severity_level: 'critical',
+    alert_type: 'eyes_closed',
+    delivery: 'live',
+    position_unknown: false,
+  })
+  expect(alert.id_incident).toBeTruthy()
+
+  // Live operations: the truck's marker is on the map.
   await page.goto('/')
-  await expect(
-    page.locator('.fleet-marker__plate', { hasText: plate }),
-  ).toBeVisible()
-  await expect(page.getByText(alertType, { exact: true })).toBeVisible()
+  await expect(page.locator('.fleet-marker__plate', { hasText: plate })).toBeVisible()
 
-  // No "Low" chip anymore (an Alert row is never posted as low), so filter to Medium instead.
-  await page.getByRole('button', { name: 'Medium', exact: true }).click()
-  await expect(page.getByText(alertType, { exact: true })).toHaveCount(0)
-  await page.getByRole('button', { name: 'Critical' }).click()
-  await expect(page.getByText(alertType, { exact: true })).toBeVisible()
+  if (FINAL_TWEAKS_UI) {
+    // The incident feed: the Critical tier holds this truck's incident, labelled by alert type.
+    const criticalTier = tierRegion(page, 'Critical')
+    await expect(criticalTier.getByText(plate).first()).toBeVisible()
+    await expect(incidentCard(criticalTier, 'Eyes closed').first()).toBeVisible()
 
-  // Clicking through to Alert triage — full detail rendering for a `fusion` alert.
-  await page.getByText(alertType, { exact: true }).click()
-  await expect(page).toHaveURL(`/alerts/${alert.id_alert}`)
-  await expect(page.getByRole('heading', { name: alertType, exact: true })).toBeVisible()
-  await expect(page.getByText('CRITICAL SEVERITY', { exact: true })).toBeVisible()
-  await expect(page.getByText('Camera + grip sensor (fused)')).toBeVisible()
-  await expect(page.getByText('Not drowsy', { exact: true })).toBeVisible()
-  await expect(page.getByText('Drowsy', { exact: true })).toBeVisible()
-  await expect(page.getByText('88%')).toBeVisible()
-  await expect(page.getByText('Steering-wheel grip')).toBeVisible()
+    // The route view lists the incident as open: its own card (not the `Open` filter chip)
+    // still offers Close incident to root_admin and carries no `Closed HH:MM` pill.
+    await page.goto(`/routes/${routeId}/live`)
+    const card = incidentCard(page, 'Eyes closed')
+    await expect(card).toBeVisible()
+    await expect(card.getByRole('button', { name: 'Close incident' })).toBeVisible()
+    await expect(card.getByText(CLOSED_AT)).toHaveCount(0)
+  }
 })
 
-test('a panic_button alert shows no AI scores, and a guardian can review it and have the review persist', async ({
+test('a no-face critical reported by the truck carries no scores, and a guardian closes its incident with a note', async ({
   page,
   request,
 }) => {
   const suffix = uniqueSuffix()
-  const alertType = `Panic button ${suffix}`
-  const guardianEmail = `guardian-liveops-${suffix}@argus.dev`
-  const guardianPassword = 'guardian-pass-123'
-  const noteText = `Checked in with driver, false alarm — ${suffix}`
-
   const rootToken = await restLogin(request, ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD)
-  const truck = await createTruck(request, rootToken, `LIVE-${suffix}`)
-  const driver = await createDriver(request, rootToken, `LIC-${suffix}`)
-  const route = await createRouteRest(request, rootToken, {
-    driverId: driver.id_driver,
-    truckId: truck.id_truck,
-    origin: `Origin-${suffix}`,
-    destination: `Dest-${suffix}`,
+  const truck = await setupActiveTruck(request, rootToken, suffix, { platePrefix: 'LIVE' })
+  const guardian = await createUserAndLogin(request, rootToken, 'guardian', `liveops-${suffix}`)
+  const note = `Called the driver, camera was blocked by a sun visor — ${suffix}`
+
+  // What replaced the panic test: an alert the truck itself reports. No face means no model
+  // output, so the scores are null (C1.5 / C2.1).
+  const result = await postReportOk(request, truck.deviceKey, {
+    points: [reportPoint({ age_s: 2, vigilance: 'critical' })],
+    event: alertEvent({
+      severity: 'critical',
+      alert_type: 'no_face',
+      ai_metadata: { model: 'parts-rules-v1', scores: null },
+    }),
   })
-  await postStatus(request, rootToken, route.id_route, 'critical')
-  const alert = await postPanicButtonAlert(request, rootToken, route.id_route, {
-    alertType,
-    severity: 'critical',
-  })
-  await createUserRest(request, rootToken, {
-    email: guardianEmail,
-    password: guardianPassword,
-    role: 'guardian',
-  })
+  expect(result.event?.status).toBe('created')
+  const alert = await getAlert(request, rootToken, result.event!.id_alert!)
+  expect(alert.alert_type).toBe('no_face')
+  expect(alert.source).toBe('fusion')
+  const [incident] = await listIncidents(request, rootToken, truck.routeId, 'open')
+  expect(incident.id_incident).toBe(alert.id_incident)
 
-  await page.goto('/login')
-  await login(page, guardianEmail, guardianPassword)
-  await page.goto(`/alerts/${alert.id_alert}`)
+  if (FINAL_TWEAKS_UI) {
+    await page.goto('/login')
+    await login(page, guardian.email, guardian.password)
+    await page.goto(`/routes/${truck.routeId}/live`)
+    // The incident is open: its card is listed, with its own Close incident button and no
+    // `Closed HH:MM` pill (the `Open` filter chip says nothing about the incident itself).
+    const card = incidentCard(page, 'Driver not visible')
+    await expect(card).toBeVisible()
+    await expect(card.getByText(CLOSED_AT)).toHaveCount(0)
 
-  await expect(page.getByRole('heading', { name: alertType, exact: true })).toBeVisible()
-  await expect(page.getByText('CRITICAL SEVERITY', { exact: true })).toBeVisible()
-  await expect(page.getByText('Trigger source')).toBeVisible()
-  await expect(page.getByText('Driver-activated panic button', { exact: true })).toBeVisible()
-  // No camera/grip evaluation happens for a panic_button alert — the score bars/labels
-  // `Model output` would render for a `fusion` alert must be absent here.
-  await expect(page.getByText('Not drowsy', { exact: true })).toHaveCount(0)
-  await expect(page.getByText('Drowsy', { exact: true })).toHaveCount(0)
+    // A critical incident can't be closed without a note.
+    await card.getByRole('button', { name: 'Close incident' }).click()
+    const dialog = closeDialog(page)
+    await dialog.getByRole('button', { name: 'Close incident' }).click()
+    await expect(
+      page.getByText('A note is required to close a critical incident'),
+    ).toBeVisible()
+    await dialog.getByRole('textbox').fill(note)
+    await dialog.getByRole('button', { name: 'Close incident' }).click()
+    await expect(dialog).toBeHidden()
+    // The view stays where it was (C3.7 [sync 3]: no tab switch): the confirmation shows, the
+    // Open chip is still the selected one, and the incident is no longer in that list.
+    await expect(closeConfirmation(page)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Open', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    await expect(incidentCard(page, 'Driver not visible')).toHaveCount(0)
 
-  // Guardian is one of the two roles allowed to review (root_admin, guardian) — review, save,
-  // then reload to prove it round-tripped through the real backend, not just local state.
-  await page.getByLabel('Mark alert as reviewed').check()
-  await page.getByPlaceholder('Operator notes — what was observed, what action was taken…').fill(
-    noteText,
-  )
-  await page.getByRole('button', { name: 'Save and close alert' }).click()
-  await expect(page.getByRole('button', { name: 'Saved' })).toBeVisible()
+    // It round-tripped through the backend, not just local state: after a reload the incident
+    // is under the Closed filter, with its close time and note.
+    await page.reload()
+    await page.getByRole('button', { name: 'Closed', exact: true }).click()
+    const closedCard = incidentCard(page, 'Driver not visible')
+    await expect(incidentOwnText(closedCard, CLOSED_AT)).toBeVisible()
+    await expect(closedCard.getByText(note)).toBeVisible()
+  } else {
+    // Without the new UI, close it over REST as the same guardian.
+    const closed = await closeIncident(request, guardian.token, incident.id_incident, note)
+    expect(closed.status).toBe(200)
+  }
 
-  await page.reload()
-  await expect(page.getByLabel('Mark alert as reviewed')).toBeChecked()
-  await expect(
-    page.getByPlaceholder('Operator notes — what was observed, what action was taken…'),
-  ).toHaveValue(noteText)
+  const [closedIncident] = await listIncidents(request, rootToken, truck.routeId, 'closed')
+  expect(closedIncident.id_incident).toBe(incident.id_incident)
+  expect(closedIncident.close_note).toBe(note)
+  const closedAlert = await getAlert(request, rootToken, alert.id_alert)
+  expect(closedAlert.closed_at).toBeTruthy()
+  expect(closedAlert.reviewed_by_operator).toBe(true)
 })
 
-test('an admin sees alert triage read-only, with no review controls', async ({
-  page,
-  request,
-}) => {
+test('an admin sees open incidents but cannot close them', async ({ page, request }) => {
   const suffix = uniqueSuffix()
-  const alertType = `Ops check ${suffix}`
-  const adminEmail = `operator-liveops-${suffix}@argus.dev`
-  const adminPassword = 'operator-pass-123'
-
   const rootToken = await restLogin(request, ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD)
-  const truck = await createTruck(request, rootToken, `LIVE-${suffix}`)
-  const driver = await createDriver(request, rootToken, `LIC-${suffix}`)
-  const route = await createRouteRest(request, rootToken, {
-    driverId: driver.id_driver,
-    truckId: truck.id_truck,
-    origin: `Origin-${suffix}`,
-    destination: `Dest-${suffix}`,
-  })
-  await postStatus(request, rootToken, route.id_route, 'medium')
-  const alert = await postFusionAlert(request, rootToken, route.id_route, {
-    alertType,
-    severity: 'medium',
-  })
-  await createUserRest(request, rootToken, {
-    email: adminEmail,
-    password: adminPassword,
-    role: 'admin',
-  })
+  const truck = await setupActiveTruck(request, rootToken, suffix, { platePrefix: 'LIVE' })
+  const admin = await createUserAndLogin(request, rootToken, 'admin', `liveops-${suffix}`)
 
-  await page.goto('/login')
-  await login(page, adminEmail, adminPassword)
-  await page.goto(`/alerts/${alert.id_alert}`)
+  await postReportOk(request, truck.deviceKey, {
+    points: [],
+    event: alertEvent({ severity: 'medium', alert_type: 'head_down' }),
+  })
+  const [incident] = await listIncidents(request, admin.token, truck.routeId, 'open')
+  expect(incident.severity).toBe('medium')
 
-  await expect(page.getByRole('heading', { name: alertType, exact: true })).toBeVisible()
-  await expect(page.getByText('MEDIUM SEVERITY', { exact: true })).toBeVisible()
-  await expect(page.getByText('Not yet reviewed')).toBeVisible()
+  // Closing is guardian + root_admin only (C3.6): an admin gets 403, even with a note.
+  const res = await closeIncident(request, admin.token, incident.id_incident, 'Looks fine')
+  expect(res.status).toBe(403)
+  const [stillOpen] = await listIncidents(request, rootToken, truck.routeId, 'open')
+  expect(stillOpen.id_incident).toBe(incident.id_incident)
 
-  // `canReview` is root_admin/guardian only (`AlertTriage.tsx`) — an admin gets none of these.
-  await expect(page.getByText('Immediate actions')).toHaveCount(0)
-  await expect(page.getByLabel('Mark alert as reviewed')).toHaveCount(0)
-  await expect(
-    page.getByPlaceholder('Operator notes — what was observed, what action was taken…'),
-  ).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Save and close alert' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'De-escalate', exact: true })).toHaveCount(0)
+  if (FINAL_TWEAKS_UI) {
+    await page.goto('/login')
+    await login(page, admin.email, admin.password)
+    await page.goto(`/routes/${truck.routeId}/live`)
+    await expect(page.getByText('Head down', { exact: true }).first()).toBeVisible()
+    await expect(page.getByRole('button', { name: /close incident/i })).toHaveCount(0)
+  }
 })
 
 test('a guardian de-escalates a critical alert, and the original severity and reason persist', async ({
@@ -347,34 +230,20 @@ test('a guardian de-escalates a critical alert, and the original severity and re
   request,
 }) => {
   const suffix = uniqueSuffix()
-  const alertType = `Escalated check ${suffix}`
-  const guardianEmail = `guardian-deesc-${suffix}@argus.dev`
-  const guardianPassword = 'guardian-pass-123'
   const reason = `Called driver, eyes were fine — ${suffix}`
-
   const rootToken = await restLogin(request, ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD)
-  const truck = await createTruck(request, rootToken, `LIVE-${suffix}`)
-  const driver = await createDriver(request, rootToken, `LIC-${suffix}`)
-  const route = await createRouteRest(request, rootToken, {
-    driverId: driver.id_driver,
-    truckId: truck.id_truck,
-    origin: `Origin-${suffix}`,
-    destination: `Dest-${suffix}`,
+  const truck = await setupActiveTruck(request, rootToken, suffix, { platePrefix: 'LIVE' })
+  const guardian = await createUserAndLogin(request, rootToken, 'guardian', `deesc-${suffix}`)
+
+  const result = await postReportOk(request, truck.deviceKey, {
+    points: [reportPoint({ vigilance: 'critical' })],
+    event: alertEvent({ severity: 'critical', alert_type: 'eyes_closed' }),
   })
-  await postStatus(request, rootToken, route.id_route, 'critical')
-  const alert = await postFusionAlert(request, rootToken, route.id_route, {
-    alertType,
-    severity: 'critical',
-  })
-  await createUserRest(request, rootToken, {
-    email: guardianEmail,
-    password: guardianPassword,
-    role: 'guardian',
-  })
+  const alertId = result.event!.id_alert!
 
   await page.goto('/login')
-  await login(page, guardianEmail, guardianPassword)
-  await page.goto(`/alerts/${alert.id_alert}`)
+  await login(page, guardian.email, guardian.password)
+  await page.goto(`/alerts/${alertId}`)
   await expect(page.getByText('CRITICAL SEVERITY', { exact: true })).toBeVisible()
 
   const submit = page.getByRole('button', { name: 'De-escalate', exact: true })
@@ -384,12 +253,44 @@ test('a guardian de-escalates a critical alert, and the original severity and re
   await submit.click()
 
   await expect(page.getByText('MEDIUM SEVERITY', { exact: true })).toBeVisible()
-  await expect(page.getByTestId('deescalation-note')).toContainText('De-escalated from Critical to Medium')
+  await expect(page.getByTestId('deescalation-note')).toContainText(
+    'De-escalated from Critical to Medium',
+  )
   await expect(page.getByTestId('deescalation-note')).toContainText(reason)
 
-  // Survives a reload (real backend round trip), and de-escalating counts as a review.
+  // Survives a reload (real backend round trip).
   await page.reload()
   await expect(page.getByText('MEDIUM SEVERITY', { exact: true })).toBeVisible()
   await expect(page.getByTestId('deescalation-note')).toContainText(reason)
-  await expect(page.getByLabel('Mark alert as reviewed')).toBeChecked()
+
+  // De-escalating counts as a review, and recomputes the incident's severity (C3.4); the
+  // incident stays open (closing is a separate, explicit step).
+  const alert = await getAlert(request, rootToken, alertId)
+  expect(alert.severity_level).toBe('medium')
+  expect(alert.reviewed_by_operator).toBe(true)
+  const [incident] = await listIncidents(request, rootToken, truck.routeId, 'open')
+  expect(incident.id_incident).toBe(alert.id_incident)
+  expect(incident.severity).toBe('medium')
+})
+
+test.describe('final-tweaks UI', () => {
+  test.skip(!FINAL_TWEAKS_UI, NEEDS_FINAL_TWEAKS_UI)
+
+  test('a replayed critical reads "Recovered after lost connection" in the feed', async ({
+    page,
+    request,
+  }) => {
+    const suffix = uniqueSuffix()
+    const rootToken = await restLogin(request, ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD)
+    const truck = await setupActiveTruck(request, rootToken, suffix, { platePrefix: 'LIVE' })
+    await postReportOk(request, truck.deviceKey, {
+      points: [],
+      event: alertEvent({ age_s: 300, delivery: 'dlq', queued_seconds: 240 }),
+    })
+
+    await page.goto('/login')
+    await login(page, ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD)
+    await page.goto(`/routes/${truck.routeId}/live`)
+    await expect(page.getByText('Recovered after lost connection').first()).toBeVisible()
+  })
 })

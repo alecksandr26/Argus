@@ -1,5 +1,13 @@
 import { test, expect } from '@playwright/test'
-import { ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD, login, logout, uniqueSuffix } from './helpers'
+import {
+  ROOT_ADMIN_EMAIL,
+  ROOT_ADMIN_PASSWORD,
+  gotoLoadedList,
+  login,
+  logout,
+  submitCreate,
+  uniqueSuffix,
+} from './helpers'
 
 /**
  * Exercises `POST /api/trucks` through the real Fleet screen, and the write-gating that keeps a
@@ -14,13 +22,13 @@ test('root_admin creates a truck via the Fleet screen', async ({ page }) => {
   await page.goto('/login')
   await login(page, ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD)
 
-  await page.goto('/fleet')
+  await gotoLoadedList(page, '/fleet', '/api/trucks')
   await page.getByRole('button', { name: 'Add truck' }).click()
   await page.getByLabel('Plate').fill(plate)
   await page.getByLabel('Make').fill('Kenworth')
   await page.getByLabel('Model').fill('T680')
   await page.getByLabel('Unit no.').fill(`UNIT-${uniqueSuffix()}`)
-  await page.getByRole('button', { name: 'Create truck' }).click()
+  await submitCreate(page, 'Create truck', '/api/trucks')
 
   await expect(page.getByText(plate, { exact: true })).toBeVisible()
 })
@@ -37,17 +45,17 @@ test('a guardian sees Fleet read-only: no create button, existing truck fields d
   await login(page, ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD)
 
   // Seed a truck this guardian will view.
-  await page.goto('/fleet')
+  await gotoLoadedList(page, '/fleet', '/api/trucks')
   await page.getByRole('button', { name: 'Add truck' }).click()
   await page.getByLabel('Plate').fill(plate)
   await page.getByLabel('Make').fill('Kenworth')
   await page.getByLabel('Model').fill('T680')
   await page.getByLabel('Unit no.').fill(`UNIT-${suffix}`)
-  await page.getByRole('button', { name: 'Create truck' }).click()
+  await submitCreate(page, 'Create truck', '/api/trucks')
   await expect(page.getByText(plate, { exact: true })).toBeVisible()
 
   // Seed the guardian account itself via Access.
-  await page.goto('/access')
+  await gotoLoadedList(page, '/access', '/api/users')
   await page.getByRole('button', { name: 'Add user' }).click()
   await page.getByLabel('First name').fill('Gary')
   await page.getByLabel('Last name').fill('Guardian')
@@ -55,13 +63,13 @@ test('a guardian sees Fleet read-only: no create button, existing truck fields d
   await page.getByLabel('Phone').fill('5559876543')
   await page.getByLabel('Role').selectOption('guardian')
   await page.getByLabel('Password').fill(guardianPassword)
-  await page.getByRole('button', { name: 'Create user' }).click()
-  await expect(page.getByText(guardianEmail)).toBeVisible()
+  await submitCreate(page, 'Create user', '/api/users')
+  await expect(page.getByText(guardianEmail, { exact: true })).toBeVisible()
 
   await logout(page)
   await login(page, guardianEmail, guardianPassword)
 
-  await page.goto('/fleet')
+  await gotoLoadedList(page, '/fleet', '/api/trucks')
   await expect(page.getByRole('button', { name: 'Add truck' })).toHaveCount(0)
 
   await page.getByText(plate, { exact: true }).click()

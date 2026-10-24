@@ -1,15 +1,18 @@
 """Thin async wrapper around backend-argus's REST API.
 
-Every request/response shape here is copied verbatim from backend-argus's own Pydantic schemas
-(`app/schemas/*.py`) -- there is no separate contract to design for this module, just the real
-one to reuse. See this module's CLAUDE.md for why.
+Provisioning shapes are copied from backend-argus's own Pydantic schemas (`app/schemas/*.py`);
+the device write is the combined report of the frozen final-tweaks contracts (C2,
+`docs/designs/final-tweaks-contracts.md`), the same endpoint the ESP32 firmware posts to.
 """
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import httpx
+
+from .constants import ATTEMPT_TIMEOUT_S
 
 
 def sha256_hex(raw_password: str) -> str:
@@ -113,27 +116,30 @@ class BackendClient:
 
     # --- ongoing simulated traffic (per-truck device key) -----------------------------------
 
-    async def post_status(self, device_key: str, route_id: str, body: dict) -> dict:
-        resp = await self._client.post(
-            f"/api/routes/{route_id}/status", json=body, headers=self._device(device_key)
-        )
-        resp.raise_for_status()
-        return resp.json()
+    async def post_report(self, device_key: str, body: dict) -> "ReportResponse":
+        """`POST /api/devices/me/report` (contracts C2), the only device write. Unlike the
+        provisioning calls above this never raises on an HTTP status: every status (200, 401,
+        422, 429, 5xx) means something specific to the sender (`report.classify_response`).
+        Transport errors (connection refused, timeout) still raise `httpx.TransportError`.
 
-    async def post_alert(self, device_key: str, body: dict) -> dict:
+        One attempt gives up after `ATTEMPT_TIMEOUT_S` (8 s, the ESP32's
+        `ATTEMPT_TIMEOUT_WIFI_MS`), not the client's 10 s default for provisioning calls. That is
+        above the backend's 5 s route-lock wait, so its 503 for a busy lock still arrives within
+        the attempt (contracts C2.3)."""
         resp = await self._client.post(
-            "/api/alerts", json=body, headers=self._device(device_key)
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-    async def resolve_alert(self, device_key: str, alert_id: str, resolved_at_iso: str) -> dict:
-        # A device key may set ONLY resolved_at (app/routers/alerts.py's review_alert) --
-        # never reviewed_by_operator/operator_notes, which stay a human guardian's job.
-        resp = await self._client.put(
-            f"/api/alerts/{alert_id}",
-            json={"resolved_at": resolved_at_iso},
+            "/api/devices/me/report",
+            json=body,
             headers=self._device(device_key),
+            timeout=ATTEMPT_TIMEOUT_S,
         )
-        resp.raise_for_status()
-        return resp.json()
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = None
+        return ReportResponse(status_code=resp.status_code, body=payload)
+
+
+@dataclass(frozen=True)
+class ReportResponse:
+    status_code: int
+    body: Optional[Any]

@@ -1,9 +1,11 @@
 """Unit tests for BackendClient, against a mocked transport -- no real backend/network needed.
 
-The two things worth asserting mechanically, not just by inspection: (1) a login request never
-carries the raw password, matching backend-argus's Sha256HexDigest contract; (2) device-key
-writes use X-Device-Api-Key and never an Authorization header, matching authorize_device_or_user
-so a simulated truck can't accidentally rely on the admin JWT for its ongoing traffic.
+The things worth asserting mechanically, not just by inspection: (1) a login request never
+carries the raw password, matching backend-argus's Sha256HexDigest contract; (2) the device
+report uses X-Device-Api-Key and never an Authorization header (the report endpoint takes a device
+key only, contracts C2), so a simulated truck can't accidentally rely on the admin JWT for its
+ongoing traffic; (3) the report call hands every HTTP status back to the sender instead of
+raising, since each one means something different (C2.3).
 """
 from __future__ import annotations
 
@@ -57,63 +59,100 @@ async def test_rotate_key_uses_bearer_token_and_returns_plaintext_key():
     assert captured[0].url.path == "/api/trucks/abc/rotate-key"
 
 
-async def test_post_status_uses_device_header_not_bearer():
-    captured: list[httpx.Request] = []
-    transport = _mock_transport(captured, {"id_status_route": "s1"})
-    client = BackendClient("http://backend", transport=transport)
-
-    await client.post_status(
-        "device-key",
-        "route1",
+_REPORT_BODY = {
+    "points": [
         {
-            "current_coordinates": {"lat": 1.0, "lon": 2.0},
-            "current_speed": 80.0,
-            "odometer": 10.0,
+            "age_s": 4.0,
+            "lat": 20.6597,
+            "lon": -103.3496,
+            "speed": 62.5,
             "vigilance": "low",
+            "last_known": False,
+            "location_age_s": 0,
+        }
+    ]
+}
+
+
+async def test_post_report_uses_device_header_not_bearer():
+    captured: list[httpx.Request] = []
+    transport = _mock_transport(
+        captured,
+        {
+            "points": {"stored": 1, "route": "r1", "status": "ok"},
+            "event": None,
+            "active_route": "r1",
         },
     )
+    client = BackendClient("http://backend", transport=transport)
+
+    response = await client.post_report("device-key", _REPORT_BODY)
     await client.aclose()
 
     request = captured[0]
+    assert request.method == "POST"
+    assert request.url.path == "/api/devices/me/report"
     assert request.headers["x-device-api-key"] == "device-key"
     assert "authorization" not in request.headers
-    assert request.url.path == "/api/routes/route1/status"
+    assert json.loads(request.content) == _REPORT_BODY
+    assert response.status_code == 200
+    assert response.body["active_route"] == "r1"
 
 
-async def test_post_alert_panic_shape_omits_ai_metadata_and_grip_status():
+@pytest.mark.parametrize("status_code", [401, 422, 429, 503])
+async def test_post_report_returns_error_statuses_instead_of_raising(status_code):
+    # Every status means something to the sender (C2.3), so the client must hand it back.
     captured: list[httpx.Request] = []
-    transport = _mock_transport(captured, {"id_alert": "a1"})
+    transport = _mock_transport(captured, {"detail": "nope"}, status_code=status_code)
     client = BackendClient("http://backend", transport=transport)
 
-    await client.post_alert(
-        "device-key",
-        {
-            "id_route": "r1",
-            "alert_type": "panic_button",
-            "severity_level": "critical",
-            "source": "panic_button",
-            "ai_metadata": None,
-            "grip_status": None,
-            "coordinates": {"lat": 1.0, "lon": 2.0},
-            "speed_at_event": 0.0,
-        },
-    )
+    response = await client.post_report("device-key", _REPORT_BODY)
     await client.aclose()
 
-    body = json.loads(captured[0].content)
-    assert body["source"] == "panic_button"
-    assert body["ai_metadata"] is None
-    assert body["grip_status"] is None
+    assert response.status_code == status_code
+    assert response.body == {"detail": "nope"}
 
 
-async def test_resolve_alert_sends_only_resolved_at():
-    captured: list[httpx.Request] = []
-    transport = _mock_transport(captured, {"id_alert": "a1", "resolved_at": "2026-01-01T00:00:00Z"})
+async def test_post_report_tolerates_a_non_json_body():
+    transport = httpx.MockTransport(lambda request: httpx.Response(502, text="Bad Gateway"))
     client = BackendClient("http://backend", transport=transport)
 
-    await client.resolve_alert("device-key", "a1", "2026-01-01T00:00:00+00:00")
+    response = await client.post_report("device-key", _REPORT_BODY)
     await client.aclose()
 
-    body = json.loads(captured[0].content)
-    assert set(body.keys()) == {"resolved_at"}
-    assert captured[0].headers["x-device-api-key"] == "device-key"
+    assert response.status_code == 502
+    assert response.body is None
+
+
+async def test_post_report_lets_transport_errors_raise():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = BackendClient("http://backend", transport=httpx.MockTransport(handler))
+    with pytest.raises(httpx.TransportError):
+        await client.post_report("device-key", _REPORT_BODY)
+    await client.aclose()
+
+
+async def test_post_report_gives_up_after_8_s_like_the_esp32_on_wifi():
+    # ATTEMPT_TIMEOUT_WIFI_MS = 8000 (contracts C4), not the client's 10 s default.
+    captured: list[httpx.Request] = []
+    transport = _mock_transport(captured, {"points": {}, "event": None, "active_route": None})
+    client = BackendClient("http://backend", transport=transport)
+
+    await client.post_report("device-key", _REPORT_BODY)
+    await client.aclose()
+
+    assert captured[0].extensions["timeout"] == {
+        "connect": 8.0,
+        "read": 8.0,
+        "write": 8.0,
+        "pool": 8.0,
+    }
+
+
+def test_legacy_device_writes_are_gone():
+    # The report endpoint is the only device write (C2): no status ping, no alert create, no
+    # device resolve (the driver OK is an event in the report now).
+    for name in ("post_status", "post_alert", "resolve_alert"):
+        assert not hasattr(BackendClient, name)
