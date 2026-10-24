@@ -43,6 +43,8 @@ TRUCK_PLATE_ENV = "ARGUS_TRUCK_PLATE"
 ALERT_PHONE_ENV = "ARGUS_ALERT_PHONE"
 # E.164, the same regex the backend, the dashboard and the firmware check (contract C1).
 E164_PHONE = re.compile(r"^\+[1-9][0-9]{7,14}$")
+# The ESP32 ignores a longer plate (contract C1.4); its SMS then names the truck id instead.
+ESP32_MAX_PLATE_LEN = 16
 
 # Optional network settings: wire field name -> env var.
 NETWORK_ENV_VARS = {
@@ -59,7 +61,7 @@ logger = logging.getLogger(__name__)
 def mask_phone(phone: str) -> str:
     """`+523312345678` -> `+52******5678`: the last 4 digits (and an E.164 number's `+` and first
     two digits) stay, enough to tell which phone is set without printing it."""
-    keep_start = 3 if E164_PHONE.match(phone) else 0
+    keep_start = 3 if _is_e164(phone) else 0
     if len(phone) <= keep_start + 4:
         return "*" * len(phone)
     return phone[:keep_start] + "*" * (len(phone) - keep_start - 4) + phone[-4:]
@@ -124,16 +126,39 @@ class DeviceConfig:
             device_api_key=values[DEVICE_API_KEY_ENV],
             backend_url=values[BACKEND_URL_ENV].rstrip("/"),
             **network,
-            truck_plate=env.get(TRUCK_PLATE_ENV, "").strip() or None,
+            truck_plate=_truck_plate(env.get(TRUCK_PLATE_ENV, "").strip()),
             alert_phone=_alert_phone(env.get(ALERT_PHONE_ENV, "").strip()),
         )
+
+
+def _is_e164(phone: str) -> bool:
+    # fullmatch, not match: `$` on its own also matches before a trailing newline, which the
+    # backend, dashboard and firmware checks don't accept.
+    return E164_PHONE.fullmatch(phone) is not None
+
+
+def _truck_plate(plate: str) -> str | None:
+    """The plate the SMS names, or `None` when unset. A plate longer than the ESP32 accepts is
+    still sent (the contract leaves that check to the ESP32) but warned about here, so the reason
+    the SMS names the truck id instead is visible on the Pi."""
+    if not plate:
+        return None
+    if len(plate) > ESP32_MAX_PLATE_LEN:
+        logger.warning(
+            "%s=%r is longer than %d characters: the ESP32 ignores it and its SMS names the "
+            "truck id instead",
+            TRUCK_PLATE_ENV,
+            plate,
+            ESP32_MAX_PLATE_LEN,
+        )
+    return plate
 
 
 def _alert_phone(phone: str) -> str | None:
     """The SMS phone, or `None` when unset or not E.164 (warned, masked: no SMS until fixed)."""
     if not phone:
         return None
-    if not E164_PHONE.match(phone):
+    if not _is_e164(phone):
         logger.warning(
             "Ignoring %s=%s: not an E.164 number (+, then 8 to 15 digits) -- the ESP32 sends no "
             "critical-alert SMS until it's fixed in argus-device.env",

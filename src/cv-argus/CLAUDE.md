@@ -890,6 +890,8 @@ stripped, and neither takes part in the all-three-or-none check. The phone must 
 that doesn't is logged as a warning and dropped, never raised, so a typo costs the SMS and not
 the truck's alerts. The phone is personal data: `repr()` shows it through `mask_phone`
 (`+52******5678`, last 4 digits kept), the startup log line too, and nothing logs it in full.
+A plate longer than 16 characters is still sent but warned about: the ESP32 ignores it (C1.4)
+and its SMS names the truck id instead.
 An older ESP32 ignores the two extra JSON fields.
 `tests/test_sender_device_config.py` covers all of it over fakes (including the `setsockopt`
 call); the real RFCOMM security handshake is unverified until real Pi + ESP32 hardware runs it.

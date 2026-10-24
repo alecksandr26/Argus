@@ -111,6 +111,26 @@ class TestSmsFields:
         for phone in ("+12345678", "+123456789012345"):
             assert DeviceConfig.from_env({**ENV, "ARGUS_ALERT_PHONE": phone}).alert_phone == phone
 
+    def test_phone_with_a_trailing_newline_is_not_e164(self):
+        # `re.match` with `$` accepts "+52...\n"; the backend, UI and firmware checks don't, and
+        # the mask mustn't treat it as a valid number either.
+        assert device_config._alert_phone(self.PHONE + "\n") is None
+        assert device_config.mask_phone(self.PHONE + "\n").startswith("*")
+
+    def test_plate_longer_than_the_esp32_takes_is_kept_but_warned(self, caplog):
+        plate = "X" * (device_config.ESP32_MAX_PLATE_LEN + 1)
+        with caplog.at_level("WARNING"):
+            config = DeviceConfig.from_env({**ENV, "ARGUS_TRUCK_PLATE": plate})
+        assert config.truck_plate == plate
+        assert "ARGUS_TRUCK_PLATE" in caplog.text
+
+    def test_plate_of_16_is_not_warned(self, caplog):
+        plate = "X" * device_config.ESP32_MAX_PLATE_LEN
+        with caplog.at_level("WARNING"):
+            config = DeviceConfig.from_env({**ENV, "ARGUS_TRUCK_PLATE": plate})
+        assert config.truck_plate == plate
+        assert "ARGUS_TRUCK_PLATE" not in caplog.text
+
     def test_partial_credential_rule_unaffected(self):
         # Plate and phone alone are not a config...
         assert DeviceConfig.from_env(self.SMS) is None
