@@ -94,14 +94,16 @@ export const delivery: Record<AlertDelivery, Badge | null> = {
   dlq: { label: REPLAYED_LABEL, tone: 'warn' },
 }
 
-/** Display names for `Alert.alert_type` (the Pi rule reasons, C1.4/C3.7). `panic_button` stays
- * for old rows only. Use `alertTypeLabel()`, which falls back to the raw value. */
+/** Display names for `Alert.alert_type` (the Pi rule reasons, C1.4/C3.7, plus the ESP32's own
+ * `no_grip` from the wheel's grip sensor). `panic_button` stays for old rows only. Use
+ * `alertTypeLabel()`, which falls back to the raw value. */
 export const ALERT_TYPE_LABEL: Record<string, string> = {
   eyes_closed: 'Eyes closed',
   yawn_eyes_closed: 'Eyes closed after yawning',
   head_down: 'Head down',
   head_down_eyes_closed: 'Head down, eyes closed',
   no_face: 'Driver not visible',
+  no_grip: 'Hands off the wheel',
   panic_button: 'Panic button',
 }
 

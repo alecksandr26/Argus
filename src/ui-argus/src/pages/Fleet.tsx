@@ -10,6 +10,7 @@ import { createTruck, listTrucks, updateTruck } from '../api/trucks'
 import { ApiError } from '../api/client'
 import { relativeTime } from '../utils/format'
 import { truckStatus } from '../utils/status'
+import { ALERT_PHONE_EXAMPLE, alertPhoneError } from '../utils/phone'
 import type { Truck, TruckStatus } from '../types'
 
 /**
@@ -35,6 +36,7 @@ type Draft = {
   company_number: string
   raspberry_pi_mac: string
   esp32_id: string
+  alert_phone: string
   operative_status: TruckStatus
 }
 
@@ -46,6 +48,7 @@ const blankDraft = (): Draft => ({
   company_number: '',
   raspberry_pi_mac: '',
   esp32_id: '',
+  alert_phone: '',
   operative_status: 'inactive',
 })
 
@@ -57,6 +60,7 @@ const toDraft = (t: Truck): Draft => ({
   company_number: t.company_number,
   raspberry_pi_mac: t.raspberry_pi_mac ?? '',
   esp32_id: t.esp32_id ?? '',
+  alert_phone: t.alert_phone ?? '',
   operative_status: t.operative_status,
 })
 
@@ -72,6 +76,7 @@ export default function Fleet() {
   const [draft, setDraft] = useState<Draft | null>(null)
   const [mode, setMode] = useState<'edit' | 'create' | null>(null)
   const [saving, setSaving] = useState(false)
+  const [phoneError, setPhoneError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -109,11 +114,18 @@ export default function Fleet() {
   function selectRow(t: Truck) {
     setDraft(toDraft(t))
     setMode('edit')
+    setPhoneError(null)
   }
 
   function startCreate() {
     setDraft(blankDraft())
     setMode('create')
+    setPhoneError(null)
+  }
+
+  function changeDraft(d: Draft) {
+    if (draft && d.alert_phone !== draft.alert_phone) setPhoneError(null)
+    setDraft(d)
   }
 
   function replaceTruck(updated: Truck) {
@@ -127,6 +139,11 @@ export default function Fleet() {
 
   async function save() {
     if (!draft) return
+    const invalidPhone = alertPhoneError(draft.alert_phone)
+    if (invalidPhone) {
+      setPhoneError(invalidPhone)
+      return
+    }
     setSaving(true)
     setError(null)
     const input = {
@@ -136,6 +153,8 @@ export default function Fleet() {
       company_number: draft.company_number,
       raspberry_pi_mac: draft.raspberry_pi_mac || null,
       esp32_id: draft.esp32_id || null,
+      // null clears it on update; the backend stores "" as null too.
+      alert_phone: draft.alert_phone.trim() || null,
       operative_status: draft.operative_status,
     }
     try {
@@ -277,7 +296,8 @@ export default function Fleet() {
           token={token}
           onTruckChange={replaceTruck}
           saving={saving}
-          onChange={setDraft}
+          phoneError={phoneError}
+          onChange={changeDraft}
           onCancel={closePanel}
           onSave={save}
         />
@@ -294,6 +314,7 @@ function EditPanel({
   token,
   onTruckChange,
   saving,
+  phoneError,
   onChange,
   onCancel,
   onSave,
@@ -306,6 +327,7 @@ function EditPanel({
   token: string
   onTruckChange: (t: Truck) => void
   saving: boolean
+  phoneError: string | null
   onChange: (d: Draft) => void
   onCancel: () => void
   onSave: () => void
@@ -431,6 +453,28 @@ function EditPanel({
           onChange={(e) => set({ esp32_id: e.target.value })}
         />
       </label>
+      <label className="field">
+        <span className="field__label">SMS alert phone (optional)</span>
+        <input
+          className="input mono"
+          type="tel"
+          placeholder={ALERT_PHONE_EXAMPLE}
+          value={draft.alert_phone}
+          disabled={readOnly}
+          aria-invalid={phoneError ? true : undefined}
+          onChange={(e) => set({ alert_phone: e.target.value })}
+        />
+      </label>
+      {phoneError ? (
+        <div role="alert" className="field__error" style={{ marginTop: -10 }}>
+          {phoneError}
+        </div>
+      ) : (
+        <span style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: -10 }}>
+          Texted once per critical alert. International format, e.g.{' '}
+          <span className="mono">{ALERT_PHONE_EXAMPLE}</span>. Empty means no SMS.
+        </span>
+      )}
 
       {mode === 'edit' && truck && (
         <DeviceCredentials

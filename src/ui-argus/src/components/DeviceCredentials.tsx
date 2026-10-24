@@ -14,7 +14,8 @@ import type { Truck } from '../types'
  * Fleet's "Device credentials" block: issues, rotates and revokes the truck's edge-device key
  * (`POST /api/trucks/:id/rotate-key`, `DELETE /api/trucks/:id/device-key`). A fresh key is shown
  * exactly once, packaged as `argus-device.env` for the truck's Raspberry Pi — the backend keeps
- * only a hash, so closing the panel without saving it means rotating again.
+ * only a hash, so closing the panel without saving it means rotating again. The file also carries
+ * the truck's plate and SMS alert phone as saved at that moment.
  */
 export default function DeviceCredentials({
   truck,
@@ -81,6 +82,7 @@ export default function DeviceCredentials({
         plate: truck.plate_number,
         deviceApiKey: issued.key,
         backendUrl,
+        alertPhone: truck.alert_phone,
         issuedAt: issued.at,
       })
     : ''
@@ -161,6 +163,18 @@ export default function DeviceCredentials({
             Put <span className="mono">{DEVICE_ENV_FILENAME}</span> next to cv-argus's
             docker-compose.yml on this truck's Raspberry Pi, then restart the container. The
             ESP32 picks the key up from the Pi over Bluetooth.
+          </span>
+          <span data-testid="alert-phone-note" style={{ fontSize: 11.5, color: 'var(--text-soft)' }}>
+            {truck.alert_phone ? (
+              <>
+                Critical alerts are texted to <span className="mono">{truck.alert_phone}</span>.
+              </>
+            ) : (
+              'No SMS alert phone is set, so critical alerts send no SMS.'
+            )}{' '}
+            The file carries the phone as it is now: if you change it later, generate new
+            credentials, or edit the <span className="mono">ARGUS_ALERT_PHONE</span> line on the
+            Pi and restart the container.
           </span>
           <label className="field">
             <span className="field__label">Backend URL the truck uses</span>

@@ -66,6 +66,8 @@ export interface Truck {
   company_number: string
   raspberry_pi_mac: string | null
   esp32_id: string | null
+  /** E.164 phone the ESP32 texts on a critical alert (grip contracts C1); null = no SMS. */
+  alert_phone?: string | null
   operative_status: TruckStatus
   /** Whether an edge-device key is currently issued (the key itself is never returned). */
   has_device_key: boolean

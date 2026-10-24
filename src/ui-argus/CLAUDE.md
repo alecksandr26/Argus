@@ -367,6 +367,13 @@ Earlier iterations, superseded where they conflict with the sections above:
   (fixed 10-minute sessions, 12 a month, no duration input), polling every 10 s while open.
 - `components/DeviceCredentials.tsx`: Fleet's Generate / Rotate / Revoke for a truck's device
   key, shown once as `argus-device.env`.
+- SMS alert phone (`docs/designs/grip-alarm-contracts.md` C1.2): `Truck.alert_phone`, an
+  optional Fleet field validated client-side with the same E.164 regex as every other module
+  (`utils/phone.ts`; empty is sent as `null`, which clears it). `buildDeviceEnv` appends
+  `ARGUS_TRUCK_PLATE` and `ARGUS_ALERT_PHONE` (or a commented-out line when unset) after the
+  three credentials; the phone travels Pi → `CONFIG` → ESP32 RAM, so the file is a snapshot and
+  changing the phone later means new credentials or editing that line on the Pi (the dialog
+  says so). `no_grip` (the ESP32's grip-sensor critical) is labelled "Hands off the wheel".
 - Start trip (`TravelManagement.tsx`): a truck's device only gets a route while it's in
   progress, so Start is what moves a real device off `no_route`; it's refused while the truck
   already has an active trip.
