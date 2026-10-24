@@ -45,6 +45,17 @@ the diagram as historical, pre-fix reference, not the live source of truth:
 that every screen fetches real data) — see that module's own `CLAUDE.md`/`INTEGRATION.md` for
 status.
 
+Fields this backend adds that the diagram doesn't have at all (beyond the ones explained where
+they're used, like the device-key fields under "Device (ESP32) auth"):
+
+| Entity | Field | What |
+|---|---|---|
+| Truck | `alert_phone` | optional E.164 phone (`ALERT_PHONE_PATTERN`, `^\+[1-9][0-9]{7,14}$`) the ESP32 texts on every critical alert (`docs/designs/grip-alarm-contracts.md`, C1). In `TruckCreate`/`TruckUpdate`/`TruckOut`; a bad format is 422, `""` is stored as `None`, and on an update `null` or `""` clears it. Same RBAC as every other truck field (root_admin/admin write, every role reads). The backend never sends it to a device: it travels in the dashboard's `argus-device.env`, so a change only reaches the truck with new credentials (or an edited env file on the Pi). |
+
+The ESP32's own grip alert (`alert_type: "no_grip"`, critical, C3 of the same contract) needed no
+backend change: `ReportEvent.alert_type` is a free string, and it is stored and grouped into
+incidents like any other critical (`tests/test_report.py`'s `no_grip` tests).
+
 ## Why `Status_Route.vigilance`, not `operative_status`
 
 The ER diagram names Status_Route's live drowsiness reading `operative_status`, matching the
@@ -593,6 +604,9 @@ dedup/TTL indexes, auth cache, migration script, legacy endpoints per C2.4): her
 and partial TTL indexes, and the route lock's `findOneAndUpdate` under real concurrency, are only
 approximated there; the migration script has a hermetic test but hasn't run against a real
 database yet, and none of this has been deployed to the AWS stack yet.
+
+**Grip-alarm work** (`Truck.alert_phone`, the `no_grip` report tests): hermetic suite at
+**381 passed, 3 xfailed** (2026-10-23, `pytest -q`).
 
 What genuinely hasn't been exercised: real concurrent load, and MongoDB running as anything other
 than a single local container (no replica set, no auth). An actual browser session driving this

@@ -16,6 +16,10 @@ class Truck(TimestampedDocument):
     raspberry_pi_mac: Optional[str] = None
     esp32_id: Optional[str] = None
     operative_status: TruckStatus = TruckStatus.INACTIVE
+    # Not in the ER diagram: the E.164 phone the ESP32 texts on every critical alert
+    # (docs/designs/grip-alarm-contracts.md, C1). It reaches the truck through the dashboard's
+    # `argus-device.env`, not through any device endpoint. None = no SMS.
+    alert_phone: Optional[str] = None
 
     # Not in the ER diagram — added so the ESP32 can authenticate its writes without a full
     # user login (see the backend CLAUDE.md's "Auth design" section). bcrypt-hashed, never
