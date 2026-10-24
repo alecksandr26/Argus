@@ -32,6 +32,10 @@ npx playwright install --with-deps chromium
 IT_BASE_URL=http://localhost:5173 npm run test   # against the repo-root `docker compose up`
 ```
 
+**Playwright UI mode from WSL.** `npm run test:ui` serves UI mode as a web page on port 8080
+instead of opening a Linux window through WSLg, which scales it up and blurs it. Open
+http://localhost:8080 in a Windows browser and zoom with Ctrl −/+. The tests still run inside WSL.
+
 ## Viewing the report
 
 Every run produces an HTML report (`playwright.config.ts`'s `html` reporter), not just the

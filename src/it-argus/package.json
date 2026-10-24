@@ -4,7 +4,8 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test",
+    "test:ui": "playwright test --ui-port=8080 --ui-host=0.0.0.0"
   },
   "devDependencies": {
     "@playwright/test": "1.49.1"
