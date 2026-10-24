@@ -80,22 +80,6 @@ const PATHS = {
       strokeLinejoin="round"
     />
   ),
-  phone: (
-    <path
-      d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3 19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3-8.7A2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .3 2 .7 3a2 2 0 0 1-.4 2.1L8 10.3a16 16 0 0 0 5.7 5.7l1.5-1.4a2 2 0 0 1 2.1-.4c1 .3 2 .5 3 .7a2 2 0 0 1 1.7 2Z"
-      strokeLinejoin="round"
-    />
-  ),
-  building: (
-    <path d="M4 19h16M6 19V9l6-4 6 4v10" strokeLinejoin="round" />
-  ),
-  siren: (
-    <path
-      d="M3 10a9 9 0 1 1 3 6.7M3 10v5M3 10h5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  ),
   play: <path d="M8 5v14l11-7-11-7Z" fill="currentColor" stroke="none" />,
   info: (
     <>
