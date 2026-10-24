@@ -29,9 +29,10 @@ Real firmware: an **Arduino IDE multi-tab sketch**, `src/esp32_argus/esp32_argus
   endpoints and the panic button; none of that is in this firmware.
 - **Bluetooth v2 is not compatible with v1**: flash this firmware and deploy the matching Pi
   image (`src/cv-argus` with protocol v2) together.
-- **The grip sensor, the buzzer and the critical-alert SMS (section 6) are written and
-  host-tested only** (2026-10-23): not compiled for the ESP32 yet (the build numbers above are
-  from before them), not flashed, and nothing of it has run on hardware. The RFP602 threshold
+- **The grip sensor, the buzzer and the critical-alert SMS (section 6) compile for the ESP32**
+  (`test/compile.sh`, 2026-10-24, same toolchain: 1,849,872 bytes, 58% of flash; 80,692 bytes,
+  24% of RAM; no new warning from our files) and pass the host tests, but are **not flashed**,
+  and nothing of it has run on hardware. The RFP602 threshold
   (500) is the user's bench value, not tuned on the real wheel, and the SIM800L SMS path has
   never been exercised by this firmware.
 
@@ -661,7 +662,7 @@ one is the one dropped. **When the retry window runs out the event is dropped wi
   `GRIP_PRESSURE_THRESHOLD` from them.
 - **Nothing has run on hardware**: the four ADC reads with Bluetooth + WiFi on, the buzzer, the
   SIM800L SMS (text mode, `+CMGS`), the SMS while GPRS data is in use, and `gripTask`'s stack
-  (watch `grip` in the `[health]` line). Not compiled for the ESP32 yet either.
+  (watch `grip` in the `[health]` line). It compiles for the ESP32 (section 0), nothing more.
 - An SMS holds the sender task while it goes (a few seconds, at most ~70 s): a live event raised
   meanwhile waits for it.
 - After a reboot there is no SMS until the next `CONFIG` succeeds (the phone is RAM only, by
