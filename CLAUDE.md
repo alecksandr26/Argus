@@ -108,9 +108,14 @@ session that's touched this repo.
   classification with its own live grip reading via a documented debounce/escalation/recovery
   state machine (not a plain 1:1 relay of every drowsiness alert it pulls) — see
   `src/esp32-argus/README.md`'s fusion section for the full decision spec, and
-  `src/cv-argus/src/orchestrator/fusion_contract.py` for its typed reference contract. There is
-  no grip sensor on the bench yet, so the firmware's `fusion.*` is kept but unused and the Pi's
-  severity decides on its own.
+  `src/cv-argus/src/orchestrator/fusion_contract.py` for its typed reference contract. Since
+  2026-10-24 the grip sensor is real (4 RFP602 pressure sensors, GPIO 34/35/36/39) but it is
+  **its own critical source, not fused**: 3 s with no pressure sounds the cabin buzzer (GPIO 13),
+  sends a `no_grip` critical to the backend and one SMS; `fusion.*` stays kept but unused. A live
+  Pi critical (not `no_face`) also sounds the buzzer until the driver OK, and every critical gets
+  one SMS to the truck's alert phone (set in Fleet, carried in `argus-device.env` →
+  `CONFIG` → ESP32 RAM). See `docs/designs/grip-alarm-contracts.md`; compiled, not yet run on
+  hardware.
 - Deliberate split: the Pi *decides* (heavy AI inference, containerizable, can be redeployed via
   OTA), the ESP32 *acts* (bare-metal/real-time, must not depend on a Linux/Docker boot cycle
   completing). Don't move CAN-bus/alarm logic onto the Pi — keep that boundary.
