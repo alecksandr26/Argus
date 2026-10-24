@@ -31,6 +31,10 @@ struct DeviceCredentials {
   bool useGprs() const { return gprsApn.length() > 0; }
 };
 
+// Same truck, key and backend URL (the network settings aside): what the backend sees of this
+// device. A change means the known active route may no longer apply (credentials.h).
+bool sameBackendIdentity(const DeviceCredentials& a, const DeviceCredentials& b);
+
 enum class ConfigLineResult : uint8_t { Ok, NoConfig, Malformed };
 
 // Parses one line of the Pi's CONFIG reply into `out` (only written on Ok). Malformed covers

@@ -19,111 +19,48 @@ const char* piSeverityName(PiSeverity s) {
   return "?";
 }
 
-const char* backendSeverity(PiSeverity s) {
+const char* backendVigilance(PiSeverity s) {
   switch (s) {
+    case PiSeverity::None:
+    case PiSeverity::Low: return "low";
     case PiSeverity::Medium: return "medium";
     case PiSeverity::Critical: return "critical";
-    default: return "low";
+    case PiSeverity::Unknown: break;
   }
+  return "unknown";
 }
 
 bool isAlerting(PiSeverity s) { return s == PiSeverity::Medium || s == PiSeverity::Critical; }
 
-const char* eventActionName(EventAction a) {
-  switch (a) {
-    case EventAction::Nothing: return "nothing to send";
-    case EventAction::RaiseAlert: return "alert";
-    case EventAction::ResolveAlert: return "resolve";
-    case EventAction::PostStatus: return "status";
+const char* piEventKindName(PiEventKind k) {
+  switch (k) {
+    case PiEventKind::None: return "no event";
+    case PiEventKind::AlertMedium: return "alert medium";
+    case PiEventKind::AlertCritical: return "alert critical";
+    case PiEventKind::DriverOk: return "driver OK";
   }
   return "?";
 }
 
-void EpisodeAlerts::remember(const std::string& episode, const std::string& alertId) {
-  if (episode.empty()) return;
-  for (int i = 0; i < kSlots; i++) {
-    if (episodes_[i] == episode) {
-      alertIds_[i] = alertId;  // an escalation: resolve the newest alert of the episode
-      return;
-    }
-  }
-  episodes_[next_] = episode;
-  alertIds_[next_] = alertId;
-  next_ = (next_ + 1) % kSlots;
-}
-
-bool EpisodeAlerts::lookup(const std::string& episode, std::string& alertId) const {
-  if (episode.empty()) return false;
-  for (int i = 0; i < kSlots; i++) {
-    if (episodes_[i] == episode) {
-      alertId = alertIds_[i];
-      return true;
-    }
-  }
-  return false;
-}
-
-void EpisodeAlerts::forget(const std::string& episode) {
-  for (int i = 0; i < kSlots; i++) {
-    if (episodes_[i] == episode) {
-      episodes_[i].clear();
-      alertIds_[i].clear();
-    }
+namespace {
+// rank(none)=0, rank(low)=1, rank(medium)=2, rank(critical)=3 (C1.5).
+int rank(PiSeverity s) {
+  switch (s) {
+    case PiSeverity::Low: return 1;
+    case PiSeverity::Medium: return 2;
+    case PiSeverity::Critical: return 3;
+    default: return 0;  // none, and a missing/unknown previous_severity ("treat as none")
   }
 }
+}  // namespace
 
-std::string EpisodeAlerts::serialize() const {
-  std::string out = "EA1";
-  for (int i = 0; i < kSlots; i++) {
-    if (episodes_[i].empty()) continue;
-    out += ";" + episodes_[i] + "=" + alertIds_[i];
-  }
-  return out;
-}
-
-bool EpisodeAlerts::deserialize(const std::string& blob) {
-  *this = EpisodeAlerts();
-  if (blob.compare(0, 3, "EA1") != 0) return false;
-  size_t at = 3;
-  while (at < blob.size()) {
-    if (blob[at] != ';') {
-      *this = EpisodeAlerts();
-      return false;
-    }
-    size_t end = blob.find(';', at + 1);
-    std::string item = blob.substr(at + 1, end == std::string::npos ? std::string::npos
-                                                                     : end - at - 1);
-    size_t eq = item.find('=');
-    if (eq == std::string::npos || eq == 0) {
-      *this = EpisodeAlerts();
-      return false;
-    }
-    remember(item.substr(0, eq), item.substr(eq + 1));
-    if (end == std::string::npos) break;
-    at = end;
-  }
-  return true;
-}
-
-EventDecision decidePiEvent(const PiRecord& record, const EpisodeAlerts& episodes) {
-  EventDecision d;
-  if (record.kind == PiRecordKind::RouteStatus) {
-    d.action = EventAction::PostStatus;
-    return d;
-  }
-  d.severity = parsePiSeverity(record.severity);
-  if (!record.transition || d.severity == PiSeverity::Unknown) return d;
-
-  PiSeverity previous = parsePiSeverity(record.previousSeverity);
-  std::string openAlert;
-  bool hasOpenAlert = episodes.lookup(record.episode, openAlert);
-
-  if (isAlerting(d.severity) && d.severity > previous) {
-    d.action = EventAction::RaiseAlert;
-    if (hasOpenAlert) d.relatedAlertId = openAlert;
-  } else if (!isAlerting(d.severity) && isAlerting(previous)) {
-    d.action = EventAction::ResolveAlert;
-    if (hasOpenAlert) d.resolveAlertId = openAlert;
-  }
-  return d;
+PiEventKind classifyPiEvent(const PiRecord& record) {
+  if (!record.transition) return PiEventKind::None;
+  PiSeverity sev = parsePiSeverity(record.severity);
+  if (sev == PiSeverity::Unknown) return PiEventKind::None;
+  int prev = rank(parsePiSeverity(record.previousSeverity));
+  if (sev == PiSeverity::Medium && prev < 2) return PiEventKind::AlertMedium;
+  if (sev == PiSeverity::Critical && prev < 3) return PiEventKind::AlertCritical;
+  if (rank(sev) <= 1 && prev >= 2) return PiEventKind::DriverOk;
+  return PiEventKind::None;
 }

@@ -3,6 +3,7 @@
 #include <TinyGPSPlus.h>
 
 #include "config.h"
+#include "gps_track.h"
 
 namespace {
 HardwareSerial gpsSerial(2);
@@ -56,9 +57,10 @@ void onGsv() {
 }  // namespace
 
 void gpsBegin() {
-  // gpsPoll() only runs between Bluetooth pulls, which can block for seconds while the NEO-6M
-  // keeps sending ~500 bytes/s. The default 256-byte RX buffer overflows and corrupts
-  // sentences (see failedChecksum in gpsLogStatus()); 4 KB covers several seconds.
+  // gpsTask drains this every ~20 ms now, but the NEO-6M keeps sending ~500 bytes/s whatever
+  // else the core is doing. The default 256-byte RX buffer overflowed and corrupted sentences
+  // when the loop also ran the Bluetooth pulls (see failedChecksum in gpsLogStatus()); 4 KB
+  // covers several seconds of any stall.
   gpsSerial.setRxBufferSize(4096);
   gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
 }
@@ -71,10 +73,17 @@ void gpsPoll() {
   }
 }
 
-bool gpsHasFix() { return BENCH_FAKE_GPS || gps.location.isValid(); }
+// TinyGPSPlus keeps isValid() true forever after the first fix, so a fix is "current" only while
+// its last update is recent: without this, a lost fix would keep reporting the old position as
+// live instead of the last-known one.
+bool gpsHasFix() {
+  return BENCH_FAKE_GPS || (gps.location.isValid() && gps.location.age() < GPS_FIX_MAX_AGE_MS);
+}
 double gpsLatitude() { return BENCH_FAKE_GPS ? BENCH_GPS_LAT : gps.location.lat(); }
 double gpsLongitude() { return BENCH_FAKE_GPS ? BENCH_GPS_LON : gps.location.lng(); }
-double gpsSpeedKmh() { return gps.speed.isValid() ? gps.speed.kmph() : 0.0; }
+double gpsSpeedKmh() {
+  return gps.speed.isValid() && gps.speed.age() < GPS_FIX_MAX_AGE_MS ? gps.speed.kmph() : 0.0;
+}
 uint32_t gpsSatellites() { return gps.satellites.isValid() ? gps.satellites.value() : 0; }
 
 void gpsLogStatus() {
@@ -104,22 +113,13 @@ void gpsLogStatus() {
   Serial.println();
 }
 
-String gpsMapsLink() {
-  String link = "https://www.google.com/maps?q=";
-  link += String(gpsLatitude(), 6);
-  link += ",";
-  link += String(gpsLongitude(), 6);
-  return link;
-}
-
-String gpsUtcIso8601() {
-  if (!gps.date.isValid() || !gps.time.isValid()) return String();
-  // A stale reading (GPS signal lost minutes ago) or a week-number-rollover date (1999/2006)
-  // would be rejected by the backend's occurred_at window with a 422 -- report "no time".
-  if (gps.time.age() > 5000 || gps.date.year() < 2024) return String();
-  char buf[25];
-  snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ", gps.date.year(),
-           gps.date.month(), gps.date.day(), gps.time.hour(), gps.time.minute(),
-           gps.time.second());
-  return String(buf);
+uint64_t gpsEpochSeconds() {
+  if (!gps.date.isValid() || !gps.time.isValid()) return 0;
+  // A stale reading (GPS time lost minutes ago) or a week-number-rollover date (1999/2006) is no
+  // time at all; epochFromUtc() refuses dates before 2024.
+  uint32_t age = gps.time.age();
+  if (age > 5000) return 0;
+  uint64_t epoch = epochFromUtc(gps.date.year(), gps.date.month(), gps.date.day(),
+                                gps.time.hour(), gps.time.minute(), gps.time.second());
+  return epoch == 0 ? 0 : epoch + age / 1000;
 }

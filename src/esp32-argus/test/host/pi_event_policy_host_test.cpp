@@ -1,4 +1,6 @@
-// What a Pi record means for the backend, from the Pi's own severity (no grip sensor yet).
+// Which Pi records are backend events (docs/designs/final-tweaks-contracts.md C1.5), from the
+// Pi's own severity (no grip sensor yet). The full table is also replayed from the shared
+// vectors in event_vectors_host_test.cpp.
 // SOURCES: pi_event_policy.cpp
 #include "check.h"
 #include "pi_event_policy.h"
@@ -7,7 +9,6 @@ static PiRecord reading(const char* severity, const char* previous, bool transit
                         const char* episode = "e1") {
   PiRecord r;
   r.id = "r";
-  r.kind = PiRecordKind::Reading;
   r.severity = severity;
   r.previousSeverity = previous;
   r.transition = transition;
@@ -15,112 +16,79 @@ static PiRecord reading(const char* severity, const char* previous, bool transit
   return r;
 }
 
-static void heartbeatPostsStatus() {
-  PiRecord r;
-  r.kind = PiRecordKind::RouteStatus;
-  EpisodeAlerts e;
-  CHECK(decidePiEvent(r, e).action == EventAction::PostStatus);
+static void keepalivesAreNotEvents() {
+  CHECK(classifyPiEvent(reading("critical", "critical", false)) == PiEventKind::None);
+  CHECK(classifyPiEvent(reading("none", "none", false)) == PiEventKind::None);
 }
 
-static void keepalivesSendNothing() {
-  EpisodeAlerts e;
-  CHECK(decidePiEvent(reading("critical", "critical", false), e).action == EventAction::Nothing);
+static void risingToMediumOrCriticalIsAnAlert() {
+  CHECK(classifyPiEvent(reading("medium", "none")) == PiEventKind::AlertMedium);
+  CHECK(classifyPiEvent(reading("critical", "low")) == PiEventKind::AlertCritical);
 }
 
-static void risingToMediumOrCriticalRaisesAnAlert() {
-  EpisodeAlerts e;
-  EventDecision d = decidePiEvent(reading("medium", "none"), e);
-  CHECK(d.action == EventAction::RaiseAlert);
-  CHECK(d.severity == PiSeverity::Medium);
-  CHECK(d.relatedAlertId.empty());
-  CHECK(decidePiEvent(reading("critical", "low"), e).action == EventAction::RaiseAlert);
+static void escalationIsOneCriticalAlert() {
+  // One alert per incident: medium once, plus one critical upgrade (the backend links them by
+  // episode, so the device no longer remembers alert ids).
+  CHECK(classifyPiEvent(reading("critical", "medium")) == PiEventKind::AlertCritical);
 }
 
-static void escalationLinksToTheEpisodesAlert() {
-  EpisodeAlerts e;
-  e.remember("e1", "alert-1");
-  EventDecision d = decidePiEvent(reading("critical", "medium"), e);
-  CHECK(d.action == EventAction::RaiseAlert);
-  CHECK(d.relatedAlertId == "alert-1");
-}
-
-static void criticalToMediumIsNotANewAlert() {
+static void criticalToMediumIsNotAnEvent() {
   // No de-escalation from the device: the incident stays at its highest severity.
-  EpisodeAlerts e;
-  CHECK(decidePiEvent(reading("medium", "critical"), e).action == EventAction::Nothing);
+  CHECK(classifyPiEvent(reading("medium", "critical")) == PiEventKind::None);
 }
 
-static void recoveryResolvesTheNewestAlertOfTheEpisode() {
-  EpisodeAlerts e;
-  e.remember("e1", "alert-1");
-  e.remember("e1", "alert-2");  // the escalation
-  EventDecision d = decidePiEvent(reading("none", "critical"), e);
-  CHECK(d.action == EventAction::ResolveAlert);
-  CHECK(d.resolveAlertId == "alert-2");
+static void reasonChangeAtTheSameLevelSendsNothing() {
+  CHECK(classifyPiEvent(reading("critical", "critical")) == PiEventKind::None);
+  CHECK(classifyPiEvent(reading("medium", "medium")) == PiEventKind::None);
 }
 
-static void recoveryWithoutAKnownAlertHasNoId() {
-  EpisodeAlerts e;
-  EventDecision d = decidePiEvent(reading("low", "medium"), e);
-  CHECK(d.action == EventAction::ResolveAlert);
-  CHECK(d.resolveAlertId.empty());
+static void recoveryIsOneDriverOk() {
+  CHECK(classifyPiEvent(reading("none", "critical")) == PiEventKind::DriverOk);
+  CHECK(classifyPiEvent(reading("low", "medium")) == PiEventKind::DriverOk);
 }
 
-static void noneLowChangesSendNothing() {
-  EpisodeAlerts e;
-  CHECK(decidePiEvent(reading("low", "none", true, ""), e).action == EventAction::Nothing);
-  CHECK(decidePiEvent(reading("none", "low", true, ""), e).action == EventAction::Nothing);
+static void noneLowChangesAreNotEvents() {
+  CHECK(classifyPiEvent(reading("low", "none", true, "")) == PiEventKind::None);
+  CHECK(classifyPiEvent(reading("none", "low", true, "")) == PiEventKind::None);
 }
 
-static void unknownSeveritySendsNothing() {
+static void missingPreviousCountsAsNone() {
+  CHECK(classifyPiEvent(reading("medium", "")) == PiEventKind::AlertMedium);
+  CHECK(classifyPiEvent(reading("none", "")) == PiEventKind::None);
+}
+
+static void unknownSeverityIsNotAnEvent() {
   // An older cv-argus without the rules' severity: nothing to decide from.
-  EpisodeAlerts e;
-  CHECK(decidePiEvent(reading("", "", true), e).action == EventAction::Nothing);
+  CHECK(classifyPiEvent(reading("", "", true)) == PiEventKind::None);
+  CHECK(classifyPiEvent(reading("severe", "none", true)) == PiEventKind::None);
 }
 
-static void episodeMemoryIsBounded() {
-  EpisodeAlerts e;
-  for (int i = 0; i < 20; i++) e.remember("ep" + std::to_string(i), "a" + std::to_string(i));
-  std::string id;
-  CHECK(!e.lookup("ep0", id));
-  CHECK(e.lookup("ep19", id) && id == "a19");
-  e.forget("ep19");
-  CHECK(!e.lookup("ep19", id));
+static void onlyCriticalAlertsAreCriticalEvents() {
+  CHECK(isCriticalEvent(PiEventKind::AlertCritical));
+  CHECK(!isCriticalEvent(PiEventKind::AlertMedium));
+  CHECK(!isCriticalEvent(PiEventKind::DriverOk));
+  CHECK(!isCriticalEvent(PiEventKind::None));
 }
 
-static void episodesSurviveARebootThroughNvs() {
-  EpisodeAlerts e;
-  e.remember("ep1", "alert-1");
-  e.remember("ep2", "alert-2");
-  EpisodeAlerts restored;
-  CHECK(restored.deserialize(e.serialize()));
-  std::string id;
-  CHECK(restored.lookup("ep1", id) && id == "alert-1");
-  CHECK(restored.lookup("ep2", id) && id == "alert-2");
-  CHECK(!restored.deserialize("garbage"));
-  CHECK(!restored.lookup("ep1", id));
-  CHECK(restored.deserialize(EpisodeAlerts().serialize()));
-}
-
-static void backendSeverityMapping() {
-  CHECK(std::string(backendSeverity(PiSeverity::None)) == "low");
-  CHECK(std::string(backendSeverity(PiSeverity::Low)) == "low");
-  CHECK(std::string(backendSeverity(PiSeverity::Medium)) == "medium");
-  CHECK(std::string(backendSeverity(PiSeverity::Critical)) == "critical");
+static void vigilanceMapping() {
+  CHECK(std::string(backendVigilance(PiSeverity::None)) == "low");
+  CHECK(std::string(backendVigilance(PiSeverity::Low)) == "low");
+  CHECK(std::string(backendVigilance(PiSeverity::Medium)) == "medium");
+  CHECK(std::string(backendVigilance(PiSeverity::Critical)) == "critical");
+  CHECK(std::string(backendVigilance(PiSeverity::Unknown)) == "unknown");
 }
 
 int main() {
-  RUN(heartbeatPostsStatus);
-  RUN(keepalivesSendNothing);
-  RUN(risingToMediumOrCriticalRaisesAnAlert);
-  RUN(escalationLinksToTheEpisodesAlert);
-  RUN(criticalToMediumIsNotANewAlert);
-  RUN(recoveryResolvesTheNewestAlertOfTheEpisode);
-  RUN(recoveryWithoutAKnownAlertHasNoId);
-  RUN(noneLowChangesSendNothing);
-  RUN(unknownSeveritySendsNothing);
-  RUN(episodeMemoryIsBounded);
-  RUN(episodesSurviveARebootThroughNvs);
-  RUN(backendSeverityMapping);
+  RUN(keepalivesAreNotEvents);
+  RUN(risingToMediumOrCriticalIsAnAlert);
+  RUN(escalationIsOneCriticalAlert);
+  RUN(criticalToMediumIsNotAnEvent);
+  RUN(reasonChangeAtTheSameLevelSendsNothing);
+  RUN(recoveryIsOneDriverOk);
+  RUN(noneLowChangesAreNotEvents);
+  RUN(missingPreviousCountsAsNone);
+  RUN(unknownSeverityIsNotAnEvent);
+  RUN(onlyCriticalAlertsAreCriticalEvents);
+  RUN(vigilanceMapping);
   return report("pi_event_policy_host_test");
 }

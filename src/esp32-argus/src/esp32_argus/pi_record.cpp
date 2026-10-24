@@ -89,6 +89,13 @@ ParseOutcome parsePiRecord(const std::string& rawLine, PiRecord& record) {
     record.monoMs = doc["mono_ms"].as<uint64_t>();
   }
   record.bootId = str(doc["boot_id"]);
+  if (doc["age_s"].is<float>()) {
+    float age = doc["age_s"].as<float>();
+    if (age >= 0.0f) {  // a negative age is as unusable as a null one
+      record.hasAgeS = true;
+      record.ageS = age;
+    }
+  }
   if (doc["clock_synced"].is<bool>()) {
     record.hasClockSynced = true;
     record.clockSynced = doc["clock_synced"].as<bool>();
@@ -99,17 +106,13 @@ ParseOutcome parsePiRecord(const std::string& rawLine, PiRecord& record) {
     record.isDeadLetter = true;
     record.dlqError = str(dlq["error"]);
     record.dlqAttempts = dlq["attempts"] | 0;
+    float queued = dlq["queued_s"] | 0.0f;
+    record.dlqQueuedS = queued > 0.0f ? queued : 0.0f;
     if (dlq["body"].is<JsonObjectConst>()) serializeJson(dlq["body"], record.dlqBody);
   }
 
-  std::string kind = str(doc["kind"]);
-  if (kind == "route_status") {
-    record.kind = PiRecordKind::RouteStatus;
-    return ParseOutcome::Ok;
-  }
-  if (kind != "drowsiness") return ParseOutcome::Drop;
+  if (str(doc["kind"]) != "drowsiness") return ParseOutcome::Drop;  // route_status is gone in v2
 
-  record.kind = PiRecordKind::Reading;
   JsonObjectConst payload = doc["payload"];
   record.className = str(payload["class_name"]);
   if (!readState(record.className, record.state)) return ParseOutcome::Drop;

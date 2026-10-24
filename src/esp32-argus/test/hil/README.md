@@ -8,27 +8,40 @@ PC: cv-argus Buffer + SenderServer ──Bluetooth SPP──▶ ESP32 (real firm
 PC: backend-argus (real app, in memory) ◀──────────────┘
 ```
 
-`esp32_hil.py` feeds the Pi buffer what cv-argus produces (`Drowsy` readings every second, a
-`route_status` heartbeat every 10 s). It prints every line the ESP32 exchanges over Bluetooth and
-every alert/status the ESP32 posts to the backend (the device key in the `CONFIG` reply is
-masked). Then it checks five hops:
+`esp32_hil.py` feeds the Pi buffer what cv-argus's orchestrator produces under Bluetooth
+protocol v2 (`docs/designs/final-tweaks-contracts.md` C1): a keepalive every 2 s, one CRITICAL
+raise `--alert-after` seconds (default 15) after the ESP32's first `PULL`, keepalives while it is
+held, and the recovery (a driver OK, same episode) `--recover-after` seconds (default 20) later.
+There is no heartbeat and no panic button any more. It prints every line the ESP32 exchanges over
+Bluetooth (the device key in the `CONFIG` reply is masked) and what reaches the backend through
+`POST /api/devices/me/report`. Then it checks seven hops:
 
 1. The ESP32 fetched its backend credentials over Bluetooth (`CONFIG`).
 2. The ESP32 connected over Bluetooth and sent `PULL`.
-3. The ESP32 ACKed records, so they left the Pi buffer.
-4. A route status reached the backend over HTTP.
-5. A fusion alert reached the backend over HTTP.
+3. The ESP32 ACKed the keepalives and `TAKEN` the events (v2).
+4. A report reached the backend (the truck's `device_last_seen_at` is set). With no position at
+   all the ESP32 still sends an empty liveness report every 30 s.
+5. GPS points reached the route (needs a fix, or `BENCH_FAKE_GPS 1`).
+6. Exactly one CRITICAL alert exists for the incident.
+7. The driver OK reached it: the alert has `driver_ok_at` (it stays open; only a guardian closes it).
 
-It stops as soon as the relay checks (3–5) have happened (or after `--duration`, default 120 s) and exits `0`
-only if every check passed.
+It stops as soon as checks 5–7 have happened (or after `--duration`, default 150 s) and exits
+`0` only if every check passed. The ESP32's Serial Monitor shows the sender's side: one
+`[live]`/`[dlq]` line per attempt and a `[health]` line (heap, stacks) every 30 s.
 
 `bench_backend.py` is the backend half on its own: the real FastAPI app on `mongomock` instead
 of MongoDB, listening on `0.0.0.0:8000`. No Docker, no `mongod`. It seeds one truck/route with
 **fixed** ids and a **fixed** device key, so `config.h` stays valid across runs.
 
-**Status:** the PC side is verified end to end against a fake ESP32 on a virtual serial port.
-The real Windows Bluetooth + real firmware run hasn't happened yet. Steps 3–4 below (pairing and
-the incoming COM port) are the untested part.
+**Status:** this is the v2 bench (final tweaks), and it has **not run end to end yet**: not
+against the real ESP32 (the v2 firmware compiles, `../compile.sh`, but hasn't been flashed), and
+not against a fake one either. What is checked: the script starts and imports cv-argus's v2
+`SenderServer`/`Buffer` and backend-argus's app from the final-tweaks branches (2026-10-23, on a
+local merge of T1 + T4). The same Pi server, report endpoint and a Python mirror of the firmware
+run together in `src/tests/edge_chain/` (66 passed on that merge). The **v1** bench (protocol v1
+and the retired per-message endpoints) passed all its checks on real hardware on 2026-10-17, over
+WiFi with `BENCH_FAKE_GPS 1`, including steps 3–4 below (pairing and the incoming COM port).
+Flash the v2 firmware and run this before trusting the device side of v2.
 
 ## Why Windows, not WSL
 
@@ -55,16 +68,16 @@ Python venv. On a Linux machine with BlueZ (e.g. the real Pi), use `--rfcomm` in
 3. **Firmware `config.h`**, then flash:
    - Nothing network- or backend-related goes in `config.h` anymore: `esp32_hil.py` serves the
      WiFi network, the bench backend URL (this PC's LAN IP) and the bench device key over
-     Bluetooth (`CONFIG`), and the ESP32 looks its route up from the key. A new IP or WiFi
-     between runs needs no reflash. No APN is served, so the ESP32 stays on WiFi.
+     Bluetooth (`CONFIG`), and every report's answer tells the ESP32 its active route. A new IP
+     or WiFi between runs needs no reflash. No APN is served, so the ESP32 stays on WiFi.
    - Set `PI_BT_MAC_ADDRESS` to the **PC's** Bluetooth MAC, because the PC is the Pi here.
      `ipconfig /all` shows it as "Physical Address" under "Bluetooth Network Connection".
      `B0-DC-EF-34-4C-83` becomes `{ 0xB0, 0xDC, 0xEF, 0x34, 0x4C, 0x83 }`.
    - Set `PI_BT_CHANNEL` to `0`. Windows picks its own RFCOMM channel for the incoming COM port,
      so the ESP32 has to look it up; the real Pi serves on the fixed channel 4.
-   - `BENCH_FAKE_GPS`: `1` to test Bluetooth/HTTP indoors without a GPS fix (nothing gets
-     relayed without one), `0` to test the real NEO-6M (see "Testing the real GPS").
-     **It must be `0` on a real truck.**
+   - `BENCH_FAKE_GPS`: `1` to test indoors without a GPS fix (without one, events still go
+     with "position unknown", but no GPS points do, so check 5 fails), `0` to test the real
+     NEO-6M (see "Testing the real GPS"). **It must be `0` on a real truck.**
 4. **Pair the ESP32 with Windows**: Settings → Bluetooth & devices → Add device → Bluetooth →
    **ESP32-Argus**.
 5. **Create an incoming Bluetooth COM port**: Settings → Bluetooth & devices → Devices → *More
@@ -83,7 +96,7 @@ Allow Python through the Windows Firewall (Private networks) the first time, or 
 HTTP requests never arrive. Keep the Arduino Serial Monitor (115200) open on the USB port too,
 so you see the firmware's side.
 
-Options: `--duration 300`, `--drowsy-every 1`, `--heartbeat-every 10`, `--serial COM4,COM6`.
+Options: `--duration 300`, `--alert-after 15`, `--recover-after 20`, `--serial COM4,COM6`.
 `--serial auto` listens on every incoming Bluetooth port. That's useful because Windows
 advertises all of them, and the ESP32 connects to whichever one it finds first.
 
@@ -118,7 +131,7 @@ proves nothing about the GPS. To check that the positions come from the NEO-6M:
    ```powershell
    python .\esp32_hil.py --serial auto --expect-location "20.659812, -103.349655" --tolerance-m 100
    ```
-   This adds a 5th check. It fails if the ESP32 sent the fake bench position, sent no position,
+   This adds an 8th check. It fails if the ESP32 sent the fake bench position, sent no position,
    or sent one farther than `--tolerance-m` from yours. It prints the farthest position as a
    Google Maps link you can open. The NEO-6M is typically accurate to 2–10 m outdoors and
    worse by a window. 100 m only catches real mistakes, like a fake or wrong position.
@@ -129,10 +142,11 @@ proves nothing about the GPS. To check that the positions come from the NEO-6M:
 |---|---|
 | Check 1 fails; Serial Monitor shows `[bt] Could not connect to the Pi's Bluetooth SPP server` | Wrong `PI_BT_MAC_ADDRESS`, `PI_BT_CHANNEL` not `0`, not paired, or no *incoming* COM port (setup steps 2–4) |
 | `could not open port 'COM5'` | Wrong COM number, or another program has it open |
-| Serial Monitor shows `No GPS fix yet -- ... not relaying` | The NEO-6M has no fix yet (see `[gps]` lines and "Testing the real GPS"), or set `BENCH_FAKE_GPS 1` to test without it |
-| Check 5 says "sent the BENCH_FAKE_GPS position" | `BENCH_FAKE_GPS` is still `1` in the flashed firmware |
-| Serial Monitor shows `No mobile data or WiFi` | Wrong `ARGUS_WIFI_SSID`/`ARGUS_WIFI_PASSWORD` (exact, spaces included), or a 5 GHz-only network (the ESP32 only does 2.4 GHz) |
-| Bluetooth works but checks 4–5 fail | Firewall blocking port 8000, or the ESP32 on a different network from the PC (the URL it gets over `CONFIG` is this PC's LAN IP) |
+| Check 5 fails, Serial Monitor shows `[live] liveness ...` lines | The NEO-6M has no fix yet and no last known position is saved (see `[gps]` lines and "Testing the real GPS"), or set `BENCH_FAKE_GPS 1` to test without it |
+| Check 8 says "sent the BENCH_FAKE_GPS position" | `BENCH_FAKE_GPS` is still `1` in the flashed firmware |
+| Serial Monitor shows `[net] No network: ...` | Wrong `ARGUS_WIFI_SSID`/`ARGUS_WIFI_PASSWORD` (exact, spaces included), or a 5 GHz-only network (the ESP32 only does 2.4 GHz) |
+| Bluetooth works but checks 4–7 fail | Firewall blocking port 8000, or the ESP32 on a different network from the PC (the URL it gets over `CONFIG` is this PC's LAN IP) |
 | Check 1 fails, Serial shows `[creds] Using credentials ... (NVS cache)` | An older run's credentials are cached and the `CONFIG` fetch didn't connect; same causes as a failed `PULL` |
 | Backend rejects posts (401) | The ESP32 is using stale cached credentials; it re-fetches `CONFIG` on the next poll — watch for a second `CONFIG` line |
-| Check 4 fails but 1–3 pass | Fusion hasn't confirmed yet (5 s debounce). Run longer, and leave the grip input (GPIO 19) unconnected so it reads "bad grip" |
+| Check 6 fails with `rejected no_route` in the Serial Monitor | The bench route has no `actual_departure` (an old `bench_backend.py`): events are routed by time (C2.2) |
+| Check 7 fails but 6 passes | Run longer (`--recover-after` + a few seconds), and watch for `[live] ok ... failed` lines |

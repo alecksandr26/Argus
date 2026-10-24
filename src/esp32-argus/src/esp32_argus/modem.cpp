@@ -5,6 +5,32 @@
 
 namespace {
 HardwareSerial modemSerial(1);
+
+const Deadline* attemptDeadline = nullptr;
+
+// What modemFlush() threw away, scanned for a late "+HTTPACTION:" result.
+String flushedTail;
+bool sawHttpActionUrc = false;
+String httpActionUrc;
+
+int cachedStat = -1;
+bool statKnown = false;
+unsigned long statAt = 0;
+
+bool pastDeadline() { return attemptDeadline && attemptDeadline->expired(millis()); }
+
+void noteFlushed(char c) {
+  flushedTail += c;
+  if (flushedTail.length() > 96) flushedTail.remove(0, flushedTail.length() - 96);
+  int at = flushedTail.indexOf("+HTTPACTION:");
+  if (at != -1 && flushedTail.indexOf('\n', at) != -1) {
+    int end = flushedTail.indexOf('\n', at);
+    httpActionUrc = flushedTail.substring(at, end);
+    httpActionUrc.trim();
+    sawHttpActionUrc = true;
+    flushedTail = "";
+  }
+}
 }  // namespace
 
 void modemBegin() {
@@ -32,14 +58,30 @@ void modemBegin() {
   }
 }
 
+void modemSetDeadline(const Deadline* deadline) { attemptDeadline = deadline; }
+
+bool modemDeadlinePassed() { return pastDeadline(); }
+
 void modemFlush() {
-  while (modemSerial.available()) modemSerial.read();
+  while (modemSerial.available()) noteFlushed((char)modemSerial.read());
+}
+
+bool modemTakeHttpActionUrc(String* line) {
+  modemFlush();
+  if (!sawHttpActionUrc) return false;
+  sawHttpActionUrc = false;
+  if (line) *line = httpActionUrc;
+  return true;
 }
 
 bool modemReadUntil(const char* expect, unsigned long timeoutMs, String* response) {
   String buf;
   unsigned long lastByteAt = millis();
-  while (millis() - lastByteAt < timeoutMs) {
+  while (millis() - lastByteAt < timeoutMs && !pastDeadline()) {
+    if (!modemSerial.available()) {
+      vTaskDelay(1);  // nothing yet: let the other tasks run
+      continue;
+    }
     while (modemSerial.available()) {
       buf += (char)modemSerial.read();
       lastByteAt = millis();
@@ -72,7 +114,7 @@ bool modemSendATWithin(const String& cmd, const char* expect, unsigned long tota
   modemSerial.print("\r\n");
   String buf;
   unsigned long sentAt = millis();
-  while (millis() - sentAt < totalMs) {
+  while (millis() - sentAt < totalMs && !pastDeadline()) {
     while (modemSerial.available()) {
       buf += (char)modemSerial.read();
       if (buf.indexOf(expect) != -1 || buf.indexOf("ERROR") != -1) {
@@ -80,7 +122,7 @@ bool modemSendATWithin(const String& cmd, const char* expect, unsigned long tota
         return buf.indexOf(expect) != -1;
       }
     }
-    delay(10);
+    delay(10);  // vTaskDelay underneath: yields
   }
   if (response) *response = buf;
   return false;
@@ -104,13 +146,15 @@ String modemOneLine(const String& response) {
 
 void modemWrite(const String& data) { modemSerial.print(data); }
 
-void modemWriteByte(uint8_t b) { modemSerial.write(b); }
-
 String modemReadBytes(size_t n, unsigned long timeoutMs) {
   String buf;
   buf.reserve(n);
   unsigned long lastByteAt = millis();
-  while (buf.length() < n && millis() - lastByteAt < timeoutMs) {
+  while (buf.length() < n && millis() - lastByteAt < timeoutMs && !pastDeadline()) {
+    if (!modemSerial.available()) {
+      vTaskDelay(1);
+      continue;
+    }
     while (modemSerial.available() && buf.length() < n) {
       buf += (char)modemSerial.read();
       lastByteAt = millis();
@@ -121,15 +165,23 @@ String modemReadBytes(size_t n, unsigned long timeoutMs) {
 
 int modemRegistrationStat() {
   String resp;
-  if (!modemSendAT("AT+CREG?", "OK", 2000UL, &resp)) return -1;
+  int stat = -1;
   CregResult creg;
-  return parseCreg(resp.c_str(), creg) ? creg.stat : -1;
+  if (modemSendAT("AT+CREG?", "OK", 2000UL, &resp) && parseCreg(resp.c_str(), creg)) {
+    stat = creg.stat;
+  }
+  cachedStat = stat;
+  statKnown = true;
+  statAt = millis();
+  return stat;
 }
 
-bool modemIsRegistered() {
-  int stat = modemRegistrationStat();
-  return stat == 1 || stat == 5;
+int modemRegistrationCached(uint32_t maxAgeMs) {
+  if (statKnown && millis() - statAt < maxAgeMs) return cachedStat;
+  return modemRegistrationStat();
 }
+
+void modemForgetRegistration() { statKnown = false; }
 
 const char* modemRegistrationText(int stat) {
   switch (stat) {

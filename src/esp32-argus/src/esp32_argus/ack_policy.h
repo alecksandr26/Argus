@@ -1,21 +1,35 @@
 #pragma once
 
-// What to do with a pulled Pi record after trying to relay it, decided by the HTTP result.
-// Pure logic (no Arduino deps) so test/host/ack_policy_host_test.cpp can run it on the PC.
-//
-// `status` is the HTTP status, or <= 0 for a transport error (HTTPClient's negative codes, or
-// a SIM800L 6xx mapped to -1 by gprs_http). `bodyParsed` doesn't change the action: a 201
-// whose body couldn't be parsed was still stored, so re-posting it would only duplicate it.
+// What one report attempt's answer means (docs/designs/final-tweaks-contracts.md C2.3): whether
+// its event was delivered (ACK it to the Pi), rejected for good (FAIL <reason>, the Pi archives a
+// critical / drops a medium or OK), or the attempt failed (the retry rules apply); what the
+// backend now says about this truck's active route; and whether to re-fetch CONFIG. Points are
+// done after every attempt either way: stored, refused, or dropped with a failed report (user
+// decision). Pure logic, so test/host/ack_policy_host_test.cpp runs it on the PC.
 
-enum class RelayAction {
-  Ack,              // stored (201), or already stored (200 = client_event_id retry)
-  AckAndDrop,       // permanently rejected (400/409/422) -- retrying can never succeed, and
-                    // leaving it unacked would block every record behind it on the Pi
-  Hold,             // transient (5xx, 429, transport error) -- leave unacked, retry next pull
-  HoldAndFlagAuth,  // 401/403 -- the device key is wrong; holding keeps the data until fixed
-  RefetchRoute,     // 404 -- ROUTE_ID doesn't exist on this backend
+#include <string>
+
+enum class EventOutcome : unsigned char {
+  NoEvent,        // the report carried no event
+  Delivered,      // 200, event created or duplicate -> ACK <id>
+  Rejected,       // 200 event rejected, or 413/422 (`invalid`) -> FAIL <id> <reason> -
+  AttemptFailed,  // 401/429/5xx/other, transport error, unreadable 200 -> retry rules
 };
 
-RelayAction relayActionFor(int status, bool bodyParsed);
-bool shouldAck(RelayAction action);
-const char* relayActionName(RelayAction action);
+struct ReportReaction {
+  EventOutcome event = EventOutcome::NoEvent;
+  // Rejected: the backend's reason (route_finished, no_route, too_old, wrong_truck, invalid; any
+  // other one becomes `invalid`). AttemptFailed: http_<status>, bad_response, or the
+  // transport reason the caller passed (no_network, no_credentials, timeout, transport_error,
+  // modem_busy).
+  std::string reason;
+  bool routeKnown = false;  // a readable 200: the active route below is the backend's answer
+  std::string activeRoute;  // "" = null: no active route (points-only reports slow down)
+  bool recredential = false;  // 401: the key was rotated or revoked -> ask the Pi for CONFIG
+};
+
+// `httpStatus` <= 0 means nothing reached the backend; `transportReason` says why.
+ReportReaction reactToReport(int httpStatus, const std::string& body, bool sentEvent,
+                             const char* transportReason);
+
+const char* eventOutcomeName(EventOutcome outcome);

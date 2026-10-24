@@ -106,6 +106,28 @@ static void validity() {
   CHECK(!c.valid());
 }
 
+// A routine CONFIG refresh with the same truck, key and URL keeps the known active route; a new
+// WiFi or APN alone does too; a new truck, key or URL doesn't (refreshCredentialsIfStale).
+static void backendIdentity() {
+  DeviceCredentials a;
+  CHECK(parseConfigLine(GOOD, a) == ConfigLineResult::Ok);
+  DeviceCredentials b = a;
+  CHECK(sameBackendIdentity(a, b));
+  b.wifiSsid = "hotspot";
+  b.gprsApn = "internet.itelcel.com";
+  CHECK(sameBackendIdentity(a, b));
+  DeviceCredentials key = a;
+  key.apiKey = "rotated";
+  CHECK(!sameBackendIdentity(a, key));
+  DeviceCredentials truck = a;
+  truck.truckId = "64b0a0000000000000000002";
+  CHECK(!sameBackendIdentity(a, truck));
+  DeviceCredentials url = a;
+  url.backendUrl = "http://192.168.1.20:8000";
+  CHECK(!sameBackendIdentity(a, url));
+  CHECK(!sameBackendIdentity(DeviceCredentials(), a));  // the first CONFIG after an empty NVS
+}
+
 int main() {
   RUN(parsesTheThreeFields);
   RUN(plainHttpBenchUrl);
@@ -115,5 +137,6 @@ int main() {
   RUN(networkSettingsAreOptionalAndVerbatim);
   RUN(malformedNetworkSettingRejectsTheLine);
   RUN(validity);
+  RUN(backendIdentity);
   return report("device_config_host_test");
 }

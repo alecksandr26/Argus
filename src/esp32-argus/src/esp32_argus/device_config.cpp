@@ -79,3 +79,7 @@ ConfigLineResult parseConfigLine(const String& line, DeviceCredentials& out) {
   out = parsed;
   return ConfigLineResult::Ok;
 }
+
+bool sameBackendIdentity(const DeviceCredentials& a, const DeviceCredentials& b) {
+  return a.truckId == b.truckId && a.apiKey == b.apiKey && a.backendUrl == b.backendUrl;
+}

@@ -5,14 +5,16 @@ Imports both modules straight from their source trees, no install needed:
 - cv-argus's `src/` only becomes `cv_argus` via setup.py's `package_dir`, so it's registered
   through importlib instead (same trick as `src/tests/smoke_cv_argus.py`).
 
-Only cv-argus's stdlib-only packages (`alerts`/`buffer`/`sender`/`orchestrator.fusion_contract`)
-are touched, so no TensorFlow/MediaPipe is needed. The backend runs in-process on
+Only cv-argus's light packages (`alerts`/`buffer`/`sender`/`orchestrator`) are touched, so no
+TensorFlow/MediaPipe is needed (numpy only). The backend runs in-process on
 mongomock-motor, like its own hermetic test tier.
 """
 from __future__ import annotations
 
 import importlib.util
 import sys
+import types
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _SRC = Path(__file__).resolve().parents[2]
@@ -26,6 +28,15 @@ if "cv_argus" not in sys.modules:
     _module = importlib.util.module_from_spec(_spec)
     sys.modules["cv_argus"] = _module
     _spec.loader.exec_module(_module)
+
+# The rule engine's to_detection() imports cv-argus's `model` package, whose __init__ imports the
+# model downloader, which imports gdown. src/tests/requirements.txt installs it; the chain never
+# downloads a model, so where it is missing anyway (an older venv) an empty stand-in keeps that
+# import working.
+try:
+    import gdown  # noqa: F401
+except ImportError:
+    sys.modules["gdown"] = types.ModuleType("gdown")
 
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
@@ -68,10 +79,17 @@ async def device_http(backend):
         yield client
 
 
+# The route departed this long ago. Events are routed by time (C2.2 rule 4: occurred_at =
+# received_at - age_s must fall inside actual_departure..actual_arrival), and the scenarios run a
+# fake clock far ahead of the real one, so their events can be minutes "old" when they arrive.
+ROUTE_DEPARTED_AGO = timedelta(hours=1)
+
+
 @pytest_asyncio.fixture
 async def truck_route(backend):
-    """Provisions a truck + driver + in-progress route the way an operator would, and mints the
-    truck's device key the way the ESP32 gets provisioned (POST /api/trucks/{id}/rotate-key)."""
+    """Provisions a truck + driver + in-progress route the way an operator would (departed an
+    hour ago, RouteCreate.actual_departure [sync 1]), and mints the truck's device key the way the
+    ESP32 gets provisioned (POST /api/trucks/{id}/rotate-key)."""
     truck = (
         await backend.post(
             "/api/trucks",
@@ -109,6 +127,7 @@ async def truck_route(backend):
                 "destination_name": "GDL",
                 "destination_coordinates": {"lat": 20.67, "lon": -103.35},
                 "estimated_departure": "2030-01-01T08:00:00Z",
+                "actual_departure": (datetime.now(timezone.utc) - ROUTE_DEPARTED_AGO).isoformat(),
                 "operative_status": "in_progress",
             },
         )
