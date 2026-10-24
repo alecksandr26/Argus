@@ -128,6 +128,90 @@ static void backendIdentity() {
   CHECK(!sameBackendIdentity(DeviceCredentials(), a));  // the first CONFIG after an empty NVS
 }
 
+// --- The SMS fields (grip-alarm contracts C1.4) ---
+
+static const char* withSms(const char* plate, const char* phone) {
+  static std::string line;
+  line = R"(CONFIG {"truck_id":"t","device_api_key":"k","backend_url":"https://x")";
+  if (plate) line += std::string(R"(,"truck_plate":)") + plate;
+  if (phone) line += std::string(R"(,"alert_phone":)") + phone;
+  line += "}";
+  return line.c_str();
+}
+
+static void plateAndPhoneAreReadWhenGiven() {
+  DeviceCredentials c;
+  CHECK(parseConfigLine(withSms(R"("JAL-123-A")", R"("+523312345678")"), c) ==
+        ConfigLineResult::Ok);
+  CHECK(c.truckPlate == "JAL-123-A");
+  CHECK(c.alertPhone == "+523312345678");
+}
+
+static void plateAndPhoneAreOptional() {
+  DeviceCredentials c;
+  CHECK(parseConfigLine(GOOD, c) == ConfigLineResult::Ok);
+  CHECK(c.truckPlate.empty() && c.alertPhone.empty());
+  CHECK(parseConfigLine(withSms("null", "null"), c) == ConfigLineResult::Ok);
+  CHECK(c.truckPlate.empty() && c.alertPhone.empty());
+}
+
+// A bad plate or phone is ignored, never Malformed: the credentials still apply.
+static void aBadPlateOrPhoneIsIgnoredNotMalformed() {
+  struct Case {
+    const char* plate;
+    const char* phone;
+  } cases[] = {
+      {R"("ABCDEFGHIJKLMNOPQ")", R"("3312345678")"},  // 17 chars; no "+"
+      {"42", "523312345678"},                         // not strings
+      {R"("")", R"("+023312345678")"},                // empty plate; leading 0
+      {"[]", R"("+52 33 1234 5678")"},                 // spaces
+      {"{}", R"("+1234567")"},                         // 7 digits: too short
+      {R"("ok")", R"("+1234567890123456")"},          // 16 digits: too long
+      {R"("ok")", R"("+52331234567x")"},
+  };
+  for (const Case& k : cases) {
+    DeviceCredentials c;
+    c.alertPhone = "+520000000000";  // from an earlier CONFIG: replaced, not kept
+    CHECK(parseConfigLine(withSms(k.plate, k.phone), c) == ConfigLineResult::Ok);
+    CHECK(c.alertPhone.empty());
+    CHECK(c.apiKey == "k");  // the credentials applied
+  }
+  DeviceCredentials c;
+  CHECK(parseConfigLine(withSms(R"("ABCDEFGHIJKLMNOPQ")", nullptr), c) == ConfigLineResult::Ok);
+  CHECK(c.truckPlate.empty());
+  CHECK(parseConfigLine(withSms(R"("ABCDEFGHIJKLMNOP")", nullptr), c) == ConfigLineResult::Ok);
+  CHECK(c.truckPlate == "ABCDEFGHIJKLMNOP");  // exactly 16 is fine
+}
+
+static void e164() {
+  CHECK(isE164Phone("+523312345678"));
+  CHECK(isE164Phone("+12345678"));          // 8 digits, the shortest
+  CHECK(isE164Phone("+123456789012345"));   // 15 digits, the longest
+  CHECK(!isE164Phone("+1234567"));
+  CHECK(!isE164Phone("+1234567890123456"));
+  CHECK(!isE164Phone("+0123456789"));
+  CHECK(!isE164Phone("523312345678"));
+  CHECK(!isE164Phone("+"));
+  CHECK(!isE164Phone(""));
+  CHECK(!isE164Phone(nullptr));
+  CHECK(!isE164Phone("+52-3312345678"));
+}
+
+static void phonesAreMaskedForTheLog() {
+  CHECK(maskPhone("+523312345678") == "+52******5678");
+  CHECK(maskPhone("+12345678") == "+12**5678");
+  CHECK(maskPhone("") == "****");
+}
+
+static void thePlateAndPhoneAreNotPartOfTheBackendIdentity() {
+  DeviceCredentials a;
+  CHECK(parseConfigLine(GOOD, a) == ConfigLineResult::Ok);
+  DeviceCredentials b = a;
+  b.truckPlate = "JAL-123-A";
+  b.alertPhone = "+523312345678";
+  CHECK(sameBackendIdentity(a, b));
+}
+
 int main() {
   RUN(parsesTheThreeFields);
   RUN(plainHttpBenchUrl);
@@ -138,5 +222,11 @@ int main() {
   RUN(malformedNetworkSettingRejectsTheLine);
   RUN(validity);
   RUN(backendIdentity);
+  RUN(plateAndPhoneAreReadWhenGiven);
+  RUN(plateAndPhoneAreOptional);
+  RUN(aBadPlateOrPhoneIsIgnoredNotMalformed);
+  RUN(e164);
+  RUN(phonesAreMaskedForTheLog);
+  RUN(thePlateAndPhoneAreNotPartOfTheBackendIdentity);
   return report("device_config_host_test");
 }

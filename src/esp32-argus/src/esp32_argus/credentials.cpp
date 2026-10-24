@@ -20,10 +20,24 @@ bool fetchedOnce = false;
 
 const char NVS_NAMESPACE[] = "argus";
 
-bool sameAs(const DeviceCredentials& a, const DeviceCredentials& b) {
+// The fields cached in NVS. The plate and the SMS phone are not among them: RAM only (C1.4).
+bool sameStored(const DeviceCredentials& a, const DeviceCredentials& b) {
   return a.truckId == b.truckId && a.apiKey == b.apiKey && a.backendUrl == b.backendUrl &&
          a.wifiSsid == b.wifiSsid && a.wifiPassword == b.wifiPassword &&
          a.gprsApn == b.gprsApn && a.gprsUser == b.gprsUser && a.gprsPassword == b.gprsPassword;
+}
+
+bool sameSmsTarget(const DeviceCredentials& a, const DeviceCredentials& b) {
+  return a.truckPlate == b.truckPlate && a.alertPhone == b.alertPhone;
+}
+
+void logSmsTarget(const DeviceCredentials& c) {
+  // The phone is personal data: masked, never in full (C1.3).
+  Serial.print("[creds] SMS alert phone: ");
+  Serial.print(c.alertPhone.length() > 0 ? maskPhone(c.alertPhone)
+                                         : String("none (no SMS on a critical)"));
+  Serial.print(", plate: ");
+  Serial.println(c.truckPlate.length() > 0 ? c.truckPlate : String("none (the SMS names the truck id)"));
 }
 
 void logLoaded(const DeviceCredentials& c, const char* from) {
@@ -115,18 +129,22 @@ void credentialsMarkStale() {
 }
 
 bool credentialsApply(const DeviceCredentials& fresh) {
-  bool identityChanged;
+  bool identityChanged, storedChanged, smsChanged;
   {
     RtosLock lock(mutex);
     stale = false;
     sawNoConfig = false;
     fetchedOnce = true;
     lastFetchedAt = millis();
-    if (sameAs(fresh, current)) return false;
+    storedChanged = !sameStored(fresh, current);
+    smsChanged = !sameSmsTarget(fresh, current);
+    if (!storedChanged && !smsChanged) return false;
     identityChanged = !sameBackendIdentity(fresh, current);
     current = fresh;
     generation++;
   }
+  if (smsChanged) logSmsTarget(fresh);
+  if (!storedChanged) return false;  // only the plate/phone: RAM only, no NVS write
   // NVS writes outside the lock: the sender task never waits on flash for a copy.
   prefs.putString("truck_id", fresh.truckId);
   prefs.putString("api_key", fresh.apiKey);
@@ -138,6 +156,18 @@ bool credentialsApply(const DeviceCredentials& fresh) {
   prefs.putString("gprs_pass", fresh.gprsPassword);
   logLoaded(fresh, "fresh from the Pi, saved to NVS");
   return identityChanged;
+}
+
+bool credentialsHasAlertPhone() {
+  RtosLock lock(mutex);
+  return current.alertPhone.length() > 0;
+}
+
+bool credentialsSmsTarget(String& phone, String& vehicle) {
+  RtosLock lock(mutex);
+  phone = current.alertPhone;
+  vehicle = current.truckPlate.length() > 0 ? current.truckPlate : current.truckId;
+  return phone.length() > 0;
 }
 
 void credentialsNoneOnPi() {
