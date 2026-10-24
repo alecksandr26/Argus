@@ -359,6 +359,20 @@ DET_LM_RETRIES: tuple[tuple[float, int], ...] = ((DET_FACE_MARGIN_FRAC, DET_IMG_
 DET_LM_RETRY_MAX_FACE_FRAC: float = 0.6
 # Bump when mp_one's output changes: the MediaPipe cache lives in .cache/det_mp_v<N>/.
 DET_MP_CACHE_VERSION: int = 2
+# Our own guided captures (scripts/capture_frames.py → scripts/add_own_captures.py), written as a
+# Roboflow-style head-pose source without going through Roboflow. The capture tag says what the
+# person was asked to do; a still tagged head-down gets a human `head_down` label only when the
+# landmarks agree it is lowered (pitch ≥ OWN_HEAD_DOWN_MIN_PITCH_DEG, sign HEAD_DOWN_PITCH_SIGN)
+# or the landmarks are lost; below that it is dropped (the person hadn't lowered it yet). Every
+# other tag gets no label: eyes, yawns and the head come from the landmarks, as for any head-pose
+# source. The floor sits below HEAD_DOWN_PITCH_DEG because a low camera makes a lowered head read
+# more frontal (in v4, 452 of 1,370 human head_down heads got no head box or head_straight from
+# pitch), so the tag overrides pitch's straight/none in 15–20°. Not lower: headpose-w4zuc's human
+# Head_forward reaches 19.6° (p95), so a barely lowered head would teach head_down on a straight
+# face. Recalibrate it per camera from add_own_captures.py's pitch summary (`--min-pitch`).
+OWN_CAPTURES_PROJECT: str = "own-captures"
+OWN_HEAD_DOWN_TAGS: tuple[str, ...] = ("head_down", "head_down_eyes_closed")
+OWN_HEAD_DOWN_MIN_PITCH_DEG: float = 15.0
 # Human head-pose labels (source label -> "head_straight" / "head_down" / None). Where an image
 # has one, it REPLACES the pitch auto-label above for that image: a human looked at it, and the
 # pitch thresholds were only ever a proxy. None = a pose that is neither class (turned, up,
@@ -385,6 +399,8 @@ ROBOFLOW_HEAD_CLASS_MAP: dict[str, dict[str, str | None]] = {
         "head_down": "head_down", "head_front": "head_straight",
         "head_left": None, "head_right": None, "head_up": None,
     },
+    # scripts/add_own_captures.py writes only head_down boxes (the BlazeFace face box).
+    OWN_CAPTURES_PROJECT: {"head_down": "head_down"},
 }
 # A human head label counts only if its box side is at least this fraction of BlazeFace's face
 # box side (catches head labels drawn on an eye).
@@ -397,7 +413,7 @@ DET_HEAD_BOX_MARGIN_BY_PROJECT: dict[str, float] = {"drowsiness-detection-xsriz"
 # BlazeFace misses the face (strong pose is the point of this data), crops around the human head
 # box instead. Their eye boxes, if any, go through ROBOFLOW_CLASS_MAP as usual.
 ROBOFLOW_HEADPOSE_PROJECTS: tuple[str, ...] = (
-    "headpose-w4zuc", "drowsiness-detection-xsriz", "facial-movements-detection")
+    "headpose-w4zuc", "drowsiness-detection-xsriz", "facial-movements-detection", OWN_CAPTURES_PROJECT)
 # Head-pose images whose eyes can't be (fully) labelled — no landmarks on a turned/lowered head —
 # are kept with just their head box. Trade-off: a visible-but-unlabelled eye is learned as
 # background, but rejecting them would throw away exactly the hard head_down examples.
