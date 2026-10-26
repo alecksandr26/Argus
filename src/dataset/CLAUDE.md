@@ -285,9 +285,35 @@ The rules below each came from looking at real data:
       `head_straight` needs the landmarks to say straight. A disagreement **rejects** the image
       (`head_label_disagrees`) rather than falling back to pitch: in a side view a real nod can
       read as low pitch, so the pitch guess could be the wrong label. No landmarks → the label stands.
+      `DET_HEAD_CHECK_MAX_YAW_DEG_BY_PROJECT` (noddingoff only, 30°) skips the head_down check on
+      faces turned beyond it: the first build rejected 85 noddingoff images that the contact sheet
+      showed were all real nods in profile (yaw 37–64°, pitch ≈ 0). Not for kantuk, where a turned,
+      level yawning face (p −20°, y −32°) would get through.
     - **`ROBOFLOW_IMAGE_LEVEL_HEAD_PROJECTS`** (noddingoff): the box isn't a head box, so the label
       goes on the BlazeFace face, skipping `DET_HUMAN_HEAD_MIN_REL` and the inside-the-crop check,
       and a missed face is `no_face` (no crop around a body box).
+    - **`ROBOFLOW_BOX_BRIGHTNESS_AUGMENTED_PROJECTS`** (headmovement): Roboflow's per-box
+      brightness augmentation (`bbbrightness`, in every headmovement version from v6) leaves a
+      bright or dark rectangle on the face. `box_brightness_step` measures the straight step along
+      the box edges; above `DET_BOX_BRIGHTNESS_MAX_STEP` (5 grey levels) the image is rejected
+      (`box_brightness_artifact`). Measured on v12: unaugmented valid median 1 (p95 4), augmented
+      train median 37. Checked in the build loop (it needs pixels), not in `plan_roboflow_image`.
+      Every other source's augmentation is whole-image (checked through the API, 2026-10-26).
+  - **v5 build (2026-10-26)**, with the three sources above. **MRL Eye was not in it**: its server
+    (mrl.cs.vsb.cz) timed out all day, so this build has no MRL close-ups and its IR copies are the
+    red-channel mix without histogram matching (`ir.to_ir_like` with no reference). Rebuild once
+    MRL is fetched; the Roboflow numbers below won't change.
+
+    | | v4 | v5 |
+    |---|---|---|
+    | `head_down` boxes (train / valid / test) | 2,069 (1,437 / 333 / 299) | 2,689 (1,862 / 447 / 380) |
+    | distinct `head_down` groups (train / valid / test) | 996 (693 / 153 / 150) | 1,599 (1,104 / 265 / 230) |
+    | `head_straight` boxes | 9,160 | 10,460 |
+
+    New `head_down` by source (boxes / distinct groups): kantuk 268 / 266, noddingoff 203 / 192,
+    headmovement 149 / 145. Rejected in the new sources: `head_label_disagrees` 1,347 (mostly
+    kantuk: 554 `head_dropped` at median pitch 1.4°, on the sheet yawns, level faces and slight
+    dips; 691 `head_straight`, mostly turned), `box_brightness_artifact` 2,436 (headmovement).
   - **`ROBOFLOW_LANDMARK_ONLY_PROJECTS`** (empty so far): sources whose labels are ignored
     entirely. Head from pitch/yaw, eyes and yawn from landmarks; no landmarks → `no_landmarks`.
     For face photos that add head poses but carry no usable part labels.
@@ -365,7 +391,7 @@ seeded (reproducible) `parts_dataset_aug/` + `.zip`. Rules agreed so far:
 
 ## What's verified vs. not
 
-- **Verified:** the test suite (`pytest` → 110 pass, 1 skipped without `[dev]` on 2026-10-23;
+- **Verified:** the test suite (`pytest` → 115 pass, 1 skipped without `[dev]` on 2026-10-26;
   the skip is the geometry-equivalence check, which needs `tensorflow`); the NumPy
   geometry port vs. the real `tf.keras` layer to `atol=1e-4`; the spawn pool + checkpoint +
   resume + model-download flow end to end on synthetic video; the collector's no-overwrite

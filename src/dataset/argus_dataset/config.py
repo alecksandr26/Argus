@@ -441,6 +441,20 @@ DET_HUMAN_HEAD_DOWN_MIN_PITCH_DEG: float = OWN_HEAD_DOWN_MIN_PITCH_DEG
 # body). The label goes on the BlazeFace face; the box's size and position are ignored, and an
 # image where BlazeFace finds no face is rejected (no crop around a body box).
 ROBOFLOW_IMAGE_LEVEL_HEAD_PROJECTS: tuple[str, ...] = ("noddingoff-z8zad",)
+# Beyond this |yaw| the pitch check is skipped for that project: in profile the landmark pitch
+# is meaningless. Measured 2026-10-26: noddingoff's pitch-rejected images were all real nods at
+# yaw 37–64° reading pitch ≈ 0 (contact sheet). Only for a source whose every image was checked
+# to be head-down; kantuk would let a turned, level yawning face through (one read p−20 y−32).
+DET_HEAD_CHECK_MAX_YAW_DEG_BY_PROJECT: dict[str, float] = {"noddingoff-z8zad": 30.0}
+# Roboflow's per-box brightness augmentation ("bbbrightness") brightens or darkens only the
+# inside of each box, leaving a rectangle on the face that a detector could learn as "a head".
+# Images of these projects whose box edges show a straight brightness step larger than
+# DET_BOX_BRIGHTNESS_MAX_STEP (grey levels, see box_brightness_step) are rejected. Measured on
+# headmovement v12 (2026-10-26): its unaugmented valid split has a median step of 1 (95th pct 4),
+# its augmented train split a median of 37, and 94% of train is above 3. Every headmovement
+# version from v6 on uses it; v5, the last clean one, has only 250 images.
+ROBOFLOW_BOX_BRIGHTNESS_AUGMENTED_PROJECTS: tuple[str, ...] = ("headmovement",)
+DET_BOX_BRIGHTNESS_MAX_STEP: float = 5.0
 # A human head label counts only if its box side is at least this fraction of BlazeFace's face
 # box side (catches head labels drawn on an eye).
 DET_HUMAN_HEAD_MIN_REL: float = 0.5

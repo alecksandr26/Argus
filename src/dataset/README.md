@@ -311,7 +311,10 @@ For a source with noisy head labels, list it in `ROBOFLOW_HEAD_PITCH_CHECKED_PRO
 `head_down` then needs pitch ≥ 15° and a human `head_straight` needs the landmarks to agree, or
 the image is rejected (`head_label_disagrees`). For a source whose box isn't a head box (e.g. the
 whole driver), list it in `ROBOFLOW_IMAGE_LEVEL_HEAD_PROJECTS`: the label goes on the face
-BlazeFace finds, and an image with no face is rejected.
+BlazeFace finds, and an image with no face is rejected. For a source whose Roboflow version uses
+per-box brightness augmentation (`bbbrightness`, a bright/dark rectangle on the face), list it in
+`ROBOFLOW_BOX_BRIGHTNESS_AUGMENTED_PROJECTS`: images showing that rectangle are rejected
+(`box_brightness_artifact`).
 - **Unlabelled eyes are pseudo-labelled** from landmarks (EAR < 0.15 closed, > 0.25 open,
   otherwise the image is rejected; a head-pose source's `head_down` image is kept with that eye
   unlabelled, since downcast lids are exactly what reads as unclear). Without this, eyes the

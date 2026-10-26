@@ -302,6 +302,33 @@ def test_pitch_checked_head_labels(env, monkeypatch):
     assert dd.plan_roboflow_image(down, e, _mp(pitch="0"), 100, 100)["head_class"] == "head_down"
 
 
+def test_pitch_check_skipped_in_profile(env, monkeypatch):
+    dd = env[2]
+    root, e = _headpose(env, monkeypatch, [("train", "d_jpg.rf.1", "0 0.5 0.5 0.7 0.7\n"),
+                                           ("train", "f_jpg.rf.2", "1 0.5 0.5 0.7 0.7\n")])
+    monkeypatch.setattr(dd.config, "ROBOFLOW_HEAD_PITCH_CHECKED_PROJECTS", (HP,))
+    down, fwd = root / "train/images/d_jpg.rf.1.jpg", root / "train/images/f_jpg.rf.2.jpg"
+    profile = _mp(pitch="0", yaw="50")
+    assert dd.plan_roboflow_image(down, e, profile, 100, 100)["reason"] == "head_label_disagrees"
+    monkeypatch.setitem(dd.config.DET_HEAD_CHECK_MAX_YAW_DEG_BY_PROJECT, HP, 30.0)
+    assert dd.plan_roboflow_image(down, e, profile, 100, 100)["head_class"] == "head_down"
+    assert dd.plan_roboflow_image(down, e, _mp(pitch="0", yaw="20"), 100, 100)["reason"] == "head_label_disagrees"
+    # a profile "straight" label is still checked
+    assert dd.plan_roboflow_image(fwd, e, profile, 100, 100)["reason"] == "head_label_disagrees"
+
+
+def test_box_brightness_step(env):
+    dd = env[2]
+    y, x = np.mgrid[0:200, 0:200]
+    clean = (60 + 0.5 * x + 0.3 * y + np.random.default_rng(0).normal(0, 2, (200, 200))).clip(0, 255)
+    box = [(0, 0.5, 0.5, 0.4, 0.5)]
+    aug = clean.copy()
+    aug[50:150, 60:140] *= 1.3                                         # Roboflow "bbbrightness"
+    assert dd.box_brightness_step(clean.astype(np.uint8), box) < 3
+    assert dd.box_brightness_step(aug.clip(0, 255).astype(np.uint8), box) > 20
+    assert np.isnan(dd.box_brightness_step(clean.astype(np.uint8), []))
+
+
 def test_image_level_head_label(env, monkeypatch):
     dd = env[2]
     # A whole-body box. As a head box, a missed face would be cropped around it (human_box).

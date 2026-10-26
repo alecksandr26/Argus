@@ -381,11 +381,14 @@ def _human_head(boxes, raw, hmap):
     return max(heads, key=lambda h: h[1][2] * h[1][3]) if heads else None
 
 
-def human_head_agrees(hc: str | None, mp_row: dict) -> bool:
+def human_head_agrees(hc: str | None, mp_row: dict, max_yaw: float = float("inf")) -> bool:
     """Whether a human head label is consistent with the landmarks (ROBOFLOW_HEAD_PITCH_CHECKED_
     PROJECTS). head_down needs pitch ≥ DET_HUMAN_HEAD_DOWN_MIN_PITCH_DEG; head_straight needs the
-    landmarks to call it straight; "neither" (None) can't disagree."""
+    landmarks to call it straight; "neither" (None) can't disagree. Beyond ``max_yaw`` the pitch
+    can't judge a head_down (profile), so it isn't checked."""
     pitch, yaw = float(mp_row["pitch"]), float(mp_row["yaw"])
+    if hc == "head_down" and abs(yaw) > max_yaw:
+        return True
     if hc == "head_down":
         return config.HEAD_DOWN_PITCH_SIGN * pitch >= config.DET_HUMAN_HEAD_DOWN_MIN_PITCH_DEG
     if hc == "head_straight":
@@ -467,8 +470,9 @@ def plan_roboflow_image(img_path: Path, entry: dict, mp_row: dict | None, W: int
             human = None
         if human and (image_level or map_box_to_crop(human[1], W, H, x0, y0, side)):
             hc, plan["head_source"] = human[0], "human" if face else "human_box"
+            max_yaw = config.DET_HEAD_CHECK_MAX_YAW_DEG_BY_PROJECT.get(project, float("inf"))
             if (project in config.ROBOFLOW_HEAD_PITCH_CHECKED_PROJECTS and pose
-                    and not human_head_agrees(hc, mp_row)):
+                    and not human_head_agrees(hc, mp_row, max_yaw)):
                 plan["reason"] = "head_label_disagrees"
                 return plan
         if hc:
@@ -509,6 +513,33 @@ def plan_roboflow_image(img_path: Path, entry: dict, mp_row: dict | None, W: int
     else:
         plan["status"] = "ok"
     return plan
+
+
+def box_brightness_step(gray: np.ndarray, boxes) -> float:
+    """How strongly an image shows Roboflow's per-box brightness augmentation: for each box edge
+    inside the image, the median |step| across the edge (1 px in vs. 1 px out) minus the median
+    natural step just outside it (the same 2 px gap moved outwards); the max over edges and
+    boxes. About 0–4 grey levels on clean images, tens on augmented ones. NaN without a box."""
+    g = gray.astype(np.float32)
+    H, W = g.shape
+    steps = []
+    for _, xc, yc, w, h in boxes:
+        x0, x1 = int(round((xc - w / 2) * W)), int(round((xc + w / 2) * W))
+        y0, y1 = int(round((yc - h / 2) * H)), int(round((yc + h / 2) * H))
+        rows, cols = slice(max(y0, 0), min(y1, H)), slice(max(x0, 0), min(x1, W))
+        edges = []   # (1 px inside, 1 px outside, 3 px outside) for each edge clear of the border
+        if x0 >= 3:
+            edges.append((g[rows, x0 + 1], g[rows, x0 - 1], g[rows, x0 - 3]))
+        if x1 <= W - 4:
+            edges.append((g[rows, x1 - 2], g[rows, x1], g[rows, x1 + 2]))
+        if y0 >= 3:
+            edges.append((g[y0 + 1, cols], g[y0 - 1, cols], g[y0 - 3, cols]))
+        if y1 <= H - 4:
+            edges.append((g[y1 - 2, cols], g[y1, cols], g[y1 + 2, cols]))
+        for inside, out1, out3 in edges:
+            if inside.size > 10:
+                steps.append(float(np.median(np.abs(inside - out1)) - np.median(np.abs(out1 - out3))))
+    return max(steps) if steps else float("nan")
 
 
 def _write_pair(base: Path, split: str, image_id: str, gray: np.ndarray, irimg: np.ndarray,
@@ -578,6 +609,11 @@ def build(mp_cache: dict, progress=lambda it, **k: it) -> dict:
             plan = plan_roboflow_image(p, e, mp_cache.get(str(p)), W, H)
             image_id = f"{e['project']}__{p.stem}"
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            if plan["status"] == "ok" and e["project"] in config.ROBOFLOW_BOX_BRIGHTNESS_AUGMENTED_PROJECTS:
+                lbl = p.parent.parent / "labels" / (p.stem + ".txt")
+                boxes = parts_dataset._read_yolo_labels(lbl)[0] if lbl.exists() else []
+                if box_brightness_step(gray, boxes) > config.DET_BOX_BRIGHTNESS_MAX_STEP:
+                    plan.update(status="rejected", reason="box_brightness_artifact")
             owners = hash_owner.setdefault(parts_dataset.dhash(gray), {})
             for proj, other in owners.items():
                 if proj != e["project"]:
