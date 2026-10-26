@@ -166,7 +166,11 @@ three read one dataset, `Argus/dataset/parts_det.zip`, built locally by
   `INCLUDE_PSEUDO_EYES` in Setup. Every notebook writes `models/parts_det/<name>_metrics.json`.
 - **Local runs.** `ARGUS_SMOKE=1` plus `ARGUS_DET_ZIP` / `ARGUS_PROJECT_FOLDER` /
   `ARGUS_WORK_DIR` run a notebook locally on CPU as a few-step smoke test (all three were
-  executed end to end this way).
+  executed end to end this way). 12 was re-run this way on 2026-10-26 against dataset v5 (the
+  three new head-down sources, no MRL), with pandas 3.1 / TF 2.21 / Keras 3.15: all 28 code
+  cells, `.keras` + int8 `.tflite` written. That run caught `groupby(...).apply(sample)` dropping
+  the `source`/`kind` columns under pandas 3; the SMOKE subset (12/13/14) and 12's per-source
+  example pick now shuffle and take `groupby(...).head(n)` instead.
 - **Verified:** encode → loss → decode → eval for both of 12's detectors.
   - Ideal network outputs give mAP@0.5 = 0.99.
   - A 32-image memorisation test reaches 0.99 / 0.98 in eval mode.
