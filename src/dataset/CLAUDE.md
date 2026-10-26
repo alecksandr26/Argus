@@ -302,7 +302,10 @@ The rules below each came from looking at real data:
   - **v5 build (2026-10-26)**, with the three sources above. **MRL Eye was not in it**: its server
     (mrl.cs.vsb.cz) timed out all day, so this build has no MRL close-ups and its IR copies are the
     red-channel mix without histogram matching (`ir.to_ir_like` with no reference). Rebuild once
-    MRL is fetched; the Roboflow numbers below won't change.
+    MRL is fetched; the Roboflow numbers below won't change. That rebuild takes half as much MRL
+    as v4 (`DET_MRL_MAX_PER_SUBJECT_CLASS` 300 → 150, the user's call on 2026-10-26): MRL's
+    whole-image eye boxes are the likely reason the detector boxed whole lowered heads as one
+    `closed_eye`.
 
     | | v4 | v5 |
     |---|---|---|

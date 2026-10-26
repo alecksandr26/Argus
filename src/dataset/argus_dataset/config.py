@@ -346,7 +346,11 @@ DET_PSEUDO_MATCH_DIST: float = 0.5      # an eye counts as labelled if a box cen
 # No pseudo eyes beyond this |yaw|: the far eye is hidden and the mesh puts it on the nose/cheek
 # (seen on contact sheets, 2026-10-19). Such a face then needs human eye boxes, as before.
 DET_PSEUDO_EYE_MAX_YAW_DEG: float = 40.0
-DET_MRL_MAX_PER_SUBJECT_CLASS: int = 300  # cap MRL so it doesn't swamp the ~10k Roboflow faces
+# Cap MRL so it doesn't swamp the Roboflow faces. Halved from 300 on 2026-10-26: MRL images are
+# whole-image eye close-ups (one box filling the picture), and the trained detector put one big
+# closed_eye box over whole lowered heads (cv-argus filters those, PARTS_EYE_MAX_FRAC). Nearly
+# every MRL subject has far more than 300 images per eye state, so this keeps about half.
+DET_MRL_MAX_PER_SUBJECT_CLASS: int = 150
 DET_JPEG_QUALITY: int = 95
 DET_SAME_ORIGINAL_CORR: float = 0.75    # stem-mates join one group only if their 16x16 thumbnails
                                         # correlate ≥ this (flip-invariant); see detection_dataset
