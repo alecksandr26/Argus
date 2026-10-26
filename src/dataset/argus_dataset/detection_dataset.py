@@ -381,6 +381,18 @@ def _human_head(boxes, raw, hmap):
     return max(heads, key=lambda h: h[1][2] * h[1][3]) if heads else None
 
 
+def human_head_agrees(hc: str | None, mp_row: dict) -> bool:
+    """Whether a human head label is consistent with the landmarks (ROBOFLOW_HEAD_PITCH_CHECKED_
+    PROJECTS). head_down needs pitch ≥ DET_HUMAN_HEAD_DOWN_MIN_PITCH_DEG; head_straight needs the
+    landmarks to call it straight; "neither" (None) can't disagree."""
+    pitch, yaw = float(mp_row["pitch"]), float(mp_row["yaw"])
+    if hc == "head_down":
+        return config.HEAD_DOWN_PITCH_SIGN * pitch >= config.DET_HUMAN_HEAD_DOWN_MIN_PITCH_DEG
+    if hc == "head_straight":
+        return head_class(pitch, yaw) == "head_straight"
+    return True
+
+
 def plan_roboflow_image(img_path: Path, entry: dict, mp_row: dict | None, W: int, H: int) -> dict:
     """Decide everything about one Roboflow image without touching pixels: kind, crop square,
     mapped boxes, head class, accept/reject. Pure, so it's unit-tested directly."""
@@ -389,6 +401,7 @@ def plan_roboflow_image(img_path: Path, entry: dict, mp_row: dict | None, W: int
     hmap = config.ROBOFLOW_HEAD_CLASS_MAP.get(project, {})
     headpose_only = project in config.ROBOFLOW_HEADPOSE_PROJECTS
     landmark_only = project in config.ROBOFLOW_LANDMARK_ONLY_PROJECTS
+    image_level = project in config.ROBOFLOW_IMAGE_LEVEL_HEAD_PROJECTS
     # Head-pose / landmark-only sources that map nothing to "yawn" get their mouths from jawOpen.
     labels_no_yawns = landmark_only or (headpose_only and "yawn" not in cmap.values())
     reject_labels = set(config.ROBOFLOW_REJECT_IMAGE_LABELS.get(project, ()))
@@ -410,7 +423,8 @@ def plan_roboflow_image(img_path: Path, entry: dict, mp_row: dict | None, W: int
         if not pose:
             plan["reason"] = "no_landmarks"
             return plan
-    if face or (headpose_only and human):
+    # An image-level label's box is not a head box, so there is nothing to crop around without a face.
+    if face or (headpose_only and human and not image_level):
         if face:
             fbox = tuple(float(mp_row[k]) for k in ("fx", "fy", "fw", "fh"))
             x0, y0, side = square_face_box(*fbox)
@@ -447,11 +461,16 @@ def plan_roboflow_image(img_path: Path, entry: dict, mp_row: dict | None, W: int
         # A human head-pose label wins over the pitch guess, but only if it is the same head (its
         # centre falls inside this crop). Its class may be None ("neither"): then no head box.
         # On a found face, it must also be head-sized (not a head label drawn on an eye).
-        if human and face and (max(human[1][2] * W, human[1][3] * H)
-                               < config.DET_HUMAN_HEAD_MIN_REL * max(fbox[2], fbox[3])):
+        # An image-level label skips both box checks: it describes the image, so it goes on the face.
+        if human and face and not image_level and (max(human[1][2] * W, human[1][3] * H)
+                                                   < config.DET_HUMAN_HEAD_MIN_REL * max(fbox[2], fbox[3])):
             human = None
-        if human and map_box_to_crop(human[1], W, H, x0, y0, side):
+        if human and (image_level or map_box_to_crop(human[1], W, H, x0, y0, side)):
             hc, plan["head_source"] = human[0], "human" if face else "human_box"
+            if (project in config.ROBOFLOW_HEAD_PITCH_CHECKED_PROJECTS and pose
+                    and not human_head_agrees(hc, mp_row)):
+                plan["reason"] = "head_label_disagrees"
+                return plan
         if hc:
             # Box scope: the BlazeFace face box, like every other head box in the dataset; only
             # the no-face fallback uses the (larger) human head box.

@@ -242,6 +242,19 @@ ROBOFLOW_PROJECTS: tuple[dict, ...] = (
      "listed_images": 6391, "note": "per-image driver states incl. head_down/head_up (Public Domain)"},
     {"workspace": "mdulo-v", "project": "facial-movements-detection", "version": 1,
      "listed_images": 4734, "note": "head_front/down/left/right/up + eyes, mouth, pupil, seatbelt"},
+    # Head-down sources added 2026-10-26, chosen from per-class contact sheets of 9 candidates.
+    # All three are in ROBOFLOW_HEAD_PITCH_CHECKED_PROJECTS: their head labels are noisier.
+    # kantuk ("drowsy" in Indonesian): car cabins, face boxes + one box over BOTH eyes + a mouth
+    # box (CC BY 4.0). headmovement: office webcam, face boxes labelled in Indonesian (bawah = down,
+    # depan = front, kiri / kanan = left / right; Public Domain). noddingoff: side-view drivers
+    # nodding off, one whole-body box per image (CC BY 4.0); the same photos as Deloitte's
+    # "d2 - Nodding Off" class, without the salt-and-pepper noise that export adds.
+    {"workspace": "testproject-8jvqn", "project": "kantuk-edo70", "version": 1,
+     "listed_images": 3090, "note": "head_dropped/head_straight + both-eyes boxes + yawn/no_yawn"},
+    {"workspace": "head-movement", "project": "headmovement", "version": 12,
+     "listed_images": 1412, "note": "bawah (down) / depan (front) / kiri / kanan face boxes"},
+    {"workspace": "universe-adweg", "project": "noddingoff-z8zad", "version": 1,
+     "listed_images": 218, "note": "nodding-off drivers, whole-body 'Distraction' boxes"},
 )
 
 # Merged parts dataset (scripts/build_parts_dataset.py → processed/parts_dataset/). Every source
@@ -291,6 +304,10 @@ ROBOFLOW_CLASS_MAP: dict[str, dict[str, str | None]] = {
         "open_mouth": None,       # talking as often as yawning: jawOpen decides (pseudo yawn)
         "closed_mouth": None, "pupil": None, "wear_seatbelt": None, "no_seatbelt": None,
     },
+    # One eye box covers both eyes (contact sheets, 2026-10-26), so the eyes come from the
+    # landmarks, one box per eye. Mouth boxes are dropped too: ROBOFLOW_MOUTH_LABELS turns them
+    # into a mouth state and the yawn box is drawn from the lips, the same scope as every source.
+    "kantuk-edo70": {"eye_open": None, "eye_closed": None, "yawn": None, "no_yawn": None},
 }
 PARTS_CROP_PAD_FRAC: float = 0.15       # grow each box 15% per side, then square it about its centre
 PARTS_MIN_CROP_PX: int = 12             # drop crops whose short side is smaller than this
@@ -401,19 +418,45 @@ ROBOFLOW_HEAD_CLASS_MAP: dict[str, dict[str, str | None]] = {
     },
     # scripts/add_own_captures.py writes only head_down boxes (the BlazeFace face box).
     OWN_CAPTURES_PROJECT: {"head_down": "head_down"},
+    # Contact sheets 2026-10-26. kantuk's head_dropped is mostly real lowered heads but also
+    # yawning or laughing level heads; the pitch check drops those.
+    "kantuk-edo70": {"head_dropped": "head_down", "head_straight": "head_straight"},
+    # Indonesian labels. "-" = faces looking up into a low camera, "r" = a rolled (tilted) head.
+    "headmovement": {"bawah": "head_down", "depan": "head_straight",
+                     "kiri": None, "kanan": None, "-": None, "r": None},
+    # Every image is a driver nodding off; the box is the whole body (image-level label).
+    "noddingoff-z8zad": {"Distraction": "head_down"},
 }
+# Head-pose sources whose human head labels must agree with the landmarks, because their labels
+# were seen to be noisy. A human head_down needs pitch ≥ DET_HUMAN_HEAD_DOWN_MIN_PITCH_DEG and a
+# human head_straight needs the landmarks to say head_straight too. Otherwise the whole image is
+# rejected (head_label_disagrees), not relabelled from pitch: in a side view a real nod can read
+# as a low pitch, so the pitch guess would be the wrong label there. Without landmarks the human
+# label stands, like own_captures (strongly lowered heads are what loses the mesh).
+ROBOFLOW_HEAD_PITCH_CHECKED_PROJECTS: tuple[str, ...] = ("kantuk-edo70", "headmovement", "noddingoff-z8zad")
+# The same floor as own_captures and for the same reasons (a low camera flattens a lowered head;
+# human Head_forward reaches 19.6°).
+DET_HUMAN_HEAD_DOWN_MIN_PITCH_DEG: float = OWN_HEAD_DOWN_MIN_PITCH_DEG
+# Sources whose head label belongs to the whole image, not to its box (noddingoff boxes the whole
+# body). The label goes on the BlazeFace face; the box's size and position are ignored, and an
+# image where BlazeFace finds no face is rejected (no crop around a body box).
+ROBOFLOW_IMAGE_LEVEL_HEAD_PROJECTS: tuple[str, ...] = ("noddingoff-z8zad",)
 # A human head label counts only if its box side is at least this fraction of BlazeFace's face
 # box side (catches head labels drawn on an eye).
 DET_HUMAN_HEAD_MIN_REL: float = 0.5
 # Crop margin around a human head box when BlazeFace misses, per project (default
 # DET_HEAD_BOX_MARGIN_FRAC). xsriz boxes are face-sized like BlazeFace's, so they get the face margin.
-DET_HEAD_BOX_MARGIN_BY_PROJECT: dict[str, float] = {"drowsiness-detection-xsriz": DET_FACE_MARGIN_FRAC}
+DET_HEAD_BOX_MARGIN_BY_PROJECT: dict[str, float] = {
+    "drowsiness-detection-xsriz": DET_FACE_MARGIN_FRAC,
+    "kantuk-edo70": DET_FACE_MARGIN_FRAC, "headmovement": DET_FACE_MARGIN_FRAC,   # face-sized too
+}
 # Head-pose sources: parts_dataset.py skips them (their point is the head boxes, and they have
 # no yawn labels); the detection dataset pseudo-labels any eyes they left unlabelled and, if
 # BlazeFace misses the face (strong pose is the point of this data), crops around the human head
 # box instead. Their eye boxes, if any, go through ROBOFLOW_CLASS_MAP as usual.
 ROBOFLOW_HEADPOSE_PROJECTS: tuple[str, ...] = (
-    "headpose-w4zuc", "drowsiness-detection-xsriz", "facial-movements-detection", OWN_CAPTURES_PROJECT)
+    "headpose-w4zuc", "drowsiness-detection-xsriz", "facial-movements-detection", OWN_CAPTURES_PROJECT,
+    "kantuk-edo70", "headmovement", "noddingoff-z8zad")
 # Head-pose images whose eyes can't be (fully) labelled — no landmarks on a turned/lowered head —
 # are kept with just their head box. Trade-off: a visible-but-unlabelled eye is learned as
 # background, but rejecting them would throw away exactly the hard head_down examples.
@@ -443,6 +486,7 @@ ROBOFLOW_LANDMARK_ONLY_PROJECTS: tuple[str, ...] = ()
 ROBOFLOW_MOUTH_LABELS: dict[str, dict[str, str]] = {
     "drowsiness-detection-xsriz": {"yarning": "yawn", "": "closed"},
     "facial-movements-detection": {"closed_mouth": "closed", "open_mouth": "open"},
+    "kantuk-edo70": {"yawn": "yawn", "no_yawn": "closed"},
 }
 DET_PSEUDO_YAWNS: bool = True
 DET_PSEUDO_YAWN_JAW_CLOSED: float = 0.5

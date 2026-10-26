@@ -283,6 +283,58 @@ def test_tiny_human_head_label_is_ignored(env, monkeypatch):
     assert p["head_class"] == "head_straight" and p["head_source"] == "landmarks"   # not "Down"
 
 
+def test_pitch_checked_head_labels(env, monkeypatch):
+    dd = env[2]
+    root, e = _headpose(env, monkeypatch, [("train", "d_jpg.rf.1", "0 0.5 0.5 0.7 0.7\n"),
+                                           ("train", "f_jpg.rf.2", "1 0.5 0.5 0.7 0.7\n")])
+    monkeypatch.setattr(dd.config, "ROBOFLOW_HEAD_PITCH_CHECKED_PROJECTS", (HP,))
+    down, fwd = root / "train/images/d_jpg.rf.1.jpg", root / "train/images/f_jpg.rf.2.jpg"
+    floor = dd.config.DET_HUMAN_HEAD_DOWN_MIN_PITCH_DEG
+    p = dd.plan_roboflow_image(down, e, _mp(pitch=str(floor)), 100, 100)   # under the 20° cut, kept
+    assert p["status"] == "ok" and p["head_class"] == "head_down" and p["head_source"] == "human"
+    assert dd.plan_roboflow_image(down, e, _mp(pitch=str(floor - 1)), 100, 100)["reason"] == "head_label_disagrees"
+    assert dd.plan_roboflow_image(fwd, e, _mp(pitch="5"), 100, 100)["head_class"] == "head_straight"
+    assert dd.plan_roboflow_image(fwd, e, _mp(pitch="30"), 100, 100)["reason"] == "head_label_disagrees"
+    assert dd.plan_roboflow_image(fwd, e, _mp(yaw="35"), 100, 100)["reason"] == "head_label_disagrees"
+    q = dd.plan_roboflow_image(down, e, _mp(pose=False), 100, 100)          # no landmarks: label stands
+    assert q["status"] == "ok" and q["head_class"] == "head_down"
+    monkeypatch.setattr(dd.config, "ROBOFLOW_HEAD_PITCH_CHECKED_PROJECTS", ())
+    assert dd.plan_roboflow_image(down, e, _mp(pitch="0"), 100, 100)["head_class"] == "head_down"
+
+
+def test_image_level_head_label(env, monkeypatch):
+    dd = env[2]
+    # A whole-body box. As a head box, a missed face would be cropped around it (human_box).
+    root, e = _headpose(env, monkeypatch, [("train", "b_jpg.rf.1", "0 0.7 0.7 0.6 0.6\n")])
+    img = root / "train/images/b_jpg.rf.1.jpg"
+    assert dd.plan_roboflow_image(img, e, _mp(face=False), 100, 100)["head_source"] == "human_box"
+    monkeypatch.setattr(dd.config, "ROBOFLOW_IMAGE_LEVEL_HEAD_PROJECTS", (HP,))
+    p = dd.plan_roboflow_image(img, e, _mp(pitch="30"), 100, 100)
+    assert p["status"] == "ok" and p["head_class"] == "head_down" and p["head_source"] == "human"
+    heads = [b for c, b in p["boxes"] if c == "head_down"]
+    assert heads[0][2] == pytest.approx(60 / 90)                        # the face box, not the body box
+    assert dd.plan_roboflow_image(img, e, _mp(face=False), 100, 100)["reason"] == "no_face"
+    # A tiny "Down" box is a fine image-level label too: no DET_HUMAN_HEAD_MIN_REL check.
+    (root / "train/labels/b_jpg.rf.1.txt").write_text("0 0.1 0.1 0.05 0.05\n")
+    assert dd.plan_roboflow_image(img, e, _mp(pitch="30"), 100, 100)["head_source"] == "human"
+
+
+def test_new_head_down_sources_are_fully_mapped(env):
+    dd = env[2]
+    # The class lists the 2026-10-26 exports came with; check_head_maps must accept each one.
+    classes = {
+        "kantuk-edo70": ["eye_closed", "eye_open", "head_dropped", "head_straight", "no_yawn", "yawn"],
+        "headmovement": ["-", "bawah", "depan", "kanan", "kiri", "r"],
+        "noddingoff-z8zad": ["Distraction"],
+    }
+    manifest = {"sources": {f"roboflow/{p}": {"kind": "roboflow", "project": p, "class_names": n}
+                            for p, n in classes.items()}}
+    dd.check_head_maps(manifest)
+    assert set(classes) <= set(dd.config.ROBOFLOW_HEADPOSE_PROJECTS)
+    assert set(classes) == set(dd.config.ROBOFLOW_HEAD_PITCH_CHECKED_PROJECTS)
+    assert {s["project"] for s in dd.config.ROBOFLOW_PROJECTS} >= set(classes)
+
+
 def test_landmark_only_source(env, monkeypatch):
     paths, external, dd = env
     root, e = _export(paths, external, "some-faces", [("train", "f_jpg.rf.1", "3 0.5 0.5 0.9 0.9\n")])

@@ -286,8 +286,9 @@ The build does the following:
   human-vs-pitch agreement.
 
 **Head-pose sources** (`config.ROBOFLOW_HEADPOSE_PROJECTS`: `vidyashree/headpose-w4zuc`,
-`karthik-madhvan/drowsiness-detection-xsriz`, `mdulo-v/facial-movements-detection`) are there for
-their head labels. To add another one:
+`karthik-madhvan/drowsiness-detection-xsriz`, `mdulo-v/facial-movements-detection`, and since
+2026-10-26 `testproject-8jvqn/kantuk-edo70`, `head-movement/headmovement`,
+`universe-adweg/noddingoff-z8zad`) are there for their head labels. To add another one:
 
 ```bash
 ROBOFLOW_API_KEY=... python scripts/fetch_roboflow_parts.py --projects <project>
@@ -306,6 +307,11 @@ box instead (`head_source = human_box`, margin `DET_HEAD_BOX_MARGIN_FRAC` or the
 (`DET_HEADPOSE_ALLOW_INCOMPLETE_EYES`). A human head label only counts if its box is at least half
 the face's size (`DET_HUMAN_HEAD_MIN_REL`). For a dataset whose labels are no use at all (just
 faces), list it in `ROBOFLOW_LANDMARK_ONLY_PROJECTS`: every box then comes from the landmarks.
+For a source with noisy head labels, list it in `ROBOFLOW_HEAD_PITCH_CHECKED_PROJECTS`: a human
+`head_down` then needs pitch ≥ 15° and a human `head_straight` needs the landmarks to agree, or
+the image is rejected (`head_label_disagrees`). For a source whose box isn't a head box (e.g. the
+whole driver), list it in `ROBOFLOW_IMAGE_LEVEL_HEAD_PROJECTS`: the label goes on the face
+BlazeFace finds, and an image with no face is rejected.
 - **Unlabelled eyes are pseudo-labelled** from landmarks (EAR < 0.15 closed, > 0.25 open,
   otherwise the image is rejected; a head-pose source's `head_down` image is kept with that eye
   unlabelled, since downcast lids are exactly what reads as unclear). Without this, eyes the

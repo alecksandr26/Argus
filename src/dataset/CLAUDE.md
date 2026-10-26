@@ -265,6 +265,29 @@ The rules below each came from looking at real data:
     - `mdulo-v/facial-movements-detection` (v1, CC BY 4.0): office/car webcams; whole-head boxes
       (`head_front/down/left/right/up`), per-eye boxes, `open_mouth`/`closed_mouth` (mouth state
       via `ROBOFLOW_MOUTH_LABELS`), pupil and seatbelt boxes (ignored).
+    - **Added 2026-10-26**, chosen from per-class contact sheets of 9 Universe candidates (rejected:
+      Deloitte's modified distracted driver set, whose 218 "d2 - Nodding Off" photos are the same
+      as noddingoff's but with salt-and-pepper noise; TestDemo "sleeping", mostly side profiles,
+      rotated images and eye-only boxes; posture-detection, classrooms with tiny faces;
+      sleep-driving, tight crops of level closed-eye faces; drowsy-utudu, 155 images):
+      - `testproject-8jvqn/kantuk-edo70` (v1, CC BY 4.0): car cabins, face boxes `head_dropped` /
+        `head_straight`. Its eye box spans **both eyes**, so eyes come from landmarks
+        (`ROBOFLOW_CLASS_MAP` → None); `yawn` / `no_yawn` become mouth states. `head_dropped`
+        also holds some level yawning or laughing faces.
+      - `head-movement/headmovement` (v12, Public Domain): office webcam face boxes in Indonesian:
+        `bawah` down, `depan` front, `kiri` / `kanan` left / right, `-` looking up into a low
+        camera, `r` a rolled head. A few `bawah` faces look nearly level.
+      - `universe-adweg/noddingoff-z8zad` (v1, CC BY 4.0): side-view drivers nodding off, one
+        whole-body `Distraction` box per image.
+    - **`ROBOFLOW_HEAD_PITCH_CHECKED_PROJECTS`** (the three above): their head labels were seen to
+      be noisy, so `human_head_agrees` checks them. Human `head_down` needs pitch ≥
+      `DET_HUMAN_HEAD_DOWN_MIN_PITCH_DEG` (15°, own_captures' floor, for the same reasons); human
+      `head_straight` needs the landmarks to say straight. A disagreement **rejects** the image
+      (`head_label_disagrees`) rather than falling back to pitch: in a side view a real nod can
+      read as low pitch, so the pitch guess could be the wrong label. No landmarks → the label stands.
+    - **`ROBOFLOW_IMAGE_LEVEL_HEAD_PROJECTS`** (noddingoff): the box isn't a head box, so the label
+      goes on the BlazeFace face, skipping `DET_HUMAN_HEAD_MIN_REL` and the inside-the-crop check,
+      and a missed face is `no_face` (no crop around a body box).
   - **`ROBOFLOW_LANDMARK_ONLY_PROJECTS`** (empty so far): sources whose labels are ignored
     entirely. Head from pitch/yaw, eyes and yawn from landmarks; no landmarks → `no_landmarks`.
     For face photos that add head poses but carry no usable part labels.
