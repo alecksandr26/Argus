@@ -106,6 +106,7 @@ mirrors this (`MINORITY_WINDOW_OVERLAP`, per-class tiling spot-check) — keep t
 | `ir.py` | IR ("NoIR") simulation for RGB training crops, matching the cabin's Pi NoIR OV5647 + IR LEDs. Red-dominant channel mix (`IR_CHANNEL_WEIGHTS_BGR`), then histogram matching toward an MRL real-IR reference CDF, blended at `IR_HIST_MATCH_STRENGTH`. **Training sources only**: never applied to MRL (already IR) or at inference (real IR frames just go to gray). Random IR effects (glints, LED falloff, noise) are training-time augmentation and don't belong here. |
 | `parts_dataset.py` | Merges MRL + the Roboflow exports into one 3-class dataset (`open_eye` / `closed_eye` / `yawn`, via `ROBOFLOW_CLASS_MAP`) under `processed/parts_dataset/` (`rgb/`, `ir/`, `parts_dataset.csv`, `class_map.csv`), plus `export_zip` → `processed/parts_dataset.zip`. **Leakage guard:** rows are grouped by Roboflow original stem (`<orig>_jpg.rf.<hash>` augmented copies) and unioned across exact 64-bit dHash matches; that also chains consecutive video frames, e.g. aunvg's NTHU-style `001_glasses_…` clips form one group. MRL is grouped by subject. `assign_splits` cuts **by hash rank** per source, because thresholding the hash with only 37 MRL subjects once left test empty. Unmapped source classes are a hard error. Rebuilt wholesale on each run (~1 min); crop files are reused. Driven by `build_parts_dataset.py`. |
 | `verify.py` | Per-artifact schema/label/relationship checks; `--compare` against a Colab CSV. |
+| `det_report.py` | Balance report for `processed/parts_det/`: per class, boxes / images / distinct `group_id`s in train / valid / test, split percentages, and a source × class table. Groups are counted as distinct ids, never summed over sources (dHash can join two sources into one group). PNG charts (matplotlib, `[analysis]` extra) + `balance.csv` under `processed/parts_det_report/`. Driven by `scripts/analyze_detection_dataset.py`. |
 | `cli.py` | Shared argparse plumbing for `scripts/`. |
 
 `scripts/` are thin argparse wrappers over the package — the four `build_*` and
@@ -394,7 +395,7 @@ seeded (reproducible) `parts_dataset_aug/` + `.zip`. Rules agreed so far:
 
 ## What's verified vs. not
 
-- **Verified:** the test suite (`pytest` → 115 pass, 1 skipped without `[dev]` on 2026-10-26;
+- **Verified:** the test suite (`pytest` → 116 pass, 1 skipped without `[dev]` on 2026-10-26;
   the skip is the geometry-equivalence check, which needs `tensorflow`); the NumPy
   geometry port vs. the real `tf.keras` layer to `atol=1e-4`; the spawn pool + checkpoint +
   resume + model-download flow end to end on synthetic video; the collector's no-overwrite

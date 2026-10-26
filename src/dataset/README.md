@@ -335,6 +335,15 @@ per-box brightness augmentation (`bbbrightness`, a bright/dark rectangle on the 
   rules, which were fixed after a filename-collision chain once merged 46% of the images into
   one group.
 
+**Check the balance** after a build: boxes, images and independent groups (original photos /
+MRL subjects) per class in train / valid / test, the split proportions, and which source each
+class comes from:
+
+```bash
+pip install -e .[analysis]                       # matplotlib, once
+python scripts/analyze_detection_dataset.py      # -> processed/parts_det_report/*.png + balance.csv
+```
+
 ## 7c. Capture our own stills to label — `scripts/capture_frames.py`
 
 The external sets are other people's cameras. This captures **full frames** of our own people

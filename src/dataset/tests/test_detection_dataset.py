@@ -411,3 +411,31 @@ def test_parts_dataset_skips_headpose_projects(env, monkeypatch):
     _headpose(env, monkeypatch, [("train", "x_jpg.rf.1", "0 0.5 0.5 0.4 0.4\n")])
     from argus_dataset import parts_dataset
     assert parts_dataset.roboflow_rows(env[1].load_manifest(), None, Counter(), Counter()) == []
+
+
+# --- balance report --------------------------------------------------------------------------
+
+def test_balance_report_counts(env, tmp_path):
+    import pandas as pd
+    from argus_dataset import det_report
+    index = pd.DataFrame([
+        {"image_id": "a", "status": "ok", "split": "train", "source": "roboflow", "project": "p1", "group_id": "g1"},
+        {"image_id": "b", "status": "ok", "split": "train", "source": "roboflow", "project": "p2", "group_id": "g1"},
+        {"image_id": "c", "status": "ok", "split": "test", "source": "mrl_eye", "project": "mrl_eye", "group_id": "m1"},
+        {"image_id": "d", "status": "rejected", "split": "valid", "source": "roboflow", "project": "p1", "group_id": "g2"},
+    ])
+    labels = {"a": ["open_eye", "open_eye", "head_down"], "b": ["open_eye"], "c": ["closed_eye"],
+              "d": ["yawn"]}
+    counts = det_report.count_labels(index, labels)
+    boxes, images, groups = (det_report.per_split(counts, m) for m in ("boxes", "images", "groups"))
+    assert boxes.loc["open_eye", "train"] == 3 and images.loc["open_eye", "train"] == 2
+    assert groups.loc["open_eye", "train"] == 1          # one group across two sources, counted once
+    assert boxes.loc["yawn"].sum() == 0                   # rejected rows never count
+    assert list(boxes.index) == list(det_report.config.DET_CLASSES)
+    assert list(boxes.columns) == ["train", "valid", "test"]
+    src = det_report.per_source(counts)
+    assert src.loc["mrl_eye", "closed_eye"] == 1 and src.index[0] == "p1"
+    assert det_report.summary_table(counts).loc["open_eye", ("groups_pct", "train")] == 100.0
+    lbl = tmp_path / "x.txt"
+    lbl.write_text("4 0.5 0.5 0.2 0.2\n0 0.3 0.3 0.1 0.1\n")
+    assert det_report.read_labels(lbl) == ["head_down", "open_eye"]
