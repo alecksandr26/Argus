@@ -412,9 +412,10 @@ is missing or done.
 below: `src/cv-argus` deploys one pipeline — the tiny YOLO "parts" detector + tracker +
 deterministic rules** (notebook 12's `tiny_yolo_w1`, int8 by default; see `src/cv-argus/
 CLAUDE.md`'s "Current status").
-- Deployed model: the 2026-10-20 23:35 run (int8 on notebook 12's test set: mAP@0.5 0.756,
-  eye-state accuracy 0.920, head_down AP@0.5 0.743, head accuracy 0.994). The 2026-10-18 model it
-  replaced scored mAP@0.5 0.63, eye-state 0.95 and head_down AP about 0.25.
+- Deployed model: the 2026-10-26 23:20 run (`tiny_yolo_w1_20261026_2320`; its test-set scores
+  aren't recorded yet). The 2026-10-20 23:35 run it replaced scored, int8 on notebook 12's test
+  set: mAP@0.5 0.756, eye-state accuracy 0.920, head_down AP@0.5 0.743, head accuracy 0.994. The
+  2026-10-18 model before that scored mAP@0.5 0.63, eye-state 0.95 and head_down AP about 0.25.
 - Measured in the container on a desktop CPU under the 4-core Pi limit: 0.7 ms per face at int8
   and about 15 ms end to end.
 - Not yet run on a Pi 5, on real cabin footage, or on unseen drivers.

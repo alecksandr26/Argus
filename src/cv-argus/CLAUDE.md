@@ -148,8 +148,8 @@ boxes could out-vote the real eyes.
 - It now reports two scores: **"as deployed"** (with the filter) and **"like-for-like with
   2026-10-20"**. Only the like-for-like one compares with the deployed model's figures in the
   root `CLAUDE.md` (mAP@0.5 0.756, eye-state 0.920, head_down AP 0.743, head accuracy 0.994).
-- A Colab retrain with these changes is pending (the user runs it). Until then the deployed model
-  is still the 2026-10-20 one.
+- The deployed model is now the 2026-10-26 23:20 Colab run (`tiny_yolo_w1_20261026_2320`, same
+  46k-parameter architecture); its test-set scores aren't recorded here yet.
 - `PARTS_EYE_*` are **code constants**, not env vars.
 
 **Severity rules** (`orchestrator/parts_rules.py`; thresholds are `RULE_*` in `constants.py`, each
