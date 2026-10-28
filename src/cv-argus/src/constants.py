@@ -40,18 +40,19 @@ FACE_LOCK_MISS_GRACE_S = 1.0
 FACE_LOCK_TAKEOVER_SCALE = 1.25
 
 # --- The "parts" pipeline: tiny YOLO-style detector + rule engine ---
-# notebook/12_tiny_grid_detector.ipynb's model "tiny_yolo_w1" (46k params), the 2026-10-20 23:35
-# run. On notebook 12's test set (int8; float within 0.01): mAP@0.5 0.756 (0.63 for the
+# notebook/12_tiny_grid_detector.ipynb's model "tiny_yolo_w1" (46k params), the 2026-10-26 23:20
+# run (its test-set numbers aren't recorded here yet). The 2026-10-20 23:35 run it replaces, on
+# notebook 12's test set (int8; float within 0.01): mAP@0.5 0.756 (0.63 for the
 # 2026-10-18 model it replaces), eye-state accuracy 0.920 (0.95), head_down AP@0.5 0.743 (0.25),
 # head accuracy 0.994. Both files are shared "Anyone with the link"; the env vars of the same
 # name override the ids.
 # The filenames carry the run date ON PURPOSE: /app/models is the `model-cache` volume, and the
 # downloader skips a file already cached under the same name, so reusing a name would keep a Pi
 # silently running the previous model after an image rebuild.
-PARTS_INT8_DRIVE_FILE_ID = "1MSnhSekHeCavvFzni41-KUBAMatnXqln"    # tiny_yolo_w1_20261020_2335_int8.tflite
-PARTS_INT8_FILENAME = "parts_tiny_yolo_w1_20261020_2335_int8.tflite"
-PARTS_FLOAT_DRIVE_FILE_ID = "1ivbCARbpw25k_ZDGDIeV0T3xcShAwCl4"   # tiny_yolo_w1_20261020_2335.keras
-PARTS_FLOAT_FILENAME = "parts_tiny_yolo_w1_20261020_2335.keras"
+PARTS_INT8_DRIVE_FILE_ID = "1HLw4Ff-wdUItH9gn-CYr_4UVBPF5mGH0"    # tiny_yolo_w1_20261026_2320_int8.tflite
+PARTS_INT8_FILENAME = "parts_tiny_yolo_w1_20261026_2320_int8.tflite"
+PARTS_FLOAT_DRIVE_FILE_ID = "10wr7KFV2-CwXKsK4a-JpcDCxsH6dDPHX"   # tiny_yolo_w1_20261026_2320.keras
+PARTS_FLOAT_FILENAME = "parts_tiny_yolo_w1_20261026_2320.keras"
 PARTS_DEFAULT_PRECISION = "int8"    # PARTS_PRECISION=int8|float
 # Must match the training data (src/dataset/argus_dataset/config.py DET_*) and notebook 12's IMG.
 PARTS_CLASSES = ("open_eye", "closed_eye", "yawn", "head_straight", "head_down")
