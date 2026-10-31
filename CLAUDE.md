@@ -110,12 +110,13 @@ session that's touched this repo.
   `src/esp32-argus/README.md`'s fusion section for the full decision spec, and
   `src/cv-argus/src/orchestrator/fusion_contract.py` for its typed reference contract. Since
   2026-10-24 the grip sensor is real (4 RFP602 pressure sensors, GPIO 34/35/36/39) but it is
-  **its own critical source, not fused**: 3 s with no pressure sounds the cabin buzzer (GPIO 13),
-  sends a `no_grip` critical to the backend and one SMS; `fusion.*` stays kept but unused. A live
-  Pi critical (not `no_face`) also sounds the buzzer until the driver OK, and every critical gets
-  one SMS to the truck's alert phone (set in Fleet, carried in `argus-device.env` →
-  `CONFIG` → ESP32 RAM). See `docs/designs/grip-alarm-contracts.md`; compiled, not yet run on
-  hardware.
+  **its own critical source for the backend, not fused**: 3 s with no pressure sends a `no_grip`
+  critical to the backend, and a live Pi critical goes to the backend as before; `fusion.*` stays
+  kept but unused. **Since 2026-10-31 the cabin buzzer (GPIO 13) and the SMS are a double check
+  (user decision): they need a live Pi critical (`no_face` included) AND 3 s without pressure at
+  the same time**, not either one. One SMS when both come together, at most one per camera
+  episode, to the truck's alert phone (set in Fleet, carried in `argus-device.env` → `CONFIG` →
+  ESP32 RAM). See `docs/designs/grip-alarm-contracts.md`; compiled, not yet run on hardware.
 - Deliberate split: the Pi *decides* (heavy AI inference, containerizable, can be redeployed via
   OTA), the ESP32 *acts* (bare-metal/real-time, must not depend on a Linux/Docker boot cycle
   completing). Don't move CAN-bus/alarm logic onto the Pi — keep that boundary.

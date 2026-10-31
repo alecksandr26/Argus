@@ -231,22 +231,22 @@
 
 // =====================================================
 // Cabin buzzer (contracts C4) -- an active buzzer: a continuous tone while its pin is on. On
-// while the grip alarm or the vision alarm is (alarm_policy.h).
+// only while the grip alarm AND the vision alarm both are (alarm_policy.h): a double check, so
+// neither the camera alone nor the wheel alone sounds it.
 // =====================================================
 #define BUZZER_PIN 13
 #define BUZZER_ACTIVE_HIGH 1
-// A vision alarm (a live critical from the camera, not no_face) stops on the Pi's driver OK, or
-// after this long as a safety cap if that OK never comes.
+// A vision alarm (a live critical from the camera, no_face included) stops on the Pi's driver OK,
+// or after this long as a safety cap if that OK never comes.
 #define VISION_ALARM_MAX_MS 300000UL
 
 // =====================================================
-// Critical-alert SMS (contracts C5) -- one SMS per critical episode (a grip episode, or a Pi
-// critical first taken live) to the phone the Pi sends in CONFIG (ARGUS_ALERT_PHONE, RAM only).
-// Sent by the sender task with raw AT on the SIM800L, between report attempts (sms_policy.h,
-// sms_modem.h). Needs the modem registered on the GSM network; no APN is needed.
+// Critical-alert SMS (contracts C5) -- one SMS when a camera critical and the hands off the wheel
+// come together (the moment the buzzer turns on), at most one per camera episode, to the phone the
+// Pi sends in CONFIG (ARGUS_ALERT_PHONE, RAM only). Sent by the sender task with raw AT on the
+// SIM800L, between report attempts (sms_policy.h, sms_modem.h). Needs the modem registered on the
+// GSM network; no APN is needed.
 // =====================================================
-// 1 = a no_face critical gets its SMS too (it never sounds the buzzer).
-#define SMS_ON_NO_FACE 1
 // Messages waiting at once; a new one when full drops the oldest waiting one (logged).
 #define SMS_QUEUE_SLOTS 4
 // The last this many Pi episodes that got (or skipped) their SMS: a re-pulled record or the same

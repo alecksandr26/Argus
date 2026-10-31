@@ -7,11 +7,11 @@ VisionChange AlarmPolicy::onPiRecord(PiEventKind kind, bool dlq, bool taken,
 
   if (kind == PiEventKind::AlertCritical) {
     if (!taken) return VisionChange::None;  // left on the Pi: it sounds when it is taken
-    if (alertType == "no_face") return VisionChange::NoFace;
     if (sounded_.contains(episode)) return VisionChange::None;  // served again / same episode
     sounded_.add(episode);
     vision_ = true;
     visionEpisode_.assignTruncated(episode);
+    visionAlertType_.assignTruncated(alertType);
     visionSinceMs_ = nowMs;  // the cap counts from the newest episode's critical
     return VisionChange::On;
   }

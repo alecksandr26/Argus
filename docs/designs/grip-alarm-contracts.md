@@ -3,11 +3,15 @@
 Agreed 2026-10-23. Source: the user's bench sketch (4 × RFP602 pressure sensors on the wheel, a
 buzzer, a TinyGsm SMS with a Google Maps link) plus their rules:
 
-- No pressure on the wheel for **3 s** → a **critical** alert to the backend, the buzzer, one SMS.
+- No pressure on the wheel for **3 s** → a **critical** alert to the backend (the grip alarm).
   Pressure back → the grip alarm stops.
-- A **critical from the vision (Pi)** → the buzzer and one SMS. A driver-OK from the Pi stops it.
-  **`no_face` never sounds the buzzer** (it still gets its SMS, see C5).
-- **One SMS per critical alert**, to a phone set from the dashboard and carried
+- A **critical from the vision (Pi)** → the vision alarm. A driver-OK from the Pi stops it.
+- **Changed 2026-10-31 (user decision, a double check): the buzzer and the SMS need both.** The
+  buzzer sounds only while the grip alarm **and** the vision alarm are on, and one SMS goes the
+  moment both come together (at most one per camera episode). The camera alone or the wheel alone
+  still reaches the backend as before, but never sounds the buzzer nor texts. `no_face` counts as
+  a camera critical like any other (before, it never sounded and texted alone).
+- The SMS goes to a phone set from the dashboard and carried
   UI → `argus-device.env` → Pi → `CONFIG` → ESP32, where it lives in **RAM only**.
 
 Teams: T1 `esp32-argus`, T2 `cv-argus`, T3 `backend-argus`, T4 `ui-argus`. Branches
@@ -68,7 +72,8 @@ value means "no phone" (no SMS).
   Sampled every `GRIP_SAMPLE_INTERVAL_MS` (100). Raw readings go to Serial at most every
   `GRIP_LOG_INTERVAL_MS` (2000), not every sample.
 - **No pressure continuously for `GRIP_ALERT_MS` (3000)** → a grip episode starts: the grip alarm
-  turns on, one live critical event is queued (C3), one SMS is queued (C5).
+  turns on, one live critical event is queued (C3), and the SMS is queued if a camera critical is
+  already on (C5).
 - **Pressure back for `GRIP_RECOVERY_MS` (300)** → the grip alarm turns off at once, the episode
   ends, and one live OK event with the same episode is queued (C3). The next 3 s without pressure
   starts a new episode.
@@ -97,11 +102,12 @@ ESP32-originated, so they are **not** Pi records: no `TAKEN`/`ACK`/`FAIL` to the
 
 ## C4. Buzzer (T1)
 
-- Buzzer on **GPIO 13**, `BUZZER_ACTIVE_HIGH 1`, continuous tone. **On while `gripAlarm ||
-  visionAlarm`**, off otherwise.
+- Buzzer on **GPIO 13**, `BUZZER_ACTIVE_HIGH 1`, continuous tone. **On while `gripAlarm &&
+  visionAlarm`** (changed 2026-10-31 from `||`: a double check), off otherwise; either one ending
+  silences it at once.
 - `visionAlarm` turns **on** when this device takes a **live** Pi record classified as
-  `AlertCritical` whose reason is not `no_face` (`eyes_closed`, `yawn_eyes_closed`, `head_down`,
-  `head_down_eyes_closed`, or any other non-`no_face` reason). It turns **off** on a live Pi record
+  `AlertCritical`, whatever its reason (`eyes_closed`, `yawn_eyes_closed`, `head_down`,
+  `head_down_eyes_closed`, `no_face`, or any other). It turns **off** on a live Pi record
   classified as the driver OK, or after `VISION_ALARM_MAX_MS` (300000) as a safety cap if the Pi
   never sends one. MEDIUM never sounds. DLQ replays never sound.
 - A record pulled again after its lease expired (same record id) or a second critical of the same
@@ -110,18 +116,21 @@ ESP32-originated, so they are **not** Pi records: no `TAKEN`/`ACK`/`FAIL` to the
 
 ## C5. Critical-alert SMS (T1)
 
-- **One SMS per critical episode**: each grip episode (C2) and each Pi critical episode first taken
-  live (keyed by its episode; a ring of the last 8 episodes dedupes re-pulls and the same
-  episode's later criticals). Not for MEDIUM, OK, or DLQ replays. `SMS_ON_NO_FACE 1`: a `no_face`
-  critical gets its SMS (it doesn't sound).
+- **One SMS when both alarms come together** (changed 2026-10-31): the moment the buzzer turns on
+  (C4), whichever of the two came second (`cabinAlarmSms()`, called on a vision alarm turning on
+  and on a grip episode starting). Keyed by the **camera's** episode, at most one per episode (a
+  ring of the last 8): the driver letting go again in the same episode, a re-pull or the
+  episode's later criticals send nothing more. Never for the camera alone, the wheel alone,
+  MEDIUM, OK, or DLQ replays. `SMS_ON_NO_FACE` is gone: `no_face` is a camera critical like any
+  other.
 - Only when `alertPhone` is set; otherwise logged once per episode and skipped.
 - Text, plain ASCII/GSM-7, at most 160 chars:
-  `ARGUS ALERTA CRITICA: <motivo>. Camion <plate or truck id>. https://maps.google.com/?q=<lat>,<lon>`
-  (6 decimals), or `... Ubicacion desconocida.` without a position (never wait for a fix).
-  Motivos: `eyes_closed` → `ojos cerrados`, `yawn_eyes_closed` → `ojos cerrados tras bostezo`,
-  `head_down` → `cabeza abajo`, `head_down_eyes_closed` → `cabeza abajo y ojos cerrados`,
-  `no_face` → `conductor no visible`, `no_grip` → `manos fuera del volante`, anything else → the
-  raw reason.
+  `ARGUS ALERTA CRITICA: <motivo>, sin manos en el volante. Camion <plate or truck id>. https://maps.google.com/?q=<lat>,<lon>`
+  (6 decimals, the position when both came together), or `... Ubicacion desconocida.` without a
+  position (never wait for a fix). Motivos (the camera's reason): `eyes_closed` →
+  `ojos cerrados`, `yawn_eyes_closed` → `ojos cerrados tras bostezo`, `head_down` →
+  `cabeza abajo`, `head_down_eyes_closed` → `cabeza abajo y ojos cerrados`, `no_face` →
+  `conductor no visible`, anything else → the raw reason.
 - Sent by the **sender task** (the only modem owner), with raw AT like the rest of the firmware:
   `AT+CMGF=1`, `AT+CSCS="GSM"`, `AT+CMGS="<phone>"`, wait for `>`, the text, `0x1A`, wait for
   `+CMGS:` then `OK` (up to 60 s). Serviced between report attempts, never in the middle of an HTTP

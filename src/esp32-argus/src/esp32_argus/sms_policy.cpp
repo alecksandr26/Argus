@@ -2,8 +2,6 @@
 
 #include <cstdio>
 
-#include "grip_policy.h"
-
 namespace {
 
 bool reached(uint32_t nowMs, uint32_t dueMs) { return (int32_t)(nowMs - dueMs) >= 0; }
@@ -40,40 +38,20 @@ int SmsPolicy::find(const std::string& episode) const {
   return -1;
 }
 
-SmsQueueResult SmsPolicy::onPiRecord(PiEventKind kind, bool dlq, bool taken,
-                                     const std::string& episode, const std::string& alertType,
-                                     const EventPosition& where, bool hasPhone, uint32_t nowMs) {
+SmsQueueResult SmsPolicy::onBothAlarms(const std::string& visionEpisode,
+                                       const std::string& alertType, const EventPosition& where,
+                                       bool hasPhone, uint32_t nowMs) {
   SmsQueueResult r;
-  if (kind != PiEventKind::AlertCritical || dlq || !taken) return r;  // Ignored
-  if (alertType == "no_face" && !timing_.onNoFace) {
-    r.result = SmsQueued::NoFace;  // not remembered: a later critical of the episode still counts
+  if (episodes_.contains(visionEpisode)) {
+    r.result = SmsQueued::Duplicate;  // hands off again in the same episode, or served again
     return r;
   }
-  if (piEpisodes_.contains(episode)) {
-    r.result = SmsQueued::Duplicate;  // served again, or the episode's later critical
-    return r;
-  }
-  piEpisodes_.add(episode);
+  episodes_.add(visionEpisode);
   if (!hasPhone) {
     r.result = SmsQueued::NoPhone;
     return r;
   }
-  return enqueue(episode, alertType, where, nowMs);
-}
-
-SmsQueueResult SmsPolicy::onGripEpisode(const std::string& episode, const EventPosition& where,
-                                        bool hasPhone, uint32_t nowMs) {
-  SmsQueueResult r;
-  // Grip episodes are new by construction (a counter): only the queue dedupes them.
-  if (find(episode) >= 0) {
-    r.result = SmsQueued::Duplicate;
-    return r;
-  }
-  if (!hasPhone) {
-    r.result = SmsQueued::NoPhone;
-    return r;
-  }
-  return enqueue(episode, kGripAlertType, where, nowMs);
+  return enqueue(visionEpisode, alertType, where, nowMs);
 }
 
 SmsQueueResult SmsPolicy::enqueue(const std::string& episode, const std::string& alertType,
@@ -169,7 +147,6 @@ const char* smsMotivo(const std::string& alertType) {
   if (alertType == "head_down") return "cabeza abajo";
   if (alertType == "head_down_eyes_closed") return "cabeza abajo y ojos cerrados";
   if (alertType == "no_face") return "conductor no visible";
-  if (alertType == kGripAlertType) return "manos fuera del volante";
   return nullptr;
 }
 
@@ -191,11 +168,12 @@ std::string composeSmsText(const std::string& alertType, const std::string& vehi
   }
 
   const std::string head = "ARGUS ALERTA CRITICA: ";
-  const std::string mid = ". Camion ";
+  const std::string mid = ", sin manos en el volante. Camion ";
   const std::string tail = ". " + place;
   // Over 160 chars only with a long raw alert type (up to 64) or truck id: cut those, never the
-  // link. The vehicle keeps kSmsVehicleMaxLength (a plate is at most 16, a truck id 24), then the
-  // motive gets what is left (at least 54 chars with a real position).
+  // hands-off part or the link. The vehicle keeps kSmsVehicleMaxLength (a plate is at most 16, a
+  // truck id 24), then the motive gets what is left (at least 29 chars with a real position:
+  // "cabeza abajo y ojos cerrados", the longest known one, is 28).
   if (truck.size() > kSmsVehicleMaxLength) truck.resize(kSmsVehicleMaxLength);
   size_t fixed = head.size() + mid.size() + tail.size() + truck.size();
   size_t room = kSmsMaxLength > fixed ? kSmsMaxLength - fixed : 0;

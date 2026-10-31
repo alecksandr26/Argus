@@ -1,13 +1,16 @@
 #pragma once
 
-// The critical-alert SMS (docs/designs/grip-alarm-contracts.md C5): which criticals get one, the
-// queue that waits for the GSM network, the retries, and the text. Pure logic with an injected
-// millis() clock, so test/host/sms_policy_host_test.cpp runs it on the PC with exact strings.
+// The critical-alert SMS (docs/designs/grip-alarm-contracts.md C5, changed 2026-10-31): which
+// moments get one, the queue that waits for the GSM network, the retries, and the text. Pure logic
+// with an injected millis() clock, so test/host/sms_policy_host_test.cpp runs it on the PC with
+// exact strings.
 //
-// - One SMS per critical episode: each grip episode, and each Pi critical episode first taken live
-//   (a ring of the last SMS_EPISODE_MEMORY Pi episodes dedupes a record served again and the same
-//   episode's later criticals). Never for a medium, an OK or a DLQ replay. A no_face critical gets
-//   one while SMS_ON_NO_FACE is 1 (it never sounds the buzzer).
+// - One SMS when the camera's critical and the hands off the wheel come together: the moment the
+//   cabin buzzer turns on (alarm_policy.h: vision alarm AND grip alarm, cabin_signals.h queues it).
+//   Never for the camera alone, the wheel alone, a medium, an OK or a DLQ replay.
+// - At most one per camera episode: a ring of the last SMS_EPISODE_MEMORY episodes dedupes the
+//   driver letting go and taking the wheel again during the same episode, a record served again
+//   and the episode's later criticals.
 // - Only with an alert phone (CONFIG's alert_phone): without one the episode is skipped, logged
 //   once (its result is NoPhone, then Duplicate).
 // - A queue of SMS_QUEUE_SLOTS, deduped by episode; a new one when full drops the oldest waiting.
@@ -25,13 +28,11 @@
 #include "bounded_string.h"
 #include "config.h"
 #include "episode_ring.h"
-#include "pi_event_policy.h"
 
 struct SmsTiming {
   uint32_t retryGapMs = SMS_RETRY_GAP_MS;
   uint32_t pendingMaxMs = SMS_PENDING_MAX_MS;
   int maxAttempts = SMS_MAX_ATTEMPTS;
-  bool onNoFace = SMS_ON_NO_FACE != 0;
 };
 
 // One message waiting to go. A static slot: its text is fixed-capacity (bounded_string.h). The
@@ -39,19 +40,18 @@ struct SmsTiming {
 struct SmsMessage {
   bool used = false;
   IdString episode;
-  AlertTypeString alertType;  // the alert's alert_type: the Pi's reason, or "no_grip"
-  EventPosition position;     // where the truck was when the alert was raised
+  AlertTypeString alertType;  // the camera critical's alert_type (the Pi's reason)
+  EventPosition position;     // where the truck was when both alarms came together
   uint32_t queuedAtMs = 0;
   int attempts = 0;           // failed tries so far
   uint32_t lastAttemptEndMs = 0;
 };
 
 enum class SmsQueued : uint8_t {
-  Ignored,    // not a critical this rule sends an SMS for (medium, OK, DLQ, not taken, ...)
+  Ignored,    // not a moment this rule sends an SMS for (only one alarm on, a medium, an OK...)
   Queued,
   Duplicate,  // this episode already had its SMS (or was skipped): nothing new
   NoPhone,    // no alert phone set: skipped (log it: once per episode)
-  NoFace,     // a no_face critical with SMS_ON_NO_FACE 0
 };
 
 struct SmsQueueResult {
@@ -74,15 +74,10 @@ class SmsPolicy {
 
   explicit SmsPolicy(const SmsTiming& timing = SmsTiming());
 
-  // A Pi record from a Bluetooth session, as pull_session.h decided it (like
-  // AlarmPolicy::onPiRecord): only a live (`!dlq`), taken AlertCritical is an SMS. `where` is the
-  // position composed into its event.
-  SmsQueueResult onPiRecord(PiEventKind kind, bool dlq, bool taken, const std::string& episode,
-                            const std::string& alertType, const EventPosition& where,
-                            bool hasPhone, uint32_t nowMs);
-  // A grip episode started (grip_policy.h): its SMS, alert type "no_grip".
-  SmsQueueResult onGripEpisode(const std::string& episode, const EventPosition& where,
-                               bool hasPhone, uint32_t nowMs);
+  // Both alarms just came together (cabin_signals.h): the camera's critical of `visionEpisode`
+  // (`alertType`, its reason) and the hands off the wheel. `where`: the position then.
+  SmsQueueResult onBothAlarms(const std::string& visionEpisode, const std::string& alertType,
+                              const EventPosition& where, bool hasPhone, uint32_t nowMs);
 
   // --- The sender task, between report attempts ---
   // Removes one message that waited longer than pendingMaxMs since it was queued into `dropped`;
@@ -104,21 +99,22 @@ class SmsPolicy {
 
   SmsTiming timing_;
   SmsMessage slots_[kSlots];
-  EpisodeRing<kRemembered> piEpisodes_;
+  EpisodeRing<kRemembered> episodes_;  // camera episodes that got (or skipped) their SMS
 };
 
-// The SMS motive for an alert type (C5): "eyes_closed" -> "ojos cerrados", ..., "no_grip" ->
-// "manos fuera del volante"; nullptr for any other (the text then uses the raw alert type).
+// The SMS motive for a camera alert type (C5): "eyes_closed" -> "ojos cerrados", ...; nullptr for
+// any other (the text then uses the raw alert type).
 const char* smsMotivo(const std::string& alertType);
 
 // The C5 text, plain GSM-7, at most kSmsMaxLength chars:
-//   "ARGUS ALERTA CRITICA: <motivo>. Camion <vehicle>. https://maps.google.com/?q=<lat>,<lon>"
+//   "ARGUS ALERTA CRITICA: <motivo>, sin manos en el volante. Camion <vehicle>.
+//    https://maps.google.com/?q=<lat>,<lon>"
 // (6 decimals), or "... Camion <vehicle>. Ubicacion desconocida." without a position. `vehicle`
 // is the truck's plate, else its truck id. A character outside the safe GSM-7 set (letters,
 // digits, space and . , : / ? = + - # ( )) in the raw alert type or the vehicle is written as a
 // space ("mouth_open" -> "mouth open"), so the modem's "GSM" character set can't garble it. The
-// vehicle is cut to kSmsVehicleMaxLength, and the motive to what then fits in 160 chars: the link
-// always fits whole.
+// vehicle is cut to kSmsVehicleMaxLength, and the motive to what then fits in 160 chars: the
+// hands-off part and the link always fit whole.
 constexpr size_t kSmsMaxLength = 160;
 constexpr size_t kSmsVehicleMaxLength = 24;  // a truck id (ObjectId) is 24, a plate at most 16
 std::string composeSmsText(const std::string& alertType, const std::string& vehicle,
