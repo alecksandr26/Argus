@@ -310,10 +310,12 @@ scripts/demo.sh --camera 1                        # another webcam (or --camera 
 scripts/demo.sh --camera src/demo_clips/x.mp4     # a recorded clip (keep clips under src/demo_clips/, gitignored)
 scripts/demo.sh --camera picam                    # Pi 5 CSI camera (adds docker-compose.pi.yml + this host's camera nodes)
 scripts/demo.sh --eye-threshold 0.35 --head-threshold 0.25   # more sensitive closed / down
+scripts/demo.sh --build                           # rebuild the image first (Dockerfile/requirements/model-id change)
 ```
 
 `demo.sh` turns on all three outputs: the console line per frame, the metrics file and the
-stream.
+stream. It starts the existing image without rebuilding (compose builds it only if it doesn't
+exist yet); pass `--build` after a change that needs a rebuild (see "Building vs. running").
 
 What the stream shows:
 - The face box, the dashed square the model saw, and each tracked part as `ID class confidence`
