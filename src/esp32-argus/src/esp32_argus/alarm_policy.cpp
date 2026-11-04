@@ -48,7 +48,12 @@ void AlarmPolicy::onCameraReading(bool dlq, const std::string& className,
                                   uint32_t nowMs) {
   if (dlq) return;
   cameraNoFace_ = className == "No Face" || (severity == "critical" && reason == "no_face");
-  cameraFaceCritical_ = severity == "critical" && !cameraNoFace_;
+  // The camera's own latest reading drives the buzzer too (2026-11-03, bench): a critical with
+  // the face in view (eyes closed, head down + eyes closed), or ANY head-down reading -- the Pi
+  // rates head down with the eyes open only "medium", which would never sound otherwise.
+  bool headDown = reason.rfind("head_down", 0) == 0 &&
+                  (severity == "medium" || severity == "critical");
+  cameraFaceCritical_ = !cameraNoFace_ && (severity == "critical" || headDown);
   cameraSeenMs_ = nowMs;
 }
 
@@ -67,8 +72,10 @@ bool AlarmPolicy::tick(uint32_t nowMs) {
   // the wheel or not; the hands off sound with any camera critical, or alone after the delay.
   // A no_face episode counts as "in view" again once a fresh critical reading shows a face (the
   // Pi sends no new event for no_face -> eyes_closed at the same severity).
-  bool faceCritical = vision_ && !noFace &&
-                      (visionAlertType_ != "no_face" || (cameraFaceCritical_ && fresh));
+  // The latest fresh reading alone is enough (no taken event, no episode needed): the driver
+  // asleep or head down sounds at once, hands on the wheel or not, and stops with the reading.
+  bool readingAlarm = cameraFaceCritical_ && fresh && !noFace;
+  bool faceCritical = readingAlarm || (vision_ && !noFace && visionAlertType_ != "no_face");
   bool gripOnly = grip_ && elapsed(nowMs, gripSinceMs_, timing_.gripOnlyAfterMs);
   bool wants = faceCritical || (grip_ && (vision_ || gripOnly));
 
@@ -87,10 +94,11 @@ bool AlarmPolicy::tick(uint32_t nowMs) {
 
   buzzer_ = wants && !noFaceMuted_;
   if (buzzer_) {
-    if (vision_ && grip_) {
+    bool camera = vision_ || faceCritical;
+    if (camera && grip_) {
       cause_ = BuzzerCause::CameraAndGrip;
     } else {
-      cause_ = vision_ ? BuzzerCause::CameraOnly : BuzzerCause::GripOnly;
+      cause_ = camera ? BuzzerCause::CameraOnly : BuzzerCause::GripOnly;
     }
   } else {
     cause_ = (wants && noFaceMuted_) ? BuzzerCause::NoFaceMuted : BuzzerCause::None;
