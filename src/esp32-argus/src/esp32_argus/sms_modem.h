@@ -14,5 +14,7 @@
 
 // True once the modem confirmed it sent the message ("+CMGS:"). `phone` must be E.164 (it comes
 // from device_config's check) and `text` plain GSM-safe ASCII (composeSmsText). On failure,
-// `error` says which step failed, for the log.
-bool smsSendText(const String& phone, const String& text, String& error);
+// `error` says which step failed and the modem's reply, for the log. `reference`, when given: the
+// message reference of a sent one ("+CMGS: <mr>", parseCmgsReference), -1 if unreadable or not
+// sent.
+bool smsSendText(const String& phone, const String& text, String& error, int* reference = nullptr);

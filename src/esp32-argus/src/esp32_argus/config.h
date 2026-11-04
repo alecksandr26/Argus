@@ -243,7 +243,9 @@
 // a current fix), so a parked truck doesn't alarm. 0 (the user's rule as given) = it always runs.
 #define GRIP_REQUIRE_MOVING 0
 #define GRIP_MIN_SPEED_KMH 5.0f
-#define GRIP_TASK_STACK 4096
+// 6144 since the grip SMS is composed and logged in full when queued (logSmsQueued): headroom
+// for its strings; "[health] stack left: grip" shows what is left.
+#define GRIP_TASK_STACK 6144
 
 // =====================================================
 // Cabin buzzer (contracts C4, changed 2026-11-03) -- an active buzzer: a continuous tone while its
@@ -290,3 +292,7 @@
 #define SMS_SEND_TIMEOUT_MS 60000UL
 // "[sms] waiting for the GSM network" at most this often while a message waits.
 #define SMS_WAIT_LOG_INTERVAL_MS 30000UL
+// The SMS says the alert's time as local "HH:MM" (sms_policy.h smsClockText), from the GPS's UTC
+// clock shifted by this. -360 = Mexico's central zone (CDMX, Guadalajara, Monterrey), UTC-6 all
+// year since DST ended in 2022. Without GPS time the SMS has no time part.
+#define SMS_UTC_OFFSET_MINUTES (-360)

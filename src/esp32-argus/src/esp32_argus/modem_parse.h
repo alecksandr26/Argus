@@ -38,6 +38,10 @@ bool parseHttpAction(const char* response, HttpActionResult& result);
 // "+CREG: <n>,<stat>"
 bool parseCreg(const char* response, CregResult& result);
 
+// "+CMGS: <mr>" (an SMS the network took): its message reference, 0..255, for the log; -1 when
+// `response` has no well-formed +CMGS.
+int parseCmgsReference(const char* response);
+
 // A request an earlier attempt fired (AT+HTTPACTION) whose result hadn't come when that attempt
 // ended holds the modem's HTTP session until its "+HTTPACTION:" arrives. The next attempt waits
 // for it in short chunks (lateActionChunkMs), asking between them whether to stop, and then:

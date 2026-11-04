@@ -77,6 +77,13 @@ bool parseCreg(const char* response, CregResult& result) {
   return parseIntField(p, result.n) && skipComma(p) && parseIntField(p, result.stat);
 }
 
+int parseCmgsReference(const char* response) {
+  const char* p = afterPrefix(response, "+CMGS:");
+  int mr = -1;
+  if (!p || !parseIntField(p, mr) || mr < 0 || mr > 255) return -1;
+  return mr;
+}
+
 LateAction lateActionVerdict(bool resultArrived, bool preempted, uint32_t sinceFiredMs,
                              uint32_t giveUpAfterMs) {
   if (resultArrived) return LateAction::Free;

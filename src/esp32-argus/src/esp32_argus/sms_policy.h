@@ -61,7 +61,13 @@ struct SmsQueueResult {
   SmsQueued result = SmsQueued::Ignored;
   bool evicted = false;  // the queue was full: the oldest waiting message was dropped for it
   IdString evictedEpisode;
+  bool handsOff = false;    // Queued: the message's hands-off flag (for the log's text)
+  uint32_t queuedAtMs = 0;  // Queued: when (the text's event time)
 };
+
+// The log's reason for an SMS that won't go (logSmsQueued in the sketch): NoPhone and Duplicate;
+// nullptr for Queued and Ignored, which aren't skips.
+const char* smsSkipReason(SmsQueued result);
 
 enum class SmsAttemptEnd : uint8_t {
   Sent,     // +CMGS: and OK came back
@@ -117,18 +123,32 @@ class SmsPolicy {
 // any other (the text then uses the raw alert type).
 const char* smsMotivo(const std::string& alertType);
 
-// The C5 text, plain GSM-7, at most kSmsMaxLength chars:
-//   "ARGUS ALERTA CRITICA: <motivo>[, sin manos en el volante]. Camion <vehicle>.
+// The C5 text, plain GSM-7, at most kSmsMaxLength chars. It says what the backend's alert for the
+// same critical says (route guardian contracts G9): the alert type (its motive, worded like the
+// dashboard's label), the severity, the truck, the time and where:
+//   "ARGUS ALERTA CRITICA: <motivo>[, sin manos en el volante]. Camion <vehicle>[, <HH:MM>].
 //    https://maps.google.com/?q=<lat>,<lon>"
-// (6 decimals), or "... Camion <vehicle>. Ubicacion desconocida." without a position. The
-// hands-off part only with `handsOff`; the grip critical (kGripAlertType, "no_grip") reads
-// "ARGUS ALERTA CRITICA: sin manos en el volante. Camion ...". `vehicle`
-// is the truck's plate, else its truck id. A character outside the safe GSM-7 set (letters,
-// digits, space and . , : / ? = + - # ( )) in the raw alert type or the vehicle is written as a
-// space ("mouth_open" -> "mouth open"), so the modem's "GSM" character set can't garble it. The
-// vehicle is cut to kSmsVehicleMaxLength, and the motive to what then fits in 160 chars: the
+// (6 decimals), or "... Camion <vehicle>[, <HH:MM>]. Ubicacion desconocida." without a position.
+// e.g. "ARGUS ALERTA CRITICA: ojos cerrados, sin manos en el volante. Camion JAL-123-A, 14:05.
+// https://maps.google.com/?q=20.659712,-103.349612". The hands-off part only with `handsOff`;
+// the grip critical (kGripAlertType, "no_grip") reads "ARGUS ALERTA CRITICA: sin manos en el
+// volante. Camion ...". `vehicle` is the truck's plate, else its truck id. `clock` is the event's
+// local time (smsClockText), "" = no GPS time: no time part. A character outside the safe GSM-7
+// set (letters, digits, space and . , : / ? = + - # ( )) in the raw alert type, the vehicle or the
+// clock is written as a space ("mouth_open" -> "mouth open"), so the modem's "GSM" character set
+// can't garble it.
+// The cut, always the same: the vehicle to kSmsVehicleMaxLength; then the time part only if the
+// whole motive still fits with it (else it is left out); then the motive to what fits. The
 // hands-off part and the link always fit whole.
 constexpr size_t kSmsMaxLength = 160;
 constexpr size_t kSmsVehicleMaxLength = 24;  // a truck id (ObjectId) is 24, a plate at most 16
 std::string composeSmsText(const std::string& alertType, bool handsOff,
-                           const std::string& vehicle, const EventPosition& where);
+                           const std::string& vehicle, const EventPosition& where,
+                           const std::string& clock = std::string());
+
+// The event's UTC time, epoch seconds, from the GPS clock: `gpsEpoch` read at millis()
+// `gpsAtMs`, the event at millis() `eventMs` (before or after it; millis() wrap-safe). 0 when the
+// GPS has no time (gpsEpoch 0).
+uint64_t smsEventEpoch(uint64_t gpsEpoch, uint32_t gpsAtMs, uint32_t eventMs);
+// "HH:MM" of `epochUtc` shifted by `utcOffsetMinutes` (SMS_UTC_OFFSET_MINUTES); "" for 0.
+std::string smsClockText(uint64_t epochUtc, int utcOffsetMinutes);

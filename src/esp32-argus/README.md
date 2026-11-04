@@ -247,11 +247,11 @@ the attempt or session as not made instead of rebooting.
 [grip] S1=12 S2=0 S3=31 S4=7 (threshold 500) -> no pressure
 !!! No pressure on the steering wheel for 3.0 s -- episode grip-1a2b3c4d-1
 [grip] Grip alarm on (camera critical on too: buzzer now); critical no_grip for the backend queued
-[sms] SMS queued for episode grip-1a2b3c4d-1
+[sms] Queued the no_grip SMS (episode grip-1a2b3c4d-1) for +52******5678, at 20.659712,-103.349612 (current fix), 120 chars: ARGUS ALERTA CRITICA: sin manos en el volante. Camion JAL-123-A, 14:05. https://maps.google.com/?q=20.659712,-103.349612
 [alarm] Buzzer ON (camera critical + hands off the wheel)
 [live] critical grip-1a2b3c4d-1-a attempt 1 via gprs 4.8 s: delivered
-[sms] -> +52******5678 (attempt 1/3): ARGUS ALERTA CRITICA: sin manos en el volante. Camion JAL-123-A. https://maps.google.com/?q=20.659712,-103.349612
-[sms] Sent for episode grip-1a2b3c4d-1 in 4.1 s
+[sms] Attempt 1/3: the no_grip SMS (episode grip-1a2b3c4d-1) -> +52******5678, 120 chars: ARGUS ALERTA CRITICA: sin manos en el volante. Camion JAL-123-A, 14:05. https://maps.google.com/?q=20.659712,-103.349612
+[sms] Attempt 1/3 OK in 4.1 s (+CMGS mr 42): SMS sent for episode grip-1a2b3c4d-1 -- done
 [grip] Pressure back -- episode grip-1a2b3c4d-1 over: grip alarm off; OK for the backend queued
 [alarm] Buzzer off
 [health] heap free 61234 B, min ever 40112 B, largest block 38900 B | stack left: sender 5120 B, loop 3010 B, gps 2100 B, grip 2600 B | held: 1 live + 0 grip, 0 dlq, 2 outcome(s) for the Pi (0 lost, 0 bodies cut) | route active | 0 SMS waiting | buzzer off
@@ -270,8 +270,9 @@ the attempt or session as not made instead of rebooting.
   network, at most every 30 s. `[gprs]` / `[modem]`: the mobile-data steps and the modem's
   state. `[creds]`: where the credentials came from (never the key itself; the SMS phone only
   masked). `[grip]`: the four raw readings every 2 s and each episode's start and end. `[alarm]`:
-  the vision alarm and the buzzer turning on/off. `[sms]`: each SMS queued, sent, retried or
-  dropped (the phone masked).
+  the vision alarm and the buzzer turning on/off. `[sms]`: one line per SMS decision -- queued
+  (with its full text), skipped (and why), each attempt and its result, the final outcome -- with
+  the phone always masked (section 6, "What the `[sms]` log shows").
 
 ## 1. Bluetooth SPP client: pulling from `cv-argus` (protocol v2, contracts C1)
 
@@ -673,19 +674,31 @@ tone. `gripTask` decides it every 100 ms (`AlarmPolicy::tick()`):
     ring).
   - Never for a medium, an OK or a DLQ replay.
   - Hands off plus a camera critical gives two SMS, one per source.
-- Only with an alert phone from `CONFIG`; without one the episode is logged once
-  (`[sms] No SMS alert phone set ...`) and skipped.
-- Text, plain GSM-7 ASCII, at most 160 chars:
-  `ARGUS ALERTA CRITICA: <motivo>[, sin manos en el volante]. Camion <plate, else the truck id>. https://maps.google.com/?q=<lat>,<lon>`
-  (6 decimals, the position when the critical came), or `... Camion <...>. Ubicacion
-  desconocida.` with no position (it never waits for a fix). The `sin manos` part only when the
-  grip alarm is on at that moment; the grip SMS is `ARGUS ALERTA CRITICA: sin manos en el
-  volante. Camion ...`. Motivos (the camera's reason):
-  `eyes_closed` → `ojos cerrados`, `yawn_eyes_closed` → `ojos cerrados tras bostezo`,
-  `head_down` → `cabeza abajo`, `head_down_eyes_closed` → `cabeza abajo y ojos cerrados`,
-  `no_face` → `conductor no visible`, anything else → the raw reason (a character that isn't
-  the same in GSM-7, like `_`, becomes a space). The vehicle is cut to 24 chars and the motive to
-  what then fits, so the link always fits whole.
+- Only with an alert phone from `CONFIG` (`alert_phone`: since the route guardian work, the
+  route guardian's phone, written into `argus-device.env` as `ARGUS_ALERT_PHONE`); without one the
+  episode is logged once (`[sms] Skipped ...`) and skipped. A phone that isn't E.164 is dropped
+  when `CONFIG` is parsed and said once then, masked.
+- Text, plain GSM-7 ASCII, at most 160 chars. It says what the backend's alert for the same
+  critical says (route guardian contracts G9): the alert type, the severity, the truck, the time
+  and the position.
+  `ARGUS ALERTA CRITICA: <motivo>[, sin manos en el volante]. Camion <plate, else the truck id>[, <HH:MM>]. https://maps.google.com/?q=<lat>,<lon>`
+  (6 decimals, the position when the critical came), or `... Camion <...>[, <HH:MM>]. Ubicacion
+  desconocida.` with no position (it never waits for a fix). For example:
+  `ARGUS ALERTA CRITICA: ojos cerrados, sin manos en el volante. Camion JAL-123-A, 14:05. https://maps.google.com/?q=20.659712,-103.349612`
+  - The `sin manos` part only when the grip alarm is on at that moment; the grip SMS is
+    `ARGUS ALERTA CRITICA: sin manos en el volante. Camion ...`.
+  - Motivos (the backend's `alert_type`, worded like the dashboard's label for it):
+    `eyes_closed` → `ojos cerrados`, `yawn_eyes_closed` → `ojos cerrados tras bostezo`,
+    `head_down` → `cabeza abajo`, `head_down_eyes_closed` → `cabeza abajo y ojos cerrados`,
+    `no_face` → `conductor no visible`, `no_grip` → `sin manos en el volante`, anything else →
+    the raw reason (a character that isn't the same in GSM-7, like `_`, becomes a space).
+  - `HH:MM` is the time of the alert (when it was queued, not when the SMS went), local: the
+    GPS's UTC clock plus `SMS_UTC_OFFSET_MINUTES` (-360, Mexico's central zone). Without GPS time
+    there is no time part.
+  - The cut, always the same: the vehicle to 24 chars; then the time only if the whole motive
+    still fits with it (otherwise the time is left out); then the motive to what fits. The
+    hands-off part and the link always fit whole. The backend alert's speed, last-known-position
+    flag and AI scores aren't in the SMS (no room in 160 chars).
 - **Sent by the sender task** (the only modem owner), between report attempts, never in the
   middle of an HTTP request: `AT+CMGF=1`, `AT+CSCS="GSM"`, `AT+CMGS="<phone>"`, the text after
   `>`, Ctrl-Z, then `+CMGS:` and `OK` (up to `SMS_SEND_TIMEOUT_MS`, 60 s). Its reads keep a late
@@ -697,6 +710,34 @@ tone. `gripTask` decides it every 100 ms (`AlarmPolicy::tick()`):
   waiting one (logged). `SMS_MAX_ATTEMPTS` (3) tries, `SMS_RETRY_GAP_MS` (10 s) apart; a message
   still unsent `SMS_PENDING_MAX_MS` (5 min) after it was queued (no registration, or retries) is
   dropped (logged).
+
+**What the `[sms]` log shows** (one line per decision; the phone always masked as
+`+52******5678`, never in full, also inside a modem error reply):
+
+```
+[sms] Alert phone from the Pi rejected: "331***5678" is not E.164 (+<country><number>, e.g. +523312345678) -- no SMS on a critical until ARGUS_ALERT_PHONE is fixed
+[sms] Queued the eyes_closed SMS (episode a1b2c3d4e5f6) for +52******5678, at 20.659712,-103.349612 (current fix), 135 chars: ARGUS ALERTA CRITICA: ojos cerrados, sin manos en el volante. Camion JAL-123-A, 14:05. https://maps.google.com/?q=20.659712,-103.349612
+[sms] Skipped the eyes_closed SMS (episode a1b2c3d4e5f6): this episode already had its SMS (or was skipped)
+[sms] Skipped the no_face SMS (episode 0f9e8d7c6b5a): no usable alert phone from the Pi's CONFIG (ARGUS_ALERT_PHONE in argus-device.env: missing, or not E.164)
+[sms] Queue full (4): dropped the waiting SMS for episode 99aa88bb77cc (the newest alert goes instead)
+[sms] Waiting: modem not on the GSM network (not registered, still searching for the network (antenna? 2G coverage?)) -- the eyes_closed SMS for episode a1b2c3d4e5f6 waits, no attempt counted
+[sms] Attempt 1/3: the eyes_closed SMS (episode a1b2c3d4e5f6) -> +52******5678, 135 chars: ARGUS ALERTA CRITICA: ojos cerrados, ...
+[sms] Attempt 1/3 failed in 2.1 s: AT+CMGS (no '>' prompt): ERROR -- retrying in 10 s
+[sms] Attempt 2/3 OK in 4.3 s (+CMGS mr 17): SMS sent for episode a1b2c3d4e5f6 -- done
+[sms] Attempt 3/3 failed in 60.0 s: waiting for +CMGS: +CMS ERROR: 500 -- gave up on the SMS for episode 0a1b2c3d4e5f after 3 attempts
+[sms] Gave up on the no_grip SMS for episode grip-1a2b3c4d-2: still unsent 300 s after it was queued (0 failed attempt(s))
+```
+
+- `Queued`: the alert type and episode, the masked phone, the position, and the text as it will
+  go (the vehicle is read again when it goes) with its length.
+- `Skipped`: no usable phone (once per episode), the episode already had its SMS, or the phone
+  was removed from `CONFIG` while the message waited. A rejected phone is said once, when the
+  `CONFIG` that brought it is applied (`credentials.cpp`), not per alert.
+- `Waiting`: the modem isn't registered on GSM; at most every 30 s, not an attempt.
+- `Attempt n/3`: the text and length, then `OK` with the modem's message reference (`+CMGS
+  mr <n>`; "sent" means the network took it, there's no delivery report) or `failed` with the AT
+  step and the modem's reply (its last 80 chars). The last attempt's line, or `Gave up ...` after
+  5 min, is the final outcome.
 
 **Known gaps** (none of this has run on hardware):
 

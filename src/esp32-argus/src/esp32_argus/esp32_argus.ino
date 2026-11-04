@@ -151,26 +151,40 @@ std::string positionText(const EventPosition& p) {
   return text;
 }
 
-// What a queued SMS means for the log (sms_policy.h); quiet for duplicates and non-criticals.
+// The event's local "HH:MM" for the SMS text (sms_policy.h smsClockText): the GPS clock at
+// millis() `atMs`, "" without GPS time. Under stateMutex (latestGpsEpoch/latestGpsAt).
+std::string smsClockAt(uint32_t atMs) {
+  return smsClockText(smsEventEpoch(latestGpsEpoch, latestGpsAt, atMs), SMS_UTC_OFFSET_MINUTES);
+}
+
+// One [sms] line for what sms_policy.h decided about a critical's SMS: queued (with the text it
+// will send, its length and the masked phone) or skipped (why); quiet for non-criticals. Outside
+// stateMutex: it takes it, and the credentials' own lock, briefly.
 void logSmsQueued(const SmsQueueResult& r, const std::string& episode,
-                  const EventPosition& where = EventPosition()) {
+                  const std::string& alertType, const EventPosition& where = EventPosition()) {
   if (r.evicted) {
-    Serial.printf("[sms] Queue full (%d): dropped the waiting SMS for episode %s\n",
+    Serial.printf("[sms] Queue full (%d): dropped the waiting SMS for episode %s (the newest "
+                  "alert goes instead)\n",
                   SmsPolicy::kSlots, r.evictedEpisode.c_str());
   }
-  switch (r.result) {
-    case SmsQueued::Queued:
-      Serial.printf("[sms] SMS queued for episode %s, %s\n", episode.c_str(),
-                    positionText(where).c_str());
-      break;
-    case SmsQueued::NoPhone:
-      Serial.printf("[sms] No SMS alert phone set (ARGUS_ALERT_PHONE on the Pi) -- no SMS for "
-                    "episode %s\n",
-                    episode.c_str());
-      break;
-    case SmsQueued::Duplicate:
-    case SmsQueued::Ignored:
-      break;
+  if (r.result == SmsQueued::Queued) {
+    String phone, vehicle;
+    credentialsSmsTarget(phone, vehicle);
+    std::string clock;
+    {
+      RtosLock lock(stateMutex);
+      clock = smsClockAt(r.queuedAtMs);
+    }
+    std::string text = composeSmsText(alertType, r.handsOff, vehicle.c_str(), where, clock);
+    Serial.printf("[sms] Queued the %s SMS (episode %s) for %s, %s, %u chars: %s\n",
+                  alertType.c_str(), episode.c_str(), maskPhone(phone).c_str(),
+                  positionText(where).c_str(), (unsigned)text.size(), text.c_str());
+    return;
+  }
+  const char* why = smsSkipReason(r.result);
+  if (why) {
+    Serial.printf("[sms] Skipped the %s SMS (episode %s): %s\n", alertType.c_str(),
+                  episode.c_str(), why);
   }
 }
 
@@ -234,7 +248,7 @@ void onGripChange(GripChange change) {
                   episode.c_str(), queuedText);
   }
   logLocalDrops();
-  if (started) logSmsQueued(queued, episode, where);  // the grip episode's own SMS
+  if (started) logSmsQueued(queued, episode, kGripAlertType, where);  // its own SMS
 }
 
 // The buzzer pin follows the alarm decision (alarm_policy.h tick(): the vision alarm's safety
@@ -428,10 +442,10 @@ void serviceSms() {
     }
   }
   for (int i = 0; i < nExpired; i++) {
-    Serial.printf("[sms] Gave up on the SMS for episode %s: still unsent %lu s after it was queued "
-                  "(%d failed attempt(s))\n",
-                  expired[i].episode.c_str(), (unsigned long)(SMS_PENDING_MAX_MS / 1000),
-                  expired[i].attempts);
+    Serial.printf("[sms] Gave up on the %s SMS for episode %s: still unsent %lu s after it was "
+                  "queued (%d failed attempt(s))\n",
+                  expired[i].alertType.c_str(), expired[i].episode.c_str(),
+                  (unsigned long)(SMS_PENDING_MAX_MS / 1000), expired[i].attempts);
   }
   if (!have) {
     smsWaitLogged = false;
@@ -444,8 +458,9 @@ void serviceSms() {
       RtosLock lock(stateMutex);
       smsQueue.drop(msg.episode.str());
     }
-    Serial.printf("[sms] No SMS alert phone any more -- dropping the SMS for episode %s\n",
-                  msg.episode.c_str());
+    Serial.printf("[sms] Skipped the %s SMS (episode %s): no alert phone any more (the Pi's "
+                  "CONFIG dropped it) -- removed from the queue\n",
+                  msg.alertType.c_str(), msg.episode.c_str());
     return;
   }
   int stat = modemRegistrationCached(MODEM_REG_CACHE_MS);
@@ -453,20 +468,29 @@ void serviceSms() {
     if (!smsWaitLogged || millis() - smsWaitLoggedAt >= SMS_WAIT_LOG_INTERVAL_MS) {
       smsWaitLogged = true;
       smsWaitLoggedAt = millis();
-      Serial.printf("[sms] Waiting for the GSM network to send the SMS for episode %s: %s\n",
-                    msg.episode.c_str(), modemRegistrationText(stat));
+      Serial.printf("[sms] Waiting: modem not on the GSM network (%s) -- the %s SMS for episode "
+                    "%s waits, no attempt counted\n",
+                    modemRegistrationText(stat), msg.alertType.c_str(), msg.episode.c_str());
     }
     return;  // it waits (not an attempt), up to SMS_PENDING_MAX_MS
   }
   smsWaitLogged = false;
 
+  std::string clock;
+  {
+    RtosLock lock(stateMutex);
+    clock = smsClockAt(msg.queuedAtMs);  // the alert's time, not the send's
+  }
   std::string text =
-      composeSmsText(msg.alertType.str(), msg.handsOff, vehicle.c_str(), msg.position);
-  Serial.printf("[sms] -> %s (attempt %d/%d): %s\n", maskPhone(phone).c_str(), msg.attempts + 1,
-                SMS_MAX_ATTEMPTS, text.c_str());
+      composeSmsText(msg.alertType.str(), msg.handsOff, vehicle.c_str(), msg.position, clock);
+  int attempt = msg.attempts + 1;
+  Serial.printf("[sms] Attempt %d/%d: the %s SMS (episode %s) -> %s, %u chars: %s\n", attempt,
+                SMS_MAX_ATTEMPTS, msg.alertType.c_str(), msg.episode.c_str(),
+                maskPhone(phone).c_str(), (unsigned)text.size(), text.c_str());
   String error;
+  int reference = -1;
   uint32_t startedAt = millis();
-  bool sent = smsSendText(phone, String(text.c_str()), error);
+  bool sent = smsSendText(phone, String(text.c_str()), error, &reference);
   uint32_t endedAt = millis();
   if (!sent) modemForgetRegistration();  // check the network again before the next try
   SmsAttemptEnd end;
@@ -475,22 +499,33 @@ void serviceSms() {
     end = smsQueue.attemptEnded(msg.episode.str(), sent, endedAt);
   }
   float secs = (endedAt - startedAt) / 1000.0f;
+  char ref[24];
+  if (reference >= 0) {
+    std::snprintf(ref, sizeof(ref), "+CMGS mr %d", reference);
+  } else {
+    std::snprintf(ref, sizeof(ref), "no +CMGS reference");
+  }
   switch (end) {
     case SmsAttemptEnd::Sent:
-      Serial.printf("[sms] Sent for episode %s in %.1f s\n", msg.episode.c_str(), secs);
+      Serial.printf("[sms] Attempt %d/%d OK in %.1f s (%s): SMS sent for episode %s -- done\n",
+                    attempt, SMS_MAX_ATTEMPTS, secs, ref, msg.episode.c_str());
       break;
     case SmsAttemptEnd::Retry:
-      Serial.printf("[sms] Failed for episode %s after %.1f s (%s) -- retrying in %lu s\n",
-                    msg.episode.c_str(), secs, error.c_str(),
+      Serial.printf("[sms] Attempt %d/%d failed in %.1f s: %s -- retrying in %lu s\n", attempt,
+                    SMS_MAX_ATTEMPTS, secs, error.c_str(),
                     (unsigned long)(SMS_RETRY_GAP_MS / 1000));
       break;
     case SmsAttemptEnd::GaveUp:
-      Serial.printf("[sms] Failed for episode %s (%s) -- giving up after %d attempts\n",
-                    msg.episode.c_str(), error.c_str(), SMS_MAX_ATTEMPTS);
+      Serial.printf("[sms] Attempt %d/%d failed in %.1f s: %s -- gave up on the SMS for episode "
+                    "%s after %d attempts\n",
+                    attempt, SMS_MAX_ATTEMPTS, secs, error.c_str(), msg.episode.c_str(),
+                    SMS_MAX_ATTEMPTS);
       break;
     case SmsAttemptEnd::Gone:
-      Serial.printf("[sms] %s for episode %s (it had already left the queue)\n",
-                    sent ? "Sent" : "Failed", msg.episode.c_str());
+      Serial.printf("[sms] Attempt %d/%d %s in %.1f s (%s) for episode %s (it had already left "
+                    "the queue)\n",
+                    attempt, SMS_MAX_ATTEMPTS, sent ? "OK" : "failed", secs,
+                    sent ? ref : error.c_str(), msg.episode.c_str());
       break;
   }
 }
@@ -675,7 +710,7 @@ void logCabinSignals(const PiRecord& r, const CabinSignals& s) {
     case VisionChange::None:
       break;
   }
-  logSmsQueued(s.sms, episode, s.where);
+  logSmsQueued(s.sms, episode, eventAlertType(r), s.where);
 }
 
 // One PULL or DLQ session. False when it didn't complete (no link, protocol error, no OK).

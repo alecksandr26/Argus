@@ -62,6 +62,19 @@ static void creg() {
   CHECK(!parseCreg("+CSQ: 20,0", c));
 }
 
+// The SMS log's message reference: the read stops at "+CMGS:", the rest of the line follows.
+static void cmgsReference() {
+  CHECK(parseCmgsReference("\r\n+CMGS: 42\r\n\r\nOK\r\n") == 42);
+  CHECK(parseCmgsReference("+CMGS: 0") == 0);
+  CHECK(parseCmgsReference("+CMGS: 255,\"26/11/03,14:05:30-24\"") == 255);  // with an scts
+  CHECK(parseCmgsReference("+CMGS:7\r\n") == 7);
+  CHECK(parseCmgsReference("+CMGS: 256") == -1);
+  CHECK(parseCmgsReference("+CMGS: x") == -1);
+  CHECK(parseCmgsReference("+CMGS:") == -1);
+  CHECK(parseCmgsReference("+CMS ERROR: 500") == -1);
+  CHECK(parseCmgsReference("") == -1);
+}
+
 static void aLateResultFreesTheModem() {
   CHECK(lateActionVerdict(true, false, 1000, 130000) == LateAction::Free);
   CHECK(lateActionVerdict(true, true, 1000, 130000) == LateAction::Free);  // it came: use it
@@ -92,6 +105,7 @@ int main() {
   RUN(httpAction);
   RUN(httpActionModuleErrorsAreTransportErrors);
   RUN(creg);
+  RUN(cmgsReference);
   RUN(aLateResultFreesTheModem);
   RUN(aBusyModemIsNotATransportFailure);
   RUN(theWaitGoesInShortChunks);
