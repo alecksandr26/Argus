@@ -8,6 +8,7 @@ import Icon from '../components/Icon'
 import RouteEndActions from '../components/RouteEndActions'
 import AssignGuardianDialog from '../components/AssignGuardianDialog'
 import GuardianOptions from '../components/GuardianOptions'
+import RouteDeviceFileButton from '../components/RouteDeviceFileButton'
 import { useAuth } from '../context/AuthContext'
 import { createRoute as createRouteApi, listRoutes, updateRoute } from '../api/routes'
 import { listDrivers } from '../api/drivers'
@@ -268,9 +269,16 @@ export default function TravelManagement() {
           >
             {r.guardian ? 'Change guardian' : 'Assign guardian'}
           </button>
-          {/* G7: RouteDeviceFileButton slot — in scope: `r` (this Route), its truck via
-              `truckById.get(r.id_truck)` (Truck | undefined), `token`, and `setTrucks` for an
-              `onTruckChange`. */}
+          {canWrite && truckById.get(r.id_truck) && (
+            <RouteDeviceFileButton
+              route={r}
+              truck={truckById.get(r.id_truck)!}
+              token={token}
+              onTruckChange={(t) =>
+                setTrucks((prev) => prev.map((x) => (x.id_truck === t.id_truck ? t : x)))
+              }
+            />
+          )}
         </div>
       )
     },

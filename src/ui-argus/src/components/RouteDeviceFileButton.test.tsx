@@ -38,6 +38,8 @@ const route: Route = {
   stop_reason: null,
   stopped_by: null,
   stopped_at: null,
+  id_guardian: 'g-1',
+  guardian: { id_user: 'g-1', first_name: 'Ana', last_name: 'López', phone_number: '+523312345678' },
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
 }

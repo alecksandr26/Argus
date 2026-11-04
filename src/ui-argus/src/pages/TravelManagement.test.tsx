@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import TravelManagement from './TravelManagement'
@@ -434,6 +434,21 @@ describe('TravelManagement guardians', () => {
     )
     expect(screen.getByRole('dialog', { name: 'Assign guardian' })).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Save guardian' })).toBeEnabled()
+  })
+
+  it('open routes offer the per-route Device file to root_admin, not to a guardian', async () => {
+    seedSession('root_admin')
+    mockBackend([route('r-1', 'scheduled'), route('r-2', 'completed')])
+    renderPage()
+    expect(await screen.findByText('From r-1 → To r-1')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Device file' })).toHaveLength(1)
+    cleanup()
+
+    seedSession('guardian')
+    mockBackend([route('r-1', 'scheduled')])
+    renderPage()
+    expect(await screen.findByText('From r-1 → To r-1')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Device file' })).not.toBeInTheDocument()
   })
 
   it('ended routes offer no guardian action', async () => {
