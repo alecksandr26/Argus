@@ -588,8 +588,10 @@ stops it; a critical from the camera is the vision alarm, and the Pi's driver OK
 - **Every critical alert texts.** That's one SMS per camera critical episode, hands on the wheel
   or not, and one per grip episode. They go to the phone set in the dashboard (Fleet truck form →
   `argus-device.env` → the Pi → `CONFIG` → this device, RAM only, section 1b).
-- **The buzzer never sounds with the hands on the wheel.** With the hands off it sounds at once
-  with a camera critical, or after 3 s without pressure with the camera OK.
+- **The buzzer uses OR logic** (2026-11-03). A camera critical with the driver in view (eyes
+  closed, head down) sounds it at once, hands on the wheel or not. With the hands off it sounds
+  at once with any camera critical (`no_face` included), or after 3 s without pressure with the
+  camera OK. A `no_face` critical with the hands on stays silent.
 - **No-face cap:** while the camera says nobody is in view, it sounds 3 s at most.
 - **The backend** still gets each alert on its own.
 

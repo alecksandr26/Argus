@@ -11,8 +11,11 @@ buzzer, a TinyGsm SMS with a Google Maps link) plus their rules:
   - **Every critical alert texts.** A live camera critical (any reason, `no_face` included) sends
     one SMS per camera episode, whether or not the hands are on the wheel. The wheel's `no_grip`
     critical (3 s without pressure) sends one per grip episode.
-  - **The buzzer never sounds with the hands on the wheel.** With the hands off it sounds at once
-    if a camera critical is on. With the camera OK it sounds after **3 s without pressure** (5 s
+  - **The buzzer uses OR logic** (changed 2026-11-03, replacing "never with the hands on the
+    wheel"). A camera critical with the driver in view (eyes closed, head down: any reason but
+    `no_face`) sounds it at once, hands on the wheel or not. With the hands off it sounds at once
+    with any camera critical, `no_face` included; a `no_face` critical with the hands on stays
+    silent. With the camera OK it sounds after **3 s without pressure** (5 s
     at first; 3 s after the bench run, same day). There
     is no movement gate (it can't be simulated on the bench), so a parked truck counts too.
   - **The no-face cap.** While the camera's latest reading says nobody is in view (class

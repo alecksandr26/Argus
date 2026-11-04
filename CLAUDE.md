@@ -116,8 +116,10 @@ session that's touched this repo.
   - **Every critical alert sends an SMS.** That means one per live Pi critical episode
     (`no_face` included, hands on the wheel or not) and one per grip episode. It goes to the
     truck's alert phone (set in Fleet, carried in `argus-device.env` → `CONFIG` → ESP32 RAM).
-  - **The cabin buzzer (GPIO 13) never sounds with the hands on the wheel.** With the hands off
-    it sounds after 3 s without pressure, camera critical or not. There's no movement gate.
+  - **The cabin buzzer (GPIO 13) uses OR logic** (changed 2026-11-03). A camera critical with the
+    driver in view (eyes closed, head down) sounds it at once, hands on the wheel or not. With
+    the hands off it sounds at once with any camera critical, or after 3 s without pressure. A
+    `no_face` critical with the hands on stays silent. There's no movement gate.
   - **While the camera's latest reading says nobody is in view, the buzzer sounds 3 s at most.**
     That means class `No Face`, or a `no_face` critical, which the Pi now raises from boot too.
     The ESP32 tracks it from every record's class/reason, keepalives included, since the Pi sends
