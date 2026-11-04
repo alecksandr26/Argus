@@ -107,7 +107,8 @@ static void aCameraCriticalTextsAtOnceWithTheHandsOn() {
   CHECK(m->alertType == "eyes_closed");
   CHECK(!m->handsOff);  // the text won't say "sin manos"
   CHECK(m->position.known && m->position.lat == 20.659712);  // the event's position
-  CHECK(!c.buzzerAt(1000));  // but the buzzer still needs the hands off
+  CHECK(c.buzzerAt(1000));  // OR logic (2026-11-03): an eyes_closed critical sounds, hands on
+  CHECK(c.alarm.cause() == BuzzerCause::CameraOnly);
 }
 
 static void handsOffTextsThenACameraCriticalTextsAndSounds() {
@@ -165,7 +166,8 @@ static void oneSmsPerCameraEpisodeAndOnePerGripEpisode() {
   CHECK(c.handsOff(1000).result == SmsQueued::Queued);  // grip episode 1
   CHECK(c.buzzerAt(1000));
   c.handsBack(2000);
-  CHECK(!c.buzzerAt(2000));  // silent at once
+  CHECK(c.buzzerAt(2000));  // hands back, but the eyes_closed critical keeps it on (OR logic)
+  CHECK(c.alarm.cause() == BuzzerCause::CameraOnly);
   CHECK(c.handsOff(5000).result == SmsQueued::Queued);  // grip episode 2: its own SMS
   CHECK(c.buzzerAt(5000));  // the camera episode still on: at once
   // The driver OK: the camera part ends; the hands are still off, so the hands-off rule goes on.
