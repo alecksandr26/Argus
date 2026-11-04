@@ -257,6 +257,26 @@ with `unknown`, `IncidentState`, `TimeSource` with `relative`). Timing constants
 - **Routes** (`pages/TravelManagement.tsx`, `/routes`): Start trip, and Complete trip / Stop
   route through `RouteEndActions`. Those two are disabled while a Start trip is in flight.
 
+### Route guardians (`docs/designs/route-guardian-contracts.md` G1/G2/G4/G7)
+
+Every route has a guardian: a `guardian`-role user whose phone the truck texts on every critical
+alert. `Route.id_guardian` (nullable: older routes have none) and `Route.guardian` (a
+`GuardianSummary`, resolved by the backend, so guardian viewers never need `/api/users`).
+- **Routes:** the create form has a required **Guardian** select (`components/GuardianOptions`:
+  a "Select a guardian" placeholder, active guardians only, one without an E.164 phone disabled
+  as "(no valid phone)"); the guardian list comes from `GET /api/users`, root_admin/admin only,
+  filtered by `utils/guardian.ts`' `selectableGuardians`. A Guardian column (name + phone, or a
+  "No guardian" chip), an "Assign guardian" / "Change guardian" row action on scheduled and
+  in-progress routes (`components/AssignGuardianDialog`: `PUT {id_guardian}`, the backend's
+  422/409 detail shown in the dialog), and a banner while any open route has none. The row
+  actions hold a marked `G7: RouteDeviceFileButton slot` for the per-route device file.
+- **Live operations** (active-route cards), **route view** (Guardian context item) and **Route
+  history** (expanded row) show the embedded guardian, "name · phone" or "No guardian".
+- **Access / Profile:** for the guardian role the phone is a `type="tel"` field with the E.164
+  hint, checked after `normalizePhone` (`utils/phone.ts`, the backend's `normalize_phone`) and
+  sent normalised. Other roles keep free text. On an edit, an untouched role/phone is left out
+  of the PUT, so an old bad phone never blocks another change.
+
 ### Incidents, tiers and alert cards
 
 - `components/IncidentFeed.tsx` + `utils/incidents.ts`: tier sections **Critical → Medium →
@@ -346,7 +366,8 @@ All screens call the real backend; `src/data/fixtures.ts` is long gone. The fina
 per-alert review-to-close with incidents, and removed the panic/grip UI. `api/routes.ts` no
 longer wraps `/api/routes/active` or `/api/routes/{id}/status`.
 
-**Verified** (from a native Linux copy, Node 24): `npm ci`, `npm test` (31 files, 248 tests),
+**Verified** (from a native Linux copy, Node 24; route guardian UI, 2026-11-03): `npm ci`,
+`npm test` (32 files, 306 tests),
 `npm run build` (`tsc -b && vite build`), and `eslint .` (one pre-existing `AuthContext.tsx`
 fast-refresh warning). **Not verified here:** a real-browser click-through of the reworked
 screens and the Leaflet layers. That is `src/it-argus`'s Playwright suite against the real

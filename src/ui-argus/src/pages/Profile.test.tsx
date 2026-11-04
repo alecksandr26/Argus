@@ -82,8 +82,50 @@ describe('Profile', () => {
     expect(putCall[0]).toContain('/api/auth/me')
     expect(putCall[1].method).toBe('PUT')
     const body = JSON.parse(putCall[1].body)
-    expect(body.phone_number).toBe('+1-555-9999')
+    // A guardian's phone goes out normalised (route guardian contracts G2).
+    expect(body.phone_number).toBe('+15559999')
     expect(body).not.toHaveProperty('role')
     expect(body).not.toHaveProperty('is_active')
+  })
+
+  it("refuses a guardian's non-E.164 phone, with the hint", async () => {
+    seedSession()
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => meRow })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    renderProfile()
+
+    const phone = await screen.findByLabelText('Phone')
+    expect(phone).toHaveAttribute('type', 'tel')
+    expect(screen.getByText(/critical-alert SMS go to this number/)).toBeInTheDocument()
+    await user.clear(phone)
+    await user.type(phone, '33 1234 5678')
+    expect(screen.getAllByText('Use the E.164 format, e.g. +523312345678').length).toBeGreaterThan(0)
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+    expect(fetchMock).toHaveBeenCalledTimes(1) // only the GET
+  })
+
+  it("another role's phone stays free text, and an unchanged phone isn't sent", async () => {
+    localStorage.setItem(
+      'argus.session',
+      JSON.stringify({ token: 'tok', user: { ...sessionUser, role: 'admin' } }),
+    )
+    const adminRow: User = { ...meRow, role: 'admin', phone_number: 'ext. 204' }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => adminRow })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => adminRow })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    renderProfile()
+
+    const first = await screen.findByLabelText('First name')
+    expect(screen.queryByText(/critical-alert SMS go to this number/)).not.toBeInTheDocument()
+    await user.type(first, 'x')
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).not.toHaveProperty('phone_number')
   })
 })

@@ -225,6 +225,25 @@ describe('LiveOps', () => {
     expect(screen.queryByRole('button', { name: 'Stop route' })).not.toBeInTheDocument()
   })
 
+  it('each active route shows its embedded guardian, or "No guardian"', async () => {
+    seedSession('guardian')
+    const live = liveFixture()
+    live.routes[1] = { ...live.routes[1], id_guardian: null, guardian: null }
+    const fetchMock = mockBackend(live)
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByRole('region', { name: 'Critical incidents' })
+
+    await user.click(screen.getByRole('button', { name: 'Routes on the road' }))
+    const [first, second] = screen.getAllByTestId('active-route')
+    expect(within(first).getByTestId('route-guardian')).toHaveTextContent(
+      'Guardian: Gina Guard · +523312345678',
+    )
+    expect(within(second).getByTestId('route-guardian')).toHaveTextContent('Guardian: No guardian')
+    // A guardian can't list users: the name comes from the /api/live payload only.
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/api/users'))).toBe(false)
+  })
+
   it('admin stops a route from the routes panel (reason required), then re-polls', async () => {
     seedSession('admin')
     const fetchMock = mockBackend()
