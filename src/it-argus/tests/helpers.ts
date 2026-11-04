@@ -447,9 +447,13 @@ export async function createRouteRest(
     origin: string
     destination: string
     departedSecondsAgo?: number
+    /** The route's guardian (required by the backend, route guardian contracts G1). Defaults
+     * to the shared `ensureGuardian()` one. */
+    guardianId?: string
   },
 ) {
   const departedAt = new Date(Date.now() - (opts.departedSecondsAgo ?? 3600) * 1000)
+  const guardianId = opts.guardianId ?? (await ensureGuardian(request, token)).id_user
   const res = await request.post(`${BACKEND_URL}/api/routes`, {
     headers: authHeaders(token),
     data: {
@@ -461,28 +465,99 @@ export async function createRouteRest(
       estimated_departure: departedAt.toISOString(),
       actual_departure: departedAt.toISOString(),
       operative_status: 'in_progress',
+      id_guardian: guardianId,
     },
   })
   return expectCreated<Route>(`createRouteRest(${opts.origin})`, res)
 }
 
+/** A fresh E.164 phone (`+52555111xxxx`): every guardian's phone must be E.164 (G2). */
+export function e164Phone(): string {
+  return `+52555111${String(Math.floor(Math.random() * 1e4)).padStart(4, '0')}`
+}
+
+export interface UserRow {
+  id_user: string
+  email: string
+  role: string
+  first_name: string
+  last_name: string
+  phone_number: string
+  is_active: boolean
+}
+
 export async function createUserRest(
   request: APIRequestContext,
   token: string,
-  opts: { email: string; password: string; role: 'guardian' | 'admin' },
-) {
+  opts: {
+    email: string
+    password: string
+    role: 'guardian' | 'admin'
+    firstName?: string
+    lastName?: string
+    phone?: string
+  },
+): Promise<UserRow> {
   const res = await request.post(`${BACKEND_URL}/api/users`, {
     headers: authHeaders(token),
     data: {
       email: opts.email,
       password: sha256Hex(opts.password),
       role: opts.role,
-      first_name: 'Test',
-      last_name: opts.role === 'guardian' ? 'Guardian' : 'Admin',
-      phone_number: '5551110000',
+      first_name: opts.firstName ?? 'Test',
+      last_name: opts.lastName ?? (opts.role === 'guardian' ? 'Guardian' : 'Admin'),
+      phone_number: opts.phone ?? e164Phone(),
     },
   })
-  await expectCreated<unknown>(`createUserRest(${opts.email})`, res)
+  return expectCreated<UserRow>(`createUserRest(${opts.email})`, res)
+}
+
+/** A fresh guardian with a valid E.164 phone, named with `suffix`. */
+export function createGuardianRest(request: APIRequestContext, token: string, suffix: string) {
+  return createUserRest(request, token, {
+    email: `guardian-${suffix}@argus.dev`,
+    password: 'guardian-pass-123',
+    role: 'guardian',
+    firstName: 'Gia',
+    lastName: `Guard ${suffix}`,
+  })
+}
+
+/** The shared guardian every helper-made route carries (`createRouteRest`), found by email or
+ * created. Never deactivated: the backend refuses that while it's assigned to an active route
+ * (G3). Two workers creating it at once is fine: the loser re-reads the list. */
+export const IT_GUARDIAN_EMAIL = 'it-guardian@argus.dev'
+let itGuardian: Promise<UserRow> | null = null
+
+export function ensureGuardian(request: APIRequestContext, token: string): Promise<UserRow> {
+  const find = async () => {
+    const res = await request.get(`${BACKEND_URL}/api/users`, { headers: authHeaders(token) })
+    if (!res.ok()) throw new Error(`ensureGuardian: GET /api/users ${res.status()}`)
+    return ((await res.json()) as UserRow[]).find((u) => u.email === IT_GUARDIAN_EMAIL)
+  }
+  itGuardian ??= (async () => {
+    const existing = await find()
+    if (existing) return existing
+    const res = await request.post(`${BACKEND_URL}/api/users`, {
+      headers: authHeaders(token),
+      data: {
+        email: IT_GUARDIAN_EMAIL,
+        password: sha256Hex(`it-guardian-${randomUUID()}`),
+        role: 'guardian',
+        first_name: 'IT',
+        last_name: 'Guardian',
+        phone_number: '+525551110000',
+      },
+    })
+    if (res.status() === 201) return (await res.json()) as UserRow
+    const raced = await find()
+    if (raced) return raced
+    throw new Error(`ensureGuardian failed: ${res.status()} ${await res.text()}`)
+  })()
+  itGuardian.catch(() => {
+    itGuardian = null
+  })
+  return itGuardian
 }
 
 export interface ActiveTruck {

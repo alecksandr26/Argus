@@ -216,6 +216,13 @@ npm run deploy
   against the CloudFront URL, uploads it, and hits `/health`. It ends with
   `Argus is live at: https://xxxx.cloudfront.net`. The first run takes ~10–15 minutes, mostly
   CloudFront.
+- **Version check**: the script takes the git short SHA once (`-dirty` with uncommitted changes)
+  and builds the backend image with `--build-arg ARGUS_VERSION=<sha>` (the Lambda wrapper image
+  inherits it) and the UI with `VITE_GIT_SHA=<sha>`. At the end it prints the `/health` answer
+  next to the UI version and warns when they differ. Check the deployed backend any time with
+  `curl -s $SITE_URL/health` (`{"status":"ok","version":"<sha>"}`). The UI's Fleet screen shows
+  "This UI (…) and the backend (…) are different versions — redeploy both" when they differ: a
+  UI newer than its backend calls fields the backend doesn't have yet.
 - **Lambda concurrency limit**: brand-new accounts sometimes have a limit of 10, which can't
   reserve any (AWS keeps 10 unreserved). `npm run deploy` checks the limit and, below 12, deploys
   with `-c backendReservedConcurrency=none` itself (the kill switch still works). With a bare
@@ -232,7 +239,7 @@ time it starts, if no user with that email exists yet.
 - **curl**: the API takes the SHA-256 hex of the password, not the password itself:
   ```bash
   URL=https://xxxx.cloudfront.net
-  curl $URL/health                       # {"status":"ok"}
+  curl $URL/health                       # {"status":"ok","version":"<git sha>"}
   curl -X POST $URL/api/auth/login -H 'content-type: application/json' \
     -d "{\"email\":\"you@example.com\",\"password\":\"$(printf %s 'YOUR_PASSWORD' | sha256sum | cut -d' ' -f1)\"}"
   ```

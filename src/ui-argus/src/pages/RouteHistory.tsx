@@ -16,6 +16,7 @@ import { REPLAYED_LABEL, alertTypeLabel, routeStatusBadge, severity } from '../u
 import { alertPosition, positionSummary } from '../utils/position'
 import { alertPins, trackPath } from '../utils/mapLayers'
 import { toLatLng } from '../utils/geo'
+import { guardianLabel } from '../utils/guardian'
 import type { Alert, Driver, Route, RouteTrack, Truck } from '../types'
 
 /**
@@ -275,6 +276,12 @@ export default function RouteHistory() {
                           : '14px 14px 14px 42px',
                       }}
                     >
+                      <div
+                        data-testid="route-guardian"
+                        style={{ fontSize: 12, color: 'var(--text-soft)', padding: '8px 0 0' }}
+                      >
+                        Guardian: {guardianLabel(r.guardian)}
+                      </div>
                       {r.stop_reason && (
                         <div style={{ fontSize: 12, color: 'var(--warn)', padding: '8px 0' }}>
                           Stopped: {r.stop_reason}

@@ -47,6 +47,7 @@ from app.models.route import Route
 from app.models.status_route import StatusRoute
 from app.models.truck import Truck
 from app.models.user import User
+from app.phone import is_e164
 from scripts.migrate_final_tweaks import backfill_incidents
 
 DEMO_PASSWORD = "changeme123"
@@ -63,15 +64,16 @@ def _password_hash(raw: str) -> str:
 
 # (email, role, first_name, last_name, phone_number) — one root_admin (matches
 # `app/auth/bootstrap.py`'s own default so a bare `docker compose up` and this script agree),
-# three admin/operators, three guardians.
+# three admin/operators, three guardians. Guardian phones are E.164: the ESP32 texts them on a
+# critical, and route creation rejects a guardian without one (route-guardian contracts, G1/G2).
 _USERS: list[tuple[str, Role, str, str, str]] = [
     ("admin@argus.dev", Role.ROOT_ADMIN, "Ana", "Torres", "+52-555-0100"),
     ("operator@argus.dev", Role.ADMIN, "Sofia", "Reyes", "+52-555-0102"),
     ("operator2@argus.dev", Role.ADMIN, "Miguel", "Castillo", "+52-555-0103"),
     ("operator3@argus.dev", Role.ADMIN, "Daniela", "Ortiz", "+52-555-0104"),
-    ("guardian@argus.dev", Role.GUARDIAN, "Luis", "Mendoza", "+52-555-0101"),
-    ("guardian2@argus.dev", Role.GUARDIAN, "Patricia", "Flores", "+52-555-0105"),
-    ("guardian3@argus.dev", Role.GUARDIAN, "Ricardo", "Salinas", "+52-555-0106"),
+    ("guardian@argus.dev", Role.GUARDIAN, "Luis", "Mendoza", "+525550100101"),
+    ("guardian2@argus.dev", Role.GUARDIAN, "Patricia", "Flores", "+525550100105"),
+    ("guardian3@argus.dev", Role.GUARDIAN, "Ricardo", "Salinas", "+525550100106"),
 ]
 
 # (plate_number, brand, model, company_number, status) — spans every TruckStatus so the Fleet
@@ -95,18 +97,28 @@ _DRIVERS: list[tuple[str, str, str, str, str, str, str, DriverStatus]] = [
 ]
 
 
-async def _seed_users() -> None:
+async def _seed_users() -> list[User]:
+    """Inserts the missing demo users; returns the seeded guardians (existing or new), in
+    `_USERS` order, for the demo routes. An existing seeded guardian whose phone isn't E.164
+    (seeded before the guardian phone rule) gets the demo phone, so it can still guard a route."""
+    guardians: list[User] = []
     for email, role, first_name, last_name, phone_number in _USERS:
-        if await User.find_one(User.email == email) is not None:
-            continue
-        await User(
-            email=email,
-            password_hash=_password_hash(DEMO_PASSWORD),
-            role=role,
-            first_name=first_name,
-            last_name=last_name,
-            phone_number=phone_number,
-        ).insert()
+        user = await User.find_one(User.email == email)
+        if user is None:
+            user = User(
+                email=email,
+                password_hash=_password_hash(DEMO_PASSWORD),
+                role=role,
+                first_name=first_name,
+                last_name=last_name,
+                phone_number=phone_number,
+            )
+            await user.insert()
+        elif role == Role.GUARDIAN and user.role == Role.GUARDIAN and not is_e164(user.phone_number):
+            await user.set({"phone_number": phone_number})
+        if user.role == Role.GUARDIAN:
+            guardians.append(user)
+    return guardians
 
 
 async def _seed_trucks_and_drivers() -> tuple[list[Truck], list[Driver]]:
@@ -153,10 +165,16 @@ async def _seed_trucks_and_drivers() -> tuple[list[Truck], list[Driver]]:
     return trucks, drivers
 
 
-async def _seed_routes_and_alerts(trucks: list[Truck], drivers: list[Driver]) -> None:
+async def _seed_routes_and_alerts(
+    trucks: list[Truck], drivers: list[Driver], guardians: list[User]
+) -> None:
     """Only called when the `Route` collection is empty (no stable unique key to dedupe routes
-    by otherwise) — see `seed()`'s `reset`/idempotent branching below."""
+    by otherwise) — see `seed()`'s `reset`/idempotent branching below. The guardians are spread
+    over the routes round-robin."""
     now = datetime.now(timezone.utc)
+
+    def guardian_id(index: int):
+        return str(guardians[index % len(guardians)].id) if guardians else None
 
     route1 = Route(
         id_driver=str(drivers[0].id),
@@ -168,6 +186,7 @@ async def _seed_routes_and_alerts(trucks: list[Truck], drivers: list[Driver]) ->
         estimated_arrival=now + timedelta(hours=4),
         actual_departure=now - timedelta(hours=2),
         operative_status=RouteStatus.IN_PROGRESS,
+        id_guardian=guardian_id(0),
     )
     await route1.insert()
     await StatusRoute(
@@ -225,6 +244,7 @@ async def _seed_routes_and_alerts(trucks: list[Truck], drivers: list[Driver]) ->
         estimated_arrival=now + timedelta(hours=1),
         actual_departure=now - timedelta(hours=1),
         operative_status=RouteStatus.IN_PROGRESS_ALERT,
+        id_guardian=guardian_id(1),
     )
     await route2.insert()
     await StatusRoute(
@@ -262,6 +282,7 @@ async def _seed_routes_and_alerts(trucks: list[Truck], drivers: list[Driver]) ->
         destination_coordinates=to_geojson(Coordinates(lat=19.1738, lon=-96.1342)),
         estimated_departure=now + timedelta(hours=6),
         operative_status=RouteStatus.SCHEDULED,
+        id_guardian=guardian_id(2),
     )
     await route3.insert()
 
@@ -276,6 +297,7 @@ async def _seed_routes_and_alerts(trucks: list[Truck], drivers: list[Driver]) ->
         actual_departure=now - timedelta(days=1, hours=3),
         actual_arrival=now - timedelta(days=1),
         operative_status=RouteStatus.COMPLETED,
+        id_guardian=guardian_id(3),
     )
     await route4.insert()
     await Alert(
@@ -341,11 +363,11 @@ async def seed(reset: bool = True, client=None, credentials_file: str | None = N
         for model in DOCUMENT_MODELS:
             await model.get_motor_collection().delete_many({})
 
-    await _seed_users()
+    guardians = await _seed_users()
     trucks, drivers = await _seed_trucks_and_drivers()
 
     if reset or await Route.find_all().count() == 0:
-        await _seed_routes_and_alerts(trucks, drivers)
+        await _seed_routes_and_alerts(trucks, drivers, guardians)
 
     print("Seeded demo data:" if reset else "Ensured demo data (idempotent):")
     print(f"  root_admin login: admin@argus.dev / {DEMO_PASSWORD}")

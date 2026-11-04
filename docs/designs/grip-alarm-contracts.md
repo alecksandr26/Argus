@@ -160,7 +160,10 @@ ESP32-originated, so they are **not** Pi records: no `TAKEN`/`ACK`/`FAIL` to the
   - Hands off plus a camera critical gives two SMS, one per source.
 - Only when `alertPhone` is set; otherwise logged once per episode and skipped.
 - Text, plain ASCII/GSM-7, at most 160 chars:
-  `ARGUS ALERTA CRITICA: <motivo>[, sin manos en el volante]. Camion <plate or truck id>. https://maps.google.com/?q=<lat>,<lon>`
+  `ARGUS ALERTA CRITICA: <motivo>[, sin manos en el volante]. Camion <plate or truck id>[, <HH:MM>]. https://maps.google.com/?q=<lat>,<lon>`
+  (the `, <HH:MM>` local alert time added 2026-11-03 for parity with the backend alert, route
+  guardian contracts G9: GPS UTC plus `SMS_UTC_OFFSET_MINUTES`, left out without GPS time or when
+  it doesn't fit; see `src/esp32-argus/README.md` section 6)
   (6 decimals, the position when the critical came), or `... Ubicacion desconocida.` without a
   position (never wait for a fix). The `sin manos` part only when the grip alarm is on at that
   moment. The grip SMS reads `ARGUS ALERTA CRITICA: sin manos en el volante. Camion ...`. Motivos (the camera's reason): `eyes_closed` →

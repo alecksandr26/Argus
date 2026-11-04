@@ -99,6 +99,8 @@ SmsQueueResult SmsPolicy::enqueue(const std::string& episode, const std::string&
   m.position = where;
   m.queuedAtMs = nowMs;
   r.result = SmsQueued::Queued;
+  r.handsOff = handsOff;
+  r.queuedAtMs = nowMs;
   return r;
 }
 
@@ -164,8 +166,38 @@ const char* smsMotivo(const std::string& alertType) {
   return nullptr;
 }
 
+const char* smsSkipReason(SmsQueued result) {
+  switch (result) {
+    case SmsQueued::NoPhone:
+      return "no usable alert phone from the Pi's CONFIG (ARGUS_ALERT_PHONE in argus-device.env: "
+             "missing, or not E.164)";
+    case SmsQueued::Duplicate:
+      return "this episode already had its SMS (or was skipped)";
+    case SmsQueued::Queued:
+    case SmsQueued::Ignored:
+      break;
+  }
+  return nullptr;
+}
+
+uint64_t smsEventEpoch(uint64_t gpsEpoch, uint32_t gpsAtMs, uint32_t eventMs) {
+  if (gpsEpoch == 0) return 0;
+  int64_t s = (int64_t)gpsEpoch + (int64_t)(int32_t)(eventMs - gpsAtMs) / 1000;
+  return s > 0 ? (uint64_t)s : 0;
+}
+
+std::string smsClockText(uint64_t epochUtc, int utcOffsetMinutes) {
+  if (epochUtc == 0) return std::string();
+  int64_t minutes = ((int64_t)(epochUtc / 60) + utcOffsetMinutes) % (24 * 60);
+  if (minutes < 0) minutes += 24 * 60;
+  char text[12];
+  std::snprintf(text, sizeof(text), "%02d:%02d", (int)(minutes / 60), (int)(minutes % 60));
+  return text;
+}
+
 std::string composeSmsText(const std::string& alertType, bool handsOff,
-                           const std::string& vehicle, const EventPosition& where) {
+                           const std::string& vehicle, const EventPosition& where,
+                           const std::string& clock) {
   const std::string handsPart = "sin manos en el volante";
   bool grip = alertType == kGripAlertType;
   std::string motivo;
@@ -192,13 +224,17 @@ std::string composeSmsText(const std::string& alertType, bool handsOff,
                           : handsOff ? ", " + handsPart + ". Camion "
                                      : std::string(". Camion ");
   const std::string tail = ". " + place;
-  // Over 160 chars only with a long raw alert type (up to 64) or truck id: cut those, never the
-  // hands-off part or the link. The vehicle keeps kSmsVehicleMaxLength (a plate is at most 16, a
-  // truck id 24), then the motive gets what is left (at least 29 chars with a real position:
-  // "cabeza abajo y ojos cerrados", the longest known one, is 28).
+  // Over 160 chars only with a long raw alert type (up to 64), a truck id or the time: cut those,
+  // never the hands-off part or the link. The vehicle keeps kSmsVehicleMaxLength (a plate is at
+  // most 16, a truck id 24); the time goes only if the whole motive fits with it; then the motive
+  // gets what is left (at least 29 chars with a real position: "cabeza abajo y ojos cerrados",
+  // the longest known one, is 28).
   if (truck.size() > kSmsVehicleMaxLength) truck.resize(kSmsVehicleMaxLength);
+  std::string when = clock.empty() ? std::string() : ", " + gsmSanitized(clock);
   size_t fixed = head.size() + mid.size() + tail.size() + truck.size();
+  if (fixed + when.size() + motivo.size() > kSmsMaxLength) when.clear();
+  fixed += when.size();
   size_t room = kSmsMaxLength > fixed ? kSmsMaxLength - fixed : 0;
   if (motivo.size() > room) motivo.resize(room);
-  return head + motivo + mid + truck + tail;
+  return head + motivo + mid + truck + when + tail;
 }

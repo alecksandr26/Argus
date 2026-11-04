@@ -41,6 +41,10 @@ _ENV_VARS = (TRUCK_ID_ENV, DEVICE_API_KEY_ENV, BACKEND_URL_ENV)
 # Optional, from argus-device.env, outside the credential check above.
 TRUCK_PLATE_ENV = "ARGUS_TRUCK_PLATE"
 ALERT_PHONE_ENV = "ARGUS_ALERT_PHONE"
+# Display only (docs/designs/route-guardian-contracts.md G7): who the phone belongs to, e.g.
+# "guardian Ana López of route <id>". Logged next to the masked phone, never sent in CONFIG.
+ALERT_PHONE_LABEL_ENV = "ARGUS_ALERT_PHONE_LABEL"
+ALERT_PHONE_LABEL_MAX_LEN = 120
 # E.164, the same regex the backend, the dashboard and the firmware check (contract C1).
 E164_PHONE = re.compile(r"^\+[1-9][0-9]{7,14}$")
 # The ESP32 ignores a longer plate (contract C1.4); its SMS then names the truck id instead.
@@ -80,12 +84,16 @@ class DeviceConfig:
     truck_plate: str | None = None
     # Masked by __repr__ below rather than hidden: which phone is set is worth seeing.
     alert_phone: str | None = field(default=None, repr=False)
+    # Not in to_wire(): the ESP32 only needs the phone itself.
+    alert_phone_label: str | None = field(default=None, repr=False)
 
     def __repr__(self) -> str:
         # The dataclass repr (secrets left out by `repr=False`), plus the phone masked.
         shown = [f"{f.name}={getattr(self, f.name)!r}" for f in fields(self) if f.repr]
         if self.alert_phone is not None:
             shown.append(f"alert_phone={mask_phone(self.alert_phone)!r}")
+        if self.alert_phone_label is not None:
+            shown.append(f"alert_phone_label={self.alert_phone_label!r}")
         return f"{type(self).__name__}({', '.join(shown)})"
 
     def to_wire(self) -> dict[str, str]:
@@ -128,6 +136,7 @@ class DeviceConfig:
             **network,
             truck_plate=_truck_plate(env.get(TRUCK_PLATE_ENV, "").strip()),
             alert_phone=_alert_phone(env.get(ALERT_PHONE_ENV, "").strip()),
+            alert_phone_label=_alert_phone_label(env.get(ALERT_PHONE_LABEL_ENV, "")),
         )
 
 
@@ -167,3 +176,10 @@ def _alert_phone(phone: str) -> str | None:
         )
         return None
     return phone
+
+
+def _alert_phone_label(label: str) -> str | None:
+    """Who the SMS phone belongs to, for the log only: control characters become spaces, runs
+    of whitespace collapse, capped at `ALERT_PHONE_LABEL_MAX_LEN`. `None` when unset."""
+    cleaned = " ".join("".join(" " if not ch.isprintable() else ch for ch in label).split())
+    return cleaned[:ALERT_PHONE_LABEL_MAX_LEN] or None

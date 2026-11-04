@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.auth.dependencies import require_role
 from app.auth.security import hash_secret
+from app.guardians import ensure_not_guarding, guardian_phone
 from app.models.common import Role
 from app.models.user import User
 from app.schemas.common import Message
@@ -53,6 +54,9 @@ async def create_user(
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "admin may only create guardian-role accounts"
         )
+    phone_number = body.phone_number
+    if body.role == Role.GUARDIAN:
+        phone_number = guardian_phone(phone_number)
     if await User.find_one(User.email == body.email) is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Email already registered")
     user = User(
@@ -61,7 +65,7 @@ async def create_user(
         role=body.role,
         first_name=body.first_name,
         last_name=body.last_name,
-        phone_number=body.phone_number,
+        phone_number=phone_number,
         is_active=body.is_active,
     )
     await user.insert()
@@ -99,6 +103,14 @@ async def update_user(
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "admin may only manage guardian-role accounts"
         )
+    # G3: a guardian of an active route can't be deactivated or demoted until it's reassigned.
+    if data.get("is_active") is False or data.get("role") not in (None, Role.GUARDIAN):
+        await ensure_not_guarding(str(target.id))
+    # G2: the *resulting* role decides; an update touching neither role nor phone never fails
+    # on an old bad phone.
+    resulting_role = data.get("role") or target.role
+    if resulting_role == Role.GUARDIAN and ("role" in data or "phone_number" in data):
+        data["phone_number"] = guardian_phone(data.get("phone_number", target.phone_number))
     if "password" in data:
         target.password_hash = hash_secret(data.pop("password"))
     for field, value in data.items():
@@ -113,5 +125,6 @@ async def delete_user(
 ) -> Message:
     target = await _get_or_404(user_id)
     _require_admin_scope(actor, target.role)
+    await ensure_not_guarding(str(target.id))  # G3
     await target.delete()
     return Message(detail="User deleted")

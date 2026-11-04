@@ -4,9 +4,10 @@ from Beanie's `doc.id`, and the one place (besides `app/geo.py` itself) that cal
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Mapping, Optional
 
 from app.geo import to_latlon
+from app.guardians import load_guardians
 from app.models.alert import Alert
 from app.models.driver import Driver
 from app.models.route import Route
@@ -16,7 +17,7 @@ from app.models.user import User
 from app.schemas.alert import AlertOut
 from app.schemas.driver import DriverOut
 from app.schemas.live import LivePosition, TrackPoint
-from app.schemas.route import RouteOut, RouteWithStatus
+from app.schemas.route import GuardianSummary, RouteOut, RouteWithStatus
 from app.schemas.status_route import StatusRouteOut
 from app.schemas.truck import TruckOut
 from app.schemas.user import UserOut
@@ -73,7 +74,22 @@ def driver_out(doc: Driver) -> DriverOut:
     )
 
 
-def route_out(doc: Route) -> RouteOut:
+def guardian_summary(user: Optional[User]) -> Optional[GuardianSummary]:
+    if user is None:
+        return None
+    return GuardianSummary(
+        id_user=str(user.id),
+        first_name=user.first_name,
+        last_name=user.last_name,
+        phone_number=user.phone_number,
+    )
+
+
+def route_out(doc: Route, guardians: Mapping[str, User]) -> RouteOut:
+    """`guardians` is `load_guardians()`'s map (user id -> User) for this route and possibly
+    others; required, so no caller can forget the guardian block (G4). A missing entry (the user
+    was deleted) gives `guardian: null`."""
+    guardian = guardians.get(doc.id_guardian) if doc.id_guardian else None
     return RouteOut(
         id_route=str(doc.id),
         id_driver=doc.id_driver,
@@ -91,9 +107,22 @@ def route_out(doc: Route) -> RouteOut:
         stop_reason=doc.stop_reason,
         stopped_by=doc.stopped_by,
         stopped_at=doc.stopped_at,
+        id_guardian=doc.id_guardian,
+        guardian=guardian_summary(guardian),
         created_at=doc.created_at,
         updated_at=doc.updated_at,
     )
+
+
+async def routes_out(docs: list[Route]) -> list[RouteOut]:
+    """`route_out` for several routes, their guardians loaded in one query."""
+    guardians = await load_guardians(docs)
+    return [route_out(d, guardians) for d in docs]
+
+
+async def route_out_loaded(doc: Route) -> RouteOut:
+    """`route_out` for one route, loading its guardian."""
+    return route_out(doc, await load_guardians([doc]))
 
 
 def status_route_out(doc: StatusRoute) -> StatusRouteOut:
@@ -119,8 +148,9 @@ def route_with_status_out(
     latest_status: Optional[StatusRoute],
     truck: Optional[Truck],
     driver: Optional[Driver],
+    guardians: Mapping[str, User],
 ) -> RouteWithStatus:
-    base = route_out(route)
+    base = route_out(route, guardians)
     return RouteWithStatus(
         **base.model_dump(),
         latest_status=status_route_out(latest_status) if latest_status else None,

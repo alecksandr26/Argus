@@ -365,6 +365,7 @@ Env vars `main.py` reads (all optional, all with defaults):
 | `ESP32_BT_MAC` | unset | peer allowlist for `SenderServer`; with `bluez` also the only MAC the pairing agent accepts (unset = nothing new pairs) |
 | `ARGUS_TRUCK_ID`/`ARGUS_DEVICE_API_KEY`/`ARGUS_BACKEND_URL` | unset | `sender/device_config.py`'s `DeviceConfig`, from the dashboard's `argus-device.env` (`docker-compose.yml` `env_file`, runtime only) |
 | `ARGUS_TRUCK_PLATE`/`ARGUS_ALERT_PHONE` | unset | optional `DeviceConfig` SMS fields, from `argus-device.env`, sent in `CONFIG` only when set; stripped; outside the all-three-or-none check; a non-E.164 phone is warned (masked) and dropped |
+| `ARGUS_ALERT_PHONE_LABEL` | unset | optional display-only `DeviceConfig.alert_phone_label`, from `argus-device.env` (route-guardian contracts G7): logged next to the masked phone, control characters removed, capped at 120; **not** in `to_wire()`, so `CONFIG` is unchanged |
 | `ARGUS_WIFI_SSID`/`ARGUS_WIFI_PASSWORD`/`ARGUS_GPRS_APN`/`ARGUS_GPRS_USER`/`ARGUS_GPRS_PASSWORD` | unset | optional `DeviceConfig` network fields, from `.env` (per installation), sent to the ESP32 in `CONFIG`; verbatim, not stripped |
 | model-artifact overrides | see `constants.py` | `MODEL_DIR`, `*_DRIVE_FILE_ID`, `*_FILENAME`, `*_BUNDLE_URL` — see "Model download strategy" |
 

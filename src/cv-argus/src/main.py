@@ -256,8 +256,9 @@ def _device_config() -> DeviceConfig | None:
         else:
             # Masked: the phone is personal data and never goes to the log in full.
             logger.info(
-                "Critical-alert SMS go to %s (plate %s)",
+                "Critical-alert SMS go to %s%s (plate %s)",
                 mask_phone(config.alert_phone),
+                f", {config.alert_phone_label}" if config.alert_phone_label else "",
                 config.truck_plate or "not set",
             )
     return config

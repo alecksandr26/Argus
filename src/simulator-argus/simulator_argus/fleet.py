@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -46,11 +47,70 @@ def _is_sim(natural_key: str) -> bool:
     return natural_key.startswith(SIM_PREFIX)
 
 
+GUARDIAN_FIRST_NAME = "SIM"
+GUARDIAN_LAST_NAME = "Guardian"
+
+
+async def ensure_guardian(client: BackendClient, token: str, settings: Settings) -> str:
+    """Finds the simulator's guardian by `SIMULATOR_GUARDIAN_EMAIL`, or creates it, and returns
+    its `id_user` (route guardian contracts G8). Every route `provision_fleet` creates carries it
+    as `id_guardian`, which the backend requires (G1).
+
+    - An existing one that is inactive is reactivated, and a phone that differs from
+      `SIMULATOR_GUARDIAN_PHONE` (already normalised and checked by `Settings`) is fixed, in one
+      `PUT` that sends only those fields. Nothing is written when it's already right.
+    - A user with that email but another role is never turned into a guardian (it could be an
+      admin someone pointed the setting at by mistake): that raises instead.
+    - It's created with a random password nobody knows: the simulator never logs in as it.
+    - `reset_previous_run` never deletes it; it's reused across runs.
+    """
+    email = settings.simulator_guardian_email.strip().lower()
+    phone = settings.simulator_guardian_phone
+    existing = next(
+        (u for u in await client.list_users(token) if u["email"].strip().lower() == email),
+        None,
+    )
+
+    if existing is None:
+        created = await client.create_user(
+            token,
+            {
+                "email": email,
+                "password": secrets.token_urlsafe(32),
+                "role": "guardian",
+                "first_name": GUARDIAN_FIRST_NAME,
+                "last_name": GUARDIAN_LAST_NAME,
+                "phone_number": phone,
+                "is_active": True,
+            },
+        )
+        logger.info("Created the simulator guardian %s (%s)", email, phone)
+        return created["id_user"]
+
+    if existing["role"] != "guardian":
+        raise RuntimeError(
+            f"SIMULATOR_GUARDIAN_EMAIL {email} belongs to a {existing['role']} account, not a "
+            "guardian; point it at another email"
+        )
+
+    fix: dict = {}
+    if not existing.get("is_active", True):
+        fix["is_active"] = True
+    if existing.get("phone_number") != phone:
+        fix["phone_number"] = phone
+    if fix:
+        await client.update_user(token, existing["id_user"], fix)
+        logger.info("Updated the simulator guardian %s: %s", email, ", ".join(sorted(fix)))
+    return existing["id_user"]
+
+
 async def reset_previous_run(client: BackendClient, token: str) -> None:
     """Deletes every SIM-* truck/driver/route (and their alerts) from a previous run, so
     repeated `docker compose up`s during dev stay idempotent instead of piling up ghost fleets.
     Identifies "ours" by the SIM- prefix on plate_number/license_number, since Route itself
     carries no distinguishing text of its own -- routes are matched via their id_truck/id_driver.
+    The simulator's guardian (`ensure_guardian`) is left alone: it's reused across runs, and
+    deleting it would be refused anyway while a non-SIM route still names it (contracts G3).
     """
     trucks = await client.list_trucks(token)
     drivers = await client.list_drivers(token)
@@ -92,6 +152,7 @@ async def provision_fleet(client: BackendClient, settings: Settings) -> list[Vir
     if settings.simulator_reset:
         await reset_previous_run(client, token)
 
+    guardian_id = await ensure_guardian(client, token, settings)
     weights = parse_scenario_weights(settings.simulator_scenario_weights)
 
     specs: list[VirtualTruckSpec] = []
@@ -142,6 +203,7 @@ async def provision_fleet(client: BackendClient, settings: Settings) -> list[Vir
                 "estimated_departure": departure.isoformat(),
                 "estimated_arrival": arrival.isoformat(),
                 "operative_status": "in_progress",
+                "id_guardian": guardian_id,
             },
         )
 

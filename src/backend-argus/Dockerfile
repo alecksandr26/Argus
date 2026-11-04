@@ -30,6 +30,12 @@ RUN pytest
 FROM base AS runtime
 COPY --from=test /app/app ./app
 
-ENV PYTHONUNBUFFERED=1
+# Reported by GET /health as "version" (route-guardian contracts, G6): build with
+# `--build-arg ARGUS_VERSION=<git short SHA>`. Declared in this stage only, so a new SHA doesn't
+# invalidate the test stage's cache. The Lambda wrapper image (src/infra-argus/docker/
+# backend-lambda) is FROM this image and inherits the ENV.
+ARG ARGUS_VERSION=dev
+ENV PYTHONUNBUFFERED=1 \
+    ARGUS_VERSION=$ARGUS_VERSION
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

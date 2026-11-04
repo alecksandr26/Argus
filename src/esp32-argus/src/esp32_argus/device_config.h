@@ -34,6 +34,9 @@ struct DeviceCredentials {
   // isn't E.164, is ignored (left "") -- never a reason to reject the line.
   String truckPlate;
   String alertPhone;
+  // An alert_phone the Pi sent that isn't E.164 (so alertPhone stays ""), already masked
+  // (maskPhone): what the [creds] line shows once per CONFIG change. "" = none was rejected.
+  String alertPhoneRejected;
 
   bool valid() const;
   bool useGprs() const { return gprsApn.length() > 0; }

@@ -8,16 +8,19 @@ from pydantic import AfterValidator, BaseModel
 
 from app.constants import ALERT_PHONE_PATTERN
 from app.models.common import TruckStatus
+from app.phone import normalize_phone
 from app.schemas.common import UtcDatetime
 
 
 def _alert_phone(value: Optional[str]) -> Optional[str]:
     """E.164 or nothing (grip-alarm contracts, C1.1): `""` means "no phone" and is stored as
     None, so on an update both `null` and `""` clear it. Anything else that isn't E.164 is a 422,
-    since a phone the ESP32 can't dial would silently drop every SMS."""
+    since a phone the ESP32 can't dial would silently drop every SMS. Separators are removed
+    first (`normalize_phone`, route-guardian contracts G2), so `+52 33 1234-5678` is stored as
+    `+523312345678`."""
     if value is None:
         return None
-    value = value.strip()
+    value = normalize_phone(value)
     if not value:
         return None
     if not re.fullmatch(ALERT_PHONE_PATTERN, value):

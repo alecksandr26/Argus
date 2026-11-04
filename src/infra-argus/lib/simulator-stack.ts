@@ -40,6 +40,10 @@ export const SIMULATOR_TASK_SETTINGS = {
   SIMULATOR_OUTAGE_CHANCE: '0',
   SIMULATOR_GPS_LOSS_CHANCE: '0',
   SIMULATOR_OUTAGE_AROUND_CRITICAL: 'false',
+  /** The guardian every simulated route carries (route guardian contracts G8), found or created
+   * and kept across sessions. A fake E.164 phone: the simulator never sends an SMS. */
+  SIMULATOR_GUARDIAN_EMAIL: 'sim-guardian@argus.sim',
+  SIMULATOR_GUARDIAN_PHONE: '+520000000000',
 } as const
 
 export interface SimulatorStackProps extends cdk.StackProps {

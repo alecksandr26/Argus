@@ -1,6 +1,6 @@
 import pytest
 
-from tests.conftest import auth_headers
+from tests.conftest import auth_headers, make_guardian
 
 
 async def _make_route(api_client, headers, truck_id) -> str:
@@ -21,6 +21,7 @@ async def _make_route(api_client, headers, truck_id) -> str:
     route_resp = await api_client.post(
         "/api/routes",
         json={
+            "id_guardian": str((await make_guardian()).id),
             "id_driver": driver_resp.json()["id_driver"],
             "id_truck": truck_id,
             "origin_name": "CDMX",
