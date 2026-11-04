@@ -11,7 +11,9 @@
 //
 // FusionReading::at is monotonic seconds (the caller derives it from millis()), matching
 // the Python reference's documented convention. There's no thread here either -- update()
-// is a plain call this device's main loop makes once per new FusionReading.
+// is a plain call meant to be made once per new FusionReading. NOT CALLED by the sketch today:
+// the grip sensor is its own critical source and the buzzer follows alarm_policy.h
+// (grip-alarm contracts C2/C4); only test/host/fusion*_host_test.cpp exercise this.
 
 enum class GripState : uint8_t { GOOD, BAD };
 enum class DrowsyState : uint8_t { NOT_DROWSY, DROWSY };

@@ -1,12 +1,14 @@
 #pragma once
 
-// The hook between the cabin's two inputs and its alarm (docs/designs/grip-alarm-contracts.md
-// C4, C5, changed 2026-10-31). A pulled Pi record, once pull_session.h has classified it and
-// TAKEN it (or not), moves the vision alarm (alarm_policy.h): only a live, taken critical turns it
-// on, one per episode, a driver OK turns it off. A grip episode moves the grip alarm. The buzzer
-// sounds and the one SMS is queued only when both are on: cabinAlarmSms() is called on either
-// rising edge, so whichever comes second queues it. Pure, so test/host/cabin_signals_host_test.cpp
-// runs real record lines through parsePiRecord() -> decidePulledRecord() -> here.
+// The hook between a pulled Pi record and the cabin (docs/designs/grip-alarm-contracts.md C4, C5,
+// changed 2026-11-03). Once pull_session.h has classified a record and TAKEN it (or not):
+// - every usable live record, keepalives included, gives the alarm the camera's latest reading
+//   (alarm_policy.h onCameraReading: the no-face cap follows it);
+// - a live, taken critical turns the vision alarm on (one per episode) and queues that episode's
+//   SMS at once, hands on the wheel or not (every critical texts); a driver OK turns it off.
+// The grip side (the sketch's onGripChange) calls AlarmPolicy::setGripAlarm() and
+// SmsPolicy::onGripCritical() itself. Pure, so test/host/cabin_signals_host_test.cpp runs real
+// record lines through parsePiRecord() -> decidePulledRecord() -> here.
 
 #include <cstdint>
 
@@ -22,10 +24,11 @@ struct CabinSignals {
   SmsQueueResult sms;
 };
 
-// The SMS for "both alarms on" (sms_policy.h onBothAlarms), or Ignored while only one is. Call
-// it right after either alarm turned on, under the lock that guards both policies.
-SmsQueueResult cabinAlarmSms(const AlarmPolicy& alarm, SmsPolicy& sms, const EventPosition& where,
-                             bool hasPhone, uint32_t nowMs);
+// The SMS for the camera critical the vision alarm just turned on for (sms_policy.h
+// onCameraCritical), saying whether the hands are off right now. Under the lock that guards both
+// policies.
+SmsQueueResult cabinCameraSms(const AlarmPolicy& alarm, SmsPolicy& sms, const EventPosition& where,
+                              bool hasPhone, uint32_t nowMs);
 
 // Right after decidePulledRecord(), under the same lock. `dlqSession`: the record came from
 // `DLQ 1`. `where`: the position composed into its event (the HerePosition the decision used).

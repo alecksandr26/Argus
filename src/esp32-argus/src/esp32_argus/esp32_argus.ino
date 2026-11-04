@@ -12,16 +12,17 @@
 //     device's position and TAKEN for the sender. Then `DLQ 1` when the Pi holds dead letters and
 //     no live event is pending. Each session also carries the ACK/FAIL of every event the sender
 //     finished. No backend call ever happens inside a session. CONFIG (credentials.h) is fetched
-//     here too: at boot, after a 401, and every 10 minutes. A live critical it takes also starts
-//     the vision alarm (no_face included); a driver OK stops it (alarm_policy.h).
+//     here too: at boot, after a 401, and every 10 minutes. Every record gives the alarm the
+//     camera's latest reading (the no-face cap); a live critical it takes starts the vision alarm
+//     (no_face included) and queues that episode's SMS; a driver OK stops it (alarm_policy.h).
 //   - gpsTask: drains the NEO-6M and reads it every GPS_READ_INTERVAL_MS into the track buffer (a
 //     point per read: the current fix, else the last known position). The last known position
 //     is kept in NVS ("lastpos").
 //   - gripTask: every GRIP_SAMPLE_INTERVAL_MS reads the four wheel sensors (grip_policy.h): 3 s
 //     without pressure starts a grip episode (the grip alarm, a live critical "no_grip" for the
-//     sender), 300 ms of pressure ends it (one live OK). It also drives the buzzer: grip alarm
-//     AND vision alarm (a double check), with the vision alarm's 5-minute cap. The moment both
-//     are on, from either side, queues the one SMS of that camera episode (cabin_signals.h).
+//     sender and its SMS), 300 ms of pressure ends it (one live OK). It also drives the buzzer
+//     (alarm_policy.h): hands off + a camera critical at once, hands off 5 s with the camera OK,
+//     at most 3 s while the camera says nobody is in view; the vision alarm's 5-minute cap.
 //   - senderTask: the only code that touches the modem, WiFi or HTTP. One report per POST: the
 //     points since the last report plus at most one event, by priority (live critical > medium >
 //     OK > one dead letter; the grip events rank as live ones of their tier); live events retry
@@ -169,7 +170,8 @@ void logGripReadings(const int* raw, bool pressure) {
 }
 
 // A grip episode started or ended: its event for the sender (C3), the grip alarm, and on a start
-// the SMS if a camera critical is already on (C5: both alarms, cabin_signals.h). The event's time is read under the lock, like every other task does: a millis()
+// its SMS (C5: every critical texts). The event's time is read under the lock, like every other
+// task does: a millis()
 // read before it could be older than latestGpsAt (the GPS task may write it meanwhile), and
 // hereNow()'s (nowMs - latestGpsAt) would wrap.
 void onGripChange(GripChange change) {
@@ -180,7 +182,6 @@ void onGripChange(GripChange change) {
   TakeResult took = TakeResult::Queued;
   SmsQueueResult queued;
   bool vision = false;
-  std::string visionEpisode;
   {
     RtosLock lock(stateMutex);
     uint32_t nowMs = millis();
@@ -189,10 +190,9 @@ void onGripChange(GripChange change) {
                          ? gripAlertEvent(bootTag, n, here.position, here.hasSpeed, here.speedKmh)
                          : gripOkEvent(bootTag, n, here.position, here.hasSpeed, here.speedKmh);
     took = sender.takeLocal(ev, nowMs);
-    cabinAlarm.setGripAlarm(started);
-    if (started) queued = cabinAlarmSms(cabinAlarm, smsQueue, here.position, hasPhone, nowMs);
+    cabinAlarm.setGripAlarm(started, nowMs);
+    if (started) queued = smsQueue.onGripCritical(episode, here.position, hasPhone, nowMs);
     vision = cabinAlarm.visionAlarm();
-    visionEpisode = cabinAlarm.visionEpisode().str();
   }
   const char* queuedText = took == TakeResult::Full ? "dropped (see below)" : "queued";
   if (started) {
@@ -201,36 +201,53 @@ void onGripChange(GripChange change) {
                   GRIP_ALERT_MS / 1000.0, episode.c_str());
     Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
     Serial.printf("[grip] Grip alarm on (%s); critical no_grip for the backend %s\n",
-                  vision ? "camera critical on too: buzzer" : "no buzzer without a camera critical",
+                  vision ? "camera critical on too: buzzer now"
+                         : "camera OK: buzzer at 5 s without pressure",
                   queuedText);
   } else {
     Serial.printf("[grip] Pressure back -- episode %s over: grip alarm off; OK for the backend %s\n",
                   episode.c_str(), queuedText);
   }
   logLocalDrops();
-  if (started) logSmsQueued(queued, visionEpisode);  // the SMS belongs to the camera's episode
+  if (started) logSmsQueued(queued, episode);  // the grip episode's own SMS
 }
 
-// The buzzer pin follows the alarm decision: the vision alarm's safety cap first, then
-// grip && vision (the double check). The clock is read under the lock: one read before it could
-// predate the critical the loop task just took (alarm_policy.h tick()).
+// The buzzer pin follows the alarm decision (alarm_policy.h tick(): the vision alarm's safety
+// cap, the grip-only delay, the no-face cap). The clock is read under the lock: one read before it
+// could predate the critical the loop task just took.
 void applyBuzzer() {
+  static BuzzerCause lastCause = BuzzerCause::None;
   bool capped, buzz;
+  BuzzerCause cause;
   {
     RtosLock lock(stateMutex);
     capped = cabinAlarm.tick(millis());
     buzz = cabinAlarm.buzzer();
+    cause = cabinAlarm.cause();
   }
   if (capped) {
     Serial.printf("[alarm] Vision alarm off: no driver OK from the Pi in %lu s (safety cap)\n",
                   (unsigned long)(VISION_ALARM_MAX_MS / 1000));
   }
-  if (buzz == buzzerIsOn()) return;
+  if (buzz == buzzerIsOn() && cause == lastCause) return;
+  lastCause = cause;
   buzzerSet(buzz);
-  if (buzz) {
-    Serial.println("[alarm] Buzzer ON (camera critical + hands off the wheel)");
-  } else {
-    Serial.println("[alarm] Buzzer off");
+  switch (cause) {
+    case BuzzerCause::CameraAndGrip:
+      Serial.println("[alarm] Buzzer ON (camera critical + hands off the wheel)");
+      break;
+    case BuzzerCause::GripOnly:
+      Serial.printf("[alarm] Buzzer ON (hands off the wheel %.1f s, no camera critical)\n",
+                    GRIP_ONLY_BUZZER_MS / 1000.0);
+      break;
+    case BuzzerCause::NoFaceMuted:
+      Serial.printf("[alarm] Buzzer off: nobody in view (no_face), quiet after %.1f s until the "
+                    "camera sees someone\n",
+                    NO_FACE_BUZZER_MAX_MS / 1000.0);
+      break;
+    case BuzzerCause::None:
+      Serial.println("[alarm] Buzzer off");
+      break;
   }
 }
 
@@ -412,7 +429,8 @@ void serviceSms() {
   }
   smsWaitLogged = false;
 
-  std::string text = composeSmsText(msg.alertType.str(), vehicle.c_str(), msg.position);
+  std::string text =
+      composeSmsText(msg.alertType.str(), msg.handsOff, vehicle.c_str(), msg.position);
   Serial.printf("[sms] -> %s (attempt %d/%d): %s\n", maskPhone(phone).c_str(), msg.attempts + 1,
                 SMS_MAX_ATTEMPTS, text.c_str());
   String error;
@@ -616,8 +634,8 @@ void logCabinSignals(const PiRecord& r, const CabinSignals& s) {
   const std::string& episode = eventEpisode(r);
   switch (s.vision) {
     case VisionChange::On:
-      Serial.printf("[alarm] Vision alarm ON: \"%s\" (episode %s) -- the buzzer and the SMS also "
-                    "need the hands off the wheel\n",
+      Serial.printf("[alarm] Vision alarm ON: \"%s\" (episode %s) -- its SMS goes now; the "
+                    "buzzer also needs the hands off the wheel\n",
                     eventAlertType(r).c_str(), episode.c_str());
       break;
     case VisionChange::Off:
@@ -650,8 +668,8 @@ bool runSession(bool dlq) {
         uint32_t now = millis();
         HerePosition here = hereNow(now);
         d = decidePulledRecord(parsed, r, dlq, sender, vigilance, here, now);
-        // The hook: a live critical taken here starts the vision alarm (and queues the SMS if
-        // the hands are already off the wheel); a driver OK stops the vision alarm.
+        // The hook: every record updates the camera's latest reading (the no-face cap); a live
+        // critical taken here starts the vision alarm and queues its SMS; a driver OK stops it.
         signals = cabinSignalsFor(r, parsed, d, dlq, here.position, hasPhone, cabinAlarm,
                                   smsQueue, now);
       }

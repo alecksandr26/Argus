@@ -17,13 +17,15 @@ consecutive frames of another class, so one bad frame (a blink, a head turn) nei
 clears anything.
 
 **No face is its own class**, not "not drowsy": a drowsy driver slumping out of frame must never
-read as a recovery. The ESP32 decides what sustained `No Face` means (fusion treats it as
-drowsy after a while).
+read as a recovery. A sustained missing face is decided here, not on the ESP32: the parts rules
+raise a `critical` with reason `no_face` after `RULE_NO_FACE_CRITICAL_S` (its records carry class
+`Drowsy`). The ESP32's fusion module is unused.
 
 **State is per camera source** (`source_id`), so two cameras can't reset each other.
 
 **Severity changes are transitions too.** The parts rules give a severity (none/low/medium/
-critical); the ESP32 alerts on it directly (no grip sensor yet). A change of severity is emitted
+critical); the ESP32 alerts on it directly (the grip sensor is its own source there). A
+change of severity is emitted
 as a `transition: true` reading right away, even when the class hasn't changed (medium ->
 critical are both `Drowsy`), with `previous_severity` and an `episode` id: one id from the moment
 the severity reaches medium until it falls back to none/low, so the ESP32 can link an incident's
@@ -31,15 +33,19 @@ alert, its escalation and its recovery. The rules already have their own hystere
 isn't debounced again -- and a severity change also adopts this frame's class at once, so the
 recovery record ("driver OK again") carries `Not Drowsy` right away instead of a stale `Drowsy`
 followed by a class-only transition a few frames later (contract C1.5). A reason change at the
-same severity emits nothing.
+same severity emits nothing -- only the next keepalive carries the new `reason`. The ESP32's
+buzzer depends on that (grip-alarm contracts C4, 2026-11-03): its no-face cap follows the
+`severity` + `reason` of the latest live record, keepalives included, so `reason` in a keepalive
+is a contract field, not a debug extra.
 
 Which of these records become backend events (medium alert, critical alert or escalation, driver
 OK) is decided by the ESP32 with the rule in contract C1.5; keepalives never reach the backend.
 
 **One decision loop**: every wake -- a detection or a poll timeout -- checks for a class change,
-for due keepalives (so a stalled pipeline still keeps the ESP32 informed) and for periodic buffer
-housekeeping. There is no heartbeat any more (contract C1.5): the ESP32 reports GPS every 5 s on
-its own, and the 2 s keepalives tell it the camera is alive.
+for due keepalives and for periodic buffer housekeeping. There is no heartbeat any more
+(contract C1.5): the ESP32 reports GPS every 5 s on its own. The 2 s keepalives tell it the
+*process* is alive, not the camera: a hung camera keeps repeating the last reading with no stale
+marker (CV-15, open), so the ESP32 can only detect silence (`PI_STALE_MS`), not a frozen camera.
 """
 import logging
 import math

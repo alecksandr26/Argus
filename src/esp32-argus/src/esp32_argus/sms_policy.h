@@ -1,16 +1,17 @@
 #pragma once
 
-// The critical-alert SMS (docs/designs/grip-alarm-contracts.md C5, changed 2026-10-31): which
-// moments get one, the queue that waits for the GSM network, the retries, and the text. Pure logic
-// with an injected millis() clock, so test/host/sms_policy_host_test.cpp runs it on the PC with
-// exact strings.
+// The critical-alert SMS (docs/designs/grip-alarm-contracts.md C5, changed 2026-11-03: every
+// critical alert texts): which moments get one, the queue that waits for the GSM network, the
+// retries, and the text. Pure logic with an injected millis() clock, so
+// test/host/sms_policy_host_test.cpp runs it on the PC with exact strings.
 //
-// - One SMS when the camera's critical and the hands off the wheel come together: the moment the
-//   cabin buzzer turns on (alarm_policy.h: vision alarm AND grip alarm, cabin_signals.h queues it).
-//   Never for the camera alone, the wheel alone, a medium, an OK or a DLQ replay.
-// - At most one per camera episode: a ring of the last SMS_EPISODE_MEMORY episodes dedupes the
-//   driver letting go and taking the wheel again during the same episode, a record served again
-//   and the episode's later criticals.
+// - A live camera critical (any reason, no_face included) the moment this device takes it,
+//   whether or not the hands are on the wheel (onCameraCritical; the text adds "sin manos en el
+//   volante" only when they are off then). Never for a medium, an OK or a DLQ replay.
+// - A grip episode's start: the wheel's own no_grip critical (onGripCritical).
+// - At most one per episode: a ring of the last SMS_EPISODE_MEMORY camera episodes dedupes a
+//   record served again and the episode's later criticals; grip episodes have their own ring, so
+//   a burst of them never makes a re-served camera critical text twice.
 // - Only with an alert phone (CONFIG's alert_phone): without one the episode is skipped, logged
 //   once (its result is NoPhone, then Duplicate).
 // - A queue of SMS_QUEUE_SLOTS, deduped by episode; a new one when full drops the oldest waiting.
@@ -28,6 +29,7 @@
 #include "bounded_string.h"
 #include "config.h"
 #include "episode_ring.h"
+#include "grip_policy.h"  // kGripAlertType
 
 struct SmsTiming {
   uint32_t retryGapMs = SMS_RETRY_GAP_MS;
@@ -40,15 +42,16 @@ struct SmsTiming {
 struct SmsMessage {
   bool used = false;
   IdString episode;
-  AlertTypeString alertType;  // the camera critical's alert_type (the Pi's reason)
-  EventPosition position;     // where the truck was when both alarms came together
+  AlertTypeString alertType;  // the camera critical's alert_type (the Pi's reason), or no_grip
+  bool handsOff = false;      // the grip alarm was on when it was queued (the text says so)
+  EventPosition position;     // where the truck was when the critical came
   uint32_t queuedAtMs = 0;
   int attempts = 0;           // failed tries so far
   uint32_t lastAttemptEndMs = 0;
 };
 
 enum class SmsQueued : uint8_t {
-  Ignored,    // not a moment this rule sends an SMS for (only one alarm on, a medium, an OK...)
+  Ignored,    // not a moment this rule sends an SMS for (a medium, an OK, a DLQ replay...)
   Queued,
   Duplicate,  // this episode already had its SMS (or was skipped): nothing new
   NoPhone,    // no alert phone set: skipped (log it: once per episode)
@@ -74,10 +77,14 @@ class SmsPolicy {
 
   explicit SmsPolicy(const SmsTiming& timing = SmsTiming());
 
-  // Both alarms just came together (cabin_signals.h): the camera's critical of `visionEpisode`
-  // (`alertType`, its reason) and the hands off the wheel. `where`: the position then.
-  SmsQueueResult onBothAlarms(const std::string& visionEpisode, const std::string& alertType,
-                              const EventPosition& where, bool hasPhone, uint32_t nowMs);
+  // A live camera critical was just taken (cabin_signals.h): `visionEpisode`, `alertType` (its
+  // reason), `handsOff` the grip alarm is on now. `where`: the position then.
+  SmsQueueResult onCameraCritical(const std::string& visionEpisode, const std::string& alertType,
+                                  bool handsOff, const EventPosition& where, bool hasPhone,
+                                  uint32_t nowMs);
+  // A grip episode just started (its no_grip critical): `gripEpisode` its id (grip_policy.h).
+  SmsQueueResult onGripCritical(const std::string& gripEpisode, const EventPosition& where,
+                                bool hasPhone, uint32_t nowMs);
 
   // --- The sender task, between report attempts ---
   // Removes one message that waited longer than pendingMaxMs since it was queued into `dropped`;
@@ -93,13 +100,17 @@ class SmsPolicy {
   bool drop(const std::string& episode);
 
  private:
-  SmsQueueResult enqueue(const std::string& episode, const std::string& alertType,
+  SmsQueueResult once(EpisodeRing<kRemembered>& ring, const std::string& episode,
+                      const std::string& alertType, bool handsOff, const EventPosition& where,
+                      bool hasPhone, uint32_t nowMs);
+  SmsQueueResult enqueue(const std::string& episode, const std::string& alertType, bool handsOff,
                          const EventPosition& where, uint32_t nowMs);
   int find(const std::string& episode) const;
 
   SmsTiming timing_;
   SmsMessage slots_[kSlots];
-  EpisodeRing<kRemembered> episodes_;  // camera episodes that got (or skipped) their SMS
+  EpisodeRing<kRemembered> episodes_;      // camera episodes that got (or skipped) their SMS
+  EpisodeRing<kRemembered> gripEpisodes_;  // grip episodes likewise
 };
 
 // The SMS motive for a camera alert type (C5): "eyes_closed" -> "ojos cerrados", ...; nullptr for
@@ -107,9 +118,11 @@ class SmsPolicy {
 const char* smsMotivo(const std::string& alertType);
 
 // The C5 text, plain GSM-7, at most kSmsMaxLength chars:
-//   "ARGUS ALERTA CRITICA: <motivo>, sin manos en el volante. Camion <vehicle>.
+//   "ARGUS ALERTA CRITICA: <motivo>[, sin manos en el volante]. Camion <vehicle>.
 //    https://maps.google.com/?q=<lat>,<lon>"
-// (6 decimals), or "... Camion <vehicle>. Ubicacion desconocida." without a position. `vehicle`
+// (6 decimals), or "... Camion <vehicle>. Ubicacion desconocida." without a position. The
+// hands-off part only with `handsOff`; the grip critical (kGripAlertType, "no_grip") reads
+// "ARGUS ALERTA CRITICA: sin manos en el volante. Camion ...". `vehicle`
 // is the truck's plate, else its truck id. A character outside the safe GSM-7 set (letters,
 // digits, space and . , : / ? = + - # ( )) in the raw alert type or the vehicle is written as a
 // space ("mouth_open" -> "mouth open"), so the modem's "GSM" character set can't garble it. The
@@ -117,5 +130,5 @@ const char* smsMotivo(const std::string& alertType);
 // hands-off part and the link always fit whole.
 constexpr size_t kSmsMaxLength = 160;
 constexpr size_t kSmsVehicleMaxLength = 24;  // a truck id (ObjectId) is 24, a plate at most 16
-std::string composeSmsText(const std::string& alertType, const std::string& vehicle,
-                           const EventPosition& where);
+std::string composeSmsText(const std::string& alertType, bool handsOff,
+                           const std::string& vehicle, const EventPosition& where);

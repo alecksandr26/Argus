@@ -32,7 +32,9 @@ Real firmware: an **Arduino IDE multi-tab sketch**, `src/esp32_argus/esp32_argus
 - **The grip sensor, the buzzer and the critical-alert SMS (section 6) compile for the ESP32**
   (`test/compile.sh`, 2026-10-24, same toolchain: 1,849,872 bytes, 58% of flash; 80,692 bytes,
   24% of RAM; no new warning from our files) and pass the host tests, but are **not flashed**,
-  and nothing of it has run on hardware. The RFP602 threshold
+  and nothing of it has run on hardware. The 2026-11-03 rules (grip-only buzzer at 5 s, the
+  no-face 3 s cap, an SMS for every critical) compile too (1,851,036 bytes, 58%; 81,348 bytes,
+  24%) and pass the host tests; not flashed either. The RFP602 threshold
   (500) is the user's bench value, not tuned on the real wheel, and the SIM800L SMS path has
   never been exercised by this firmware.
 
@@ -63,9 +65,9 @@ Real firmware: an **Arduino IDE multi-tab sketch**, `src/esp32_argus/esp32_argus
 | `bluetooth_client.*` | the Bluetooth I/O (`BluetoothSerial`): one fresh RFCOMM connection per session; reads the whole batch before handling it |
 | `grip_sensor.*` | the four RFP602 wheel sensors as 12-bit analog reads on GPIO 34/35/36/39; only `gripTask` calls it |
 | `grip_policy.*` | pure: the grip rule (3 s without pressure starts an episode, 300 ms of pressure ends it, the optional moving gate, the episode counter) and the `no_grip` alert / OK events with their ids |
-| `alarm_policy.*` / `buzzer.*` | pure: when the buzzer sounds (the grip alarm **and** the vision alarm: a live critical, `no_face` included, until the driver OK or the 5 min cap, once per episode); the buzzer's GPIO write |
-| `sms_policy.*` | pure: the SMS when both alarms come together (one per camera episode), the queue of 4, the retries and the pending timeout, the exact text |
-| `cabin_signals.*` | pure: the hook that hands each pulled Pi record, once classified and taken, to the vision alarm, and queues the SMS when the vision alarm or a grip episode completes the pair (`cabinAlarmSms()`) |
+| `alarm_policy.*` / `buzzer.*` | pure: when the buzzer sounds (hands off + a camera critical at once, hands off 5 s with the camera OK, at most 3 s while the latest camera reading is `no_face`; the vision alarm: a live critical until the driver OK or the 5 min cap, once per episode); the buzzer's GPIO write |
+| `sms_policy.*` | pure: one SMS per critical (one per camera critical episode, one per grip episode), the queue of 4, the retries and the pending timeout, the exact text |
+| `cabin_signals.*` | pure: the hook that hands each pulled Pi record, once classified and taken, to the alarm (the camera's latest reading, the vision alarm) and queues a new camera critical's SMS (`cabinCameraSms()`) |
 | `episode_ring.h` | the last 8 episode ids, for "already sounded / already had its SMS" |
 | `bounded_string.h` / `rtos_lock.h` | fixed-capacity strings for the static slots; a scoped FreeRTOS mutex lock |
 | `fusion.*` | `FusionOrchestrator`, a 1:1 C++ port of `cv-argus`'s `fusion_contract.py` (section 5); **not used**: the grip sensor is its own critical source (grip-alarm contracts C2) |
@@ -244,12 +246,12 @@ the attempt or session as not made instead of rebooting.
 [dlq] critical 7b01e2aa attempt 3/5 via gprs 15.0 s: failed (timeout)
 [grip] S1=12 S2=0 S3=31 S4=7 (threshold 500) -> no pressure
 !!! No pressure on the steering wheel for 3.0 s -- episode grip-1a2b3c4d-1
-[grip] Grip alarm on (camera critical on too: buzzer); critical no_grip for the backend queued
-[sms] SMS queued for episode 5f3c9e1a-0007
+[grip] Grip alarm on (camera critical on too: buzzer now); critical no_grip for the backend queued
+[sms] SMS queued for episode grip-1a2b3c4d-1
 [alarm] Buzzer ON (camera critical + hands off the wheel)
 [live] critical grip-1a2b3c4d-1-a attempt 1 via gprs 4.8 s: delivered
-[sms] -> +52******5678 (attempt 1/3): ARGUS ALERTA CRITICA: ojos cerrados, sin manos en el volante. Camion JAL-123-A. https://maps.google.com/?q=20.659712,-103.349612
-[sms] Sent for episode 5f3c9e1a-0007 in 4.1 s
+[sms] -> +52******5678 (attempt 1/3): ARGUS ALERTA CRITICA: sin manos en el volante. Camion JAL-123-A. https://maps.google.com/?q=20.659712,-103.349612
+[sms] Sent for episode grip-1a2b3c4d-1 in 4.1 s
 [grip] Pressure back -- episode grip-1a2b3c4d-1 over: grip alarm off; OK for the backend queued
 [alarm] Buzzer off
 [health] heap free 61234 B, min ever 40112 B, largest block 38900 B | stack left: sender 5120 B, loop 3010 B, gps 2100 B, grip 2600 B | held: 1 live + 0 grip, 0 dlq, 2 outcome(s) for the Pi (0 lost, 0 bodies cut) | route active | 0 SMS waiting | buzzer off
@@ -575,10 +577,15 @@ re-deriving them from the matrix below.
 The user's rules, ported from their bench sketch (`test/bench/grip_sms_reference.ino`): no
 pressure on the wheel for 3 s is a critical for the backend (the grip alarm) and pressure back
 stops it; a critical from the camera is the vision alarm, and the Pi's driver OK stops it.
-**Since 2026-10-31 the buzzer and the SMS are a double check: they need both alarms at once**
-(before, either one was enough). One SMS when both come together, at most one per camera
-episode, to the phone set in the dashboard (Fleet truck form → `argus-device.env` → the Pi →
-`CONFIG` → this device, RAM only, section 1b). The backend still gets each alert on its own.
+**Since 2026-11-03** (it replaces the 2026-10-31 double check):
+
+- **Every critical alert texts.** That's one SMS per camera critical episode, hands on the wheel
+  or not, and one per grip episode. They go to the phone set in the dashboard (Fleet truck form →
+  `argus-device.env` → the Pi → `CONFIG` → this device, RAM only, section 1b).
+- **The buzzer never sounds with the hands on the wheel.** With the hands off it sounds at once
+  with a camera critical, or after 5 s without pressure with the camera OK.
+- **No-face cap:** while the camera says nobody is in view, it sounds 3 s at most.
+- **The backend** still gets each alert on its own.
 
 **The grip sensor** (`grip_sensor.*`, `grip_policy.*`; `gripTask`):
 
@@ -587,8 +594,7 @@ episode, to the phone set in the dashboard (Fleet truck form → `argus-device.e
   Sampled every `GRIP_SAMPLE_INTERVAL_MS` (100 ms); the four raw readings go to Serial every
   `GRIP_LOG_INTERVAL_MS` (2 s), not every sample.
 - **No pressure continuously for `GRIP_ALERT_MS` (3 s)** starts a grip episode: the grip alarm
-  turns on, one live critical goes to the sender, and the SMS is queued if a camera critical is
-  already on.
+  turns on, one live critical goes to the sender, and its SMS is queued (one per grip episode).
 - **Pressure back for `GRIP_RECOVERY_MS` (300 ms)** ends it at once: the grip alarm turns off and
   one live OK of the same episode goes. The next 3 s without pressure start a new episode.
 - `GRIP_REQUIRE_MOVING` (default `0`, the user's rule as given): with `1`, the 3 s timer only runs
@@ -613,9 +619,28 @@ event replaces an older unsent one (dropped and logged); if the older one is on 
 one is the one dropped. **When the retry window runs out the event is dropped with a
 `[live] ... dropped` line**: there is no Pi DLQ behind it.
 
-**The buzzer** (`alarm_policy.*`, `buzzer.*`): GPIO 13, `BUZZER_ACTIVE_HIGH 1`, a continuous tone
-**only while the grip alarm and the vision alarm are both on** (a double check; either one
-ending silences it at once). `gripTask` applies it every 100 ms.
+**The buzzer** (`alarm_policy.*`, `buzzer.*`): GPIO 13, `BUZZER_ACTIVE_HIGH 1`, a continuous
+tone. `gripTask` decides it every 100 ms (`AlarmPolicy::tick()`):
+
+| Situation | Buzzer |
+|---|---|
+| Hands on the wheel | silent (the hands back silence it at once) |
+| Hands off + a camera critical (the vision alarm) | at once |
+| Hands off, camera OK (no critical, or no Pi reading for `PI_STALE_MS`) | after `GRIP_ONLY_BUZZER_MS` (5 s from the last pressure, so 2 s into the grip episode). There's no movement gate, so a parked truck counts too |
+| Latest live camera reading is a `no_face` critical | `NO_FACE_BUZZER_MAX_MS` (3 s) at most, then quiet until a reading with anything else |
+
+- **The no-face cap follows readings, not events.** Every live record a session pulls,
+  keepalives included (not DLQ replays), updates the camera's latest `severity` + `reason`.
+  - **Why readings:** the Pi sends no event for a reason change at the same severity (`no_face` →
+    `eyes_closed` when the driver comes back asleep), so only the next keepalive shows the face is
+    back. It re-arms the buzzer at once.
+  - **When the 3 s start:** at the later of "it would sound" and "the `no_face` reading arrived".
+  - **Stale readings:** a `no_face` reading older than `PI_STALE_MS` (10 s, no link) never mutes.
+    The wheel rule then works on its own.
+- **Accepted consequences** (user decisions):
+  - An empty cab right after boot never gets a `no_face` (the Pi only counts once it has seen a
+    face), so with the hands off the buzzer sounds continuously.
+  - A camera that hangs while repeating `no_face` keepalives keeps the cap on (CV-15, Pi side).
 
 - The **vision alarm** turns on when this device takes (`TAKEN`) a **live** Pi record classified
   as a critical alert (C1.5), whatever its reason (`eyes_closed`, `yawn_eyes_closed`,
@@ -629,17 +654,22 @@ ending silences it at once). `gripTask` applies it every 100 ms.
 
 **The SMS** (`sms_policy.*`, `sms_modem.*`):
 
-- **One when both alarms come together**: the moment the buzzer turns on, whichever came second
-  (`cabin_signals.*`' `cabinAlarmSms()`). At most one per camera episode (a ring of the last 8):
-  letting go of the wheel again in the same episode, a record served again or the episode's
-  later criticals send nothing more. Never for the camera alone, the wheel alone, a medium, an
-  OK or a DLQ replay.
+- **Every critical alert texts:**
+  - **A live camera critical** texts the moment this device takes it (`cabin_signals.*`'
+    `cabinCameraSms()`), hands on the wheel or not. At most one per camera episode (a ring of the
+    last 8): a record served again or the episode's later criticals send nothing more.
+  - **A grip episode's start** (its `no_grip` critical) texts once per grip episode (its own
+    ring).
+  - Never for a medium, an OK or a DLQ replay.
+  - Hands off plus a camera critical gives two SMS, one per source.
 - Only with an alert phone from `CONFIG`; without one the episode is logged once
   (`[sms] No SMS alert phone set ...`) and skipped.
 - Text, plain GSM-7 ASCII, at most 160 chars:
-  `ARGUS ALERTA CRITICA: <motivo>, sin manos en el volante. Camion <plate, else the truck id>. https://maps.google.com/?q=<lat>,<lon>`
-  (6 decimals, the position when both came together), or `... Camion <...>. Ubicacion
-  desconocida.` with no position (it never waits for a fix). Motivos (the camera's reason):
+  `ARGUS ALERTA CRITICA: <motivo>[, sin manos en el volante]. Camion <plate, else the truck id>. https://maps.google.com/?q=<lat>,<lon>`
+  (6 decimals, the position when the critical came), or `... Camion <...>. Ubicacion
+  desconocida.` with no position (it never waits for a fix). The `sin manos` part only when the
+  grip alarm is on at that moment; the grip SMS is `ARGUS ALERTA CRITICA: sin manos en el
+  volante. Camion ...`. Motivos (the camera's reason):
   `eyes_closed` → `ojos cerrados`, `yawn_eyes_closed` → `ojos cerrados tras bostezo`,
   `head_down` → `cabeza abajo`, `head_down_eyes_closed` → `cabeza abajo y ojos cerrados`,
   `no_face` → `conductor no visible`, anything else → the raw reason (a character that isn't
@@ -652,7 +682,7 @@ ending silences it at once). `gripTask` applies it every 100 ms.
 - Needs the modem **registered on the GSM network**, with or without an APN: `setup()` always
   powers the SIM800L, which registers by itself, so a WiFi-only install still sends SMS when a
   phone is set. The registration is checked (`AT+CREG?`, cached 10 s) only while an SMS waits.
-- A queue of `SMS_QUEUE_SLOTS` (4), deduped by episode; a new one when full drops the oldest
+- A queue of `SMS_QUEUE_SLOTS` (4), deduped by episode id; a new one when full drops the oldest
   waiting one (logged). `SMS_MAX_ATTEMPTS` (3) tries, `SMS_RETRY_GAP_MS` (10 s) apart; a message
   still unsent `SMS_PENDING_MAX_MS` (5 min) after it was queued (no registration, or retries) is
   dropped (logged).

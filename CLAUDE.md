@@ -112,11 +112,18 @@ session that's touched this repo.
   2026-10-24 the grip sensor is real (4 RFP602 pressure sensors, GPIO 34/35/36/39) but it is
   **its own critical source for the backend, not fused**: 3 s with no pressure sends a `no_grip`
   critical to the backend, and a live Pi critical goes to the backend as before; `fusion.*` stays
-  kept but unused. **Since 2026-10-31 the cabin buzzer (GPIO 13) and the SMS are a double check
-  (user decision): they need a live Pi critical (`no_face` included) AND 3 s without pressure at
-  the same time**, not either one. One SMS when both come together, at most one per camera
-  episode, to the truck's alert phone (set in Fleet, carried in `argus-device.env` → `CONFIG` →
-  ESP32 RAM). See `docs/designs/grip-alarm-contracts.md`; compiled, not yet run on hardware.
+  kept but unused. **Since 2026-11-03 (user decisions, replacing the 2026-10-31 double check):**
+  - **Every critical alert sends an SMS.** That means one per live Pi critical episode
+    (`no_face` included, hands on the wheel or not) and one per grip episode. It goes to the
+    truck's alert phone (set in Fleet, carried in `argus-device.env` → `CONFIG` → ESP32 RAM).
+  - **The cabin buzzer (GPIO 13) never sounds with the hands on the wheel.** With the hands off
+    it sounds at once with a Pi critical, or after 5 s without pressure with the camera OK.
+    There's no movement gate.
+  - **While the camera's latest reading is a `no_face` critical, the buzzer sounds 3 s at most.**
+    The ESP32 tracks that from every record's `reason`, keepalives included, since the Pi sends
+    no event for a same-severity reason change.
+
+  See `docs/designs/grip-alarm-contracts.md` C4/C5; compiled, not yet run on hardware.
 - Deliberate split: the Pi *decides* (heavy AI inference, containerizable, can be redeployed via
   OTA), the ESP32 *acts* (bare-metal/real-time, must not depend on a Linux/Docker boot cycle
   completing). Don't move CAN-bus/alarm logic onto the Pi — keep that boundary.

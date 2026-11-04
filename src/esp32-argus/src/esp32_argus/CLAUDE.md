@@ -7,6 +7,11 @@ this file only covers getting it to compile and flash, and what has been verifie
 
 ## Status
 
+- **2026-11-03 cabin rules** (grip-only buzzer at 5 s, the no-face 3 s cap, an SMS for every
+  critical; `docs/designs/grip-alarm-contracts.md` C4/C5) compile with `../../test/compile.sh`
+  (same Windows `arduino-cli`, core 3.3.12, Huge APP, `--warnings all`): **1,851,036 bytes (58%
+  flash), 81,348 bytes of globals (24% RAM)**, still only `BluetoothSerial`'s deprecation warning.
+  All 21 host suites pass. Not flashed; the buzzer timings and both SMS texts need a bench run.
 - **The grip sensor, the cabin buzzer and the critical-alert SMS
   (`docs/designs/grip-alarm-contracts.md`, README section 6) compile for the ESP32 but have not
   been flashed.** Written 2026-10-23 without a toolchain; first real build 2026-10-24 (the review

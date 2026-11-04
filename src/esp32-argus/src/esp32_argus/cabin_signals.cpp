@@ -1,10 +1,9 @@
 #include "cabin_signals.h"
 
-SmsQueueResult cabinAlarmSms(const AlarmPolicy& alarm, SmsPolicy& sms, const EventPosition& where,
-                             bool hasPhone, uint32_t nowMs) {
-  if (!alarm.buzzer()) return SmsQueueResult();  // Ignored: the double check isn't met
-  return sms.onBothAlarms(alarm.visionEpisode().str(), alarm.visionAlertType().str(), where,
-                          hasPhone, nowMs);
+SmsQueueResult cabinCameraSms(const AlarmPolicy& alarm, SmsPolicy& sms,
+                              const EventPosition& where, bool hasPhone, uint32_t nowMs) {
+  return sms.onCameraCritical(alarm.visionEpisode().str(), alarm.visionAlertType().str(),
+                              alarm.gripAlarm(), where, hasPhone, nowMs);
 }
 
 CabinSignals cabinSignalsFor(const PiRecord& record, ParseOutcome parsed,
@@ -18,9 +17,11 @@ CabinSignals cabinSignalsFor(const PiRecord& record, ParseOutcome parsed,
   // The episode and alert type exactly as the backend event has them.
   const std::string& episode = eventEpisode(record);
   const std::string& alertType = eventAlertType(record);
+  // The camera's latest reading first (the payload's own reason: a "No Face" class record before
+  // the 5 s critical has none, and must not count as no_face).
+  alarm.onCameraReading(dlqSession, record.severity, record.reason, nowMs);
   s.vision = alarm.onPiRecord(decision.kind, dlqSession, taken, episode, alertType, nowMs);
-  // Only a vision alarm that just turned on can complete the pair here; the grip side calls
-  // cabinAlarmSms() itself when its episode starts.
-  if (s.vision == VisionChange::On) s.sms = cabinAlarmSms(alarm, sms, where, hasPhone, nowMs);
+  // Every critical texts: the vision alarm turning on is exactly "a new live critical episode".
+  if (s.vision == VisionChange::On) s.sms = cabinCameraSms(alarm, sms, where, hasPhone, nowMs);
   return s;
 }

@@ -1,7 +1,9 @@
-// When the cabin buzzer sounds (grip-alarm contracts C4, changed 2026-10-31): grip alarm AND vision
-// alarm (a double check); the vision alarm on for a live, taken critical (no_face included), off on
-// the driver OK or the 5-minute cap, never from a medium or a DLQ replay, and never restarted by a
-// re-pulled record or a later critical of the same episode.
+// When the cabin buzzer sounds (grip-alarm contracts C4, changed 2026-11-03): never with the hands
+// on the wheel; hands off + a camera critical at once; hands off alone after GRIP_ONLY_BUZZER_MS;
+// at most NO_FACE_BUZZER_MAX_MS while the camera's latest reading is a no_face critical. The vision
+// alarm on for a live, taken critical (no_face included), off on the driver OK or the 5-minute
+// cap, never from a medium or a DLQ replay, and never restarted by a re-pulled record or a later
+// critical of the same episode.
 // SOURCES: alarm_policy.cpp
 #include <string>
 
@@ -147,35 +149,190 @@ static void aClockReadJustBeforeTheCriticalDoesNotTripTheCap() {
   CHECK(w.visionAlarm());
 }
 
-// The double check: the buzzer only while both are on, whichever came first.
-static void theBuzzerNeedsGripAndVision() {
+static void reading(AlarmPolicy& a, const char* severity, const char* reason, uint32_t now,
+                    bool dlq = false) {
+  a.onCameraReading(dlq, severity, reason, now);
+}
+
+// Hands off + a camera critical: sounds at once (no grip-only delay), whichever came first, and
+// stops at once with the hands back or the driver OK.
+static void handsOffAndACameraCriticalSoundAtOnce() {
   AlarmPolicy a;
+  a.tick(0);
   CHECK(!a.buzzer());
-  a.setGripAlarm(true);  // hands off alone: silent
+  a.setGripAlarm(true, 0);  // hands off alone, under the grip-only delay: silent
+  a.tick(100);
   CHECK(a.gripAlarm() && !a.visionAlarm() && !a.buzzer());
-  CHECK(critical(a, "ep1", 0) == VisionChange::On);  // + the camera: sounds
+  CHECK(critical(a, "ep1", 200) == VisionChange::On);  // + the camera: sounds now
+  a.tick(200);
+  CHECK(a.buzzer() && a.cause() == BuzzerCause::CameraAndGrip);
+  a.setGripAlarm(false, 300);  // the hands are back: silent at once, the vision alarm still on
+  a.tick(300);
+  CHECK(a.visionAlarm() && !a.buzzer() && a.cause() == BuzzerCause::None);
+  a.setGripAlarm(true, 400);  // hands off again within the same camera episode: sounds again
+  a.tick(400);
   CHECK(a.buzzer());
-  a.setGripAlarm(false);  // the hands are back: silent at once, the vision alarm still on
-  CHECK(a.visionAlarm() && !a.buzzer());
-  a.setGripAlarm(true);  // hands off again within the same camera episode: sounds again
-  CHECK(a.buzzer());
-  CHECK(driverOk(a, "ep1", 1000) == VisionChange::Off);  // the driver OK: silent
-  CHECK(a.gripAlarm() && !a.buzzer());
+  CHECK(driverOk(a, "ep1", 1000) == VisionChange::Off);  // the driver OK: the camera part ends
+  a.tick(1000);
+  CHECK(a.gripAlarm() && !a.buzzer());  // grip episode 600 ms old: under the grip-only delay
 
   // Camera first, then the hands.
   AlarmPolicy b;
   CHECK(critical(b, "ep1", 0) == VisionChange::On);
+  b.tick(0);
   CHECK(!b.buzzer());  // the camera alone: silent
-  b.setGripAlarm(true);
-  CHECK(b.buzzer());
-  CHECK(b.tick(300000));  // the cap ends the vision alarm: silent, the grip alarm stays
-  CHECK(b.gripAlarm() && !b.buzzer());
+  b.setGripAlarm(true, 1000);
+  b.tick(1000);
+  CHECK(b.buzzer() && b.cause() == BuzzerCause::CameraAndGrip);
+  // The 5 min cap ends the vision alarm; the hands are still off, long past the grip-only delay.
+  CHECK(b.tick(300000));
+  CHECK(!b.visionAlarm() && b.buzzer() && b.cause() == BuzzerCause::GripOnly);
+}
 
-  // no_face counts like any other camera critical.
-  AlarmPolicy c;
-  c.setGripAlarm(true);
-  CHECK(critical(c, "ep1", 0, "no_face") == VisionChange::On);
-  CHECK(c.buzzer());
+// Hands off with the camera OK: 5 s from the last pressure, i.e. 2 s into the grip episode.
+static void handsOffAloneSoundsAfterTheGripOnlyDelay() {
+  CHECK(GRIP_ONLY_BUZZER_MS == 5000UL && GRIP_ALERT_MS == 3000UL);
+  AlarmPolicy a;
+  a.setGripAlarm(true, 10000);  // the grip episode starts (3 s without pressure)
+  a.tick(11999);
+  CHECK(!a.buzzer() && a.cause() == BuzzerCause::None);
+  a.tick(12000);
+  CHECK(a.buzzer() && a.cause() == BuzzerCause::GripOnly);
+  reading(a, "none", "ok", 12100);  // the camera sees a fine driver: still sounds
+  a.tick(12200);
+  CHECK(a.buzzer());
+  a.setGripAlarm(false, 30100);  // pressure back
+  a.tick(30100);
+  CHECK(!a.buzzer());
+  // A new grip episode starts its own delay.
+  a.setGripAlarm(true, 40000);
+  a.tick(41999);
+  CHECK(!a.buzzer());
+  a.tick(42000);
+  CHECK(a.buzzer());
+  // setGripAlarm(true) again inside the episode doesn't restart the delay.
+  AlarmPolicy b;
+  b.setGripAlarm(true, 0);
+  b.setGripAlarm(true, 1500);
+  b.tick(2000);
+  CHECK(b.buzzer());
+  // Across a millis() wrap, and a clock read just before the start (another task's) is "not yet".
+  AlarmPolicy w;
+  w.setGripAlarm(true, 0xFFFFFC00u);
+  w.tick(0xFFFFFB00u);
+  CHECK(!w.buzzer());
+  w.tick(0x000003CFu);  // 1999 ms
+  CHECK(!w.buzzer());
+  w.tick(0x000003D0u);  // 2000 ms
+  CHECK(w.buzzer());
+}
+
+// The no-face cap: nobody in view -> 3 s of buzzer at most, then quiet, whatever the path.
+static void noFaceSoundsThreeSecondsThenQuiet() {
+  // The camera's no_face critical with the hands off (the driver left the cab).
+  AlarmPolicy a;
+  a.setGripAlarm(true, 0);
+  reading(a, "critical", "no_face", 500);
+  CHECK(critical(a, "ep1", 500, "no_face") == VisionChange::On);
+  a.tick(500);
+  CHECK(a.buzzer() && a.cause() == BuzzerCause::CameraAndGrip);
+  a.tick(3499);
+  CHECK(a.buzzer());
+  a.tick(3500);
+  CHECK(!a.buzzer() && a.cause() == BuzzerCause::NoFaceMuted);
+  // Keepalives keep saying no_face: still quiet, past the grip-only delay too.
+  for (uint32_t t = 4000; t <= 60000; t += 2000) {
+    reading(a, "critical", "no_face", t);
+    a.tick(t + 100);
+    CHECK(!a.buzzer());
+  }
+  CHECK(a.visionAlarm());  // the vision alarm itself is untouched (the cap/OK end it)
+}
+
+static void noFaceAlsoCapsTheGripOnlyBuzzer() {
+  // The grip-only buzzer is already sounding when the no_face critical arrives: 3 s from it.
+  AlarmPolicy a;
+  a.setGripAlarm(true, 0);
+  a.tick(2000);
+  CHECK(a.buzzer() && a.cause() == BuzzerCause::GripOnly);
+  reading(a, "critical", "no_face", 5000);
+  a.tick(5000);
+  a.tick(7999);
+  CHECK(a.buzzer());
+  a.tick(8000);
+  CHECK(!a.buzzer() && a.cause() == BuzzerCause::NoFaceMuted);
+  // no_face first, hands off later: 3 s from when the buzzer would start.
+  AlarmPolicy b;
+  reading(b, "critical", "no_face", 0);
+  b.setGripAlarm(true, 1000);
+  reading(b, "critical", "no_face", 2000);
+  b.tick(2999);
+  CHECK(!b.buzzer() && b.cause() == BuzzerCause::None);  // grip-only delay not over yet
+  b.tick(3000);
+  CHECK(b.buzzer());
+  reading(b, "critical", "no_face", 4000);
+  b.tick(5999);
+  CHECK(b.buzzer());
+  b.tick(6000);
+  CHECK(!b.buzzer());
+}
+
+// The face back -- even drowsy, with no new event from the Pi -- re-arms everything at once.
+static void aReadingWithAFaceEndsTheCap() {
+  AlarmPolicy a;
+  a.setGripAlarm(true, 0);
+  reading(a, "critical", "no_face", 0);
+  CHECK(critical(a, "ep1", 0, "no_face") == VisionChange::On);
+  a.tick(0);
+  a.tick(3000);
+  CHECK(!a.buzzer());
+  // The driver is back asleep: same episode, same severity, only the keepalive's reason changes.
+  reading(a, "critical", "eyes_closed", 8000);
+  a.tick(8000);
+  CHECK(a.buzzer() && a.cause() == BuzzerCause::CameraAndGrip);
+  // Gone again: a fresh 3 s.
+  reading(a, "critical", "no_face", 10000);
+  a.tick(10000);
+  CHECK(a.buzzer());
+  reading(a, "critical", "no_face", 12000);
+  a.tick(12999);
+  CHECK(a.buzzer());
+  a.tick(13000);
+  CHECK(!a.buzzer());
+  // The driver back and fine (severity down): the grip-only rule applies again.
+  reading(a, "none", "ok", 14000);
+  CHECK(driverOk(a, "ep1", 14000) == VisionChange::Off);
+  a.tick(14000);
+  CHECK(a.buzzer() && a.cause() == BuzzerCause::GripOnly);
+}
+
+// A no_face reading older than PI_STALE_MS (no link, a dead Pi) never mutes the wheel rule; a
+// DLQ replay is history and doesn't count as a reading.
+static void aStaleOrReplayedNoFaceDoesNotMute() {
+  CHECK(PI_STALE_MS == 10000UL);
+  AlarmPolicy a;
+  a.setGripAlarm(true, 0);
+  reading(a, "critical", "no_face", 0);
+  a.tick(2000);
+  a.tick(5000);
+  CHECK(!a.buzzer());  // muted
+  a.tick(9999);
+  CHECK(!a.buzzer());
+  a.tick(10000);  // nothing from the Pi for 10 s: the no_face reading is stale
+  CHECK(a.buzzer() && a.cause() == BuzzerCause::GripOnly);
+
+  AlarmPolicy b;
+  b.setGripAlarm(true, 0);
+  reading(b, "critical", "no_face", 0, /*dlq=*/true);
+  CHECK(!b.cameraNoFace());
+  b.tick(2000);
+  b.tick(8000);
+  CHECK(b.buzzer());
+  // A "No Face" class record before the 5 s critical has severity none and no reason: not no_face.
+  reading(b, "none", "", 8000);
+  CHECK(!b.cameraNoFace());
+  reading(b, "medium", "no_face", 8100);  // only a critical counts
+  CHECK(!b.cameraNoFace());
 }
 
 static void theRingForgetsOnlyLongAgoEpisodes() {
@@ -202,7 +359,12 @@ int main() {
   RUN(anOlderEpisodesOkDoesNotSilenceANewerAlarm);
   RUN(theCapEndsAVisionAlarmTheOkNeverEnded);
   RUN(aClockReadJustBeforeTheCriticalDoesNotTripTheCap);
-  RUN(theBuzzerNeedsGripAndVision);
+  RUN(handsOffAndACameraCriticalSoundAtOnce);
+  RUN(handsOffAloneSoundsAfterTheGripOnlyDelay);
+  RUN(noFaceSoundsThreeSecondsThenQuiet);
+  RUN(noFaceAlsoCapsTheGripOnlyBuzzer);
+  RUN(aReadingWithAFaceEndsTheCap);
+  RUN(aStaleOrReplayedNoFaceDoesNotMute);
   RUN(theRingForgetsOnlyLongAgoEpisodes);
   return report("alarm_policy_host_test");
 }

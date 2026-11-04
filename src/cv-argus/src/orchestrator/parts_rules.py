@@ -40,8 +40,10 @@ below it for `RULE_RECOVERY_S`, so the alarm doesn't flicker off between frames 
 history, but never the held severity: a `critical` stays held and the new face still needs
 `RULE_RECOVERY_S` of a clear face to drop it. The switch itself never emits a transition.
 
-**Contract mapping** (`to_detection`): the ESP32 firmware only reads `class_name` and
-`probabilities`, and treats `p_drowsy ≥ 0.57` as drowsy.
+**Contract mapping** (`to_detection`): the class and probabilities below. The ESP32 firmware
+decides from the payload's `severity` (C1.5 events), and its buzzer's no-face cap from `severity`
++ `reason` (every record, keepalives included); `class_name`/`p_drowsy` only feed its unused
+fusion module.
 - medium and critical → `Drowsy`, level 2;
 - none and low → `Not Drowsy`, level 1;
 - `p_drowsy` per severity comes from `RULE_P_DROWSY`.

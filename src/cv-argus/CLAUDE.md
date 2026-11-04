@@ -201,7 +201,15 @@ sensor yet, user decision 2026-10-20).
   - **alert critical**: severity `critical` from none/low/medium (a raise or an escalation);
   - **driver OK**: severity none/low from medium/critical;
   - everything else (keepalives, none<->low, critical -> medium, class-only changes) is not an
-    event: the ESP32 uses it only for the `vigilance` of its GPS points, then ACKs it.
+    event: the ESP32 uses it for the `vigilance` of its GPS points and for its buzzer's no-face
+    cap, then ACKs it.
+- **The ESP32 reads `severity` + `reason` from every live record, keepalives included**
+  (grip-alarm contracts C4, 2026-11-03). While the latest one is a `critical` with reason
+  `no_face`, the cabin buzzer sounds 3 s at most and then stays quiet until a record shows
+  anything else. A reason change at the same severity sends no record (e.g. `no_face` →
+  `eyes_closed` when the driver comes back asleep), so the next keepalive's `reason` is what
+  re-arms the buzzer. Keep `reason` in keepalives. They prove the process is alive, not the
+  camera: a hung camera repeats the last reading (CV-15, open).
 
   `tests/test_sender_dlq.py` replays T3's shared vectors
   (`src/esp32-argus/test/vectors/event_vectors.json`) through both the Python and the SQL form;

@@ -2,8 +2,9 @@
 
 // The steering-wheel grip rule (docs/designs/grip-alarm-contracts.md C2) and the events it raises
 // for the backend (C3). The user's rule, from their bench sketch: no pressure on any of the four
-// RFP602 sensors for GRIP_ALERT_MS (3 s) starts a grip episode -- the buzzer, one live critical
-// `no_grip` for the backend, one SMS; pressure back for GRIP_RECOVERY_MS (300 ms) ends it -- the
+// RFP602 sensors for GRIP_ALERT_MS (3 s) starts a grip episode -- the grip alarm (the buzzer per
+// alarm_policy.h), one live critical `no_grip` for the backend and its SMS; pressure back for
+// GRIP_RECOVERY_MS (300 ms) ends it -- the
 // grip alarm stops at once and one live OK goes. With GRIP_REQUIRE_MOVING the 3 s timer only runs
 // while the truck moves. Grip is its own critical source: fusion.* stays unused.
 //

@@ -1,7 +1,8 @@
-// The critical-alert SMS (grip-alarm contracts C5, changed 2026-10-31): one when a camera critical
-// and the hands off the wheel come together (onBothAlarms), at most one per camera episode (the
-// ring), the queue of 4, retries, the pending timeout, and the exact text. When both alarms count
-// as "together" is cabin_signals_host_test's job.
+// The critical-alert SMS (grip-alarm contracts C5, changed 2026-11-03: every critical texts): one
+// per camera critical episode (onCameraCritical) and one per grip episode (onGripCritical), each
+// deduped by its own ring, the queue of 4, retries, the pending timeout, and the exact text (the
+// "sin manos" part only with the hands off). When a record is a new critical is
+// cabin_signals_host_test's job.
 // SOURCES: sms_policy.cpp
 #include <string>
 
@@ -20,7 +21,7 @@ static const EventPosition kHere = at(20.659712, -103.349612);
 
 static SmsQueueResult both(SmsPolicy& s, const char* episode, uint32_t now,
                            const char* reason = "eyes_closed", bool hasPhone = true) {
-  return s.onBothAlarms(episode, reason, kHere, hasPhone, now);
+  return s.onCameraCritical(episode, reason, /*handsOff=*/true, kHere, hasPhone, now);
 }
 
 static int queued(const SmsPolicy& s) {
@@ -31,7 +32,7 @@ static int queued(const SmsPolicy& s) {
 
 // --- Which moments get an SMS ---
 
-static void bothAlarmsQueueOncePerCameraEpisode() {
+static void aCameraCriticalQueuesOncePerEpisode() {
   SmsPolicy s;
   CHECK(both(s, "ep1", 0).result == SmsQueued::Queued);
   CHECK(s.pending());
@@ -145,16 +146,16 @@ static void survivesMillisWrap() {
 // --- The text: exact strings ---
 
 static void theTextWithAPosition() {
-  CHECK(composeSmsText("eyes_closed", "JAL-123-A", kHere) ==
+  CHECK(composeSmsText("eyes_closed", true, "JAL-123-A", kHere) ==
         "ARGUS ALERTA CRITICA: ojos cerrados, sin manos en el volante. Camion JAL-123-A. "
         "https://maps.google.com/?q=20.659712,-103.349612");
-  CHECK(composeSmsText("head_down", "64b0a0000000000000000001", at(-33.5, 151.25)) ==
+  CHECK(composeSmsText("head_down", true, "64b0a0000000000000000001", at(-33.5, 151.25)) ==
         "ARGUS ALERTA CRITICA: cabeza abajo, sin manos en el volante. "
         "Camion 64b0a0000000000000000001. https://maps.google.com/?q=-33.500000,151.250000");
 }
 
 static void theTextWithoutAPosition() {
-  CHECK(composeSmsText("no_face", "JAL-123-A", EventPosition()) ==
+  CHECK(composeSmsText("no_face", true, "JAL-123-A", EventPosition()) ==
         "ARGUS ALERTA CRITICA: conductor no visible, sin manos en el volante. Camion JAL-123-A. "
         "Ubicacion desconocida.");
 }
@@ -172,26 +173,26 @@ static void everyMotive() {
   };
   for (const Case& k : cases) {
     CHECK(std::string(smsMotivo(k.alertType)) == k.motivo);
-    CHECK(composeSmsText(k.alertType, "X1", EventPosition()) ==
+    CHECK(composeSmsText(k.alertType, true, "X1", EventPosition()) ==
           std::string("ARGUS ALERTA CRITICA: ") + k.motivo +
               ", sin manos en el volante. Camion X1. Ubicacion desconocida.");
   }
   CHECK(smsMotivo("mouth_open") == nullptr);
-  CHECK(smsMotivo("no_grip") == nullptr);  // never the SMS's reason any more: it's always both
+  CHECK(smsMotivo("no_grip") == nullptr);  // the grip text has no motive (theGripText)
   // Anything else: the raw reason, made GSM-safe ('_' isn't the same character in GSM-7).
-  CHECK(composeSmsText("mouth_open", "X1", EventPosition()) ==
+  CHECK(composeSmsText("mouth_open", true, "X1", EventPosition()) ==
         "ARGUS ALERTA CRITICA: mouth open, sin manos en el volante. Camion X1. "
         "Ubicacion desconocida.");
-  CHECK(composeSmsText("", "X1", EventPosition()) ==
+  CHECK(composeSmsText("", true, "X1", EventPosition()) ==
         "ARGUS ALERTA CRITICA: desconocido, sin manos en el volante. Camion X1. "
         "Ubicacion desconocida.");
 }
 
 static void theVehicleIsMadeSafeAndNeverEmpty() {
-  CHECK(composeSmsText("eyes_closed", "", EventPosition()) ==
+  CHECK(composeSmsText("eyes_closed", true, "", EventPosition()) ==
         "ARGUS ALERTA CRITICA: ojos cerrados, sin manos en el volante. Camion desconocido. "
         "Ubicacion desconocida.");
-  CHECK(composeSmsText("eyes_closed", "AB_12@\xC3\x91", EventPosition()) ==
+  CHECK(composeSmsText("eyes_closed", true, "AB_12@\xC3\x91", EventPosition()) ==
         "ARGUS ALERTA CRITICA: ojos cerrados, sin manos en el volante. Camion AB 12   . "
         "Ubicacion desconocida.");
 }
@@ -199,7 +200,7 @@ static void theVehicleIsMadeSafeAndNeverEmpty() {
 static void neverLongerThan160() {
   // The longest legal raw alert type (64 chars) and an over-long vehicle, with the longest link.
   std::string longType(64, 'r');
-  std::string text = composeSmsText(longType, std::string(200, 'V'), at(-89.999999, -179.999999));
+  std::string text = composeSmsText(longType, true, std::string(200, 'V'), at(-89.999999, -179.999999));
   CHECK(text.size() == kSmsMaxLength);
   const std::string link = "https://maps.google.com/?q=-89.999999,-179.999999";
   CHECK(text.size() >= link.size() && text.compare(text.size() - link.size(), link.size(), link) == 0);
@@ -207,15 +208,58 @@ static void neverLongerThan160() {
                   ". ") != std::string::npos);
   CHECK(text.compare(0, 22, "ARGUS ALERTA CRITICA: ") == 0);
   // The longest real texts fit with no cut at all.
-  std::string real = composeSmsText("head_down_eyes_closed", "64b0a0000000000000000001",
+  std::string real = composeSmsText("head_down_eyes_closed", true, "64b0a0000000000000000001",
                                     at(-89.999999, -179.999999));
   CHECK(real.size() <= kSmsMaxLength);
   CHECK(real.find("cabeza abajo y ojos cerrados, sin manos en el volante. ") != std::string::npos);
   for (char c : real) CHECK(c >= 0x20 && c < 0x7F);  // plain ASCII, nothing for Ctrl-Z to trip on
 }
 
+// --- The two sources since 2026-11-03 ---
+
+static void aCameraCriticalWithTheHandsOnSaysSo() {
+  SmsPolicy s;
+  CHECK(s.onCameraCritical("ep1", "eyes_closed", /*handsOff=*/false, kHere, true, 0).result ==
+        SmsQueued::Queued);
+  CHECK(!s.slot(0).handsOff);
+  CHECK(composeSmsText("eyes_closed", false, "JAL-123-A", kHere) ==
+        "ARGUS ALERTA CRITICA: ojos cerrados. Camion JAL-123-A. "
+        "https://maps.google.com/?q=20.659712,-103.349612");
+  CHECK(composeSmsText("no_face", false, "JAL-123-A", EventPosition()) ==
+        "ARGUS ALERTA CRITICA: conductor no visible. Camion JAL-123-A. Ubicacion desconocida.");
+}
+
+static void aGripEpisodeQueuesOnceWithItsOwnText() {
+  SmsPolicy s;
+  CHECK(s.onGripCritical("grip-0000abcd-1", kHere, true, 0).result == SmsQueued::Queued);
+  CHECK(s.slot(0).episode == "grip-0000abcd-1");
+  CHECK(s.slot(0).alertType == "no_grip");
+  CHECK(s.slot(0).handsOff);
+  CHECK(s.onGripCritical("grip-0000abcd-1", kHere, true, 10).result == SmsQueued::Duplicate);
+  CHECK(s.onGripCritical("grip-0000abcd-2", kHere, true, 20).result == SmsQueued::Queued);
+  CHECK(s.onGripCritical("grip-0000abcd-3", kHere, false, 30).result == SmsQueued::NoPhone);
+  CHECK(composeSmsText("no_grip", true, "JAL-123-A", kHere) ==
+        "ARGUS ALERTA CRITICA: sin manos en el volante. Camion JAL-123-A. "
+        "https://maps.google.com/?q=20.659712,-103.349612");
+  CHECK(composeSmsText("no_grip", true, "", EventPosition()) ==
+        "ARGUS ALERTA CRITICA: sin manos en el volante. Camion desconocido. "
+        "Ubicacion desconocida.");
+}
+
+// A burst of grip episodes never pushes a camera episode out of its ring (a re-served critical
+// must not text twice), and the two never collide.
+static void gripAndCameraEpisodesHaveTheirOwnRings() {
+  SmsPolicy s;
+  CHECK(both(s, "ep1", 0, "eyes_closed", false).result == SmsQueued::NoPhone);
+  for (int i = 0; i < 3 * SmsPolicy::kRemembered; i++) {
+    std::string g = "grip-0000abcd-" + std::to_string(i);
+    CHECK(s.onGripCritical(g, kHere, false, i).result == SmsQueued::NoPhone);
+  }
+  CHECK(both(s, "ep1", 100, "eyes_closed", false).result == SmsQueued::Duplicate);
+}
+
 int main() {
-  RUN(bothAlarmsQueueOncePerCameraEpisode);
+  RUN(aCameraCriticalQueuesOncePerEpisode);
   RUN(noFaceIsQueuedLikeAnyOtherCritical);
   RUN(withNoPhoneAnEpisodeIsSkippedAndReportedOnce);
   RUN(theRingRemembersTheLastEightEpisodes);
@@ -229,5 +273,8 @@ int main() {
   RUN(everyMotive);
   RUN(theVehicleIsMadeSafeAndNeverEmpty);
   RUN(neverLongerThan160);
+  RUN(aCameraCriticalWithTheHandsOnSaysSo);
+  RUN(aGripEpisodeQueuesOnceWithItsOwnText);
+  RUN(gripAndCameraEpisodesHaveTheirOwnRings);
   return report("sms_policy_host_test");
 }

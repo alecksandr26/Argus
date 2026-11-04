@@ -218,8 +218,9 @@
 #define GRIP_SAMPLE_INTERVAL_MS 100UL
 // The four raw readings go to Serial at most this often, not every sample.
 #define GRIP_LOG_INTERVAL_MS 2000UL
-// No pressure continuously this long starts a grip episode: the buzzer, one live critical
-// ("no_grip") for the backend and one SMS.
+// No pressure continuously this long starts a grip episode: one live critical ("no_grip") for the
+// backend and its SMS (every critical texts, C5 changed 2026-11-03). The buzzer comes at once if
+// a camera critical is on, else at GRIP_ONLY_BUZZER_MS (alarm_policy.h).
 #define GRIP_ALERT_MS 3000UL
 // Pressure back this long ends the episode: the grip alarm stops at once, one live OK goes.
 #define GRIP_RECOVERY_MS 300UL
@@ -230,22 +231,34 @@
 #define GRIP_TASK_STACK 4096
 
 // =====================================================
-// Cabin buzzer (contracts C4) -- an active buzzer: a continuous tone while its pin is on. On
-// only while the grip alarm AND the vision alarm both are (alarm_policy.h): a double check, so
-// neither the camera alone nor the wheel alone sounds it.
+// Cabin buzzer (contracts C4, changed 2026-11-03) -- an active buzzer: a continuous tone while its
+// pin is on (alarm_policy.h). It never sounds with the hands on the wheel. With the hands off it
+// sounds at once while a camera critical is on (the vision alarm), or after GRIP_ONLY_BUZZER_MS
+// without pressure with the camera OK; while the camera's latest reading is a no_face critical it
+// sounds NO_FACE_BUZZER_MAX_MS at most, then stays quiet until the camera reports anything else.
 // =====================================================
 #define BUZZER_PIN 13
 #define BUZZER_ACTIVE_HIGH 1
 // A vision alarm (a live critical from the camera, no_face included) stops on the Pi's driver OK,
 // or after this long as a safety cap if that OK never comes.
 #define VISION_ALARM_MAX_MS 300000UL
+// No pressure on the wheel this long (counted from the last pressure, so GRIP_ALERT_MS of it is
+// the grip episode's own start) sounds the buzzer without any camera critical.
+#define GRIP_ONLY_BUZZER_MS 5000UL
+// While the camera's latest live reading is a no_face critical (nobody in the seat), the buzzer
+// sounds this long at most, then stays quiet. A reading older than PI_STALE_MS (no link, a dead
+// Pi) no longer counts: the wheel rule then works on its own.
+#define NO_FACE_BUZZER_MAX_MS 3000UL
+#if GRIP_ONLY_BUZZER_MS < GRIP_ALERT_MS
+#error "GRIP_ONLY_BUZZER_MS counts from the last pressure: it can't be shorter than GRIP_ALERT_MS"
+#endif
 
 // =====================================================
-// Critical-alert SMS (contracts C5) -- one SMS when a camera critical and the hands off the wheel
-// come together (the moment the buzzer turns on), at most one per camera episode, to the phone the
-// Pi sends in CONFIG (ARGUS_ALERT_PHONE, RAM only). Sent by the sender task with raw AT on the
-// SIM800L, between report attempts (sms_policy.h, sms_modem.h). Needs the modem registered on the
-// GSM network; no APN is needed.
+// Critical-alert SMS (contracts C5, changed 2026-11-03) -- every critical alert texts: one SMS per
+// live camera critical episode (any reason, no_face included, hands on or off) and one per grip
+// episode (the no_grip critical), to the phone the Pi sends in CONFIG (ARGUS_ALERT_PHONE, RAM
+// only). Sent by the sender task with raw AT on the SIM800L, between report attempts
+// (sms_policy.h, sms_modem.h). Needs the modem registered on the GSM network; no APN is needed.
 // =====================================================
 // Messages waiting at once; a new one when full drops the oldest waiting one (logged).
 #define SMS_QUEUE_SLOTS 4

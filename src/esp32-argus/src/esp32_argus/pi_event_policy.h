@@ -6,7 +6,8 @@
 // medium alert, a rise to critical (a raise or an escalation) a critical one, and the fall back
 // to none/low after either is one "driver OK". Everything else (keepalives, none <-> low,
 // critical -> medium, class-only changes) is not an event: it only feeds the GPS points'
-// `vigilance`. There's no grip sensor yet, so fusion.* stays unused. Pure logic with
+// `vigilance` (and the buzzer's no-face cap, alarm_policy.h onCameraReading). The grip sensor
+// is its own critical source, so fusion.* stays unused. Pure logic with
 // std::string, so test/host/pi_event_policy_host_test.cpp runs it on the PC.
 
 #include <string>

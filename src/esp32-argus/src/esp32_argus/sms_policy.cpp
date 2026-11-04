@@ -38,24 +38,37 @@ int SmsPolicy::find(const std::string& episode) const {
   return -1;
 }
 
-SmsQueueResult SmsPolicy::onBothAlarms(const std::string& visionEpisode,
-                                       const std::string& alertType, const EventPosition& where,
-                                       bool hasPhone, uint32_t nowMs) {
+SmsQueueResult SmsPolicy::onCameraCritical(const std::string& visionEpisode,
+                                           const std::string& alertType, bool handsOff,
+                                           const EventPosition& where, bool hasPhone,
+                                           uint32_t nowMs) {
+  return once(episodes_, visionEpisode, alertType, handsOff, where, hasPhone, nowMs);
+}
+
+SmsQueueResult SmsPolicy::onGripCritical(const std::string& gripEpisode,
+                                         const EventPosition& where, bool hasPhone,
+                                         uint32_t nowMs) {
+  return once(gripEpisodes_, gripEpisode, kGripAlertType, true, where, hasPhone, nowMs);
+}
+
+SmsQueueResult SmsPolicy::once(EpisodeRing<kRemembered>& ring, const std::string& episode,
+                               const std::string& alertType, bool handsOff,
+                               const EventPosition& where, bool hasPhone, uint32_t nowMs) {
   SmsQueueResult r;
-  if (episodes_.contains(visionEpisode)) {
-    r.result = SmsQueued::Duplicate;  // hands off again in the same episode, or served again
+  if (ring.contains(episode)) {
+    r.result = SmsQueued::Duplicate;  // served again, or a later critical of the episode
     return r;
   }
-  episodes_.add(visionEpisode);
+  ring.add(episode);
   if (!hasPhone) {
     r.result = SmsQueued::NoPhone;
     return r;
   }
-  return enqueue(visionEpisode, alertType, where, nowMs);
+  return enqueue(episode, alertType, handsOff, where, nowMs);
 }
 
 SmsQueueResult SmsPolicy::enqueue(const std::string& episode, const std::string& alertType,
-                                  const EventPosition& where, uint32_t nowMs) {
+                                  bool handsOff, const EventPosition& where, uint32_t nowMs) {
   SmsQueueResult r;
   if (find(episode) >= 0) {
     r.result = SmsQueued::Duplicate;
@@ -82,6 +95,7 @@ SmsQueueResult SmsPolicy::enqueue(const std::string& episode, const std::string&
   m.used = true;
   m.episode.assignTruncated(episode);
   m.alertType.assignTruncated(alertType);
+  m.handsOff = handsOff;
   m.position = where;
   m.queuedAtMs = nowMs;
   r.result = SmsQueued::Queued;
@@ -150,11 +164,16 @@ const char* smsMotivo(const std::string& alertType) {
   return nullptr;
 }
 
-std::string composeSmsText(const std::string& alertType, const std::string& vehicle,
-                           const EventPosition& where) {
-  const char* known = smsMotivo(alertType);
-  std::string motivo = known ? known : gsmSanitized(alertType);
-  if (motivo.empty()) motivo = "desconocido";
+std::string composeSmsText(const std::string& alertType, bool handsOff,
+                           const std::string& vehicle, const EventPosition& where) {
+  const std::string handsPart = "sin manos en el volante";
+  bool grip = alertType == kGripAlertType;
+  std::string motivo;
+  if (!grip) {
+    const char* known = smsMotivo(alertType);
+    motivo = known ? known : gsmSanitized(alertType);
+    if (motivo.empty()) motivo = "desconocido";
+  }
   std::string truck = vehicle.empty() ? std::string("desconocido") : gsmSanitized(vehicle);
 
   std::string place;
@@ -168,7 +187,10 @@ std::string composeSmsText(const std::string& alertType, const std::string& vehi
   }
 
   const std::string head = "ARGUS ALERTA CRITICA: ";
-  const std::string mid = ", sin manos en el volante. Camion ";
+  // The grip critical is the hands-off part alone; a camera one adds it when the hands are off.
+  const std::string mid = grip       ? handsPart + ". Camion "
+                          : handsOff ? ", " + handsPart + ". Camion "
+                                     : std::string(". Camion ");
   const std::string tail = ". " + place;
   // Over 160 chars only with a long raw alert type (up to 64) or truck id: cut those, never the
   // hands-off part or the link. The vehicle keeps kSmsVehicleMaxLength (a plate is at most 16, a
