@@ -23,11 +23,14 @@ export default function RouteDeviceFileButton({
   truck,
   token,
   onTruckChange,
+  disabled = false,
 }: {
   route: Route
   truck: Truck
   token: string
   onTruckChange?: (t: Truck) => void
+  /** A stopped (completed/cancelled) route: shown, but no file can be issued for it. */
+  disabled?: boolean
 }) {
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -79,7 +82,12 @@ export default function RouteDeviceFileButton({
           }}
         />
       ) : (
-        <button className="btn btn--ghost" onClick={() => setConfirming(true)} disabled={busy}>
+        <button
+          className="btn btn--ghost"
+          onClick={() => setConfirming(true)}
+          disabled={busy || disabled}
+          title={disabled ? 'The route is stopped: no device file for it' : undefined}
+        >
           Device file
         </button>
       )}

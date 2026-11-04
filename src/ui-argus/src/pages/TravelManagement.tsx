@@ -231,7 +231,12 @@ export default function TravelManagement() {
     header: 'Trip',
     cell: (r) => {
       if (r.operative_status === 'completed' || r.operative_status === 'cancelled') {
-        return <span style={{ color: 'var(--text-faint)', fontSize: 11.5 }}>—</span>
+        // Stopped: the device file stays visible but disabled (every open route can issue one).
+        return canWrite && truckById.get(r.id_truck) ? (
+          <RouteDeviceFileButton route={r} truck={truckById.get(r.id_truck)!} token={token} disabled />
+        ) : (
+          <span style={{ color: 'var(--text-faint)', fontSize: 11.5 }}>—</span>
+        )
       }
       return (
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
