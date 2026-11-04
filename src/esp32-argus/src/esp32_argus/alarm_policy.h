@@ -1,13 +1,17 @@
 #pragma once
 
-// When the cabin buzzer sounds (docs/designs/grip-alarm-contracts.md C4, changed 2026-11-03).
+// When the cabin buzzer sounds (docs/designs/grip-alarm-contracts.md C4, changed 2026-11-03 to
+// OR logic: either path alone sounds it).
 //
-// - Never with the hands on the wheel: every path needs the grip alarm (grip_policy.h: on for the
-//   whole grip episode, GRIP_ALERT_MS without pressure until GRIP_RECOVERY_MS with it).
-// - Hands off + a camera critical (the vision alarm): sounds at once.
+// - A camera critical with the driver in view (eyes closed, head down -- any critical reason but
+//   no_face): sounds at once, hands on the wheel or off. A sleeping driver can still be gripping
+//   the wheel, so the grip sensor no longer vetoes the camera.
+// - Hands off + any camera critical (no_face included): sounds at once.
 // - Hands off with the camera OK: sounds once the wheel has had no pressure for
 //   GRIP_ONLY_BUZZER_MS (3 s from the last pressure since 2026-11-03, i.e. the grip episode's own
 //   start). No movement gate: a parked truck counts too (user decision).
+// - A no_face critical with the hands ON the wheel stays silent: nobody is in view, so the camera
+//   can't tell a sleeping driver, and someone is holding the wheel.
 // - The no-face cap: while the camera's LATEST live reading says nobody is in view -- class
 //   "No Face" (the Pi's first face-less reading, ~0.6 s after the face is gone) or a no_face
 //   critical -- the buzzer, from either path, sounds NO_FACE_BUZZER_MAX_MS (3 s) at most, counted
@@ -16,7 +20,9 @@
 //   no live reading arrived for PI_STALE_MS (a dead link must never mute the wheel). It follows the
 //   readings, keepalives included, not the events: the Pi sends no event for a reason change at
 //   the same severity (no_face -> eyes_closed when the driver comes back asleep), so "the last
-//   alert was no_face" would keep a sleeping driver muted.
+//   alert was no_face" would keep a sleeping driver muted. For the same reason a no_face episode
+//   counts as a face-in-view critical (the first rule) while its latest fresh reading is a
+//   critical with a face (e.g. eyes_closed).
 //
 // The vision alarm turns on when this device takes a live Pi record classified as a critical
 // alert (C1.5), no_face included. It turns off on a live driver OK of its episode, or after
@@ -47,7 +53,9 @@ enum class VisionChange : uint8_t {
 
 // Why the buzzer is in the state tick() last decided (for the log lines).
 enum class BuzzerCause : uint8_t {
-  None,           // silent: hands on the wheel, or hands off for less than the grip-only delay
+  None,           // silent: no camera critical with a face and the hands on the wheel (or off
+                  // for less than the grip-only delay)
+  CameraOnly,     // a camera critical with the driver in view (eyes closed, head down), hands on
   CameraAndGrip,  // a camera critical + the hands off
   GripOnly,       // the hands off GRIP_ONLY_BUZZER_MS with no camera critical
   NoFaceMuted,    // it would sound, but nobody is in view and it already sounded the 3 s
@@ -104,6 +112,8 @@ class AlarmPolicy {
   // The latest live reading said nobody is in view (as of the last call that changed it; tick()
   // applies the staleness).
   bool cameraNoFace() const { return cameraNoFace_; }
+  // The latest live reading was a critical with the driver in view (any reason but no_face).
+  bool cameraFaceCritical() const { return cameraFaceCritical_; }
 
  private:
   AlarmTiming timing_;
@@ -116,6 +126,7 @@ class AlarmPolicy {
   EpisodeRing<kRemembered> sounded_;
 
   bool cameraNoFace_ = false;
+  bool cameraFaceCritical_ = false;  // the latest live reading: a critical with a face in view
   uint32_t cameraSeenMs_ = 0;
   bool noFaceTiming_ = false;  // the buzzer sounded (or would) during this no_face stretch
   uint32_t noFaceSinceMs_ = 0;

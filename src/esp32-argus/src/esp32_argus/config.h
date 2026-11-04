@@ -247,9 +247,9 @@
 
 // =====================================================
 // Cabin buzzer (contracts C4, changed 2026-11-03) -- an active buzzer: a continuous tone while its
-// pin is on (alarm_policy.h). It never sounds with the hands on the wheel. With the hands off it
-// sounds at once while a camera critical is on (the vision alarm), or after GRIP_ONLY_BUZZER_MS
-// without pressure with the camera OK; while the camera's latest reading says nobody is in view it
+// pin is on (alarm_policy.h). OR logic: a camera critical with the driver in view (eyes closed,
+// head down) sounds it at once, hands on the wheel or not; with the hands off it sounds at once
+// with any camera critical (no_face included), or after GRIP_ONLY_BUZZER_MS without pressure; while the camera's latest reading says nobody is in view it
 // sounds NO_FACE_BUZZER_MAX_MS at most, then stays quiet until the camera sees a face again.
 // =====================================================
 #define BUZZER_PIN 13

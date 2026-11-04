@@ -48,6 +48,7 @@ void AlarmPolicy::onCameraReading(bool dlq, const std::string& className,
                                   uint32_t nowMs) {
   if (dlq) return;
   cameraNoFace_ = className == "No Face" || (severity == "critical" && reason == "no_face");
+  cameraFaceCritical_ = severity == "critical" && !cameraNoFace_;
   cameraSeenMs_ = nowMs;
 }
 
@@ -58,11 +59,20 @@ bool AlarmPolicy::tick(uint32_t nowMs) {
     capped = true;
   }
 
+  // A reading older than PI_STALE_MS (no link) says nothing about the cabin any more.
+  bool fresh = !elapsed(nowMs, cameraSeenMs_, timing_.cameraStaleMs);
+  bool noFace = cameraNoFace_ && fresh;
+
+  // OR logic (2026-11-03): a camera critical with the driver in view sounds on its own, hands on
+  // the wheel or not; the hands off sound with any camera critical, or alone after the delay.
+  // A no_face episode counts as "in view" again once a fresh critical reading shows a face (the
+  // Pi sends no new event for no_face -> eyes_closed at the same severity).
+  bool faceCritical = vision_ && !noFace &&
+                      (visionAlertType_ != "no_face" || (cameraFaceCritical_ && fresh));
   bool gripOnly = grip_ && elapsed(nowMs, gripSinceMs_, timing_.gripOnlyAfterMs);
-  bool wants = grip_ && (vision_ || gripOnly);
+  bool wants = faceCritical || (grip_ && (vision_ || gripOnly));
 
   // The no-face cap, on a fresh no_face reading only: a stale one (no link) never mutes.
-  bool noFace = cameraNoFace_ && !elapsed(nowMs, cameraSeenMs_, timing_.cameraStaleMs);
   if (!noFace) {
     noFaceTiming_ = false;
     noFaceMuted_ = false;
@@ -77,7 +87,11 @@ bool AlarmPolicy::tick(uint32_t nowMs) {
 
   buzzer_ = wants && !noFaceMuted_;
   if (buzzer_) {
-    cause_ = vision_ ? BuzzerCause::CameraAndGrip : BuzzerCause::GripOnly;
+    if (vision_ && grip_) {
+      cause_ = BuzzerCause::CameraAndGrip;
+    } else {
+      cause_ = vision_ ? BuzzerCause::CameraOnly : BuzzerCause::GripOnly;
+    }
   } else {
     cause_ = (wants && noFaceMuted_) ? BuzzerCause::NoFaceMuted : BuzzerCause::None;
   }

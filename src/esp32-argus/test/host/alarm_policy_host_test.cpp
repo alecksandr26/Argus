@@ -181,9 +181,9 @@ static void handsOffAndACameraCriticalSoundAtOnce() {
   CHECK(critical(a, "ep1", 200) == VisionChange::On);  // + the camera: sounds now
   a.tick(200);
   CHECK(a.buzzer() && a.cause() == BuzzerCause::CameraAndGrip);
-  a.setGripAlarm(false, 300);  // the hands are back: silent at once, the vision alarm still on
+  a.setGripAlarm(false, 300);  // the hands are back: OR logic, the eyes_closed critical still sounds
   a.tick(300);
-  CHECK(a.visionAlarm() && !a.buzzer() && a.cause() == BuzzerCause::None);
+  CHECK(a.visionAlarm() && a.buzzer() && a.cause() == BuzzerCause::CameraOnly);
   a.setGripAlarm(true, 400);  // hands off again within the same camera episode: sounds again
   a.tick(400);
   CHECK(a.buzzer());
@@ -195,7 +195,7 @@ static void handsOffAndACameraCriticalSoundAtOnce() {
   AlarmPolicy b(delayed());
   CHECK(critical(b, "ep1", 0) == VisionChange::On);
   b.tick(0);
-  CHECK(!b.buzzer());  // the camera alone: silent
+  CHECK(b.buzzer() && b.cause() == BuzzerCause::CameraOnly);  // OR logic: the camera alone sounds
   b.setGripAlarm(true, 1000);
   b.tick(1000);
   CHECK(b.buzzer() && b.cause() == BuzzerCause::CameraAndGrip);

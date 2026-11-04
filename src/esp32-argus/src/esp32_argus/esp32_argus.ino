@@ -77,7 +77,7 @@ LastKnownPosition lastKnown;
 GpsSnapshot latestGps;      // the newest GPS read, for events composed in a Bluetooth session
 uint64_t latestGpsEpoch = 0;
 uint32_t latestGpsAt = 0;
-AlarmPolicy cabinAlarm;     // the buzzer's decision: grip alarm && vision alarm
+AlarmPolicy cabinAlarm;     // the buzzer's decision: camera critical OR hands off
 SmsPolicy smsQueue;         // the critical-alert SMS waiting for the sender task
 
 // NVS "argus-state": the last known position. setup() and then gpsTask only.
@@ -227,7 +227,7 @@ void onGripChange(GripChange change) {
     Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
     Serial.printf("[grip] Grip alarm on (%s); critical no_grip for the backend %s\n",
                   vision ? "camera critical on too: buzzer now"
-                         : "camera OK: buzzer at 5 s without pressure",
+                         : "camera OK: buzzer at 3 s without pressure",
                   queuedText);
   } else {
     Serial.printf("[grip] Pressure back -- episode %s over: grip alarm off; OK for the backend %s\n",
@@ -260,6 +260,9 @@ void applyBuzzer() {
   switch (cause) {
     case BuzzerCause::CameraAndGrip:
       Serial.println("[alarm] Buzzer ON (camera critical + hands off the wheel)");
+      break;
+    case BuzzerCause::CameraOnly:
+      Serial.println("[alarm] Buzzer ON (camera critical: eyes closed / head down, hands on the wheel)");
       break;
     case BuzzerCause::GripOnly:
       Serial.printf("[alarm] Buzzer ON (hands off the wheel %.1f s, no camera critical)\n",
@@ -666,7 +669,7 @@ void logCabinSignals(const PiRecord& r, const CabinSignals& s) {
   switch (s.vision) {
     case VisionChange::On:
       Serial.printf("[alarm] Vision alarm ON: \"%s\" (episode %s), %s -- its SMS goes now; "
-                    "the buzzer also needs the hands off the wheel\n",
+                    "the buzzer sounds now (no_face: only with the hands off)\n",
                     eventAlertType(r).c_str(), episode.c_str(), positionText(s.where).c_str());
       break;
     case VisionChange::Off:
