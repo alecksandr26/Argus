@@ -12,6 +12,7 @@ import pytest
 from cv_argus.buffer import open_buffer
 from cv_argus.sender import NOCONFIG_LINE, DeviceConfig, FakeListener, SenderServer
 
+from .conftest import make_guardian
 from .esp32_sim import REPORT_PATH, SimulatedEsp32, fetch_config
 
 pytestmark = pytest.mark.asyncio
@@ -69,6 +70,7 @@ async def _new_truck_on_a_route(backend) -> tuple[str, str]:
             json={
                 "id_driver": driver["id_driver"],
                 "id_truck": truck["id_truck"],
+                "id_guardian": await make_guardian(),
                 "origin_name": "CDMX",
                 "destination_name": "GDL",
                 "destination_coordinates": {"lat": 20.67, "lon": -103.35},

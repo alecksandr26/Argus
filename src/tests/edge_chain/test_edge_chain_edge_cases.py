@@ -169,6 +169,7 @@ async def test_route_change_mid_incident_has_no_stuck_records(scenario, backend,
         json={
             "id_driver": old["id_driver"],
             "id_truck": old["id_truck"],
+            "id_guardian": old["id_guardian"],
             "origin_name": "GDL",
             "destination_name": "MTY",
             "destination_coordinates": {"lat": 25.67, "lon": -100.31},

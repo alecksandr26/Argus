@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import types
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -71,6 +72,21 @@ async def backend():
         yield client
 
 
+async def make_guardian() -> str:
+    """A guardian with an E.164 phone, inserted directly (every new route needs one,
+    docs/designs/route-guardian-contracts.md G1). Returns its id."""
+    guardian = User(
+        email=f"guardian-{uuid.uuid4().hex[:8]}@example.com",
+        password_hash=hash_secret("x" * 64),
+        role=Role.GUARDIAN,
+        first_name="Edge",
+        last_name="Guardian",
+        phone_number="+523312345678",
+    )
+    await guardian.insert()
+    return str(guardian.id)
+
+
 @pytest_asyncio.fixture
 async def device_http(backend):
     """What the ESP32 talks to the backend with: same app and database, but no user JWT, so
@@ -123,6 +139,7 @@ async def truck_route(backend):
             json={
                 "id_driver": driver["id_driver"],
                 "id_truck": truck["id_truck"],
+                "id_guardian": await make_guardian(),
                 "origin_name": "CDMX",
                 "destination_name": "GDL",
                 "destination_coordinates": {"lat": 20.67, "lon": -103.35},
