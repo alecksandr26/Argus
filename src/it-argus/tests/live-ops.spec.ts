@@ -12,6 +12,7 @@ import {
   closeDialog,
   closeIncident,
   createDriver,
+  createGuardianRest,
   createTruck,
   createUserAndLogin,
   getAlert,
@@ -52,6 +53,8 @@ test('root_admin creates a route via the Routes screen, and a critical alert the
   const rootToken = await restLogin(request, ROOT_ADMIN_EMAIL, ROOT_ADMIN_PASSWORD)
   const truck = await createTruck(request, rootToken, plate)
   const driver = await createDriver(request, rootToken, `LIC-${suffix}`)
+  // Every route needs a guardian with an E.164 phone (route guardian contracts G1/G7).
+  const guardian = await createGuardianRest(request, rootToken, `liveops-route-${suffix}`)
 
   // The route itself goes through the real Routes screen (TravelManagement.tsx).
   await page.goto('/login')
@@ -59,6 +62,7 @@ test('root_admin creates a route via the Routes screen, and a critical alert the
   await page.goto('/routes')
   await page.getByLabel('Driver').selectOption(driver.id_driver)
   await page.getByLabel('Truck').selectOption(truck.id_truck)
+  await page.getByLabel('Guardian').selectOption(guardian.id_user)
   await page.getByLabel('Origin').fill(origin)
   await page.getByLabel('Destination').fill(destination)
   await page.getByRole('button', { name: 'Create route' }).click()

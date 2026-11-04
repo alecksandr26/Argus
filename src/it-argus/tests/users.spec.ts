@@ -123,7 +123,9 @@ test('an admin creates a guardian, who is then locked out of Access entirely', a
     firstName: 'Gary',
     lastName: 'Guardian',
     email: guardianEmail,
-    phone: '5559876543',
+    // A guardian's phone must be E.164 (route guardian contracts G2); typed with spaces to
+    // exercise the normalisation.
+    phone: '+52 555 987 6543',
     password: guardianPassword,
   })
   await logout(page)
