@@ -384,9 +384,31 @@ Earlier iterations, superseded where they conflict with the sections above:
   (`utils/phone.ts`; empty is sent as `null`, which clears it). `buildDeviceEnv` appends
   `ARGUS_TRUCK_PLATE` and `ARGUS_ALERT_PHONE` (or a commented-out line when unset) after the
   three credentials; the phone travels Pi → `CONFIG` → ESP32 RAM, so the file is a snapshot and
-  changing the phone later means new credentials or editing that line on the Pi (the dialog
-  says so, and warns when the form holds a phone that isn't saved yet, since the file only
-  carries the saved one). `no_grip` (the ESP32's grip-sensor critical) is labelled "Hands off the wheel".
+  changing the phone later means new credentials or editing that line on the Pi (the panel
+  says so; the phone now comes from the rotate-key answer, see the 2026-11-03 entry below). `no_grip` (the ESP32's grip-sensor critical) is labelled "Hands off the wheel".
+- **argus-device.env fix + route guardian phone (2026-11-03, `docs/designs/route-guardian-contracts.md`
+  G5–G7).** The issued key used to live in `DeviceCredentials`' own state, so the truck form's
+  Save (`closePanel()`), Cancel or picking another truck unmounted it and the only copy of the
+  key was gone (reproduced in a test against the old code: rotate → Save → reopen shows no file,
+  just "Rotate key"). Now:
+  - Fleet holds the key (`issued`) and shows `IssuedCredentialsPanel` above the truck list until
+    "I saved the file — close" (or new credentials, or a revoke of that truck).
+    `RouteDeviceFileButton` (G7, rotates with `id_route`, for the Routes screen) shows the
+    same panel in a dialog that Escape/backdrop don't close.
+  - `issueDeviceCredentials` (`utils/deviceEnv.ts`) starts the download as soon as the key
+    is issued. `downloadTextFile` attaches the anchor while clicking, revokes the URL later
+    (Safari/iOS) and uses `application/octet-stream` (no `.txt` suffix).
+  - Rotate/Revoke confirm in place (`InlineConfirm`), not `window.confirm`, which a browser can
+    suppress (it then returns false and nothing happens). With unsaved form changes the button is
+    disabled with "Save the truck first, then rotate the key".
+  - The file's phone is the rotate-key answer's `alert_phone` (the route guardian's, else the
+    truck's fallback), with a `# SMS alert phone: ...` comment and a display-only
+    `ARGUS_ALERT_PHONE_LABEL` (one line, at most 120 chars) that cv-argus logs. A pre-G5
+    backend sends no `alert_phone`; the truck's own phone is used then.
+  - **Version check (G6):** `utils/version.ts`'s `UI_VERSION` is `VITE_GIT_SHA` (set by
+    `src/infra-argus/scripts/deploy.sh`) or `'dev'`. `VersionWarning` on Fleet compares it with
+    `GET /health`'s `version` and warns when both are real builds and differ. The deployed
+    backend's version: `curl -s $SITE_URL/health`.
 - Start trip (`TravelManagement.tsx`): a truck's device only gets a route while it's in
   progress, so Start is what moves a real device off `no_route`; it's refused while the truck
   already has an active trip.
