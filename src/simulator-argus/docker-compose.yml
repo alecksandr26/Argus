@@ -67,6 +67,9 @@ services:
       - BACKEND_BASE_URL=http://backend-argus:8000
       - SIMULATOR_ADMIN_EMAIL=admin@argus.dev
       - SIMULATOR_ADMIN_PASSWORD=changeme123
+      # The guardian every simulated route carries (route guardian contracts G8); fake E.164 phone.
+      - SIMULATOR_GUARDIAN_EMAIL=${SIMULATOR_GUARDIAN_EMAIL:-sim-guardian@argus.sim}
+      - SIMULATOR_GUARDIAN_PHONE=${SIMULATOR_GUARDIAN_PHONE:-+520000000000}
       - SIMULATOR_TRUCK_COUNT=${SIMULATOR_TRUCK_COUNT:-6}
       - SIMULATOR_REPORT_INTERVAL_S=${SIMULATOR_REPORT_INTERVAL_S:-5}
       - SIMULATOR_ROUTE_DURATION_MINUTES=${SIMULATOR_ROUTE_DURATION_MINUTES:-20}

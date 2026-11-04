@@ -7,10 +7,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .constants import NORMAL_BLIP_CHANCE, SIMULATOR_REPORT_INTERVAL_S
+from .phone import ALERT_PHONE_PATTERN, normalize_phone
 
 
 class Settings(BaseSettings):
@@ -26,6 +27,25 @@ class Settings(BaseSettings):
     # match backend-argus's own bootstrap defaults so this works out of the box.
     simulator_admin_email: str = "admin@argus.dev"
     simulator_admin_password: str = "changeme123"
+
+    # The guardian every provisioned route carries (route guardian contracts G8): found by email
+    # or created, reactivated and its phone fixed when needed, and kept across runs (the reset
+    # never deletes it). Its phone is what a real truck would text on a critical alert, so the
+    # default is a fake E.164 number. It's checked here (after the backend's normalisation:
+    # spaces, dashes, dots and parentheses dropped) so a bad value fails at startup, not as a
+    # 422 halfway through provisioning.
+    simulator_guardian_email: str = "sim-guardian@argus.sim"
+    simulator_guardian_phone: str = "+520000000000"
+
+    @field_validator("simulator_guardian_phone")
+    @classmethod
+    def _guardian_phone_is_e164(cls, value: str) -> str:
+        normalised = normalize_phone(value)
+        if not ALERT_PHONE_PATTERN.fullmatch(normalised):
+            raise ValueError(
+                "SIMULATOR_GUARDIAN_PHONE must be in E.164 format, e.g. +523312345678"
+            )
+        return normalised
 
     simulator_truck_count: int = 6
     # Points-only report cadence: a report goes this long after the previous one ended (an

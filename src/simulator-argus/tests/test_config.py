@@ -92,3 +92,26 @@ def test_outage_around_critical_is_off_by_default(monkeypatch):
     assert _settings(monkeypatch).simulator_outage_around_critical is False
     on = _settings(monkeypatch, SIMULATOR_OUTAGE_AROUND_CRITICAL="true")
     assert on.simulator_outage_around_critical is True
+
+
+def _guardian_settings(monkeypatch, **env: str) -> Settings:
+    for name in ("SIMULATOR_GUARDIAN_EMAIL", "SIMULATOR_GUARDIAN_PHONE"):
+        monkeypatch.delenv(name, raising=False)
+    return _settings(monkeypatch, **env)
+
+
+def test_guardian_defaults(monkeypatch):
+    settings = _guardian_settings(monkeypatch)
+    assert settings.simulator_guardian_email == "sim-guardian@argus.sim"
+    assert settings.simulator_guardian_phone == "+520000000000"
+
+
+def test_guardian_phone_is_normalised(monkeypatch):
+    settings = _guardian_settings(monkeypatch, SIMULATOR_GUARDIAN_PHONE=" +52 (33) 1234-56.78 ")
+    assert settings.simulator_guardian_phone == "+523312345678"
+
+
+@pytest.mark.parametrize("phone", ["", "3312345678", "+0523312345678", "+1234567", "call me"])
+def test_a_non_e164_guardian_phone_fails_at_startup(monkeypatch, phone):
+    with pytest.raises(pydantic.ValidationError, match="E.164"):
+        _guardian_settings(monkeypatch, SIMULATOR_GUARDIAN_PHONE=phone)
