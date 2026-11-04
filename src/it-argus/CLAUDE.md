@@ -122,6 +122,14 @@ route with its `actual_departure` set in the past, users of each role) goes over
 | `route-stop.spec.ts` | Stop route (reason required with the pinned 422 text, root_admin/admin only), every later report rejected `route_finished` (points, event, driver OK, DLQ replay); Complete trip the same; `no_route` before any route started; the Stop route dialog |
 | `positions.spec.ts` | alert positions (live, last known with its age, unknown), last-known GPS points in the path, points less than a second apart both stored with ms timestamps (C2.1 [sync 3]), and the UI position labels |
 
+**Route guardians** (`docs/designs/route-guardian-contracts.md`). Every route needs a guardian with
+an E.164 phone (G1). `createRouteRest` (and so `setupActiveTruck`) passes `id_guardian`: a given
+`guardianId`, else the shared `ensureGuardian()` one (`it-guardian@argus.dev`, found or created,
+never deactivated since G3 would refuse it). `createUserRest` gives every user a fresh E.164 phone
+(`e164Phone()`), `createGuardianRest` makes a fresh guardian, and `live-ops.spec.ts` picks one in
+the Routes screen's Guardian select by `id_user`. `users.spec.ts` types a guardian phone with
+spaces (`+52 555 987 6543`), since Access now refuses a non-E.164 guardian phone.
+
 **`IT_FINAL_TWEAKS_UI`** (`docker-compose.yml` passes it through, default `0`). The final-tweaks
 merge order puts the backend, simulator and this module before `ui-argus`'s new screens, so the
 specs and spec halves that assert on the incident feed, the close/stop dialogs and the position

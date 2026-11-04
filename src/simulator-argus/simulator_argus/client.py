@@ -76,6 +76,34 @@ class BackendClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def list_users(self, token: str) -> list[dict]:
+        resp = await self._client.get("/api/users", headers=self._bearer(token))
+        resp.raise_for_status()
+        return resp.json()
+
+    async def create_user(self, token: str, body: dict) -> dict:
+        """`POST /api/users`. A `password` in `body` is the raw password: it goes out as its
+        SHA-256 hex digest, like `login()` (the backend's `Sha256HexDigest` contract)."""
+        resp = await self._client.post(
+            "/api/users", json=self._hash_password(body), headers=self._bearer(token)
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def update_user(self, token: str, user_id: str, body: dict) -> dict:
+        """`PUT /api/users/{id}`, a partial update (same raw-password rule as `create_user`)."""
+        resp = await self._client.put(
+            f"/api/users/{user_id}", json=self._hash_password(body), headers=self._bearer(token)
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    @staticmethod
+    def _hash_password(body: dict) -> dict:
+        if "password" not in body:
+            return body
+        return {**body, "password": sha256_hex(body["password"])}
+
     async def create_driver(self, token: str, body: dict) -> dict:
         resp = await self._client.post("/api/drivers", json=body, headers=self._bearer(token))
         resp.raise_for_status()

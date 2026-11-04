@@ -59,6 +59,34 @@ async def test_rotate_key_uses_bearer_token_and_returns_plaintext_key():
     assert captured[0].url.path == "/api/trucks/abc/rotate-key"
 
 
+async def test_user_calls_send_a_password_digest_and_use_the_admin_token():
+    captured: list[httpx.Request] = []
+    transport = _mock_transport(captured, {"id_user": "u1"})
+    client = BackendClient("http://backend", transport=transport)
+
+    await client.list_users("tok")
+    await client.create_user("tok", {"email": "g@argus.sim", "password": "raw-secret"})
+    await client.update_user("tok", "u1", {"phone_number": "+520000000000"})
+    await client.aclose()
+
+    listing, create, update = captured
+    assert (listing.method, listing.url.path) == ("GET", "/api/users")
+    assert (create.method, create.url.path) == ("POST", "/api/users")
+    assert json.loads(create.content)["password"] == hashlib.sha256(b"raw-secret").hexdigest()
+    assert (update.method, update.url.path) == ("PUT", "/api/users/u1")
+    # No password in the update: none is added.
+    assert json.loads(update.content) == {"phone_number": "+520000000000"}
+    assert all(r.headers["authorization"] == "Bearer tok" for r in captured)
+
+
+async def test_user_calls_raise_on_an_error_status():
+    transport = _mock_transport([], {"detail": "id_guardian must be an active guardian"}, 422)
+    client = BackendClient("http://backend", transport=transport)
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.update_user("tok", "u1", {"is_active": True})
+    await client.aclose()
+
+
 _REPORT_BODY = {
     "points": [
         {

@@ -65,6 +65,19 @@ Everything it creates carries a `SIM-` prefix (`plate_number`, `license_number`)
 drivers) before provisioning a fresh one, without touching anyone else's data. Identity is the
 natural key (`SIM-` prefix), not a cached id from a previous process.
 
+**The guardian** (route guardian contracts G8). The backend requires an `id_guardian` on every
+new route (G1), so `fleet.py`'s `ensure_guardian` finds the guardian by
+`SIMULATOR_GUARDIAN_EMAIL` (case-insensitive) or creates it ("SIM Guardian", phone
+`SIMULATOR_GUARDIAN_PHONE`, a random password nobody knows; the simulator never logs in as it),
+right after the reset and before the first route. An existing one is reactivated and its phone set
+when they differ, in one `PUT` with just those fields. A user with that email but another role is
+never converted (it could be an admin someone pointed the setting at by mistake): startup fails
+instead. The guardian is identified by email, not the `SIM-` prefix, and `reset_previous_run`
+never deletes it: it's reused across runs, and the backend would refuse to delete a guardian
+still assigned to an active route anyway (G3). `Settings` normalises and checks the phone (E.164,
+`phone.py`, a copy of the backend's pattern and `normalize_phone`), so a bad value fails at
+startup rather than as a 422 mid-provisioning.
+
 ## The two halves of a virtual truck
 
 `virtual_truck.py`'s `VirtualTruck` plays both devices of a real truck:

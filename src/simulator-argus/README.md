@@ -121,6 +121,8 @@ Every variable has a dev-safe default, so none is required. See `.env.example`.
 |---|---|---|
 | `BACKEND_BASE_URL` | `http://backend-argus:8000` | where the simulator sends requests |
 | `SIMULATOR_ADMIN_EMAIL` / `SIMULATOR_ADMIN_PASSWORD` | `admin@argus.dev` / `changeme123` | root_admin credentials used **only once**, at startup, to provision the fleet and mint each truck's device key |
+| `SIMULATOR_GUARDIAN_EMAIL` | `sim-guardian@argus.sim` | the guardian ("SIM Guardian") every simulated route carries: found by this email or created, reactivated and its phone fixed when needed, never deleted by the reset |
+| `SIMULATOR_GUARDIAN_PHONE` | `+520000000000` | that guardian's phone, E.164 (checked at startup after dropping spaces, dashes, dots and parentheses). Fake by default: the simulator never texts anyone |
 | `SIMULATOR_TRUCK_COUNT` | `6` | how many virtual trucks to run |
 | `SIMULATOR_REPORT_INTERVAL_S` | `5` | points-only report cadence, after the previous report ended (an event goes at once). The old name `SIMULATOR_STATUS_INTERVAL_SECONDS` is still accepted as an alias |
 | `SIMULATOR_ROUTE_DURATION_MINUTES` | `20` | wall-clock length of a trip: minutes for a quick demo, hours for something closer to a shift |
