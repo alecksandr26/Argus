@@ -5,8 +5,19 @@
 source "$(dirname "$0")/lib.sh"
 require aws docker node npm
 
+# One version for both halves (route guardian contracts G6): the backend reports it on /health
+# (ARGUS_VERSION), the UI is built with it (VITE_GIT_SHA) and warns on Fleet when they differ.
+# "-dirty" marks a build from uncommitted changes.
+VERSION="$(git -C "$SRC_DIR" rev-parse --short HEAD 2>/dev/null || echo dev)"
+if [ "$VERSION" != dev ] && [ -n "$(git -C "$SRC_DIR" status --porcelain 2>/dev/null)" ]; then
+  VERSION="$VERSION-dirty"
+fi
+echo "==> Version $VERSION"
+
 echo "==> Building backend-argus (runs its pytest gate)"
-docker build -t argus/backend-argus:latest "$SRC_DIR/backend-argus"
+# The Lambda wrapper image (docker/backend-lambda) is FROM this image, so it inherits the
+# ARGUS_VERSION env the backend Dockerfile sets from this build arg.
+docker build --build-arg "ARGUS_VERSION=$VERSION" -t argus/backend-argus:latest "$SRC_DIR/backend-argus"
 
 echo "==> Deploying stacks"
 cd "$INFRA_DIR"
@@ -31,17 +42,25 @@ DIST_ID="$(stack_output ArgusApp DistributionId)"
 echo "==> Building ui-argus for $SITE_URL"
 # Same origin as the API (CloudFront routes /api/* to the backend), so no CORS needed.
 npm --prefix "$SRC_DIR/ui-argus" install --no-audit --no-fund
-VITE_API_BASE_URL="$SITE_URL" npm --prefix "$SRC_DIR/ui-argus" run build
+VITE_API_BASE_URL="$SITE_URL" VITE_GIT_SHA="$VERSION" npm --prefix "$SRC_DIR/ui-argus" run build
 
 echo "==> Uploading UI"
 aws s3 sync "$SRC_DIR/ui-argus/dist/" "s3://$BUCKET/" --delete
 aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths '/*' >/dev/null
 
 echo "==> Smoke test"
+HEALTH=""
 for i in 1 2 3 4 5 6; do
-  if curl -fsS "$SITE_URL/health"; then echo; break; fi
+  if HEALTH="$(curl -fsS "$SITE_URL/health")"; then break; fi
+  HEALTH=""
   echo "  waiting for the backend cold start ($i)..."; sleep 5
 done
+echo "  backend /health: ${HEALTH:-no answer}   (check again any time: curl -s $SITE_URL/health)"
+echo "  UI version:      $VERSION"
+case "$HEALTH" in
+  *"\"version\":\"$VERSION\""* | *"\"version\": \"$VERSION\""*) echo "  backend and UI versions match" ;;
+  *) echo "WARNING: /health doesn't report version $VERSION; the backend may be an older build than the UI." ;;
+esac
 
 OSRM_BUCKET="$(stack_output ArgusSimulator OsrmBucketName)"
 if [ -z "$(aws s3 ls "s3://$OSRM_BUCKET/mexico-latest.osrm" 2>/dev/null)" ]; then
