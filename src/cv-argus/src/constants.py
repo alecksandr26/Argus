@@ -167,6 +167,12 @@ BUFFER_LEASE_SECONDS = 120.0
 BUFFER_DLQ_MAX_ATTEMPTS = 5
 # FAIL reasons that archive a critical at once: the backend will never accept it.
 BUFFER_ARCHIVE_NOW_REASONS = ("route_finished", "no_route", "too_old", "wrong_truck", "invalid")
+# A keepalive (a `transition: false` reading, never a backend event) older than this is deleted
+# before a PULL is served instead of being sent: only the newest reading matters to the ESP32
+# (camera alive, current severity/reason), and a backlog of stale ones must not fill a batch.
+# Events are never touched by this. Keepalives come every ORCHESTRATOR_KEEPALIVE_SECONDS (2 s),
+# so a running camera always has a fresh one.
+BUFFER_KEEPALIVE_MAX_AGE_SECONDS = 10.0
 # The 60 s RouteStatus("OK") heartbeat is gone (final tweaks, contract C1.5): the ESP32 sends a
 # GPS report every 5 s on its own, and the 2 s keepalives tell it the camera is alive.
 #

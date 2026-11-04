@@ -159,9 +159,12 @@ overridable by env var):
 - **Head down + eyes closed or hidden:** CRITICAL at 3 s (2 s after a yawn).
 - **Head down with eyes open:** MEDIUM at 3 s.
 - **Yawning alone** (3 yawns ≥ 1.5 s within 5 min): never above LOW.
-- **No face** (after a face was seen): **CRITICAL at `RULE_NO_FACE_CRITICAL_S` = 5 s**, reason
-  `no_face`, with no LOW/MEDIUM step (contract C1.5; the 3/5/10 s ladder is gone). A driver
-  slumped out of frame must never read as fine. The comparison is `elapsed >=
+- **No face**: **CRITICAL at `RULE_NO_FACE_CRITICAL_S` = 5 s**, reason `no_face`, with no
+  LOW/MEDIUM step (contract C1.5; the 3/5/10 s ladder is gone). A driver slumped out of frame
+  must never read as fine. **The timer runs from boot**: with nobody in view since start-up (an
+  empty seat, a covered camera) it reaches critical 5 s after the first frame, like a driver who
+  left. It used to wait for a first face (`_seen_face`, removed 2026-11-03), so a cab with nobody
+  in view stayed at `none` forever and the ESP32 never alarmed. The comparison is `elapsed >=
   RULE_NO_FACE_CRITICAL_S` on purpose: with a passenger in view, the face switch (5 s) relies on
   the no-face CRITICAL firing on or before the switch frame (C1.7).
 - **While the face is missing, nothing recovers:** a held severity only drops after
@@ -171,7 +174,7 @@ overridable by env var):
 - **Face switch: `reset_signals(self) -> None`** (contract C1.7; T2's face stage calls it once
   per switch or take-over, after feeding that frame to the rules). It resets every running timer
   (`_eyes`, `_head`, `_mouth`, `_noface`), the yawn history and the recovery timer. It never
-  touches the held severity, its reason, `_trigger` or `_seen_face`. So a held CRITICAL stays
+  touches the held severity, its reason or `_trigger`. So a held CRITICAL stays
   held through a switch and needs 2 s of a clear new face to drop, and the switch itself never
   emits a transition. Keep the signature: `PartsInferenceStage._on_face_switch` (`pipeline/parts_stages.py`) calls it directly.
 
@@ -371,7 +374,8 @@ Env vars `main.py` reads (all optional, all with defaults):
 `PARTS_EYE_MAX_FRAC` (0.30), `PARTS_EYE_CY_RANGE` (0.15-0.70), and the protocol/buffer values
 (`BUFFER_LEASE_SECONDS`, `BUFFER_DLQ_MAX_ATTEMPTS`, `BUFFER_ARCHIVE_NOW_REASONS`,
 `BUFFER_MAX_UNSENT_ROWS`, `MAX_PULL_LIMIT`, `MAX_DLQ_LIMIT`), which are contract C4 values the
-ESP32 relies on.
+ESP32 relies on, plus the Pi-side-only `BUFFER_KEEPALIVE_MAX_AGE_SECONDS` (10 s, stale
+keepalives are dropped before a `PULL`).
 
 `docker compose` passes `/dev/video0` through by default — adjust the `devices:` entry to
 match your machine, or drop it when testing against a video file. `Dockerfile` sets
@@ -771,6 +775,15 @@ as `esp32_unreachable` (no body, `attempts` stays 0); any other event (a medium,
 archived as `esp32_unreachable`; non-events (keepalives) are deleted. With
 `SENDER_TRANSPORT=none` nothing expires; only `cap_unsent` bounds the outbox.
 
+*Stale keepalives are never served* (`drop_stale_keepalives`, called by `SenderServer` right
+before every `PULL` is answered): a non-leased outbox keepalive (`kind='drowsiness'`,
+`transition: false`) enqueued more than `BUFFER_KEEPALIVE_MAX_AGE_SECONDS` (10 s, a code
+constant) ago is deleted, so it is neither served nor counted in `END`. Only the newest reading
+matters to the ESP32, and at 2 s per keepalive a 60 s outbox could otherwise fill a whole
+`PULL 8` with stale ones (seen on the bench: 30 rows waiting). Rows with `transition: true`
+(events and non-event transitions alike), leased rows and dead letters are never touched; the
+session log line counts what was dropped.
+
 *`FAIL <id> <reason> <body>`* (`apply_fail`, for a row in `outbox` or `dlq`):
 1. not a critical event row → archived at once with `<reason>` (normally `retry_window`: a
    medium/OK whose live window ran out);
@@ -860,8 +873,11 @@ C: <report lines> / DONE        S: OK ...
   pending; a replay carries `delivery: "dlq"` and `queued_seconds` to the backend.
 - `server.py`'s `SenderServer` runs a single-session-at-a-time accept loop (one Pi, one ESP32)
   against a `Transport`/`Listener` pair (`transport.py`). Its housekeeping (every 5 s, between
-  sessions) runs `expire_outbox` and logs the queue. Logs: every FAIL as it happens, one line
-  per session that delivered, took or failed an event, the queue every 30 s while anything waits,
+  sessions) runs `expire_outbox` and logs the queue. Logs: every FAIL as it happens, **exactly one summary
+  line per session** (request, rows served, ACK/TAKEN/FAIL counts, outcome, duration in ms; INFO
+  when it completed, WARNING for `no request within 5 s`, `disconnected before request`,
+  `disconnected after END`, `report timeout`, `bad line`, `bad request`, `ESP32 reconnected
+  mid-session`, `server stopping`, `error`), the queue every 30 s while anything waits,
   `ESP32 <mac> connected` / `link down?` transitions, and each change in the severity the ESP32
   acked.
 - Two commands in the running container: `python -m cv_argus.sender.inject <severity> [--episode

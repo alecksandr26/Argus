@@ -5,8 +5,9 @@
 // - Every critical texts: a live, taken camera critical at once (hands on or off, the text says
 //   which), a grip episode's start (its no_grip critical); a re-pulled row, a later critical of
 //   the episode or a DLQ replay never does.
-// - The buzzer: hands off + a camera critical at once; hands off alone after the grip-only delay;
-//   at most 3 s while the latest reading (keepalives included) is a no_face critical.
+// - The buzzer: hands off 3 s (the grip episode) sounds, camera critical or not; at most 3 s
+//   while the latest reading (keepalives included) says nobody is in view ("No Face" class or a
+//   no_face critical).
 // SOURCES: cabin_signals.cpp alarm_policy.cpp sms_policy.cpp pull_session.cpp sender_policy.cpp backend_messages.cpp pi_event_policy.cpp pi_record.cpp gps_track.cpp pi_protocol.cpp
 // NEEDS: arduinojson
 #include <ArduinoJson.h>
@@ -115,7 +116,8 @@ static void handsOffTextsThenACameraCriticalTextsAndSounds() {
   CHECK(g.result == SmsQueued::Queued);  // the no_grip critical texts on its own
   const SmsMessage* gm = c.message("grip-0000abcd-1");
   CHECK(gm != nullptr && gm->alertType == "no_grip" && gm->handsOff && gm->position.lat == 21.0);
-  CHECK(!c.buzzerAt(100));  // under the grip-only delay
+  CHECK(c.buzzerAt(100));  // hands off 3 s: sounds at the grip episode's start
+  CHECK(c.alarm.cause() == BuzzerCause::GripOnly);
   CabinSignals s = c.feed(line("c1", "critical", "medium", "head_down"), 1000);
   CHECK(s.vision == VisionChange::On);
   CHECK(s.sms.result == SmsQueued::Queued);
@@ -125,16 +127,36 @@ static void handsOffTextsThenACameraCriticalTextsAndSounds() {
   CHECK(c.alarm.cause() == BuzzerCause::CameraAndGrip);
 }
 
-static void handsOffAloneSoundsAtFiveSeconds() {
+static void handsOffAloneSoundsAtThreeSeconds() {
   Cabin c;
-  // The grip episode starts at 3 s without pressure (t = 10000 here), the buzzer 2 s later.
+  c.feed(keepalive("k1", "none", "ok", ""), 9500);  // the camera sees a fine driver
+  CHECK(!c.buzzerAt(9999));
+  // The grip episode starts at 3 s without pressure (t = 10000 here): the buzzer with it.
   c.handsOff(10000);
-  c.feed(keepalive("k1", "none", "ok", ""), 10500);  // the camera sees a fine driver
-  CHECK(!c.buzzerAt(11999));
-  CHECK(c.buzzerAt(12000));
+  CHECK(c.buzzerAt(10000));
   CHECK(c.alarm.cause() == BuzzerCause::GripOnly);
   c.handsBack(13000);
   CHECK(!c.buzzerAt(13000));
+}
+
+// The driver steps out with the hands off: the Pi's first face-less record (class "No Face",
+// severity none, ~0.6 s after the face is gone) starts the 3 s cap, well before the 5 s critical.
+static void theFirstNoFaceRecordStartsTheCap() {
+  Cabin c;
+  c.feed(keepalive("k1", "none", "ok", ""), 0);
+  c.handsOff(1000);
+  CHECK(c.buzzerAt(1000));
+  std::string noFace = std::string(R"({"id":"nf1","kind":"drowsiness","level":null,"created_at_ms":1,)") +
+                       R"("source_id":"c","age_s":0.4,"payload":{"class_name":"No Face",)" +
+                       R"("probabilities":null,"transition":true,"severity":"none",)" +
+                       R"("previous_severity":"none"}})";
+  CabinSignals s = c.feed(noFace, 2000);
+  CHECK(s.vision == VisionChange::None && s.sms.result == SmsQueued::Ignored);
+  CHECK(c.alarm.cameraNoFace());
+  CHECK(c.buzzerAt(2000));  // the grip task ticks every 100 ms: the cap starts here
+  CHECK(c.buzzerAt(4999));
+  CHECK(!c.buzzerAt(5000));
+  CHECK(c.alarm.cause() == BuzzerCause::NoFaceMuted);
 }
 
 static void oneSmsPerCameraEpisodeAndOnePerGripEpisode() {
@@ -146,10 +168,10 @@ static void oneSmsPerCameraEpisodeAndOnePerGripEpisode() {
   CHECK(!c.buzzerAt(2000));  // silent at once
   CHECK(c.handsOff(5000).result == SmsQueued::Queued);  // grip episode 2: its own SMS
   CHECK(c.buzzerAt(5000));  // the camera episode still on: at once
-  // The driver OK: the camera part ends; the hands are still off, under the grip-only delay.
+  // The driver OK: the camera part ends; the hands are still off, so the hands-off rule goes on.
   CHECK(c.feed(line("o1", "low", "critical", "ok"), 6000).vision == VisionChange::Off);
-  CHECK(!c.buzzerAt(6000));
-  CHECK(c.buzzerAt(7000));  // grip-only now
+  CHECK(c.buzzerAt(6000));
+  CHECK(c.alarm.cause() == BuzzerCause::GripOnly);
   // A new camera episode: texts again.
   CabinSignals s = c.feed(line("c2", "critical", "medium", "eyes_closed", "ep2"), 60000);
   CHECK(s.vision == VisionChange::On);
@@ -238,7 +260,7 @@ static void aCriticalLeftOnThePiWaitsUntilItIsTaken() {
   CHECK(d.action == RecordAction::Leave && d.take == TakeResult::Full);
   CHECK(s.vision == VisionChange::None);
   CHECK(s.sms.result == SmsQueued::Ignored);
-  CHECK(!c.buzzerAt(100));
+  CHECK(!c.alarm.visionAlarm());
   // A slot frees up; the Pi serves the row again and it is taken now.
   c.sender.beginAttempt(c.sender.plan(200, true), 200);
   c.sender.endAttempt(AttemptEnd::Delivered, "", 300);
@@ -275,7 +297,8 @@ static void unusableAndNonEventRecordsChangeNothingButTheReading() {
 int main() {
   RUN(aCameraCriticalTextsAtOnceWithTheHandsOn);
   RUN(handsOffTextsThenACameraCriticalTextsAndSounds);
-  RUN(handsOffAloneSoundsAtFiveSeconds);
+  RUN(handsOffAloneSoundsAtThreeSeconds);
+  RUN(theFirstNoFaceRecordStartsTheCap);
   RUN(oneSmsPerCameraEpisodeAndOnePerGripEpisode);
   RUN(aRowServedAgainChangesNothing);
   RUN(aSecondCriticalOfTheEpisodeChangesNothing);

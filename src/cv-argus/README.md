@@ -198,6 +198,10 @@ How it works:
   critical to the dead-letter queue (`esp32_unreachable`), archives a medium/OK and drops
   keepalives. If the ESP32 later reports that same critical with the message it composed, the
   Pi keeps that message.
+- A keepalive older than 10 s (`BUFFER_KEEPALIVE_MAX_AGE_SECONDS`) is deleted before a `PULL`
+  is served instead of being sent: only the newest reading matters, so after a gap the batch
+  carries the events and the current state, not a backlog of stale keepalives. Events are
+  never dropped this way.
 - Every record carries `age_s`, the seconds since the event, computed when it's served. The
   backend turns it into a time with its own clock, so the Pi's clock doesn't need to be right.
 - Without `argus-device.env` the ESP32 can't reach the backend (`no_credentials`), so criticals
@@ -207,8 +211,18 @@ What the log shows:
 ```
 orchestrator: cam0 -> Drowsy, severity none -> critical (eyes_closed), episode 3f2a1b2c3d4e | queued for the ESP32
 sender: ESP32 78:1C:3C:36:4A:22 couldn't deliver drowsiness critical (eyes_closed) -> dead-letter queue (no_network)
+sender: ESP32 78:1C:3C:36:4A:22 PULL 8: served 1, acked 0, took 1, failed 0 -> ok in 140 ms | outbox 0, dead-letter queue 7 (oldest 12 min ago, no_network 7), archive 3
+sender: ESP32 78:1C:3C:36:4A:22 PULL 8: served 1, acked 1, took 0, failed 0 -> ok in 85 ms | outbox 0, dlq 7
+sender: ESP32 78:1C:3C:36:4A:22 PULL 8: served 2, acked 0, took 0, failed 0 -> disconnected after END in 12 ms | outbox 2, dlq 7
 sender: queue: outbox 0, dead-letter queue 7 (oldest 12 min ago, no_network 7), archive 3
 ```
+Every Bluetooth session ends with **one** `sender: ESP32 <mac> <request>: ...` line: the request
+(`PULL 8`, `DLQ 1`, `CONFIG`, `report`), rows served, ACK/TAKEN/FAIL counts, the outcome and the
+duration. It's INFO when the session completed (`ok`, `config sent`, `no config`) and WARNING
+otherwise (`no request within 5 s`, `disconnected before request`, `disconnected after END`,
+`report timeout`, `bad line ...`, `bad request`, `ESP32 reconnected mid-session`, `error`). A
+link that connects but never completes a session shows up as a stream of WARNING lines, not as
+silence.
 
 Two commands in the running container (prefix them with
 `docker compose -f docker-compose.yml -f docker-compose.pi.yml exec cv-argus`):
@@ -348,7 +362,7 @@ More head-down training data is the real fix.
 | Head down + eyes closed or hidden | | | **3.0** (2.0 after a yawn) |
 | Head down, eyes open (looking down) | | 3.0 | |
 | Yawning alone: ≥ 3 yawns (≥ 1.5 s each) in 5 min | yes | never | never |
-| No face for 5 s after one was seen | | | **5.0** (no LOW/MEDIUM step) |
+| No face for 5 s (from boot too: an empty seat alarms) | | | **5.0** (no LOW/MEDIUM step) |
 
 Closed eyes and head down are the risks; yawning only makes those fire sooner. Severity rises
 immediately and drops only after 2 s with a visible, clear face (never while the face is

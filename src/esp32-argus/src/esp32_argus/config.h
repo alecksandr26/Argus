@@ -140,11 +140,18 @@
 #define PI_BT_MIN_FREE_HEAP 20480UL
 #define PI_BT_MIN_HEAP_BLOCK 4096UL
 // At most this many records per poll (the Pi allows 50). The whole batch is held in memory before
-// any of it is handled (bluetoothOpenSession), so a small batch keeps the heap safe. 8 every
-// PI_BT_POLL_INTERVAL_MS is still well above the Pi's one keepalive per 2 s. Nothing in a session
-// waits on the backend (the sender task does that), so the Pi's 30 s wait for the report lines
-// (cv-argus SenderServer ack_timeout) is never at risk.
-#define PI_BT_PULL_COUNT 8
+// any of it is handled (bluetoothOpenSession), so a small batch keeps the heap safe. 4 every
+// PI_BT_POLL_INTERVAL_MS (was 8 until 2026-11-03: a backed-up batch of 8 is ~3 KB, more than the
+// core's 512 B receive queue held) is still above the Pi's one keepalive per 2 s. Nothing in a
+// session waits on the backend (the sender task does that), so the Pi's 30 s wait for the report
+// lines (cv-argus SenderServer ack_timeout) is never at risk.
+#define PI_BT_PULL_COUNT 4
+// This device's own receive buffer for the Pi's bytes (bluetooth_client.cpp, fed by
+// BluetoothSerial::onData()): the core's queue is 512 B and silently drops what doesn't fit (the
+// 2026-11-03 bench: sessions that never saw END). Allocated once at boot.
+#define PI_BT_RX_BUFFER 4096
+// This many failed connects in a row restart the Bluetooth stack (SerialBT.end() + begin()).
+#define PI_BT_RESET_AFTER_FAILS 5
 // Bytes reserved per line read from the Pi; a record is 200-400 B today (a dead letter with its
 // stored event ~900 B), more just reallocates. A line longer than PI_BT_LINE_MAX ends the session.
 #define PI_BT_LINE_RESERVE 768
@@ -212,9 +219,17 @@
 // =====================================================
 #define GRIP_SENSOR_COUNT 4
 #define GRIP_SENSOR_PINS { 34, 35, 36, 39 }
-// Pressure = any sensor reads above this (12-bit ADC, 0..4095). From the user's bench sketch;
-// NOT tuned against the real wheel yet.
-#define GRIP_PRESSURE_THRESHOLD 500
+// Pressure (changed 2026-11-03: the fixed 500 needed a heavy press, and one sensor (S2, GPIO 35)
+// idles at ~190-260 with nothing on it): each sensor's resting level is learned
+// (grip_policy.h GripBaseline), and pressure = any sensor at least GRIP_PRESSURE_DELTA above its
+// own baseline -- a light touch or a notebook counts. Lower = more sensitive; keep it above the
+// idle jitter the [grip] line shows (raw vs base).
+#define GRIP_PRESSURE_DELTA 80
+// The baselines are first measured over this long after boot (keep the wheel untouched), then
+// follow the resting level slowly (and fast downwards, e.g. a hand that was on it at boot).
+#define GRIP_BASELINE_BOOT_MS 2000UL
+// analogRead()s averaged per sensor per sample (noise).
+#define GRIP_ADC_SAMPLES 4
 #define GRIP_SAMPLE_INTERVAL_MS 100UL
 // The four raw readings go to Serial at most this often, not every sample.
 #define GRIP_LOG_INTERVAL_MS 2000UL
@@ -234,8 +249,8 @@
 // Cabin buzzer (contracts C4, changed 2026-11-03) -- an active buzzer: a continuous tone while its
 // pin is on (alarm_policy.h). It never sounds with the hands on the wheel. With the hands off it
 // sounds at once while a camera critical is on (the vision alarm), or after GRIP_ONLY_BUZZER_MS
-// without pressure with the camera OK; while the camera's latest reading is a no_face critical it
-// sounds NO_FACE_BUZZER_MAX_MS at most, then stays quiet until the camera reports anything else.
+// without pressure with the camera OK; while the camera's latest reading says nobody is in view it
+// sounds NO_FACE_BUZZER_MAX_MS at most, then stays quiet until the camera sees a face again.
 // =====================================================
 #define BUZZER_PIN 13
 #define BUZZER_ACTIVE_HIGH 1
@@ -243,11 +258,12 @@
 // or after this long as a safety cap if that OK never comes.
 #define VISION_ALARM_MAX_MS 300000UL
 // No pressure on the wheel this long (counted from the last pressure, so GRIP_ALERT_MS of it is
-// the grip episode's own start) sounds the buzzer without any camera critical.
-#define GRIP_ONLY_BUZZER_MS 5000UL
-// While the camera's latest live reading is a no_face critical (nobody in the seat), the buzzer
-// sounds this long at most, then stays quiet. A reading older than PI_STALE_MS (no link, a dead
-// Pi) no longer counts: the wheel rule then works on its own.
+// the grip episode's own start) sounds the buzzer without any camera critical. 3 s since
+// 2026-11-03 (user decision): the same moment as the grip episode, its no_grip critical and SMS.
+#define GRIP_ONLY_BUZZER_MS 3000UL
+// While the camera's latest live reading says nobody is in view (class "No Face", or a no_face
+// critical), the buzzer sounds this long at most, then stays quiet. A reading older than
+// PI_STALE_MS (no link, a dead Pi) no longer counts: the wheel rule then works on its own.
 #define NO_FACE_BUZZER_MAX_MS 3000UL
 #if GRIP_ONLY_BUZZER_MS < GRIP_ALERT_MS
 #error "GRIP_ONLY_BUZZER_MS counts from the last pressure: it can't be shorter than GRIP_ALERT_MS"

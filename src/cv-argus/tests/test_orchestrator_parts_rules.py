@@ -142,9 +142,20 @@ def test_no_face_threshold_is_the_c4_constant():
     assert not hasattr(constants, "RULE_NO_FACE_MEDIUM_S")
 
 
-def test_no_face_before_any_face_raises_nothing():
+def test_no_face_from_boot_is_a_single_critical_at_5s():
+    """Nobody in view since boot (empty seat, camera blocked): the no-face timer runs from the
+    first frame, so it reaches critical no_face at 5 s and not before. It used to wait for a
+    first face and stayed at none forever."""
+    e = PartsRuleEngine(RuleConfig())
+    t, seen = 0.0, []
+    for _ in range(40):                            # 8 s without a face, from the first frame
+        st = e.update(t, NOFACE)
+        seen.append((st.severity, st.reason))
+        t += DT
+    assert set(seen) == {("none", "ok"), ("critical", "no_face")}
+    assert seen.index(("critical", "no_face")) == 25   # t = 5.0 s: the timer reaches 5.0 s
     st, _ = run(PartsRuleEngine(RuleConfig()), NOFACE, 30.0)
-    assert st.severity == "none"
+    assert (st.severity, st.reason) == ("critical", "no_face")
 
 
 def test_an_incident_holds_while_the_face_is_missing():

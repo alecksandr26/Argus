@@ -27,10 +27,14 @@ longer `RULE_HEAD_GRACE_S` (1 s), because `head_down` is missed on many frames.
 | head down + eyes closed or hidden | head down ≥ 3.0 s (2.0 s after a yawn) | **critical** |
 | head down, eyes open (looking down) | head down ≥ 3.0 s | medium |
 | yawning (fatigue) | ≥ 3 yawn events (mouth open ≥ 1.5 s) in 5 min | low (never higher) |
-| driver not visible | no face ≥ 5 s, after a face was seen | **critical** (no low/medium step) |
+| driver not visible | no face ≥ 5 s, from boot too | **critical** (no low/medium step) |
 
 Closed eyes and head down are the risks. Yawning only adds weight: it makes the eye and head
 rules fire sooner, and alone it never goes above LOW.
+
+The no-face timer runs **from boot**: an empty seat (nobody in view since the Pi started) reaches
+`no_face` critical after 5 s like a driver who left. It used to wait for a first face, so a cab
+with nobody in view stayed at `none` forever and the ESP32 never got an alarm.
 
 **Hold and recovery.** Severity escalates immediately. It only drops after the rules have stayed
 below it for `RULE_RECOVERY_S`, so the alarm doesn't flicker off between frames of a closure.
@@ -184,15 +188,13 @@ class PartsRuleEngine:
         self._yawn_counted = False
         self._yawn_events: deque[float] = deque()
         self._last_yawn_end: float | None = None
-        self._seen_face = False
         self._held = ("none", "ok")
         self._below_since: float | None = None
         self._trigger = 0.0
 
     def reset_signals(self) -> None:
         """Forget every running timer, the yawn history and the recovery timer, keeping the held
-        severity, its reason, the trigger length and whether a face was ever seen (contract
-        C1.7). Called once per face switch, so the new face starts from clean timers while a held
+        severity, its reason and the trigger length (contract C1.7). Called once per face switch, so the new face starts from clean timers while a held
         alarm stays held until the new face has been clear for `RULE_RECOVERY_S`."""
         g = self.cfg.grace
         self._eyes = ContinuousTimer(g)
@@ -206,13 +208,11 @@ class PartsRuleEngine:
 
     def update(self, t: float, s: FrameSignals) -> RuleState:
         cfg = self.cfg
-        if s.face:
-            self._seen_face = True
         eyes = self._eyes.update(t, s.face and s.eyes_closed)
         head = self._head.update(t, s.face and s.head_down)
         mouth_was = self._mouth.duration
         mouth = self._mouth.update(t, s.face and s.mouth_open)
-        noface = self._noface.update(t, self._seen_face and not s.face)
+        noface = self._noface.update(t, not s.face)
 
         # Yawn events: count once when the mouth has been open long enough.
         if mouth >= cfg.yawn_event and not self._yawn_counted:

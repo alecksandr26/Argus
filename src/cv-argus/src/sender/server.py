@@ -37,9 +37,18 @@ summary every `queue_log_seconds` while anything is waiting.
 
 **Link visibility.** The ESP32 opens a fresh connection on every poll, so there's no long-lived
 link to watch. The log says when sessions start (`ESP32 <mac> connected`) and when they stop for
-`link_quiet_seconds` (`link down?`) -- transitions only, so a steady link stays quiet. Each change
-in the rule severity the ESP32 acked (e.g. into `critical`) is logged once, which is the Pi-side
-proof an alert was actually delivered.
+`link_quiet_seconds` (`link down?`) -- transitions only. Each change in the rule severity the
+ESP32 acked (e.g. into `critical`) is logged once, which is the Pi-side proof an alert was
+actually delivered.
+
+**One line per session.** Every session ends with exactly one summary line: the request
+(`PULL 10`, `DLQ 1`, `CONFIG`, `report`), rows served, the ACK/TAKEN/FAIL counts, the outcome and
+the duration, e.g. `sender: ESP32 <mac> PULL 10: served 3, acked 2, took 1, failed 0 -> ok in
+412 ms | outbox 0, dlq 0`. It's INFO when the session completed (`ok`, `config sent`, `no config`)
+and WARNING when it didn't (`no request within 5 s`, `disconnected before request`, `disconnected
+after END`, `report timeout`, `bad line`, `bad request`, `ESP32 reconnected mid-session`,
+`server stopping`, `error`), so a failing link no longer looks like a good one at INFO (bench,
+2026-11: a connection every 2 s, no session ever completing, nothing in the log to say so).
 """
 
 import json
@@ -70,16 +79,28 @@ DEFAULT_QUEUE_LOG_SECONDS = 30.0
 # The report is awaited in steps this long, checking in between whether the ESP32 has already
 # reconnected (it reset mid-session, BT-20) or the server is stopping.
 _REPORT_POLL_S = 1.0
+# The ESP32 sends its request line right after connecting.
+_REQUEST_TIMEOUT_S = 5.0
 _HOUSEKEEPING_INTERVAL_S = 5.0
+
+
+# Session outcomes that mean the session did what it was for; anything else logs at WARNING.
+_OK_OUTCOMES = frozenset({"ok", "config sent", "no config"})
 
 
 @dataclass
 class _Session:
-    """What one session's report lines did, for the `OK` line and the logs."""
+    """What one session asked for and what its report lines did, for the `OK` line and the
+    one-line session log."""
 
     peer: str | None
-    served: dict[str, Alert]
+    served: dict[str, Alert] = field(default_factory=dict)
     replay: bool = False
+    request: str = "-"
+    outcome: str = "error"  # overwritten on every path that doesn't raise
+    end: tuple[int, int] | None = None  # (dlq, outbox) as announced in END
+    dropped: int = 0  # stale keepalives deleted before a PULL was served
+    started: float = field(default_factory=time.monotonic)
     acked: int = 0
     leased: int = 0
     delivered: list[Alert] = field(default_factory=list)
@@ -184,41 +205,68 @@ class SenderServer:
             logger.warning("sender: rejecting session from unlisted peer %s", transport.peer)
             return
         self._note_session(transport.peer)
-        line = transport.readline(timeout=5.0)
+        session = _Session(transport.peer)
+        try:
+            self._dispatch(transport, session)
+        finally:
+            # Exactly one summary line per session, whatever happened (an exception leaves
+            # outcome "error"; `_run` logs its traceback right after).
+            self._log_session(session)
+
+    def _dispatch(self, transport: Transport, session: _Session) -> None:
+        line = transport.readline(timeout=_REQUEST_TIMEOUT_S)
         if line is None:
+            session.outcome = (
+                "disconnected before request" if transport.eof
+                else f"no request within {_REQUEST_TIMEOUT_S:g} s"
+            )
             return
-        request = line.decode().rstrip("\r")
+        request = line.decode(errors="replace").rstrip("\r")
         if protocol.parse_config_request(request):
-            self._answer_config(transport)
+            session.request = "CONFIG"
+            session.outcome = self._answer_config(transport)
             return
         k = protocol.parse_dlq(request)
         if k is not None:
+            session.request = f"DLQ {k}"
             letters = self._buffer.serve_dlq(limit=k)
-            self._serve(transport, [a for a, _ in letters], {a.id: d for a, d in letters})
+            self._serve(transport, session, [a for a, _ in letters], {a.id: d for a, d in letters})
             return
         n = protocol.parse_pull(request)
         if n is not None:
-            self._serve(transport, self._buffer.fetch_unsent(limit=n), {})
+            session.request = f"PULL {n}"
+            # Stale keepalives (> BUFFER_KEEPALIVE_MAX_AGE_SECONDS) are deleted first: after an
+            # outage they'd fill the batch, and only the newest reading matters to the ESP32.
+            drop = getattr(self._buffer, "drop_stale_keepalives", None)
+            if drop is not None:
+                session.dropped = drop()
+            self._serve(transport, session, self._buffer.fetch_unsent(limit=n), {})
             return
         if protocol.parse_ack(request) is not None or protocol.parse_fail(request) is not None:
             # A report session: results for rows taken in an earlier session.
-            self._report(transport, _Session(transport.peer, {}), first_line=request)
+            session.request = "report"
+            self._report(transport, session, first_line=request)
             return
-        logger.warning("sender: malformed request %r, dropping session", line[:80])
+        session.request = repr(request[:40])
+        session.outcome = "bad request"
 
-    def _serve(self, transport: Transport, alerts: list[Alert], dead_letters: dict) -> None:
+    def _serve(
+        self, transport: Transport, session: _Session, alerts: list[Alert], dead_letters: dict
+    ) -> None:
         """Streams `alerts` (live, or one dead letter with its `dlq` object), each with its
         serve-time `age_s`, then `END <dlq> <outbox>`, then applies what the ESP32 reports.
         Anything not reported stays exactly where it was, so an interrupted session loses
         nothing."""
+        session.served = {a.id: a for a in alerts}
+        session.replay = bool(dead_letters)
         for alert in alerts:
             data = alerts_serialization.to_dict(alert)
             data["age_s"] = alerts_serialization.age_seconds(alert)
             if alert.id in dead_letters:
                 data["dlq"] = dead_letters[alert.id]
             transport.write((json.dumps(data, separators=(",", ":")) + "\n").encode())
-        transport.write((protocol.format_end(*self._waiting()) + "\n").encode())
-        session = _Session(transport.peer, {a.id: a for a in alerts}, replay=bool(dead_letters))
+        session.end = self._waiting()
+        transport.write((protocol.format_end(*session.end) + "\n").encode())
         self._report(transport, session)
 
     def _report(self, transport: Transport, session: _Session, first_line: str | None = None) -> None:
@@ -231,17 +279,24 @@ class SenderServer:
                 text, pending = pending, None
             else:
                 remaining = deadline - time.monotonic()
-                if remaining <= 0 or self._stop_event.is_set():
+                if self._stop_event.is_set():
+                    session.outcome = "server stopping"
+                    break
+                if remaining <= 0:
+                    session.outcome = f"report timeout ({self._ack_timeout:g} s)"
                     break
                 line = transport.readline(timeout=min(_REPORT_POLL_S, remaining))
                 if line is None:
                     # Disconnected, or the ESP32 is already back on a new connection: either
                     # way, whatever wasn't reported is safely re-served next time.
                     if transport.eof:
+                        session.outcome = (
+                            "disconnected after END" if session.end is not None else "disconnected"
+                        )
                         break
                     if self._listener.pending():
-                        logger.warning("sender: ESP32 reconnected mid-session (it reset?) -- "
-                                       "dropping the old session, nothing it didn't report is lost")
+                        session.outcome = ("ESP32 reconnected mid-session (it reset?), nothing "
+                                           "it didn't report is lost")
                         break
                     continue
                 text = line.decode(errors="replace").rstrip("\r")
@@ -250,12 +305,12 @@ class SenderServer:
                     session.acked, len(session.failed), session.leased, *self._waiting()
                 )
                 transport.write((result + "\n").encode())
+                session.outcome = "ok"
                 break
             if not self._apply_report_line(transport, text, session):
-                logger.debug("sender: unexpected line %r, ending session", text[:80])
+                session.outcome = f"bad line {text[:80]!r}"
                 break
         self._log_delivery(session.peer, session.delivered)
-        self._log_session(session)
 
     def _apply_report_line(self, transport: Transport, text: str, session: _Session) -> bool:
         ids = protocol.parse_ack(text)
@@ -303,8 +358,9 @@ class SenderServer:
     # --- logs ------------------------------------------------------------------------------
 
     def _log_session(self, session: _Session) -> None:
-        """One line per session that delivered, took or failed a backend event; a session of
-        keepalives only stays at debug level."""
+        """The session's one summary line (INFO when it completed, WARNING when it didn't),
+        after one WARNING per record the ESP32 failed. The full queue summary is appended only
+        when the session moved a backend event or a failure, so a keepalive poll stays short."""
         peer = session.peer or "?"
         for alert, reason, outcome in session.failed:
             what = _describe(alert) if alert is not None else "a record"
@@ -317,13 +373,22 @@ class SenderServer:
             elif outcome == FAIL_ARCHIVED:
                 logger.warning("sender: ESP32 %s gave up on %s -> archive (%s)", peer, what, reason)
         events = [a for a in session.delivered + session.taken if event_kind(a.payload)]
-        if not events and not session.failed:
-            logger.debug("sender: ESP32 %s acked %d record(s)", peer, session.acked)
-            return
-        what = "replay" if session.replay else "session"
-        logger.info(
-            "sender: ESP32 %s %s: acked %d, took %d, failed %d | %s",
-            peer, what, session.acked, session.leased, len(session.failed), self._queue_summary(),
+        if events or session.failed:
+            queue = self._queue_summary()
+        elif session.end is not None:
+            queue = f"outbox {session.end[1]}, dlq {session.end[0]}"
+        else:
+            queue = ""
+        if session.dropped:
+            queue = f"{queue}, " if queue else ""
+            queue += f"{session.dropped} stale keepalive(s) dropped"
+        ms = (time.monotonic() - session.started) * 1000
+        log = logger.info if session.outcome in _OK_OUTCOMES else logger.warning
+        log(
+            "sender: ESP32 %s %s%s: served %d, acked %d, took %d, failed %d -> %s in %.0f ms%s",
+            peer, session.request, " (replay)" if session.replay else "", len(session.served),
+            session.acked, session.leased, len(session.failed), session.outcome, ms,
+            f" | {queue}" if queue else "",
         )
 
     def _queue_summary(self) -> str:
@@ -404,14 +469,16 @@ class SenderServer:
             log = logger.warning if severity == "critical" else logger.info
             log("sender: ESP32 %s received severity=%s (%s)", peer or "?", severity, reason)
 
-    def _answer_config(self, transport: Transport) -> None:
+    def _answer_config(self, transport: Transport) -> str:
+        """Answers `CONFIG`; returns the session outcome."""
         if self._device_config is None:
             logger.warning("sender: ESP32 asked for CONFIG but this Pi has no device credentials")
             transport.write((protocol.NOCONFIG_LINE + "\n").encode())
-            return
+            return "no config"
         # Never log the key itself -- only which truck's credentials went out.
         logger.info("sender: sent device credentials for truck %s", self._device_config.truck_id)
         transport.write((protocol.format_config(self._device_config.to_wire()) + "\n").encode())
+        return "config sent"
 
 
 def _describe(alert: Alert) -> str:

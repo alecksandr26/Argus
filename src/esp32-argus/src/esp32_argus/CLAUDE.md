@@ -7,6 +7,10 @@ this file only covers getting it to compile and flash, and what has been verifie
 
 ## Status
 
+- **2026-11-03 bench fixes** (Bluetooth: own 4 KB receive buffer, drain per connect, failure
+  counters, stack restart, PULL 4; grip auto-baseline; grip-only buzzer at 3 s; the no-face cap on
+  the `No Face` class; GPS lat/lon in the logs) compile: **1,857,196 bytes (59% flash), 81,756 bytes
+  of globals (24% RAM)**, plus 4 KB of heap for the receive buffer. Host tests 21/21. Not flashed yet.
 - **2026-11-03 cabin rules** (grip-only buzzer at 5 s, the no-face 3 s cap, an SMS for every
   critical; `docs/designs/grip-alarm-contracts.md` C4/C5) compile with `../../test/compile.sh`
   (same Windows `arduino-cli`, core 3.3.12, Huge APP, `--warnings all`): **1,851,036 bytes (58%

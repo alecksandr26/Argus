@@ -22,6 +22,7 @@
 struct CabinSignals {
   VisionChange vision = VisionChange::None;
   SmsQueueResult sms;
+  EventPosition where;  // the position composed into the record's event (for the log lines)
 };
 
 // The SMS for the camera critical the vision alarm just turned on for (sms_policy.h

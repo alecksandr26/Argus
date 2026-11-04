@@ -18,8 +18,41 @@
 #include "backend_messages.h"
 #include "config.h"
 
-// Pressure = any sensor reads above `threshold` (C2).
-bool gripHasPressure(const int* raw, int count, int threshold = GRIP_PRESSURE_THRESHOLD);
+// Pressure = any sensor reads above `threshold` (the bench sketch's fixed rule; the sketch now
+// uses GripBaseline below).
+bool gripHasPressure(const int* raw, int count, int threshold);
+
+// Each sensor's resting level, and pressure relative to it (changed 2026-11-03, C2): pressure =
+// any sensor at least `delta` above its own baseline. The baselines are the average of the first
+// `calibrationMs` of samples, then follow the reading only while it shows no pressure: slowly
+// (EMA 0.02) near the baseline, fast (EMA 0.3) when it drops more than delta/2 below it (a hand
+// that rested on the wheel at boot, then lifted). A sensor at or above baseline + delta is never
+// learned, so a notebook or a resting hand keeps counting as pressure for as long as it stays.
+// During calibration it reports no pressure (the grip timer runs from boot, as before).
+class GripBaseline {
+ public:
+  static constexpr int kMaxSensors = 8;
+  explicit GripBaseline(int count = GRIP_SENSOR_COUNT, int delta = GRIP_PRESSURE_DELTA,
+                        uint32_t calibrationMs = GRIP_BASELINE_BOOT_MS);
+
+  // One sample of `raw` (count readings) at `nowMs`: true = pressure.
+  bool onSample(const int* raw, uint32_t nowMs);
+
+  bool calibrated() const { return calibrated_; }
+  int baseline(int i) const { return (int)(base_[i] + 0.5f); }
+  int delta() const { return delta_; }
+
+ private:
+  int count_;
+  int delta_;
+  uint32_t calibrationMs_;
+  bool started_ = false;
+  bool calibrated_ = false;
+  uint32_t startMs_ = 0;
+  int samples_ = 0;
+  float sum_[kMaxSensors] = {};
+  float base_[kMaxSensors] = {};
+};
 
 // "The truck moves" for GRIP_REQUIRE_MOVING: a current GPS fix with at least minSpeedKmh. No fix
 // counts as not moving.

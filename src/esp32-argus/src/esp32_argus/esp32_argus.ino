@@ -90,6 +90,7 @@ TaskHandle_t gripTaskHandle = nullptr;
 
 // ---- The grip task only ----
 GripPolicy gripRule;
+GripBaseline gripBaseline;  // gripTask only: each wheel sensor's resting level
 uint32_t bootTag = 0;  // esp_random() at boot (set before the tasks start): grip event ids
 
 // ---- The sender task only ----
@@ -137,15 +138,30 @@ void logLocalDrops() {
   }
 }
 
+// "lat,lon" with where it came from, for the log lines (the position each event carries).
+std::string positionText(const EventPosition& p) {
+  if (!p.known) return "position unknown (no GPS fix yet)";
+  char text[96];
+  if (p.lastKnown) {
+    std::snprintf(text, sizeof(text), "at %.6f,%.6f (last known, %.0f s old)", p.lat, p.lon,
+                  p.locationAgeS);
+  } else {
+    std::snprintf(text, sizeof(text), "at %.6f,%.6f (current fix)", p.lat, p.lon);
+  }
+  return text;
+}
+
 // What a queued SMS means for the log (sms_policy.h); quiet for duplicates and non-criticals.
-void logSmsQueued(const SmsQueueResult& r, const std::string& episode) {
+void logSmsQueued(const SmsQueueResult& r, const std::string& episode,
+                  const EventPosition& where = EventPosition()) {
   if (r.evicted) {
     Serial.printf("[sms] Queue full (%d): dropped the waiting SMS for episode %s\n",
                   SmsPolicy::kSlots, r.evictedEpisode.c_str());
   }
   switch (r.result) {
     case SmsQueued::Queued:
-      Serial.printf("[sms] SMS queued for episode %s\n", episode.c_str());
+      Serial.printf("[sms] SMS queued for episode %s, %s\n", episode.c_str(),
+                    positionText(where).c_str());
       break;
     case SmsQueued::NoPhone:
       Serial.printf("[sms] No SMS alert phone set (ARGUS_ALERT_PHONE on the Pi) -- no SMS for "
@@ -162,10 +178,17 @@ void logSmsQueued(const SmsQueueResult& r, const std::string& episode) {
 // gripTask: the wheel sensors and the buzzer
 // =====================================================================================
 
-void logGripReadings(const int* raw, bool pressure) {
+void logGripReadings(const int* raw, const GripBaseline& base, bool pressure) {
   Serial.print("[grip]");
-  for (int i = 0; i < GRIP_SENSOR_COUNT; i++) Serial.printf(" S%d=%d", i + 1, raw[i]);
-  Serial.printf(" (threshold %d) -> %s\n", GRIP_PRESSURE_THRESHOLD,
+  if (!base.calibrated()) {
+    for (int i = 0; i < GRIP_SENSOR_COUNT; i++) Serial.printf(" S%d=%d", i + 1, raw[i]);
+    Serial.println(" (learning the baselines: keep the wheel untouched)");
+    return;
+  }
+  for (int i = 0; i < GRIP_SENSOR_COUNT; i++) {
+    Serial.printf(" S%d=%d/%d", i + 1, raw[i], base.baseline(i));
+  }
+  Serial.printf(" (raw/base, pressure = +%d) -> %s\n", base.delta(),
                 pressure ? "pressure" : "no pressure");
 }
 
@@ -182,10 +205,12 @@ void onGripChange(GripChange change) {
   TakeResult took = TakeResult::Queued;
   SmsQueueResult queued;
   bool vision = false;
+  EventPosition where;
   {
     RtosLock lock(stateMutex);
     uint32_t nowMs = millis();
     HerePosition here = hereNow(nowMs);
+    where = here.position;
     ReportEvent ev = started
                          ? gripAlertEvent(bootTag, n, here.position, here.hasSpeed, here.speedKmh)
                          : gripOkEvent(bootTag, n, here.position, here.hasSpeed, here.speedKmh);
@@ -197,8 +222,8 @@ void onGripChange(GripChange change) {
   const char* queuedText = took == TakeResult::Full ? "dropped (see below)" : "queued";
   if (started) {
     Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-    Serial.printf("!!! No pressure on the steering wheel for %.1f s -- episode %s\n",
-                  GRIP_ALERT_MS / 1000.0, episode.c_str());
+    Serial.printf("!!! No pressure on the steering wheel for %.1f s -- episode %s, %s\n",
+                  GRIP_ALERT_MS / 1000.0, episode.c_str(), positionText(where).c_str());
     Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
     Serial.printf("[grip] Grip alarm on (%s); critical no_grip for the backend %s\n",
                   vision ? "camera critical on too: buzzer now"
@@ -209,7 +234,7 @@ void onGripChange(GripChange change) {
                   episode.c_str(), queuedText);
   }
   logLocalDrops();
-  if (started) logSmsQueued(queued, episode);  // the grip episode's own SMS
+  if (started) logSmsQueued(queued, episode, where);  // the grip episode's own SMS
 }
 
 // The buzzer pin follows the alarm decision (alarm_policy.h tick(): the vision alarm's safety
@@ -259,11 +284,11 @@ void gripTask(void*) {
       int raw[GRIP_SENSOR_COUNT];
       gripSensorRead(raw);
       uint32_t now = millis();  // the grip rule's own clock (only this task uses it)
-      bool pressure = gripHasPressure(raw, GRIP_SENSOR_COUNT);
+      bool pressure = gripBaseline.onSample(raw, now);
       if (!loggedOnce || now - lastLogAt >= GRIP_LOG_INTERVAL_MS) {  // not every sample
         loggedOnce = true;
         lastLogAt = now;
-        logGripReadings(raw, pressure);
+        logGripReadings(raw, gripBaseline, pressure);
       }
       bool moving;
       {
@@ -326,6 +351,12 @@ void gpsTask(void*) {
     if (now - lastLogAt >= GPS_LOG_INTERVAL_MS) {
       lastLogAt = now;
       gpsLogStatus();
+      EventPosition where;
+      {
+        RtosLock lock(stateMutex);
+        where = hereNow(millis()).position;
+      }
+      Serial.printf("[gps] events would carry: %s\n", positionText(where).c_str());
     }
     vTaskDelay(pdMS_TO_TICKS(20));
   }
@@ -634,9 +665,9 @@ void logCabinSignals(const PiRecord& r, const CabinSignals& s) {
   const std::string& episode = eventEpisode(r);
   switch (s.vision) {
     case VisionChange::On:
-      Serial.printf("[alarm] Vision alarm ON: \"%s\" (episode %s) -- its SMS goes now; the "
-                    "buzzer also needs the hands off the wheel\n",
-                    eventAlertType(r).c_str(), episode.c_str());
+      Serial.printf("[alarm] Vision alarm ON: \"%s\" (episode %s), %s -- its SMS goes now; "
+                    "the buzzer also needs the hands off the wheel\n",
+                    eventAlertType(r).c_str(), episode.c_str(), positionText(s.where).c_str());
       break;
     case VisionChange::Off:
       Serial.printf("[alarm] Vision alarm off: the driver is OK (episode %s)\n", episode.c_str());
@@ -644,7 +675,7 @@ void logCabinSignals(const PiRecord& r, const CabinSignals& s) {
     case VisionChange::None:
       break;
   }
-  logSmsQueued(s.sms, episode);
+  logSmsQueued(s.sms, episode, s.where);
 }
 
 // One PULL or DLQ session. False when it didn't complete (no link, protocol error, no OK).

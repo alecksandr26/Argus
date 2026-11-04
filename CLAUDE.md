@@ -117,11 +117,13 @@ session that's touched this repo.
     (`no_face` included, hands on the wheel or not) and one per grip episode. It goes to the
     truck's alert phone (set in Fleet, carried in `argus-device.env` → `CONFIG` → ESP32 RAM).
   - **The cabin buzzer (GPIO 13) never sounds with the hands on the wheel.** With the hands off
-    it sounds at once with a Pi critical, or after 5 s without pressure with the camera OK.
-    There's no movement gate.
-  - **While the camera's latest reading is a `no_face` critical, the buzzer sounds 3 s at most.**
-    The ESP32 tracks that from every record's `reason`, keepalives included, since the Pi sends
+    it sounds after 3 s without pressure, camera critical or not. There's no movement gate.
+  - **While the camera's latest reading says nobody is in view, the buzzer sounds 3 s at most.**
+    That means class `No Face`, or a `no_face` critical, which the Pi now raises from boot too.
+    The ESP32 tracks it from every record's class/reason, keepalives included, since the Pi sends
     no event for a same-severity reason change.
+  - **Grip pressure is relative to each sensor's learned resting level** (`GRIP_PRESSURE_DELTA`
+    80), not a fixed 500.
 
   See `docs/designs/grip-alarm-contracts.md` C4/C5; compiled, not yet run on hardware.
 - Deliberate split: the Pi *decides* (heavy AI inference, containerizable, can be redeployed via

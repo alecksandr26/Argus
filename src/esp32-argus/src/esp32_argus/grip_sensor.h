@@ -10,5 +10,6 @@
 
 void gripSensorBegin();  // analogReadResolution(12)
 
-// The four raw readings (0..4095), in GRIP_SENSOR_PINS order, into `raw` (GRIP_SENSOR_COUNT).
+// The four readings (0..4095, each the average of GRIP_ADC_SAMPLES analogRead()s), in
+// GRIP_SENSOR_PINS order, into `raw` (GRIP_SENSOR_COUNT).
 void gripSensorRead(int* raw);

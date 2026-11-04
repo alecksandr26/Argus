@@ -9,6 +9,36 @@ bool gripHasPressure(const int* raw, int count, int threshold) {
   return false;
 }
 
+GripBaseline::GripBaseline(int count, int delta, uint32_t calibrationMs)
+    : count_(count < kMaxSensors ? count : kMaxSensors), delta_(delta),
+      calibrationMs_(calibrationMs) {}
+
+bool GripBaseline::onSample(const int* raw, uint32_t nowMs) {
+  if (!started_) {
+    started_ = true;
+    startMs_ = nowMs;
+  }
+  if (!calibrated_) {
+    for (int i = 0; i < count_; i++) sum_[i] += raw[i];
+    samples_++;
+    if ((uint32_t)(nowMs - startMs_) < calibrationMs_) return false;
+    for (int i = 0; i < count_; i++) base_[i] = sum_[i] / samples_;
+    calibrated_ = true;
+    return false;
+  }
+  bool pressure = false;
+  for (int i = 0; i < count_; i++) {
+    if (raw[i] - base_[i] >= delta_) pressure = true;
+  }
+  if (pressure) return true;  // nothing is learned while anything presses
+  for (int i = 0; i < count_; i++) {
+    float diff = raw[i] - base_[i];
+    float rate = diff < -delta_ / 2.0f ? 0.3f : 0.02f;
+    base_[i] += diff * rate;
+  }
+  return false;
+}
+
 bool gripIsMoving(bool hasFix, float speedKmh, float minSpeedKmh) {
   return hasFix && speedKmh >= minSpeedKmh;
 }
