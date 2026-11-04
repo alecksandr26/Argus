@@ -168,6 +168,8 @@ _EVENT = (
     f" OR ({_SEV} IN ('none', 'low') AND {_PREV} IN ('medium', 'critical'))))"
 )
 _NOT_LEASED = "(lease_until_ms IS NULL OR lease_until_ms <= ?)"
+# A keepalive reading (`transition: false`): never an event, only the newest one matters.
+_KEEPALIVE = "json_extract(payload_json, '$.transition') = 0"
 
 _SELECT_ALERT = """
     SELECT id, kind, level, created_at_ms, source_id, payload_json, geolocation_json,
@@ -609,6 +611,27 @@ class Buffer:
                 f"DELETE FROM alerts WHERE {stale} AND NOT {_EVENT}", (older_than_ms, now)
             ).rowcount
         return moved, archived, dropped
+
+    def drop_stale_keepalives(self, max_age_s: float | None = None, *,
+                              now_ms: int | None = None) -> int:
+        """Delete live keepalives (drowsiness rows with `transition: false`, never a backend
+        event) enqueued more than `max_age_s` (default `BUFFER_KEEPALIVE_MAX_AGE_SECONDS`, 10 s)
+        ago, leased rows skipped. The sender calls it before serving a `PULL`, so a backlog of
+        stale keepalives never fills a batch (only the newest reading matters) and isn't counted
+        as waiting in `END`. Events (`transition: true`) and dead letters are never touched.
+        Returns how many rows were deleted."""
+        now = _now_ms() if now_ms is None else now_ms
+        age_s = constants.BUFFER_KEEPALIVE_MAX_AGE_SECONDS if max_age_s is None else max_age_s
+        cutoff = now - int(age_s * 1000)
+        with self._lock:
+            return self._conn.execute(
+                f"""
+                DELETE FROM alerts
+                WHERE state = ? AND kind = 'drowsiness' AND {_KEEPALIVE}
+                  AND enqueued_at_ms < ? AND {_NOT_LEASED}
+                """,
+                (OUTBOX, cutoff, now),
+            ).rowcount
 
     def waiting(self, *, now_ms: int | None = None) -> tuple[int, int]:
         """`(dlq_waiting, outbox_waiting)` for `END`/`OK`: rows in each state that aren't

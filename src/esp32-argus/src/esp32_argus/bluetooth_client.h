@@ -22,14 +22,15 @@ void bluetoothClientBegin();
 // asked").
 bool bluetoothLinkUp();
 
-// One Serial line on the link: up/down, sessions and records since boot, how long since the Pi
-// last answered, free heap.
+// One Serial line on the link: up/down, connects / complete sessions / records since boot, how
+// long since the last connect and the last complete session, why sessions failed, bytes received
+// and dropped, free heap.
 void bluetoothLogStatus();
 
 // Connects, sends `request` (pullRequest(n) or dlqRequest()) and reads every record line up to
-// `END <dlq> <outbox>`. The whole batch is read before any of it is handled: BluetoothSerial's
-// receive queue is 512 bytes and silently drops what doesn't fit, so handling records while the
-// Pi still streams loses bytes. False on no link, a timeout, a malformed END or running out of
+// `END <dlq> <outbox>`. The bytes land in this module's own PI_BT_RX_BUFFER (BluetoothSerial's
+// receive queue is 512 bytes and silently drops what doesn't fit), drained at every connect; the
+// whole batch is still read before any of it is handled. False on no link, a timeout, a malformed END or running out of
 // memory: then the connection is closed and nothing was reported (the Pi keeps every row as it
 // was and serves it again).
 bool bluetoothOpenSession(const std::string& request, std::vector<std::string>& lines,

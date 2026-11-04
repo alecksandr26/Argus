@@ -24,10 +24,10 @@ static void pressureIsAnySensorAboveTheThreshold() {
   int none[4] = {0, 120, 500, 499};
   int one[4] = {0, 0, 0, 501};
   int all[4] = {4095, 900, 800, 2000};
-  CHECK(!gripHasPressure(none, 4));  // 500 itself isn't above 500
-  CHECK(gripHasPressure(one, 4));
-  CHECK(gripHasPressure(all, 4));
-  CHECK(!gripHasPressure(one, 3));  // only the sensors counted
+  CHECK(!gripHasPressure(none, 4, 500));  // 500 itself isn't above 500
+  CHECK(gripHasPressure(one, 4, 500));
+  CHECK(gripHasPressure(all, 4, 500));
+  CHECK(!gripHasPressure(one, 3, 500));  // only the sensors counted
   CHECK(gripHasPressure(none, 4, 100));
 }
 
@@ -172,8 +172,74 @@ static void theAlertAndTheOkEvents() {
   CHECK(!ok.hasSpeed);
 }
 
+// --- The baselines (2026-11-03) ---
+
+static void feedFor(GripBaseline& b, const int* raw, uint32_t from, uint32_t to) {
+  for (uint32_t t = from; t < to; t += 100) b.onSample(raw, t);
+}
+
+static void baselinesAreLearnedAtBoot() {
+  GripBaseline b(4, 80, 2000);
+  const int idle[4] = {0, 250, 0, 0};
+  CHECK(!b.onSample(idle, 0));
+  feedFor(b, idle, 100, 2000);
+  CHECK(!b.calibrated());
+  CHECK(!b.onSample(idle, 2000));
+  CHECK(b.calibrated());
+  CHECK(b.baseline(0) == 0 && b.baseline(1) == 250);
+}
+
+// S2 idles at ~190-260 on the bench: that jitter must never read as pressure.
+static void idleJitterIsNotPressure() {
+  GripBaseline b(4, 80, 2000);
+  const int a[4] = {0, 226, 0, 0};
+  feedFor(b, a, 0, 2100);
+  const int highs[] = {186, 263, 240, 200, 255, 190, 262};
+  uint32_t t = 2100;
+  for (int k = 0; k < 50; k++) {
+    for (int v : highs) {
+      const int r[4] = {3, v, 0, 5};
+      CHECK(!b.onSample(r, t));
+      t += 100;
+    }
+  }
+}
+
+static void aLightTouchCountsAndIsNeverLearned() {
+  GripBaseline b(4, 80, 2000);
+  const int idle[4] = {0, 250, 0, 0};
+  feedFor(b, idle, 0, 2100);
+  const int light[4] = {90, 250, 0, 0};  // a notebook on S1: +90
+  for (uint32_t t = 2100; t < 600000; t += 100) {
+    if (!b.onSample(light, t)) {
+      CHECK(false);  // stopped counting while still resting on it
+      break;
+    }
+  }
+  CHECK(b.baseline(0) == 0);  // never absorbed
+  CHECK(!b.onSample(idle, 600000));  // lifted: no pressure again
+}
+
+// A hand resting on the wheel during calibration: once it lifts, the baseline drops fast.
+static void aHandAtBootIsCorrectedWhenItLifts() {
+  GripBaseline b(4, 80, 2000);
+  const int hand[4] = {0, 250, 1500, 0};
+  feedFor(b, hand, 0, 2100);
+  CHECK(b.baseline(2) == 1500);
+  const int idle[4] = {0, 250, 0, 0};
+  uint32_t t = 2100;
+  for (int k = 0; k < 30; k++, t += 100) b.onSample(idle, t);  // 3 s untouched
+  CHECK(b.baseline(2) < 40);
+  const int touch[4] = {0, 250, 150, 0};
+  CHECK(b.onSample(touch, t));
+}
+
 int main() {
   RUN(pressureIsAnySensorAboveTheThreshold);
+  RUN(baselinesAreLearnedAtBoot);
+  RUN(idleJitterIsNotPressure);
+  RUN(aLightTouchCountsAndIsNeverLearned);
+  RUN(aHandAtBootIsCorrectedWhenItLifts);
   RUN(threeSecondsWithoutPressureStartAnEpisode);
   RUN(pressureInBetweenRestartsTheTimer);
   RUN(threeHundredMillisecondsOfPressureEndTheEpisode);

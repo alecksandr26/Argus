@@ -359,8 +359,14 @@ this device never saw where it happened.
 
 **How it connects.** `SerialBT.connect(PI_BT_MAC_ADDRESS, PI_BT_CHANNEL)`: straight to RFCOMM
 channel 4 instead of an SDP lookup on every poll (a Windows PC playing the Pi in `test/hil/`
-needs `0`). The whole batch is read before any of it is handled, because `BluetoothSerial`'s
-512-byte receive queue silently drops what doesn't fit while records are being handled.
+needs `0`). The bytes go to this device's own `PI_BT_RX_BUFFER` (4 KB, via
+`BluetoothSerial::onData()`), because the core's 512-byte receive queue silently drops what doesn't
+fit (the 2026-11-03 bench: backed-up batches never reached `END`, so the Pi served them again
+forever). The buffer is emptied at every connect, and the whole batch is still read before any of
+it is handled. `PI_BT_PULL_COUNT` is 4. The `[bt] Pi link` status line counts connects, complete
+sessions and each failure reason (line timeout, bad END, no reply...), with bytes received and
+dropped. After `PI_BT_RESET_AFTER_FAILS` (5) failed connects in a row the Bluetooth stack is
+restarted.
 `[bt] CONNECTED to the Pi` / `[bt] Can't reach the Pi` print only when that changes.
 
 ## 1b. Credentials: fetched from the Pi, not flashed in
@@ -583,14 +589,19 @@ stops it; a critical from the camera is the vision alarm, and the Pi's driver OK
   or not, and one per grip episode. They go to the phone set in the dashboard (Fleet truck form →
   `argus-device.env` → the Pi → `CONFIG` → this device, RAM only, section 1b).
 - **The buzzer never sounds with the hands on the wheel.** With the hands off it sounds at once
-  with a camera critical, or after 5 s without pressure with the camera OK.
+  with a camera critical, or after 3 s without pressure with the camera OK.
 - **No-face cap:** while the camera says nobody is in view, it sounds 3 s at most.
 - **The backend** still gets each alert on its own.
 
 **The grip sensor** (`grip_sensor.*`, `grip_policy.*`; `gripTask`):
 
 - Four RFP602 on GPIO 34/35/36/39 (ADC1, which keeps working with Bluetooth/WiFi on),
-  `analogReadResolution(12)`. **Pressure = any sensor above `GRIP_PRESSURE_THRESHOLD` (500)**.
+  `analogReadResolution(12)`, each reading the average of `GRIP_ADC_SAMPLES` (4).
+  **Pressure = any sensor at least `GRIP_PRESSURE_DELTA` (80) above its own baseline**
+  (2026-11-03; was a fixed 500, which needed a heavy press). The baselines are learned over the
+  first `GRIP_BASELINE_BOOT_MS` (2 s: keep the wheel untouched at boot), then follow the resting
+  level only while nothing presses (fast downwards, slowly upwards), so a notebook or a resting
+  hand keeps counting. The `[grip]` line shows `raw/base` per sensor.
   Sampled every `GRIP_SAMPLE_INTERVAL_MS` (100 ms); the four raw readings go to Serial every
   `GRIP_LOG_INTERVAL_MS` (2 s), not every sample.
 - **No pressure continuously for `GRIP_ALERT_MS` (3 s)** starts a grip episode: the grip alarm
@@ -626,8 +637,8 @@ tone. `gripTask` decides it every 100 ms (`AlarmPolicy::tick()`):
 |---|---|
 | Hands on the wheel | silent (the hands back silence it at once) |
 | Hands off + a camera critical (the vision alarm) | at once |
-| Hands off, camera OK (no critical, or no Pi reading for `PI_STALE_MS`) | after `GRIP_ONLY_BUZZER_MS` (5 s from the last pressure, so 2 s into the grip episode). There's no movement gate, so a parked truck counts too |
-| Latest live camera reading is a `no_face` critical | `NO_FACE_BUZZER_MAX_MS` (3 s) at most, then quiet until a reading with anything else |
+| Hands off, camera OK (no critical, or no Pi reading for `PI_STALE_MS`) | after `GRIP_ONLY_BUZZER_MS` (3 s from the last pressure: the grip episode's start). There's no movement gate, so a parked truck counts too |
+| Latest live camera reading says nobody is in view (class `No Face`, or a `no_face` critical) | `NO_FACE_BUZZER_MAX_MS` (3 s) at most, then quiet until a reading shows a face |
 
 - **The no-face cap follows readings, not events.** Every live record a session pulls,
   keepalives included (not DLQ replays), updates the camera's latest `severity` + `reason`.
@@ -691,9 +702,9 @@ tone. `gripTask` decides it every 100 ms (`AlarmPolicy::tick()`):
 
 - **Grip events have no DLQ**: a grip alert the backend couldn't get within 60 s is gone (only
   its `[live] ... dropped` line remains). Its buzzer and SMS don't depend on the backend.
-- **The threshold (500) is untuned**: it is the bench sketch's value; the real wheel, the sensors'
-  mounting and gloves can move it a lot. Watch the `[grip]` readings on the bench and set
-  `GRIP_PRESSURE_THRESHOLD` from them.
+- **The delta (80) is untuned**: watch the `[grip]` `raw/base` readings on the bench; lower
+  `GRIP_PRESSURE_DELTA` for more sensitivity, but keep it above the idle jitter (S2 idles at
+  ~190-260).
 - **Nothing has run on hardware**: the four ADC reads with Bluetooth + WiFi on, the buzzer, the
   SIM800L SMS (text mode, `+CMGS`), the SMS while GPRS data is in use, and `gripTask`'s stack
   (watch `grip` in the `[health]` line). It compiles for the ESP32 (section 0), nothing more.

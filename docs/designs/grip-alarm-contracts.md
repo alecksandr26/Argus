@@ -12,11 +12,13 @@ buzzer, a TinyGsm SMS with a Google Maps link) plus their rules:
     one SMS per camera episode, whether or not the hands are on the wheel. The wheel's `no_grip`
     critical (3 s without pressure) sends one per grip episode.
   - **The buzzer never sounds with the hands on the wheel.** With the hands off it sounds at once
-    if a camera critical is on. With the camera OK it sounds after **5 s without pressure**. There
+    if a camera critical is on. With the camera OK it sounds after **3 s without pressure** (5 s
+    at first; 3 s after the bench run, same day). There
     is no movement gate (it can't be simulated on the bench), so a parked truck counts too.
-  - **The no-face cap.** While the camera's latest reading is a `no_face` critical (nobody in the
-    seat), the buzzer sounds **3 s** at most, then stays quiet until the camera reports anything
-    else.
+  - **The no-face cap.** While the camera's latest reading says nobody is in view (class
+    `No Face` from the Pi's first face-less reading, or a `no_face` critical), the buzzer sounds
+    **3 s** at most, then stays quiet until the camera sees a face. The Pi now raises the
+    `no_face` critical 5 s after the face is missing from boot too.
   - **Camera gone** (no live Pi record for 10 s): the wheel rule works on its own.
   - **Accepted consequences:**
     - An empty cab right after boot never gets a `no_face` (the Pi only counts once it has seen a
@@ -81,7 +83,8 @@ value means "no phone" (no SMS).
 ## C2. Grip sensor (T1)
 
 - Four RFP602 on **GPIO 34, 35, 36, 39** (ADC1: they keep working with Bluetooth/WiFi on),
-  `analogReadResolution(12)`. **Pressure = any sensor reads `> GRIP_PRESSURE_THRESHOLD` (500)**.
+  `analogReadResolution(12)`. **Pressure = any sensor at least `GRIP_PRESSURE_DELTA` (80) above
+  its own learned baseline** (changed 2026-11-03; was `> 500`). See the ESP32 README section 6.
   Sampled every `GRIP_SAMPLE_INTERVAL_MS` (100). Raw readings go to Serial at most every
   `GRIP_LOG_INTERVAL_MS` (2000), not every sample.
 - **No pressure continuously for `GRIP_ALERT_MS` (3000)** → a grip episode starts: the grip alarm
@@ -118,7 +121,7 @@ ESP32-originated, so they are **not** Pi records: no `TAKEN`/`ACK`/`FAIL` to the
 - Buzzer on **GPIO 13**, `BUZZER_ACTIVE_HIGH 1`, continuous tone (changed 2026-11-03):
   - **On while `gripAlarm && (visionAlarm || gripFor >= GRIP_ONLY_BUZZER_MS - GRIP_ALERT_MS)`**,
     i.e. the hands off plus a camera critical at once, or the hands off for `GRIP_ONLY_BUZZER_MS`
-    (5000, counted from the last pressure, so 2 s into the grip episode) with the camera OK. The
+    (3000, counted from the last pressure: the grip episode's start) with the camera OK. The
     hands back silence it at once.
   - **No-face cap:** the ESP32 keeps the `severity` + `reason` of the latest **live** Pi record,
     keepalives and non-events included (DLQ replays don't count). While that is `critical` +

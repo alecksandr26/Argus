@@ -101,11 +101,13 @@ void gpsLogStatus() {
   Serial.print(bestSnr);
   Serial.print(" boots=");
   Serial.print(gpsBoots);
-  if (gps.location.isValid()) {
-    Serial.print(" fix=yes lat=");
-    Serial.print(gps.location.lat(), 6);
-    Serial.print(" lon=");
-    Serial.print(gps.location.lng(), 6);
+  if (gpsHasFix()) {  // a current fix (isValid() alone stays true forever after the first one)
+    Serial.printf(" fix=yes lat=%.6f lon=%.6f speed=%.1f km/h age=%lu ms", gpsLatitude(),
+                  gpsLongitude(), gpsSpeedKmh(),
+                  BENCH_FAKE_GPS ? 0UL : (unsigned long)gps.location.age());
+  } else if (gps.location.isValid()) {
+    Serial.printf(" fix=lost (last lat=%.6f lon=%.6f, %lu s ago)", gps.location.lat(),
+                  gps.location.lng(), (unsigned long)(gps.location.age() / 1000));
   } else {
     Serial.print(" fix=no");
   }

@@ -1,6 +1,8 @@
 #include "bluetooth_client.h"
 
 #include <BluetoothSerial.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/stream_buffer.h>
 
 #include <new>
 
@@ -13,9 +15,70 @@ uint8_t piMac[6] = PI_BT_MAC_ADDRESS;
 // Link bookkeeping, for the Serial log only.
 bool linkUp = false;
 bool linkEverTried = false;
-unsigned long lastAnsweredAt = 0;
+unsigned long lastConnectedAt = 0;
+unsigned long lastSessionOkAt = 0;
 unsigned long sessions = 0;
+unsigned long sessionsOk = 0;
 unsigned long recordsPulled = 0;
+int connectFailsInARow = 0;
+// Why sessions failed since boot (the status line shows them).
+struct Failures {
+  unsigned long connect = 0, lineTimeout = 0, badEnd = 0, tooMany = 0, oom = 0, noReply = 0,
+                badReply = 0, btResets = 0;
+} fails;
+
+// Our own receive buffer (PI_BT_RX_BUFFER), fed by BluetoothSerial::onData() from the Bluetooth
+// task: the core's own queue is 512 B and silently drops whatever doesn't fit, so a backed-up
+// batch never reached END. Null if it couldn't be allocated (then the core's queue is used).
+StreamBufferHandle_t rxBuf = nullptr;
+volatile unsigned long rxBytes = 0;
+volatile unsigned long rxDropped = 0;
+uint8_t chunk[256];
+size_t chunkLen = 0;
+size_t chunkPos = 0;
+
+void onPiData(const uint8_t* data, size_t len) {
+  size_t sent = xStreamBufferSend(rxBuf, data, len, 0);
+  rxBytes += sent;
+  if (sent < len) rxDropped += len - sent;
+}
+
+// Forgets whatever a previous (broken) session left unread, so it can't start the next one.
+void drainRx() {
+  chunkLen = chunkPos = 0;
+  if (rxBuf) {
+    xStreamBufferReset(rxBuf);
+  } else {
+    while (SerialBT.available()) SerialBT.read();
+  }
+}
+
+// The next received byte, waiting at most `waitMs`. False if none came.
+bool nextByte(char& c, uint32_t waitMs) {
+  if (!rxBuf) {
+    unsigned long start = millis();
+    while (!SerialBT.available()) {
+      if (millis() - start >= waitMs) return false;
+      vTaskDelay(1);
+    }
+    c = (char)SerialBT.read();
+    return true;
+  }
+  if (chunkPos >= chunkLen) {
+    chunkLen = xStreamBufferReceive(rxBuf, chunk, sizeof(chunk), pdMS_TO_TICKS(waitMs));
+    chunkPos = 0;
+    if (chunkLen == 0) return false;
+  }
+  c = (char)chunk[chunkPos++];
+  return true;
+}
+
+void startBluetooth() {
+  // Classic Bluetooth only: this firmware never uses BLE, and disableBLE makes the core start the
+  // controller in classic mode and release the BLE controller's memory (btMemRelease), which
+  // leaves more heap for the classic stack.
+  SerialBT.begin("ESP32-Argus", /*isMaster=*/true, /*disableBLE=*/true);
+}
 
 void printPiAddress() {
   for (int i = 0; i < 6; i++) {
@@ -56,6 +119,7 @@ bool connectToPi() {
   if (retryDelayMs > 0 && (long)(now - nextTryAt) < 0) return false;  // backing off
   if (!heapAllowsConnect()) return false;
   bool ok = SerialBT.connect(piMac, PI_BT_CHANNEL);
+  if (ok) drainRx();
   if (ok && !linkUp) {
     Serial.print("[bt] CONNECTED to the Pi (");
     printPiAddress();
@@ -67,9 +131,21 @@ bool connectToPi() {
   }
   if (ok) {
     retryDelayMs = 0;
-    lastAnsweredAt = millis();
+    lastConnectedAt = millis();
     sessions++;
+    connectFailsInARow = 0;
   } else {
+    fails.connect++;
+    if (++connectFailsInARow >= PI_BT_RESET_AFTER_FAILS) {
+      // The stack can get stuck after the Pi drops a session mid-way: start it again.
+      Serial.printf("[bt] %d failed connects in a row: restarting the Bluetooth stack\n",
+                    connectFailsInARow);
+      connectFailsInARow = 0;
+      fails.btResets++;
+      SerialBT.end();
+      vTaskDelay(pdMS_TO_TICKS(200));
+      startBluetooth();
+    }
     retryDelayMs = retryDelayMs == 0 ? PI_BT_POLL_INTERVAL_MS : retryDelayMs * 2;
     if (retryDelayMs > PI_BT_RETRY_MAX_MS) retryDelayMs = PI_BT_RETRY_MAX_MS;
     nextTryAt = millis() + retryDelayMs;
@@ -100,21 +176,16 @@ bool readLine(std::string& out, unsigned long timeoutMs, bool* oom = nullptr) {
     out.reserve(PI_BT_LINE_RESERVE);
     unsigned long lastByteAt = millis();
     while (millis() - lastByteAt < timeoutMs) {
-      if (!SerialBT.available()) {
-        vTaskDelay(1);  // nothing yet: let the sender and GPS tasks run
-        continue;
+      char c;
+      if (!nextByte(c, 5)) continue;  // nothing yet (waits 5 ms: the other tasks run)
+      if (c == '\n') return true;
+      if (c == '\r') continue;
+      if (out.size() >= PI_BT_LINE_MAX) {  // a runaway line: never let it eat the heap
+        if (oom) *oom = true;
+        return false;
       }
-      while (SerialBT.available()) {
-        char c = SerialBT.read();
-        if (c == '\n') return true;
-        if (c == '\r') continue;
-        if (out.size() >= PI_BT_LINE_MAX) {  // a runaway line: never let it eat the heap
-          if (oom) *oom = true;
-          return false;
-        }
-        out += c;
-        lastByteAt = millis();
-      }
+      out += c;
+      lastByteAt = millis();
     }
     return false;
   } catch (const std::bad_alloc&) {
@@ -136,10 +207,14 @@ void logOutOfMemory() {
 }  // namespace
 
 void bluetoothClientBegin() {
-  // Classic Bluetooth only: this firmware never uses BLE, and disableBLE makes the core start the
-  // controller in classic mode and release the BLE controller's memory (btMemRelease), which
-  // leaves more heap for the classic stack.
-  SerialBT.begin("ESP32-Argus", /*isMaster=*/true, /*disableBLE=*/true);
+  rxBuf = xStreamBufferCreate(PI_BT_RX_BUFFER, 1);
+  if (rxBuf) {
+    SerialBT.onData(onPiData);  // the bytes come to rxBuf instead of the core's 512 B queue
+  } else {
+    Serial.printf("[bt] Couldn't allocate the %u B receive buffer: using the core's 512 B queue\n",
+                  (unsigned)PI_BT_RX_BUFFER);
+  }
+  startBluetooth();
   // This is the value the Pi needs in its .env (ESP32_BT_MAC): its pairing agent accepts only
   // this address. Not the MAC esptool or the upload log prints -- that's the WiFi base MAC.
   String mac = SerialBT.getBtAddressString();
@@ -190,19 +265,26 @@ bool bluetoothOpenSession(const std::string& request, std::vector<std::string>& 
     bool oom = false;
     if (!readLine(line, PI_BT_LINE_TIMEOUT_MS, &oom)) {
       if (oom) {
+        fails.oom++;
         logOutOfMemory();
       } else {
-        Serial.println("[bt] Timed out waiting for a line from the Pi");
+        fails.lineTimeout++;
+        Serial.printf("[bt] Session failed: no line from the Pi for %lu ms after %u record(s) "
+                      "(\"%s\"; %lu B received, %lu B dropped since boot)\n",
+                      (unsigned long)PI_BT_LINE_TIMEOUT_MS, (unsigned)lines.size(),
+                      request.c_str(), (unsigned long)rxBytes, (unsigned long)rxDropped);
       }
       break;
     }
     if (line.compare(0, 3, "END") == 0) {
       if (parseEndLine(line, end)) return true;
-      Serial.print("[bt] Malformed END from the Pi: ");
+      fails.badEnd++;
+      Serial.print("[bt] Session failed: malformed END from the Pi: ");
       Serial.println(line.c_str());
       break;
     }
     if (lines.size() >= (size_t)PI_BT_PULL_COUNT) {
+      fails.tooMany++;
       Serial.println("[bt] The Pi sent more records than asked for -- ending the session");
       break;
     }
@@ -227,6 +309,7 @@ bool bluetoothCloseSession(const std::vector<ScriptLine>& script, SessionSummary
     if (s.expectReply.empty()) continue;  // FAIL: no reply
     std::string reply;
     if (!readLine(reply, PI_BT_LINE_TIMEOUT_MS)) {
+      fails.noReply++;
       Serial.print("[bt] No reply to \"");
       Serial.print(s.line.substr(0, 40).c_str());
       Serial.println("\" -- lines already sent stand; the rest goes next session");
@@ -236,12 +319,14 @@ bool bluetoothCloseSession(const std::vector<ScriptLine>& script, SessionSummary
     if (s.expectReply == "OK") {
       gotOk = parseOkLine(reply, summary);
       if (!gotOk) {
+        fails.badReply++;
         Serial.print("[bt] Expected OK, got: ");
         Serial.println(reply.c_str());
       }
       break;  // DONE is always last
     }
     if (!parseCountReply(reply, s.expectReply.c_str(), n)) {
+      fails.badReply++;
       Serial.print("[bt] Expected ");
       Serial.print(s.expectReply.c_str());
       Serial.print(", got: ");
@@ -250,6 +335,10 @@ bool bluetoothCloseSession(const std::vector<ScriptLine>& script, SessionSummary
     }
   }
   SerialBT.disconnect();
+  if (gotOk) {
+    sessionsOk++;
+    lastSessionOkAt = millis();
+  }
   return gotOk;
 }
 
@@ -265,15 +354,22 @@ void bluetoothLogStatus() {
   Serial.print(" (");
   printPiAddress();
   Serial.print("): ");
-  Serial.print(sessions);
-  Serial.print(" session(s), ");
-  Serial.print(recordsPulled);
-  Serial.print(" record(s) since boot");
+  Serial.printf("%lu connect(s), %lu complete session(s), %lu record(s) since boot", sessions,
+                sessionsOk, recordsPulled);
   if (sessions > 0) {
-    Serial.print(", last answer ");
-    Serial.print((millis() - lastAnsweredAt) / 1000.0, 1);
-    Serial.print(" s ago");
+    Serial.printf(", last connect %.1f s ago", (millis() - lastConnectedAt) / 1000.0);
   }
+  if (sessionsOk > 0) {
+    Serial.printf(", last complete session %.1f s ago", (millis() - lastSessionOkAt) / 1000.0);
+  } else {
+    Serial.print(", no complete session yet");
+  }
+  Serial.printf(" | failures: connect %lu, line timeout %lu, bad END %lu, too many %lu, "
+                "no memory %lu, no reply %lu, bad reply %lu, BT restarts %lu | rx %lu B, "
+                "dropped %lu B",
+                fails.connect, fails.lineTimeout, fails.badEnd, fails.tooMany, fails.oom,
+                fails.noReply, fails.badReply, fails.btResets, (unsigned long)rxBytes,
+                (unsigned long)rxDropped);
   // A slow leak or fragmentation shows up here long before an allocation fails.
   Serial.print(" | free heap ");
   Serial.print(ESP.getFreeHeap());

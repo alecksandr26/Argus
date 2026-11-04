@@ -43,10 +43,11 @@ VisionChange AlarmPolicy::onPiRecord(PiEventKind kind, bool dlq, bool taken,
   return VisionChange::None;  // a medium, a keepalive, a non-event
 }
 
-void AlarmPolicy::onCameraReading(bool dlq, const std::string& severity,
-                                  const std::string& reason, uint32_t nowMs) {
+void AlarmPolicy::onCameraReading(bool dlq, const std::string& className,
+                                  const std::string& severity, const std::string& reason,
+                                  uint32_t nowMs) {
   if (dlq) return;
-  cameraNoFace_ = severity == "critical" && reason == "no_face";
+  cameraNoFace_ = className == "No Face" || (severity == "critical" && reason == "no_face");
   cameraSeenMs_ = nowMs;
 }
 
