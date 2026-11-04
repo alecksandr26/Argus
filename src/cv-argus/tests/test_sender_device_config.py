@@ -313,3 +313,34 @@ class TestListenerSecurity:
     def test_unknown_level_raises_before_opening_a_socket(self, monkeypatch):
         with pytest.raises(ValueError, match="paranoid"):
             self._listener(monkeypatch, security="paranoid")
+
+
+class TestAlertPhoneLabel:
+    """`ARGUS_ALERT_PHONE_LABEL` (route-guardian contracts G7): display only, never in CONFIG."""
+
+    PHONE_ENV = {**ENV, "ARGUS_ALERT_PHONE": "+523312345678"}
+
+    def test_unset_or_blank_is_none(self):
+        assert CONFIG.alert_phone_label is None
+        config = DeviceConfig.from_env({**self.PHONE_ENV, "ARGUS_ALERT_PHONE_LABEL": "  \t "})
+        assert config.alert_phone_label is None
+
+    def test_kept_cleaned_and_capped(self):
+        raw = "  guardian Ana\nLópez\x00  of route r-1 "
+        config = DeviceConfig.from_env({**self.PHONE_ENV, "ARGUS_ALERT_PHONE_LABEL": raw})
+        assert config.alert_phone_label == "guardian Ana López of route r-1"
+        long = DeviceConfig.from_env({**self.PHONE_ENV, "ARGUS_ALERT_PHONE_LABEL": "x" * 500})
+        assert len(long.alert_phone_label) == device_config.ALERT_PHONE_LABEL_MAX_LEN
+
+    def test_never_sent_to_the_esp32(self, tmp_path):
+        config = DeviceConfig.from_env(
+            {**self.PHONE_ENV, "ARGUS_ALERT_PHONE_LABEL": "truck fallback phone"}
+        )
+        assert "alert_phone_label" not in config.to_wire()
+        lines = _session({"device_config": config}, "CONFIG", tmp_path=tmp_path)
+        payload = protocol.parse_config(lines[0])
+        assert payload == config.to_wire() and payload["alert_phone"] == "+523312345678"
+
+    def test_a_label_without_a_phone_changes_nothing_on_the_wire(self):
+        config = DeviceConfig.from_env({**ENV, "ARGUS_ALERT_PHONE_LABEL": "truck fallback phone"})
+        assert config.to_wire() == CONFIG.to_wire()

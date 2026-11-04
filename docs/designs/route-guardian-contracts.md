@@ -120,6 +120,16 @@ Resolution, first match wins:
     ```
 
     When there's no phone, the existing commented `ARGUS_ALERT_PHONE=` line stays.
+  - When a phone is written, the next line is a display-only label (unquoted, one line,
+    control characters replaced by spaces, at most 120 characters):
+
+    ```
+    ARGUS_ALERT_PHONE_LABEL=guardian Ana López of route <id>
+    ARGUS_ALERT_PHONE_LABEL=truck fallback phone
+    ```
+
+    cv-argus logs it next to the masked phone at startup (`DeviceConfig.alert_phone_label`). It
+    is **not** sent in `CONFIG`, so the ESP32 protocol doesn't change.
   - The issued key survives the truck form's Save. The download starts as soon as the key is
     issued.
 - **`RouteDeviceFileButton`** (`src/components/RouteDeviceFileButton.tsx`):
