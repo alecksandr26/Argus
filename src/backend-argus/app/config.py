@@ -14,6 +14,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
+    # The build's version (git short SHA), reported by `GET /health` (route-guardian contracts,
+    # G6). The Dockerfile sets it from build arg ARGUS_VERSION; "dev" when not built that way.
+    argus_version: str = "dev"
+
     mongo_uri: str = "mongodb://localhost:27017"
     mongo_db: str = "argus"
 

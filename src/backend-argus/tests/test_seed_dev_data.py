@@ -3,7 +3,9 @@ idempotent (no duplicates on a second run, the shape `SEED_DEMO_DATA` relies on 
 backend startup) and that the destructive (`reset=True`) path still seeds the full dataset."""
 import pytest
 
+from app.guardians import is_usable_guardian
 from app.models.alert import Alert
+from app.models.common import Role
 from app.models.driver import Driver
 from app.models.incident import Incident
 from app.models.route import Route
@@ -82,3 +84,29 @@ async def test_credentials_file_lists_every_seeded_user(mongo_client, tmp_path):
 async def test_no_credentials_file_written_when_not_requested(mongo_client, tmp_path):
     await seed(reset=True, client=mongo_client)
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_seeded_routes_have_guardians_with_e164_phones(mongo_client):
+    """Route guardians (route-guardian contracts G1/G2): every demo route has an active guardian
+    with an E.164 phone, spread over the three seeded guardians."""
+    await seed(reset=True, client=mongo_client)
+    routes = await Route.find_all().to_list()
+    guardian_ids = {r.id_guardian for r in routes}
+    assert None not in guardian_ids and len(guardian_ids) == 3
+    for gid in guardian_ids:
+        assert is_usable_guardian(await User.get(gid))
+
+
+@pytest.mark.asyncio
+async def test_idempotent_seed_fixes_an_old_guardian_phone(mongo_client):
+    await User(
+        email="guardian@argus.dev",
+        password_hash="x",
+        role=Role.GUARDIAN,
+        first_name="Luis",
+        last_name="Mendoza",
+        phone_number="555-0101",
+    ).insert()
+    await seed(reset=False, client=mongo_client)
+    assert (await User.find_one(User.email == "guardian@argus.dev")).phone_number == "+525550100101"

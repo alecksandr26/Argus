@@ -33,6 +33,35 @@ creates are 422, a medium/critical alert joins an incident, a status without `vi
 `argus-device.env`, not through any device endpoint. The ESP32's hands-off-the-wheel alert
 arrives as an ordinary report event with `alert_type: "no_grip"`, `severity: "critical"`.
 
+**Every new route has a guardian** (`docs/designs/route-guardian-contracts.md`): the
+guardian-role user who watches it, and whose phone the ESP32 texts on a critical.
+
+- `POST /api/routes` requires `id_guardian` (a user id) next to `id_truck`/`id_driver`. It must
+  be an active `guardian` with an E.164 phone, else 422 (`"id_guardian not found"`,
+  `"id_guardian must be an active guardian"`, `"guardian has no valid E.164 phone"`).
+  `PUT /api/routes/{id}` with `id_guardian` reassigns it; on a completed/cancelled route that's
+  409 `"route is finished"`. Older routes without one keep working (`id_guardian: null`).
+- Every route response (list, get, `/api/routes/active`, `/api/live`, the device's
+  `active-route`) carries `id_guardian` and `guardian: {id_user, first_name, last_name,
+  phone_number}` (null when unset or the user is gone).
+- **Guardian phones must be E.164.** Creating or updating a user whose resulting role is
+  `guardian` (`POST`/`PUT /api/users`, `PUT /api/auth/me`) normalises the phone (spaces, `-`,
+  `.`, `(`, `)` removed) and 422s unless it matches `^\+[1-9][0-9]{7,14}$`. Other roles keep
+  free-text phones; an update touching neither `role` nor `phone_number` never fails on an old
+  phone. `Truck.alert_phone` is normalised the same way.
+- A guardian assigned to a scheduled or in-progress route can't be deactivated, given another
+  role or deleted: 409 `"guardian is assigned to N active route(s); reassign them first"`.
+- `POST /api/trucks/{id}/rotate-key` takes an optional body `{"id_route": "..."}` (no body or
+  `{}` works as before; another truck's or an unknown route is 422 `"id_route not found for
+  this truck"`, and the key is not rotated). Besides `id_truck` and `device_api_key` it returns
+  the phone for `argus-device.env`: `alert_phone`, `alert_phone_source` (`route_guardian` |
+  `truck` | null), `id_route` and `guardian_name`. First usable guardian of the given route, the
+  in-progress route, then the earliest scheduled one; else the truck's `alert_phone`.
+
+`GET /health` returns `{"status": "ok", "version": "..."}`: the `ARGUS_VERSION` env var, which
+the Dockerfile sets from build arg `ARGUS_VERSION` (default `dev`):
+`docker build --build-arg ARGUS_VERSION=<git short sha> .`
+
 ## Quick start (no Docker)
 
 ```sh
@@ -188,6 +217,7 @@ defaults so nothing here is required to boot:
 
 | var | default | effect |
 |---|---|---|
+| `ARGUS_VERSION` | `dev` | reported by `GET /health` as `version`; the Dockerfile sets it from the build arg of the same name |
 | `MONGO_URI` | `mongodb://localhost:27017` | Mongo connection string |
 | `MONGO_DB` | `argus` | database name |
 | `JWT_SECRET` | `dev-secret-change-me` | HS256 signing secret — **change this outside local dev** |

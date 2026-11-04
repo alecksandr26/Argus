@@ -79,7 +79,8 @@ async def test_admin_can_create_and_manage_a_guardian(api_client, admin_user):
         headers=auth_headers(admin_user),
     )
     assert update_resp.status_code == 200
-    assert update_resp.json()["phone_number"] == "+1-555-8888"
+    # A guardian phone is stored normalised (route-guardian contracts, G2).
+    assert update_resp.json()["phone_number"] == "+15558888"
 
     list_resp = await api_client.get("/api/users", headers=auth_headers(admin_user))
     assert list_resp.status_code == 200

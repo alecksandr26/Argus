@@ -95,8 +95,15 @@ async def test_create_with_empty_alert_phone_stores_none(api_client, root_admin)
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("sent", "stored"),
-    [(" +523312345678\n", "+523312345678"), ("   ", None)],
-    ids=["outer_whitespace_stripped", "whitespace_only_is_none"],
+    [
+        (" +523312345678\n", "+523312345678"),
+        ("   ", None),
+        # Separators are removed first (normalize_phone, route-guardian contracts G2).
+        ("+52 33 1234 5678", "+523312345678"),
+        ("+52-33-1234-5678", "+523312345678"),
+        ("+52 (33) 1234.5678", "+523312345678"),
+    ],
+    ids=["outer_whitespace_stripped", "whitespace_only_is_none", "inner_spaces", "dashes", "parens_dots"],
 )
 async def test_alert_phone_is_stripped_before_the_check(api_client, root_admin, sent, stored):
     resp = await api_client.post(
@@ -113,8 +120,6 @@ async def test_alert_phone_is_stripped_before_the_check(api_client, root_admin, 
     [
         "523312345678",
         "+0523312345678",
-        "+52 33 1234 5678",
-        "+52-33-1234-5678",
         "+1234567",
         "+1234567890123456",
         "+52331234567a",
@@ -124,8 +129,6 @@ async def test_alert_phone_is_stripped_before_the_check(api_client, root_admin, 
     ids=[
         "no_plus",
         "country_code_starts_with_0",
-        "inner_spaces",
-        "dashes",
         "7_digits",
         "16_digits",
         "letter",

@@ -20,6 +20,10 @@ class Route(TimestampedDocument):
     actual_departure: Optional[datetime] = None
     actual_arrival: Optional[datetime] = None
     operative_status: RouteStatus = RouteStatus.SCHEDULED
+    # The guardian-role User watching this route, whose phone the ESP32 texts on a critical
+    # (docs/designs/route-guardian-contracts.md, G1). Required on create; optional here so routes
+    # from before guardians, and direct `Route(...)` constructions, still load.
+    id_guardian: Optional[str] = None
 
     # Incident state (docs/designs/final-tweaks-contracts.md, C3.5). Raised by medium/critical
     # alerts; lowered only by closing incidents or by an hour of only-OK GPS points. Every write
@@ -44,6 +48,7 @@ class Route(TimestampedDocument):
         indexes = [
             pymongo.IndexModel([("id_truck", pymongo.ASCENDING)]),
             pymongo.IndexModel([("id_driver", pymongo.ASCENDING)]),
+            pymongo.IndexModel([("id_guardian", pymongo.ASCENDING)]),
             pymongo.IndexModel([("operative_status", pymongo.ASCENDING)]),
             pymongo.IndexModel([("destination_coordinates", pymongo.GEOSPHERE)]),
         ]

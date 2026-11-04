@@ -8,6 +8,7 @@ CLAUDE.md's "Tests" section for the convention this follows).
 from __future__ import annotations
 
 import hashlib
+import uuid
 
 import pytest
 import pytest_asyncio
@@ -76,7 +77,7 @@ async def guardian(mongo_client) -> User:
         role=Role.GUARDIAN,
         first_name="Guard",
         last_name="Ian",
-        phone_number="+1-555-0001",
+        phone_number="+15550000001",
     )
     await user.insert()
     return user
@@ -105,6 +106,30 @@ async def truck_driver_user(mongo_client) -> User:
         first_name="Truck",
         last_name="Driver",
         phone_number="+1-555-0002",
+    )
+    await user.insert()
+    return user
+
+
+async def make_guardian(
+    email: str | None = None,
+    phone_number: str = "+523312345678",
+    *,
+    first_name: str = "Ana",
+    last_name: str = "López",
+    is_active: bool = True,
+    role: Role = Role.GUARDIAN,
+) -> User:
+    """A guardian a route can point at (active, E.164 phone, route-guardian contracts G1);
+    every `POST /api/routes` needs one. A random email unless given."""
+    user = User(
+        email=email or f"guardian-{uuid.uuid4().hex[:10]}@example.com",
+        password_hash=hash_secret(sha256_hex("password123")),
+        role=role,
+        first_name=first_name,
+        last_name=last_name,
+        phone_number=phone_number,
+        is_active=is_active,
     )
     await user.insert()
     return user
@@ -157,6 +182,7 @@ async def make_rig(
     *,
     fingerprint: bool = True,
     departed_ago: timedelta = timedelta(hours=1),
+    guardian: User | None = None,
 ) -> Rig:
     """A truck with a device key, a driver and one route. A route that has started (in progress
     or finished) departed `departed_ago` before now, and a finished one arrived a minute ago:
@@ -196,6 +222,7 @@ async def make_rig(
         actual_departure=now - departed_ago if started else None,
         actual_arrival=now - timedelta(minutes=1) if finished else None,
         operative_status=route_status,
+        id_guardian=str(guardian.id) if guardian is not None else None,
     )
     await route.insert()
     return Rig(truck_id=str(truck.id), route_id=str(route.id), key=key)

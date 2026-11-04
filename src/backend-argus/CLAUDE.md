@@ -50,6 +50,7 @@ they're used, like the device-key fields under "Device (ESP32) auth"):
 
 | Entity | Field | What |
 |---|---|---|
+| Route | `id_guardian` | the `guardian`-role User watching the route; its phone is the one the ESP32 texts. Required on `RouteCreate`, optional in the model (older routes). Responses also embed `guardian: {id_user, first_name, last_name, phone_number}`. See "Route guardian" below. |
 | Truck | `alert_phone` | optional E.164 phone (`ALERT_PHONE_PATTERN`, `^\+[1-9][0-9]{7,14}$`) the ESP32 texts on every critical alert (`docs/designs/grip-alarm-contracts.md`, C1). In `TruckCreate`/`TruckUpdate`/`TruckOut`; a bad format is 422, `""` is stored as `None`, and on an update `null` or `""` clears it. Same RBAC as every other truck field (root_admin/admin write, every role reads). The backend never sends it to a device: it travels in the dashboard's `argus-device.env`, so a change only reaches the truck with new credentials (or an edited env file on the Pi). |
 
 The ESP32's own grip alert (`alert_type: "no_grip"`, critical, C3 of the same contract) needed no
@@ -210,6 +211,10 @@ old ingestion endpoints is root_admin/guardian (see "Device auth").
 Plus one resource outside the ER model: **`/api/simulator`** (cloud simulator on/off) is
 **`root_admin` only** for every method; every other role gets 403. See "Simulator control" below.
 
+Route guardians add two user rules (see "Route guardian" below): a guardian's phone must be
+E.164, and a guardian assigned to a scheduled/in-progress route can't be deactivated, demoted or
+deleted (409). Both apply to root_admin and admin alike.
+
 **`admin`'s user-management scope is narrow and enforced server-side, not just by convention**:
 `app/routers/users.py` moved its auth check from a router-level `dependencies=[...]` (whose
 return value isn't injectable) to a per-route `actor: User = Depends(require_role(Role.ROOT_ADMIN,
@@ -248,7 +253,8 @@ Instead, `Truck.device_api_key_hash` holds a bcrypt-hashed, per-truck static key
   credentials") turns it into an `argus-device.env` for the truck's Pi; `cv-argus` serves it to
   the ESP32 over Bluetooth (`CONFIG`), so nothing per-truck is flashed into firmware. See
   `src/esp32-argus/README.md` section 1b for the full chain.
-- `DELETE /api/trucks/{id}/device-key` (root_admin/admin) revokes it. `TruckOut` never carries
+- `DELETE /api/trucks/{id}/device-key` (root_admin/admin) revokes it. Rotate-key's response
+  also carries the SMS phone for that env file (see "Route guardian" below). `TruckOut` never carries
   the key or hash, only `has_device_key`, `device_key_issued_at`, and `device_last_seen_at`.
   A successful key match refreshes `device_last_seen_at` at most once a minute
   (`DEVICE_LAST_SEEN_RESOLUTION`, a targeted `$set`, not `truck.save()`); rotating or
@@ -441,6 +447,36 @@ Their behaviour follows the new model:
   only) on a finished route stays allowed;
 - `GET /api/devices/me/active-route` is unchanged.
 
+## Route guardian
+
+`docs/designs/route-guardian-contracts.md` (G1–G6) is the exact spec; it wins over this
+section. Every new route names a guardian (`Route.id_guardian`), whose phone is the number the
+truck's ESP32 texts on every critical alert. The phone still reaches the truck only through
+`argus-device.env` (`ARGUS_ALERT_PHONE`), so there's no new device field.
+
+- `app/guardians.py`: the validation (`guardian_problem`: not found, then not an active
+  guardian, then no E.164 phone, each a 422 on route create/update), the batched loader
+  (`load_guardians`, one users query for any number of routes, used by `/api/live`,
+  `/api/routes` and `/api/routes/active`), and the G3 guard (`ensure_not_guarding`).
+  `serializers.route_out(doc, guardians)` takes the loaded map as a required argument, so no
+  caller can forget the embedded `guardian` block; `route_out_loaded`/`routes_out` load it.
+- `app/phone.py`'s `normalize_phone` (strip, remove spaces, `-`, `.`, `(`, `)`) is shared by
+  `Truck.alert_phone` and guardian phones. Guardian phones are checked in the routers, not the
+  schemas, because the rule depends on the *resulting* role, which on an update needs the stored
+  user.
+- The G3 guard counts routes in `scheduled`, `in_progress` **and `in_progress_alert`** (the
+  contract lists the first two; `in_progress_alert` is an in-progress route too).
+- `POST /api/trucks/{id}/rotate-key` resolves the env file's phone: the given `id_route`'s
+  guardian, else the in-progress route's (`active_route_for`), else the earliest scheduled
+  route's (only the earliest one), each if usable (exists, active, guardian, E.164); else
+  `Truck.alert_phone` (`source: truck`, `id_route` = the first of those routes that exists);
+  else all null. A bad `id_route` is 422 before the key is rotated.
+- `GET /health` reports `version` from `ARGUS_VERSION` (Dockerfile build arg, default `dev`,
+  declared in the runtime stage only so a new SHA doesn't rerun the test stage). The Lambda
+  wrapper image inherits it (`FROM` this image).
+- No migration: `id_guardian` is optional in the model, and routes without one get
+  `guardian: null`.
+
 ## Simulator control — `/api/simulator` (root_admin only, cost-guarded)
 
 On the AWS demo deployment (`src/infra-argus`), the fleet simulator isn't always running. It's
@@ -607,6 +643,9 @@ database yet, and none of this has been deployed to the AWS stack yet.
 
 **Grip-alarm work** (`Truck.alert_phone`, the `no_grip` report tests): hermetic suite at
 **383 passed, 3 xfailed** (2026-10-24, `pytest -q`).
+
+**Route-guardian work** (`Route.id_guardian`, guardian phones, the G3 guard, rotate-key phone
+resolution, `/health` version): hermetic suite at **442 passed, 3 xfailed** (2026-11-03, `pytest -q`).
 
 What genuinely hasn't been exercised: real concurrent load, and MongoDB running as anything other
 than a single local container (no replica set, no auth). An actual browser session driving this
