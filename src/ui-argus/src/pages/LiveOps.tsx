@@ -15,6 +15,7 @@ import { incidentState } from '../utils/status'
 import { toLatLng } from '../utils/geo'
 import { incidentPins, routeMarkers, trackPaths } from '../utils/mapLayers'
 import { pointPosition, positionSummary } from '../utils/position'
+import { guardianLabel } from '../utils/guardian'
 import type { Alert, Incident, IncidentTier } from '../types'
 
 /**
@@ -32,7 +33,8 @@ import type { Alert, Incident, IncidentTier } from '../types'
  *   at once (it's hidden locally until the re-poll drops it).
  *   There's no "Reviewed/Unreviewed" filter any more: the feed holds exactly the open incidents,
  *   and a closed incident leaves it for Alert history.
- * - **Routes:** the active routes, with Complete trip / Stop route for root_admin and admin.
+ * - **Routes:** the active routes, each with its guardian (the embedded `guardian`, name · phone,
+ *   or "No guardian"), with Complete trip / Stop route for root_admin and admin.
  */
 
 const TIER_FILTERS: { key: IncidentTier | 'all'; label: string }[] = [
@@ -270,6 +272,15 @@ export default function LiveOps() {
                     </div>
                     <span style={{ fontSize: 11.5, color: 'var(--text-soft)' }}>
                       {r.origin_name} → {r.destination_name}
+                    </span>
+                    <span
+                      data-testid="route-guardian"
+                      style={{
+                        fontSize: 11,
+                        color: r.guardian ? 'var(--text-soft)' : 'var(--warn)',
+                      }}
+                    >
+                      Guardian: {guardianLabel(r.guardian)}
                     </span>
                     <span
                       className="mono"

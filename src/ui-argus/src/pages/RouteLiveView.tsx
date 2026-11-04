@@ -24,6 +24,7 @@ import { toLatLng } from '../utils/geo'
 import { alertPins, routeMarkers, trackPath } from '../utils/mapLayers'
 import { alertPosition, pointPosition, positionSummary } from '../utils/position'
 import { canCloseIncidents } from '../utils/incidents'
+import { guardianLabel } from '../utils/guardian'
 import type { Alert, AlertSeverity, AlertSource, Incident, Vigilance } from '../types'
 
 /** Where an alert came from. `panic_button` exists only on old rows (the panic button was
@@ -355,6 +356,16 @@ export default function RouteLiveView() {
   const ctxItems: { label: string; value: ReactNode; mono?: boolean }[] = [
     { label: 'Truck', value: route.truck_plate_number ?? '—', mono: true },
     { label: 'Driver', value: route.driver_full_name ?? '—' },
+    {
+      label: 'Guardian',
+      value: route.guardian ? (
+        <span data-testid="route-guardian">{guardianLabel(route.guardian)}</span>
+      ) : (
+        <span data-testid="route-guardian" style={{ color: 'var(--warn)' }}>
+          No guardian
+        </span>
+      ),
+    },
     { label: 'Route', value: routeName },
     focusedAlert
       ? {

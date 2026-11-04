@@ -130,8 +130,23 @@ export interface Route {
   /** User id of whoever stopped the route. */
   stopped_by: string | null
   stopped_at: string | null
+  /** User id of the route's guardian (route guardian contracts G1): the `guardian`-role user
+   * watching it, whose phone the truck texts on a critical alert. `null` on routes created before
+   * guardians existed (the UI warns and offers "Assign guardian"). */
+  id_guardian: string | null
+  /** The guardian, resolved server-side (G4) so guardian-role viewers, who can't call
+   * `/api/users`, see it too. `null` when `id_guardian` is null or that user no longer exists. */
+  guardian: GuardianSummary | null
   created_at: string
   updated_at: string
+}
+
+/** A route's guardian as `RouteOut` embeds it (G4). */
+export interface GuardianSummary {
+  id_user: string
+  first_name: string
+  last_name: string
+  phone_number: string
 }
 
 /** A route's alert state for its map marker (C3.1): `fine` = no medium/critical outstanding. */

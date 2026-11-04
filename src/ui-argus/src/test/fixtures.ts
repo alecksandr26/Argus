@@ -84,6 +84,13 @@ export function makeRoute(over: Partial<Route> = {}): Route {
     stop_reason: null,
     stopped_by: null,
     stopped_at: null,
+    id_guardian: 'g-1',
+    guardian: {
+      id_user: 'g-1',
+      first_name: 'Gina',
+      last_name: 'Guard',
+      phone_number: '+523312345678',
+    },
     created_at: '2026-10-23T09:00:00Z',
     updated_at: '2026-10-23T09:00:00Z',
     ...over,

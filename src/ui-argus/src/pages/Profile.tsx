@@ -5,6 +5,12 @@ import { useAuth } from '../context/AuthContext'
 import { getMe, updateMe } from '../api/me'
 import { ApiError } from '../api/client'
 import { roleLabel } from '../utils/status'
+import {
+  ALERT_PHONE_EXAMPLE,
+  GUARDIAN_PHONE_HINT,
+  guardianPhoneError,
+  normalizePhone,
+} from '../utils/phone'
 import type { User } from '../types'
 
 /**
@@ -13,6 +19,10 @@ import type { User } from '../types'
  * backend schema (`MeUpdate`) doesn't even accept them, so changing your own role or
  * reactivating yourself isn't just hidden here, it's impossible through this endpoint —
  * that stays root_admin's (or, for guardians, a scoped admin's) job via the Access panel.
+ *
+ * A guardian's phone gets the same E.164 check as in Access (route guardian contracts G2): the
+ * trucks of the routes they guard text it on critical alerts. It's sent normalised, and only when
+ * changed, so an old bad phone never blocks a name or password change.
  */
 export default function Profile() {
   const { session, updateSessionUser } = useAuth()
@@ -53,9 +63,17 @@ export default function Profile() {
     }
   }, [token])
 
+  const isGuardian = me?.role === 'guardian'
+  const phoneChanged = !me || phone !== me.phone_number
+  const phoneError = isGuardian && phoneChanged ? guardianPhoneError(phone) : null
+
   async function save() {
     if (password && password !== confirmPassword) {
       setError('Passwords do not match.')
+      return
+    }
+    if (phoneError) {
+      setError(phoneError)
       return
     }
     setSaving(true)
@@ -66,7 +84,7 @@ export default function Profile() {
           email,
           first_name: firstName,
           last_name: lastName,
-          phone_number: phone,
+          ...(phoneChanged ? { phone_number: isGuardian ? normalizePhone(phone) : phone } : {}),
           ...(password ? { password } : {}),
         },
         token,
@@ -149,13 +167,27 @@ export default function Profile() {
           <span className="field__label">Phone</span>
           <input
             className="input mono"
+            type="tel"
+            placeholder={isGuardian ? ALERT_PHONE_EXAMPLE : undefined}
             value={phone}
+            aria-invalid={phoneError && normalizePhone(phone) !== '' ? true : undefined}
+            aria-describedby={isGuardian ? 'me-phone-help' : undefined}
             onChange={(e) => {
               setPhone(e.target.value)
               setSaved(false)
             }}
           />
         </label>
+        {isGuardian &&
+          (phoneError && normalizePhone(phone) !== '' ? (
+            <div id="me-phone-help" className="field__error" style={{ marginTop: -8 }}>
+              {phoneError}
+            </div>
+          ) : (
+            <span id="me-phone-help" style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: -8 }}>
+              {GUARDIAN_PHONE_HINT}
+            </span>
+          ))}
 
         <div style={{ height: 1, background: 'var(--border-soft)' }} />
         <span style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text-soft)' }}>

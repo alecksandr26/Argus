@@ -6,14 +6,23 @@ import RecordTable, { type Column } from '../components/RecordTable'
 import StatusPill from '../components/StatusPill'
 import Icon from '../components/Icon'
 import RouteEndActions from '../components/RouteEndActions'
+import AssignGuardianDialog from '../components/AssignGuardianDialog'
+import GuardianOptions from '../components/GuardianOptions'
 import { useAuth } from '../context/AuthContext'
 import { createRoute as createRouteApi, listRoutes, updateRoute } from '../api/routes'
 import { listDrivers } from '../api/drivers'
 import { listTrucks } from '../api/trucks'
+import { listUsers } from '../api/users'
 import { ApiError } from '../api/client'
 import { clock } from '../utils/format'
 import { isActiveRoute, routeStatusBadge } from '../utils/status'
-import type { Driver, Route, Truck } from '../types'
+import {
+  guardianName,
+  hasValidGuardianPhone,
+  isOpenRoute,
+  selectableGuardians,
+} from '../utils/guardian'
+import type { Driver, Route, Truck, User } from '../types'
 
 /**
  * "Administration — Routes & trips" (the mockup's original label) against the real
@@ -31,6 +40,14 @@ import type { Driver, Route, Truck } from '../types'
  * alerts are filed under) while `in_progress`; nothing on the backend changes that by itself.
  * Starting is refused while the same truck already has an active trip: the device follows one
  * route, the newest by departure, so a second one would silently take its alerts.
+ *
+ * Guardians (route guardian contracts G1/G7): every new route needs one, picked from the active
+ * guardian-role users (`GET /api/users`, root_admin/admin only; one without an E.164 phone is a
+ * disabled option). The Guardian column reads the route's embedded `guardian`, so a guardian
+ * viewer sees it too. Open routes (scheduled/in progress) can be given or changed a guardian
+ * ("Assign guardian" / "Change guardian"), and a banner warns while any open route has none:
+ * routes created before guardians existed keep working, but their critical-alert SMS go only to
+ * the truck's fallback phone.
  */
 
 type NewRoute = {
@@ -40,6 +57,8 @@ type NewRoute = {
   destination_name: string
   date: string
   departure: string
+  /** `''` until one is picked: required (G1). */
+  id_guardian: string
 }
 
 const blankRoute = (drivers: Driver[], trucks: Truck[]): NewRoute => ({
@@ -49,6 +68,7 @@ const blankRoute = (drivers: Driver[], trucks: Truck[]): NewRoute => ({
   destination_name: 'Puebla',
   date: '2026-08-24',
   departure: '15:30',
+  id_guardian: '',
 })
 
 export default function TravelManagement() {
@@ -59,6 +79,11 @@ export default function TravelManagement() {
   const [list, setList] = useState<Route[]>([])
   const [drivers, setDrivers] = useState<Driver[]>([])
   const [trucks, setTrucks] = useState<Truck[]>([])
+  /** Active guardian-role users (`selectableGuardians`); stays empty for a guardian viewer. */
+  const [guardians, setGuardians] = useState<User[]>([])
+  const [guardianLoadError, setGuardianLoadError] = useState<string | null>(null)
+  const [guardianError, setGuardianError] = useState<string | null>(null)
+  const [assigning, setAssigning] = useState<Route | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
@@ -69,12 +94,25 @@ export default function TravelManagement() {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    Promise.all([listRoutes(token), listDrivers(token), listTrucks(token)])
-      .then(([routes, driversList, trucksList]) => {
+    // Only root_admin/admin may list users (a guardian gets 403); the Guardian column reads the
+    // embedded `route.guardian` instead. A failed guardian list doesn't hide the routes.
+    const guardiansReq: Promise<User[] | Error> = canWrite
+      ? listUsers(token).catch((err: unknown) =>
+          err instanceof Error ? err : new Error('Request failed'),
+        )
+      : Promise.resolve([])
+    Promise.all([listRoutes(token), listDrivers(token), listTrucks(token), guardiansReq])
+      .then(([routes, driversList, trucksList, usersOrError]) => {
         if (cancelled) return
         setList(routes)
         setDrivers(driversList)
         setTrucks(trucksList)
+        if (usersOrError instanceof Error) {
+          setGuardianLoadError(`Couldn't load guardians: ${usersOrError.message}`)
+        } else {
+          setGuardianLoadError(null)
+          setGuardians(selectableGuardians(usersOrError))
+        }
         setForm(blankRoute(driversList, trucksList))
       })
       .catch((err) => {
@@ -86,7 +124,7 @@ export default function TravelManagement() {
     return () => {
       cancelled = true
     }
-  }, [token])
+  }, [token, canWrite])
 
   const driverById = useMemo(
     () => new Map(drivers.map((d) => [d.id_driver, d])),
@@ -120,7 +158,15 @@ export default function TravelManagement() {
     (r) => r.operative_status === 'scheduled',
   ).length
 
+  /** Open (scheduled/in progress) routes with no guardian: the banner's count. */
+  const unguarded = list.filter((r) => isOpenRoute(r) && !r.guardian).length
+
   async function createRoute() {
+    if (!form.id_guardian) {
+      setGuardianError('Select a guardian for this route')
+      return
+    }
+    setGuardianError(null)
     setCreating(true)
     setError(null)
     try {
@@ -136,6 +182,7 @@ export default function TravelManagement() {
           estimated_departure: `${form.date}T${form.departure}:00-06:00`,
           estimated_arrival: null,
           operative_status: 'scheduled',
+          id_guardian: form.id_guardian,
         },
         token,
       )
@@ -209,7 +256,51 @@ export default function TravelManagement() {
             compact
             disabled={busyRoute !== null}
           />
+          <button
+            type="button"
+            className="btn btn--ghost"
+            style={{ padding: '4px 10px', fontSize: 11.5 }}
+            disabled={busyRoute !== null}
+            onClick={(e) => {
+              e.stopPropagation()
+              setAssigning(r)
+            }}
+          >
+            {r.guardian ? 'Change guardian' : 'Assign guardian'}
+          </button>
+          {/* G7: RouteDeviceFileButton slot — in scope: `r` (this Route), its truck via
+              `truckById.get(r.id_truck)` (Truck | undefined), `token`, and `setTrucks` for an
+              `onTruckChange`. */}
         </div>
+      )
+    },
+  }
+
+  const guardianColumn: Column<Route> = {
+    header: 'Guardian',
+    cell: (r) => {
+      if (r.guardian) {
+        return (
+          <span style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+            <span>{guardianName(r.guardian)}</span>
+            <span className="mono" style={{ fontSize: 11, color: 'var(--text-faint)' }}>
+              {r.guardian.phone_number}
+            </span>
+          </span>
+        )
+      }
+      return (
+        <span
+          className={isOpenRoute(r) ? 'pill pill--warn' : 'pill'}
+          style={{ fontSize: 10.5, padding: '3px 9px' }}
+          title={
+            r.id_guardian
+              ? 'The assigned guardian no longer exists'
+              : "Critical-alert SMS go only to the truck's fallback phone"
+          }
+        >
+          No guardian
+        </span>
       )
     },
   }
@@ -224,6 +315,7 @@ export default function TravelManagement() {
       ),
     },
     { header: 'Driver', cell: (r) => driverName(r.id_driver) },
+    guardianColumn,
     {
       header: 'Truck',
       cell: (r) => (
@@ -309,6 +401,29 @@ export default function TravelManagement() {
           </div>
         )}
 
+        {unguarded > 0 && (
+          <div
+            data-testid="no-guardian-banner"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '9px 12px',
+              borderRadius: 8,
+              fontSize: 12.5,
+              color: 'var(--warn)',
+              background: 'var(--warn-soft)',
+              border: '1px solid var(--warn)',
+            }}
+          >
+            <Icon name="alert-triangle" size={14} />
+            <span>
+              {unguarded} active route{unguarded === 1 ? ' has' : 's have'} no guardian
+              {canWrite ? ' — assign one so critical alerts are texted' : ''}
+            </span>
+          </div>
+        )}
+
         <RecordTable
           columns={columns}
           rows={filtered}
@@ -367,6 +482,39 @@ export default function TravelManagement() {
               ))}
             </select>
           </label>
+
+          <label className="field">
+            <span className="field__label">Guardian</span>
+            <select
+              className="input"
+              value={form.id_guardian}
+              required
+              aria-invalid={guardianError ? true : undefined}
+              aria-describedby="route-guardian-help"
+              onChange={(e) => {
+                setForm({ ...form, id_guardian: e.target.value })
+                setGuardianError(null)
+              }}
+            >
+              <GuardianOptions guardians={guardians} />
+            </select>
+          </label>
+          {guardianError || guardianLoadError ? (
+            <div id="route-guardian-help" className="field__error" style={{ marginTop: -10 }}>
+              {guardianError ?? guardianLoadError}
+            </div>
+          ) : (
+            <span
+              id="route-guardian-help"
+              style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: -10 }}
+            >
+              {guardians.length === 0
+                ? 'No active guardian yet. Add one in Access first.'
+                : guardians.some(hasValidGuardianPhone)
+                  ? 'Watches this route; the truck texts their phone on every critical alert.'
+                  : 'No guardian has a valid E.164 phone yet. Fix one in Access first.'}
+            </span>
+          )}
 
           <div style={{ height: 1, background: 'var(--border-soft)' }} />
 
@@ -445,7 +593,10 @@ export default function TravelManagement() {
           <div style={{ display: 'flex', gap: 10, marginTop: 'auto' }}>
             <button
               className="btn btn--block"
-              onClick={() => setForm(blankRoute(drivers, trucks))}
+              onClick={() => {
+                setForm(blankRoute(drivers, trucks))
+                setGuardianError(null)
+              }}
             >
               Reset
             </button>
@@ -458,6 +609,19 @@ export default function TravelManagement() {
             </button>
           </div>
         </div>
+      )}
+
+      {assigning && (
+        <AssignGuardianDialog
+          route={assigning}
+          guardians={guardians}
+          token={token}
+          onCancel={() => setAssigning(null)}
+          onDone={(updated) => {
+            setAssigning(null)
+            replaceRoute(updated)
+          }}
+        />
       )}
     </div>
   )

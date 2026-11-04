@@ -347,6 +347,22 @@ describe('RouteLiveView', () => {
     expect(screen.queryByRole('button', { name: 'Complete trip' })).not.toBeInTheDocument()
   })
 
+  it('the route context shows the embedded guardian', async () => {
+    seedSession('guardian')
+    mockBackend()
+    renderAt('/routes/r-1/live')
+    expect(await screen.findByTestId('route-guardian')).toHaveTextContent(
+      'Gina Guard · +523312345678',
+    )
+  })
+
+  it('a route without a guardian reads "No guardian"', async () => {
+    seedSession('root_admin')
+    mockBackend({ route: makeRouteLive({ id_route: 'r-1', id_guardian: null, guardian: null }) })
+    renderAt('/routes/r-1/live')
+    expect(await screen.findByTestId('route-guardian')).toHaveTextContent('No guardian')
+  })
+
   it('guardian gets no end-route buttons', async () => {
     seedSession('guardian')
     mockBackend()

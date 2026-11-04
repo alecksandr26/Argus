@@ -9,6 +9,12 @@ import { createUser, deleteUser, listUsers, updateUser } from '../api/users'
 import { ApiError } from '../api/client'
 import { relativeTime } from '../utils/format'
 import { roleLabel, userStatus } from '../utils/status'
+import {
+  ALERT_PHONE_EXAMPLE,
+  GUARDIAN_PHONE_HINT,
+  guardianPhoneError,
+  normalizePhone,
+} from '../utils/phone'
 import type { Role, User } from '../types'
 
 /**
@@ -19,6 +25,12 @@ import type { Role, User } from '../types'
  * actor) rather than re-deciding it, since the backend is the actual enforcement point.
  * "Deactivate" (`PUT is_active:false`) and "Delete permanently" (`DELETE`, a real hard delete)
  * are kept as two distinct, clearly labeled actions — conflating them would be an easy mistake.
+ *
+ * A guardian's phone is the number the truck texts on critical alerts of the routes they guard
+ * (route guardian contracts G2), so for the guardian role it must be E.164: checked here after
+ * the backend's normalisation (spaces, dashes, dots, parentheses dropped) and sent normalised.
+ * Other roles keep a free-text phone. On an edit, an untouched role and phone stay out of the PUT,
+ * so an old bad phone never blocks a name change.
  */
 
 const ALL_ROLES: Role[] = ['root_admin', 'admin', 'guardian', 'truck_driver']
@@ -49,6 +61,8 @@ export default function Access() {
   const [draft, setDraft] = useState<Draft | null>(null)
   const [mode, setMode] = useState<'edit' | 'create' | null>(null)
   const [saving, setSaving] = useState(false)
+  /** Show the guardian phone error even while the field is empty (after a Save attempt). */
+  const [showPhoneError, setShowPhoneError] = useState(false)
 
   const blankDraft = (): Draft => ({
     id_user: '',
@@ -96,18 +110,35 @@ export default function Access() {
   function selectRow(u: User) {
     setDraft(toDraft(u))
     setMode('edit')
+    setShowPhoneError(false)
   }
   function startCreate() {
     setDraft(blankDraft())
     setMode('create')
+    setShowPhoneError(false)
   }
   function closePanel() {
     setDraft(null)
     setMode(null)
+    setShowPhoneError(false)
   }
+
+  const original = draft && mode === 'edit' ? list.find((u) => u.id_user === draft.id_user) : undefined
+  const phoneChanged = !original || draft?.phone_number !== original.phone_number
+  const roleChanged = !original || draft?.role !== original.role
+  // G2: a guardian's phone must be E.164 (after normalisation). The backend checks it only when
+  // the update touches role or phone, so an untouched old bad phone doesn't block a name edit.
+  const checkGuardianPhone = draft?.role === 'guardian' && (phoneChanged || roleChanged)
+  const phoneError = draft && checkGuardianPhone ? guardianPhoneError(draft.phone_number) : null
 
   async function save() {
     if (!draft) return
+    if (phoneError) {
+      setShowPhoneError(true)
+      return
+    }
+    // A guardian's phone goes out normalised, so what's stored is what was checked here.
+    const phone = draft.role === 'guardian' ? normalizePhone(draft.phone_number) : draft.phone_number
     setSaving(true)
     setError(null)
     try {
@@ -119,7 +150,7 @@ export default function Access() {
             role: draft.role,
             first_name: draft.first_name,
             last_name: draft.last_name,
-            phone_number: draft.phone_number,
+            phone_number: phone,
             is_active: draft.is_active,
           },
           token,
@@ -132,8 +163,9 @@ export default function Access() {
             email: draft.email,
             first_name: draft.first_name,
             last_name: draft.last_name,
-            phone_number: draft.phone_number,
-            role: draft.role,
+            // Untouched role/phone stay out of the body (see `checkGuardianPhone`).
+            ...(phoneChanged || checkGuardianPhone ? { phone_number: phone } : {}),
+            ...(roleChanged ? { role: draft.role } : {}),
             is_active: draft.is_active,
             ...(draft.password ? { password: draft.password } : {}),
           },
@@ -264,6 +296,9 @@ export default function Access() {
           mode={mode}
           assignableRoles={assignableRoles}
           saving={saving}
+          phoneError={
+            showPhoneError || normalizePhone(draft.phone_number) !== '' ? phoneError : null
+          }
           onChange={setDraft}
           onCancel={closePanel}
           onSave={save}
@@ -280,6 +315,7 @@ function EditPanel({
   mode,
   assignableRoles,
   saving,
+  phoneError,
   onChange,
   onCancel,
   onSave,
@@ -290,6 +326,8 @@ function EditPanel({
   mode: 'edit' | 'create' | null
   assignableRoles: Role[]
   saving: boolean
+  /** A guardian's E.164 problem (G2), or `null`. */
+  phoneError: string | null
   onChange: (d: Draft) => void
   onCancel: () => void
   onSave: () => void
@@ -297,6 +335,7 @@ function EditPanel({
   onDelete: () => void
 }) {
   const set = (patch: Partial<Draft>) => onChange({ ...draft, ...patch })
+  const isGuardian = draft.role === 'guardian'
 
   return (
     <div
@@ -355,10 +394,27 @@ function EditPanel({
         <span className="field__label">Phone</span>
         <input
           className="input mono"
+          type="tel"
+          placeholder={isGuardian ? ALERT_PHONE_EXAMPLE : undefined}
           value={draft.phone_number}
+          aria-invalid={phoneError ? true : undefined}
+          aria-describedby={isGuardian ? 'user-phone-help' : undefined}
           onChange={(e) => set({ phone_number: e.target.value })}
         />
       </label>
+      {isGuardian &&
+        (phoneError ? (
+          <div id="user-phone-help" role="alert" className="field__error" style={{ marginTop: -10 }}>
+            {phoneError}
+          </div>
+        ) : (
+          <span
+            id="user-phone-help"
+            style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: -10 }}
+          >
+            {GUARDIAN_PHONE_HINT}
+          </span>
+        ))}
       <label className="field">
         <span className="field__label">Role</span>
         <select

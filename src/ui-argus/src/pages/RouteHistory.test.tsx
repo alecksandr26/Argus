@@ -136,6 +136,9 @@ describe('RouteHistory', () => {
     renderPage()
     await user.click(await screen.findByRole('button', { name: /León → Celaya/ }))
     expect(screen.getByText('Stopped: Truck broke down')).toBeInTheDocument()
+    expect(screen.getByTestId('route-guardian')).toHaveTextContent(
+      'Guardian: Gina Guard · +523312345678',
+    )
   })
 
   it('an alert row links to the route view focused on it, and "Show on map" flies the small map to it', async () => {

@@ -3,7 +3,9 @@ import { normalizeCoordinates } from '../utils/geo'
 import type { Route, RouteTrack } from '../types'
 
 /** What a create/edit sends. The C3.1 fields are server-owned: `incident_state`/
- * `last_not_ok_at` come from ingest, `stop_*` only from `stopRoute()`. */
+ * `last_not_ok_at` come from ingest, `stop_*` only from `stopRoute()`. `guardian` is resolved
+ * by the server from `id_guardian`, which a create must carry (G1: `RouteCreate.id_guardian` is
+ * required; a missing one is 422). */
 export type RouteInput = Omit<
   Route,
   | 'id_route'
@@ -16,7 +18,9 @@ export type RouteInput = Omit<
   | 'stop_reason'
   | 'stopped_by'
   | 'stopped_at'
->
+  | 'id_guardian'
+  | 'guardian'
+> & { id_guardian: string }
 
 // `normalizeCoordinates` runs once here, at the API boundary, per `utils/geo.ts`'s own
 // contract ("call it once, in the API client, on every coordinate field") — components never
@@ -40,6 +44,9 @@ export function createRoute(input: RouteInput, token: string): Promise<Route> {
   )
 }
 
+/** `PUT /api/routes/{id}`. With `id_guardian` it assigns or changes the guardian (G1): 422
+ * `"id_guardian not found"` / `"id_guardian must be an active guardian"` / `"guardian has no valid
+ * E.164 phone"`, 409 `"route is finished"` on a completed/stopped route. */
 export function updateRoute(
   id: string,
   input: Partial<RouteInput & Pick<Route, 'actual_departure' | 'actual_arrival'>>,
