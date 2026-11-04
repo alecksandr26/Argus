@@ -215,6 +215,98 @@ static void neverLongerThan160() {
   for (char c : real) CHECK(c >= 0x20 && c < 0x7F);  // plain ASCII, nothing for Ctrl-Z to trip on
 }
 
+// --- Parity with the backend alert (route guardian contracts G9): the time ---
+
+static void theTimeGoesAfterTheTruck() {
+  CHECK(composeSmsText("eyes_closed", true, "JAL-123-A", kHere, "14:05") ==
+        "ARGUS ALERTA CRITICA: ojos cerrados, sin manos en el volante. Camion JAL-123-A, 14:05. "
+        "https://maps.google.com/?q=20.659712,-103.349612");
+  CHECK(composeSmsText("eyes_closed", false, "JAL-123-A", kHere, "14:05") ==
+        "ARGUS ALERTA CRITICA: ojos cerrados. Camion JAL-123-A, 14:05. "
+        "https://maps.google.com/?q=20.659712,-103.349612");
+  CHECK(composeSmsText("no_face", false, "JAL-123-A", EventPosition(), "07:30") ==
+        "ARGUS ALERTA CRITICA: conductor no visible. Camion JAL-123-A, 07:30. "
+        "Ubicacion desconocida.");
+  CHECK(composeSmsText("no_grip", true, "JAL-123-A", kHere, "23:59") ==
+        "ARGUS ALERTA CRITICA: sin manos en el volante. Camion JAL-123-A, 23:59. "
+        "https://maps.google.com/?q=20.659712,-103.349612");
+  CHECK(composeSmsText("no_grip", true, "", EventPosition(), "00:00") ==
+        "ARGUS ALERTA CRITICA: sin manos en el volante. Camion desconocido, 00:00. "
+        "Ubicacion desconocida.");
+  // No GPS time: no time part, the text of before.
+  CHECK(composeSmsText("head_down", true, "JAL-123-A", kHere, "") ==
+        composeSmsText("head_down", true, "JAL-123-A", kHere));
+}
+
+static void everyMotiveWithTheTime() {
+  const char* types[] = {"eyes_closed", "yawn_eyes_closed", "head_down", "head_down_eyes_closed",
+                         "no_face"};
+  for (const char* t : types) {
+    for (bool handsOff : {true, false}) {
+      std::string text = composeSmsText(t, handsOff, "JAL-123-A", kHere, "14:05");
+      CHECK(text == std::string("ARGUS ALERTA CRITICA: ") + smsMotivo(t) +
+                        (handsOff ? ", sin manos en el volante" : "") +
+                        ". Camion JAL-123-A, 14:05. "
+                        "https://maps.google.com/?q=20.659712,-103.349612");
+      CHECK(text.size() <= kSmsMaxLength);
+    }
+  }
+}
+
+// The cut rule: the time goes only when the whole motive fits with it.
+static void theTimeIsLeftOutBeforeTheMotiveIsCut() {
+  // The longest real Mexican text keeps it: the longest motive, the hands-off part, a 16-char
+  // plate and a 3-digit longitude.
+  std::string mx = composeSmsText("head_down_eyes_closed", true, "ABCDEFGHIJKLMNOP",
+                                  at(32.534567, -117.123456), "14:05");
+  CHECK(mx.size() <= kSmsMaxLength);
+  CHECK(mx.find("Camion ABCDEFGHIJKLMNOP, 14:05. ") != std::string::npos);
+  CHECK(mx.find("cabeza abajo y ojos cerrados, ") != std::string::npos);
+  // A truck id and the longest link don't leave room: the time is dropped, nothing else is cut.
+  std::string worst = composeSmsText("head_down_eyes_closed", true, "64b0a0000000000000000001",
+                                     at(-89.999999, -179.999999), "14:05");
+  CHECK(worst == composeSmsText("head_down_eyes_closed", true, "64b0a0000000000000000001",
+                                at(-89.999999, -179.999999)));
+  CHECK(worst.find("14:05") == std::string::npos);
+  CHECK(worst.size() <= kSmsMaxLength);
+  // A long raw alert type: no time, the motive cut to exactly 160.
+  std::string longType = composeSmsText(std::string(64, 'r'), true, std::string(200, 'V'),
+                                        at(-89.999999, -179.999999), "14:05");
+  CHECK(longType.size() == kSmsMaxLength);
+  CHECK(longType.find("14:05") == std::string::npos);
+  // A clock with anything odd is made GSM-safe like the rest.
+  CHECK(composeSmsText("eyes_closed", false, "X1", EventPosition(), "1_:0@") ==
+        "ARGUS ALERTA CRITICA: ojos cerrados. Camion X1, 1 :0 . Ubicacion desconocida.");
+}
+
+static void theClock() {
+  CHECK(smsClockText(0, -360).empty());                 // no GPS time
+  CHECK(smsClockText(1793736330ULL, 0) == "20:05");     // 2026-11-03 20:05:30 UTC
+  CHECK(smsClockText(1793736330ULL, -360) == "14:05");  // Mexico central, UTC-6
+  CHECK(smsClockText(1793761200ULL, -360) == "21:00");  // 03:00 UTC: the evening before
+  CHECK(smsClockText(1793761200ULL, 330) == "08:30");   // a half-hour zone
+  // The event's epoch from the GPS clock, before or after the GPS read, across a millis() wrap.
+  CHECK(smsEventEpoch(0, 1000, 5000) == 0);
+  CHECK(smsEventEpoch(1793736330ULL, 1000, 6000) == 1793736335ULL);
+  CHECK(smsEventEpoch(1793736330ULL, 61000, 1000) == 1793736270ULL);  // a minute before it
+  CHECK(smsEventEpoch(1793736330ULL, 0xFFFFF000u, 0x00001000u) == 1793736338ULL);
+}
+
+static void whyAnSmsIsSkipped() {
+  CHECK(smsSkipReason(SmsQueued::Queued) == nullptr);
+  CHECK(smsSkipReason(SmsQueued::Ignored) == nullptr);
+  CHECK(std::string(smsSkipReason(SmsQueued::NoPhone)).find("ARGUS_ALERT_PHONE") !=
+        std::string::npos);
+  CHECK(std::string(smsSkipReason(SmsQueued::Duplicate)).find("already had its SMS") !=
+        std::string::npos);
+  // A queued result carries what the log composes its text from.
+  SmsPolicy s;
+  SmsQueueResult r = s.onCameraCritical("ep1", "eyes_closed", false, kHere, true, 1234);
+  CHECK(r.result == SmsQueued::Queued && !r.handsOff && r.queuedAtMs == 1234);
+  r = s.onGripCritical("grip-0000abcd-1", kHere, true, 99);
+  CHECK(r.result == SmsQueued::Queued && r.handsOff && r.queuedAtMs == 99);
+}
+
 // --- The two sources since 2026-11-03 ---
 
 static void aCameraCriticalWithTheHandsOnSaysSo() {
@@ -273,6 +365,11 @@ int main() {
   RUN(everyMotive);
   RUN(theVehicleIsMadeSafeAndNeverEmpty);
   RUN(neverLongerThan160);
+  RUN(theTimeGoesAfterTheTruck);
+  RUN(everyMotiveWithTheTime);
+  RUN(theTimeIsLeftOutBeforeTheMotiveIsCut);
+  RUN(theClock);
+  RUN(whyAnSmsIsSkipped);
   RUN(aCameraCriticalWithTheHandsOnSaysSo);
   RUN(aGripEpisodeQueuesOnceWithItsOwnText);
   RUN(gripAndCameraEpisodesHaveTheirOwnRings);

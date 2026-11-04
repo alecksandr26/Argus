@@ -61,6 +61,16 @@ String readPhone(JsonVariantConst value) {
   return String(s);
 }
 
+// What readPhone() dropped, masked for the log: "" when nothing was sent (absent, null, "") or
+// the phone is usable; a value that isn't a string reads as "****".
+String rejectedPhone(JsonVariantConst value) {
+  if (value.isNull()) return String("");
+  const char* s = value.as<const char*>();
+  if (s == nullptr) return String("****");
+  if (s[0] == '\0' || isE164Phone(s)) return String("");
+  return maskPhone(String(s));
+}
+
 }  // namespace
 
 bool DeviceCredentials::valid() const {
@@ -93,6 +103,7 @@ ConfigLineResult parseConfigLine(const String& line, DeviceCredentials& out) {
   }
   parsed.truckPlate = readPlate(doc["truck_plate"]);
   parsed.alertPhone = readPhone(doc["alert_phone"]);
+  parsed.alertPhoneRejected = rejectedPhone(doc["alert_phone"]);
   out = parsed;
   return ConfigLineResult::Ok;
 }

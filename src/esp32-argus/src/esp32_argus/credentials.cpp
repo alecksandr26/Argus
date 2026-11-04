@@ -28,11 +28,18 @@ bool sameStored(const DeviceCredentials& a, const DeviceCredentials& b) {
 }
 
 bool sameSmsTarget(const DeviceCredentials& a, const DeviceCredentials& b) {
-  return a.truckPlate == b.truckPlate && a.alertPhone == b.alertPhone;
+  return a.truckPlate == b.truckPlate && a.alertPhone == b.alertPhone &&
+         a.alertPhoneRejected == b.alertPhoneRejected;
 }
 
 void logSmsTarget(const DeviceCredentials& c) {
-  // The phone is personal data: masked, never in full (C1.3).
+  // The phone is personal data: masked, never in full (C1.3). A phone the CONFIG parse rejected
+  // is said once here (on the CONFIG that changed it), never again per critical.
+  if (c.alertPhone.length() == 0 && c.alertPhoneRejected.length() > 0) {
+    Serial.printf("[sms] Alert phone from the Pi rejected: \"%s\" is not E.164 (+<country><number>, "
+                  "e.g. +523312345678) -- no SMS on a critical until ARGUS_ALERT_PHONE is fixed\n",
+                  c.alertPhoneRejected.c_str());
+  }
   Serial.print("[creds] SMS alert phone: ");
   Serial.print(c.alertPhone.length() > 0 ? maskPhone(c.alertPhone)
                                          : String("none (no SMS on a critical)"));

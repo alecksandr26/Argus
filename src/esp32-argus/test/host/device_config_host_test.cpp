@@ -183,6 +183,30 @@ static void aBadPlateOrPhoneIsIgnoredNotMalformed() {
   CHECK(c.truckPlate == "ABCDEFGHIJKLMNOP");  // exactly 16 is fine
 }
 
+// A dropped phone is kept masked, so the [sms] line at CONFIG time can say what was wrong
+// without ever printing the number.
+static void aRejectedPhoneIsKeptMaskedForTheLog() {
+  DeviceCredentials c;
+  CHECK(parseConfigLine(withSms(nullptr, R"("3312345678")"), c) == ConfigLineResult::Ok);
+  CHECK(c.alertPhone.empty());
+  CHECK(c.alertPhoneRejected == "331***5678");
+  CHECK(parseConfigLine(withSms(nullptr, R"("+52 33 1234 5678")"), c) == ConfigLineResult::Ok);
+  CHECK(c.alertPhoneRejected == "+52*********5678");
+  CHECK(parseConfigLine(withSms(nullptr, R"("+1234567890123456789")"), c) == ConfigLineResult::Ok);
+  CHECK(c.alertPhoneRejected == "****");  // too long to mask by position: hidden whole
+  CHECK(parseConfigLine(withSms(nullptr, "523312345678"), c) == ConfigLineResult::Ok);
+  CHECK(c.alertPhoneRejected == "****");  // not a string
+  // Nothing sent, or a usable phone: nothing rejected.
+  CHECK(parseConfigLine(withSms(nullptr, R"("+523312345678")"), c) == ConfigLineResult::Ok);
+  CHECK(c.alertPhoneRejected.empty() && c.alertPhone == "+523312345678");
+  CHECK(parseConfigLine(withSms(nullptr, R"("")"), c) == ConfigLineResult::Ok);
+  CHECK(c.alertPhoneRejected.empty() && c.alertPhone.empty());
+  CHECK(parseConfigLine(withSms(nullptr, "null"), c) == ConfigLineResult::Ok);
+  CHECK(c.alertPhoneRejected.empty());
+  CHECK(parseConfigLine(GOOD, c) == ConfigLineResult::Ok);
+  CHECK(c.alertPhoneRejected.empty());
+}
+
 static void e164() {
   CHECK(isE164Phone("+523312345678"));
   CHECK(isE164Phone("+12345678"));          // 8 digits, the shortest
@@ -225,6 +249,7 @@ int main() {
   RUN(plateAndPhoneAreReadWhenGiven);
   RUN(plateAndPhoneAreOptional);
   RUN(aBadPlateOrPhoneIsIgnoredNotMalformed);
+  RUN(aRejectedPhoneIsKeptMaskedForTheLog);
   RUN(e164);
   RUN(phonesAreMaskedForTheLog);
   RUN(thePlateAndPhoneAreNotPartOfTheBackendIdentity);
