@@ -13,7 +13,7 @@ from app.models.truck import Truck
 from app.report import active_route_for, process_report
 from app.schemas.report import ReportEnvelope, ReportResponse
 from app.schemas.route import RouteOut
-from app.serializers import route_out
+from app.serializers import route_out_loaded
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
 
@@ -26,7 +26,7 @@ async def my_active_route(truck: Truck = Depends(get_device_truck)) -> RouteOut:
     route = await active_route_for(str(truck.id))
     if route is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No active route for this truck")
-    return route_out(route)
+    return await route_out_loaded(route)
 
 
 @router.post("/me/report", response_model=ReportResponse)

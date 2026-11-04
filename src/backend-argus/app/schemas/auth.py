@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, EmailStr
 
@@ -48,3 +48,16 @@ class DeviceKeyResponse(BaseModel):
 
     id_truck: str
     device_api_key: str
+    # The phone `argus-device.env` carries as ARGUS_ALERT_PHONE, and where it came from
+    # (route-guardian contracts, G5): a route's guardian, else the truck's fallback phone.
+    alert_phone: Optional[str] = None
+    alert_phone_source: Optional[Literal["route_guardian", "truck"]] = None
+    id_route: Optional[str] = None
+    guardian_name: Optional[str] = None
+
+
+class RotateKeyRequest(BaseModel):
+    """Optional body of `POST /api/trucks/{id}/rotate-key`: the route whose guardian's phone
+    the env file should carry (G5). No body, or `{}`, resolves it from the truck's routes."""
+
+    id_route: Optional[str] = None

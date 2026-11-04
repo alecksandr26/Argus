@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Mapping, Optional
 
 from beanie.operators import In
 from fastapi import APIRouter, Depends, Query
 
 from app.auth.dependencies import get_current_user
 from app.constants import LIVE_SINCE_OVERLAP, LIVE_TRACK_INITIAL_WINDOW
+from app.guardians import load_guardians
 from app.ids import get_by_id, get_or_404
 from app.incidents import as_utc, incidents_out, utcnow
 from app.models.driver import Driver
@@ -17,6 +18,7 @@ from app.models.incident import Incident
 from app.models.route import Route
 from app.models.status_route import StatusRoute
 from app.models.truck import Truck
+from app.models.user import User
 from app.report import ACTIVE_ROUTE_STATUSES
 from app.schemas.live import LiveResponse, RouteLive
 from app.serializers import live_position_out, route_out, track_point_out
@@ -24,7 +26,7 @@ from app.serializers import live_position_out, route_out, track_point_out
 router = APIRouter(prefix="/api/live", tags=["live"])
 
 
-async def route_live_out(route: Route) -> RouteLive:
+async def route_live_out(route: Route, guardians: Mapping[str, User]) -> RouteLive:
     latest = (
         await StatusRoute.find(StatusRoute.id_route == str(route.id))
         .sort(-StatusRoute.timestamp)
@@ -33,7 +35,7 @@ async def route_live_out(route: Route) -> RouteLive:
     truck = await get_by_id(Truck, route.id_truck)
     driver = await get_by_id(Driver, route.id_driver)
     return RouteLive(
-        **route_out(route).model_dump(),
+        **route_out(route, guardians).model_dump(),
         truck_plate_number=truck.plate_number if truck else None,
         driver_full_name=f"{driver.first_name} {driver.last_name}" if driver else None,
         latest_position=live_position_out(latest) if latest else None,
@@ -63,6 +65,7 @@ async def live(
         open_query = {"closed_at": None}
 
     incidents = await Incident.find(open_query).to_list()
+    guardians = await load_guardians(routes)  # one users query for every route (G4)
     route_ids = [str(r.id) for r in routes]
     floor = server_time - LIVE_TRACK_INITIAL_WINDOW
     if since is None:
@@ -79,7 +82,7 @@ async def live(
     )
     return LiveResponse(
         server_time=server_time,
-        routes=[await route_live_out(r) for r in routes],
+        routes=[await route_live_out(r, guardians) for r in routes],
         incidents=await incidents_out(incidents, server_time, feed=True),
         track=[track_point_out(p) for p in points],
     )

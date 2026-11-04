@@ -1,6 +1,6 @@
 import pytest
 
-from tests.conftest import auth_headers
+from tests.conftest import auth_headers, make_guardian
 
 
 async def _make_driver(api_client, headers) -> str:
@@ -29,6 +29,7 @@ async def test_create_route_and_coordinates_round_trip(api_client, root_admin, s
     resp = await api_client.post(
         "/api/routes",
         json={
+            "id_guardian": str((await make_guardian()).id),
             "id_driver": driver_id,
             "id_truck": str(sample_truck.id),
             "origin_name": "CDMX",
@@ -63,6 +64,7 @@ async def test_create_route_actual_times_by_status(
         await api_client.post(
             "/api/routes",
             json={
+                "id_guardian": str((await make_guardian()).id),
                 "id_driver": driver_id,
                 "id_truck": str(sample_truck.id),
                 "origin_name": "CDMX",
@@ -85,6 +87,7 @@ async def test_create_route_keeps_a_given_actual_departure(api_client, root_admi
         await api_client.post(
             "/api/routes",
             json={
+                "id_guardian": str((await make_guardian()).id),
                 "id_driver": driver_id,
                 "id_truck": str(sample_truck.id),
                 "origin_name": "CDMX",
@@ -108,6 +111,7 @@ async def test_active_routes_embeds_latest_status(api_client, root_admin, sample
     route_resp = await api_client.post(
         "/api/routes",
         json={
+            "id_guardian": str((await make_guardian()).id),
             "id_driver": driver_id,
             "id_truck": str(sample_truck.id),
             "origin_name": "CDMX",
@@ -148,6 +152,7 @@ async def test_active_endpoint_excludes_scheduled_routes(api_client, root_admin,
     await api_client.post(
         "/api/routes",
         json={
+            "id_guardian": str((await make_guardian()).id),
             "id_driver": driver_id,
             "id_truck": str(sample_truck.id),
             "origin_name": "CDMX",

@@ -10,7 +10,7 @@ import pytest
 
 from app.geo import GeoJSONPoint
 from app.models.route import Route
-from tests.conftest import auth_headers, fusion_alert_body, status_body
+from tests.conftest import auth_headers, fusion_alert_body, make_guardian, status_body
 
 
 @pytest.mark.parametrize("bad_id", ["CHANGE_ME", "123"])
@@ -54,6 +54,7 @@ async def test_create_route_rejects_nonexistent_truck_and_driver_ids(api_client,
     resp = await api_client.post(
         "/api/routes",
         json={
+            "id_guardian": str((await make_guardian()).id),
             "id_driver": "64b0a00000000000000000ff",
             "id_truck": "64b0a00000000000000000fe",
             "origin_name": "GDL",

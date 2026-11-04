@@ -24,6 +24,8 @@ class RouteCreate(BaseModel):
     # Created already in progress (e.g. by the simulator) without this: set to now.
     actual_departure: Optional[datetime] = None
     operative_status: RouteStatus = RouteStatus.SCHEDULED
+    # Required: an active guardian with an E.164 phone (route-guardian contracts, G1).
+    id_guardian: str
 
 
 class RouteStop(BaseModel):
@@ -53,6 +55,18 @@ class RouteUpdate(BaseModel):
     actual_departure: Optional[datetime] = None
     actual_arrival: Optional[datetime] = None
     operative_status: Optional[RouteStatus] = None
+    # Assign or change the guardian; 409 on a completed/cancelled route (G1). `null` is ignored.
+    id_guardian: Optional[str] = None
+
+
+class GuardianSummary(BaseModel):
+    """The route's guardian, embedded so guardian-role viewers (no `/api/users` access) see it
+    too (G4)."""
+
+    id_user: str
+    first_name: str
+    last_name: str
+    phone_number: str
 
 
 class RouteOut(BaseModel):
@@ -72,6 +86,9 @@ class RouteOut(BaseModel):
     stop_reason: Optional[str]
     stopped_by: Optional[str]
     stopped_at: Optional[UtcDatetime]
+    id_guardian: Optional[str] = None
+    # Null when `id_guardian` is null or that user no longer exists (G4).
+    guardian: Optional[GuardianSummary] = None
     created_at: UtcDatetime
     updated_at: UtcDatetime
 

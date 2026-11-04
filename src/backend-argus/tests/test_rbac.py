@@ -1,6 +1,6 @@
 import pytest
 
-from tests.conftest import auth_headers
+from tests.conftest import auth_headers, make_guardian
 
 
 @pytest.mark.asyncio
@@ -57,6 +57,7 @@ async def test_admin_can_create_truck_driver_and_route(api_client, admin_user):
     route_resp = await api_client.post(
         "/api/routes",
         json={
+            "id_guardian": str((await make_guardian()).id),
             "id_driver": driver_resp.json()["id_driver"],
             "id_truck": truck_resp.json()["id_truck"],
             "origin_name": "A",
@@ -93,6 +94,7 @@ async def test_admin_cannot_review_alerts(api_client, admin_user, root_admin):
     route_resp = await api_client.post(
         "/api/routes",
         json={
+            "id_guardian": str((await make_guardian()).id),
             "id_driver": driver_resp.json()["id_driver"],
             "id_truck": truck_resp.json()["id_truck"],
             "origin_name": "A",
@@ -158,6 +160,7 @@ async def test_guardian_can_review_alert_but_not_delete(api_client, guardian, ro
     route_resp = await api_client.post(
         "/api/routes",
         json={
+            "id_guardian": str((await make_guardian()).id),
             "id_driver": driver_resp.json()["id_driver"],
             "id_truck": truck_resp.json()["id_truck"],
             "origin_name": "A",

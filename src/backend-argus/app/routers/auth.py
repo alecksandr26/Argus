@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.auth.dependencies import get_current_user
 from app.auth.security import create_access_token, hash_secret, verify_secret
+from app.guardians import guardian_phone
+from app.models.common import Role
 from app.models.user import User
 from app.schemas.auth import LoginRequest, LoginResponse, LoginUser, MeUpdate
 from app.schemas.user import UserOut
@@ -51,6 +53,8 @@ async def update_me(body: MeUpdate, user: User = Depends(get_current_user)) -> U
         existing = await User.find_one(User.email == data["email"])
         if existing is not None and existing.id != user.id:
             raise HTTPException(status.HTTP_409_CONFLICT, "Email already registered")
+    if user.role == Role.GUARDIAN and "phone_number" in data:
+        data["phone_number"] = guardian_phone(data["phone_number"])  # G2
     if "password" in data:
         user.password_hash = hash_secret(data.pop("password"))
     for field, value in data.items():

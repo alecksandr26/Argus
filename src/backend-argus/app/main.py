@@ -98,4 +98,4 @@ app.include_router(simulator.router)
 
 @app.get("/health", tags=["health"])
 async def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "version": settings.argus_version}
