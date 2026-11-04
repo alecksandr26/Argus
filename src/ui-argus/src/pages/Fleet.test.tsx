@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import Fleet from './Fleet'
@@ -197,8 +197,10 @@ describe('Fleet SMS alert phone', () => {
   })
 })
 
-/** Routes fetch by URL + method, so a test can exercise the rotate/revoke calls. */
-function mockFetchDevice(state: { truck: Truck }) {
+/** Routes fetch by URL + method, so a test can exercise the rotate/revoke calls. `rotateExtra`
+ * is merged into the rotate-key answer (the G5 phone fields); without it the answer is the
+ * pre-G5 shape. */
+function mockFetchDevice(state: { truck: Truck; rotateExtra?: Record<string, unknown> }) {
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
     const json = (body: unknown) => ({ ok: true, status: 200, json: async () => body })
@@ -209,10 +211,18 @@ function mockFetchDevice(state: { truck: Truck }) {
         has_device_key: true,
         device_key_issued_at: new Date().toISOString(),
       }
-      return json({ id_truck: state.truck.id_truck, device_api_key: 'plain-key-123' })
+      return json({
+        id_truck: state.truck.id_truck,
+        device_api_key: 'plain-key-123',
+        ...state.rotateExtra,
+      })
     }
     if (url.endsWith('/device-key') && method === 'DELETE') {
       state.truck = { ...state.truck, has_device_key: false, device_key_issued_at: null }
+      return json(state.truck)
+    }
+    if (url.endsWith(`/api/trucks/${state.truck.id_truck}`) && method === 'PUT') {
+      state.truck = { ...state.truck, ...JSON.parse(String(init?.body)) }
       return json(state.truck)
     }
     if (url.endsWith(`/api/trucks/${state.truck.id_truck}`)) return json(state.truck)
@@ -222,7 +232,34 @@ function mockFetchDevice(state: { truck: Truck }) {
   return fetchMock
 }
 
+const rotateCalls = (fetchMock: ReturnType<typeof mockFetchDevice>) =>
+  fetchMock.mock.calls.filter(
+    ([url, init]) => String(url).endsWith('/rotate-key') && init?.method === 'POST',
+  )
+
+const keyedTruck: Truck = {
+  ...truckRow,
+  has_device_key: true,
+  device_key_issued_at: '2026-01-01T00:00:00Z',
+}
+
 describe('Fleet device credentials', () => {
+  beforeEach(() => {
+    // Every confirm is drawn in place now; a native dialog would fail the test.
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => {
+        throw new Error('window.confirm must not be used')
+      }),
+    )
+    // Issuing starts a download; keep jsdom from trying to navigate to the blob URL.
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it('root_admin generates credentials and sees the env file once', async () => {
     seedSession('root_admin')
     const fetchMock = mockFetchDevice({ truck: { ...truckRow } })
@@ -238,51 +275,65 @@ describe('Fleet device credentials', () => {
     expect(env).toHaveTextContent('ARGUS_DEVICE_API_KEY=plain-key-123')
     expect(env).toHaveTextContent('ARGUS_BACKEND_URL=')
     expect(screen.getByRole('button', { name: /Download argus-device.env/ })).toBeInTheDocument()
-    expect(screen.getByTestId('device-key-status')).toHaveTextContent('device not seen yet')
+    expect(screen.getByText('Device credentials ready for ARG-001')).toBeInTheDocument()
+    expect(await screen.findByTestId('device-key-status')).toHaveTextContent(
+      'device not seen yet',
+    )
     expect(screen.getByRole('button', { name: 'Rotate key' })).toBeInTheDocument()
-    expect(
-      fetchMock.mock.calls.some(
-        ([url, init]) => String(url).endsWith('/rotate-key') && init?.method === 'POST',
-      ),
-    ).toBe(true)
+    expect(rotateCalls(fetchMock)).toHaveLength(1)
+    // Fleet's rotate sends no route: the backend picks the truck's current or next one.
+    expect(rotateCalls(fetchMock)[0][1]?.body).toBeUndefined()
   })
 
-  it('rotating asks for confirmation and does nothing when declined', async () => {
+  it('rotating confirms in place and does nothing when cancelled', async () => {
     seedSession('admin')
-    const fetchMock = mockFetchDevice({
-      truck: { ...truckRow, has_device_key: true, device_key_issued_at: '2026-01-01T00:00:00Z' },
-    })
-    const confirm = vi.fn().mockReturnValue(false)
-    vi.stubGlobal('confirm', confirm)
+    const fetchMock = mockFetchDevice({ truck: { ...keyedTruck } })
     const user = userEvent.setup()
     renderFleet()
 
     await user.click(await screen.findByText('ARG-001'))
     await user.click(screen.getByRole('button', { name: 'Rotate key' }))
-    expect(confirm).toHaveBeenCalled()
+    expect(screen.getByRole('group')).toHaveTextContent(
+      "Rotate ARG-001's key? This disconnects the installed device",
+    )
+    await user.click(within(screen.getByRole('group')).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('group')).not.toBeInTheDocument()
     expect(screen.queryByTestId('device-env')).not.toBeInTheDocument()
-    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/rotate-key'))).toBe(false)
+    expect(rotateCalls(fetchMock)).toHaveLength(0)
   })
 
-  it('revoke clears the key status', async () => {
+  it('rotating after the inline confirm issues a new key', async () => {
+    seedSession('admin')
+    const fetchMock = mockFetchDevice({ truck: { ...keyedTruck } })
+    const user = userEvent.setup()
+    renderFleet()
+
+    await user.click(await screen.findByText('ARG-001'))
+    await user.click(screen.getByRole('button', { name: 'Rotate key' }))
+    expect(rotateCalls(fetchMock)).toHaveLength(0)
+    await user.click(within(screen.getByRole('group')).getByRole('button', { name: 'Rotate key' }))
+    expect(await screen.findByTestId('device-env')).toHaveTextContent(
+      'ARGUS_DEVICE_API_KEY=plain-key-123',
+    )
+    expect(rotateCalls(fetchMock)).toHaveLength(1)
+  })
+
+  it('revoke confirms in place, then clears the key status', async () => {
     seedSession('root_admin')
-    mockFetchDevice({
-      truck: { ...truckRow, has_device_key: true, device_key_issued_at: '2026-01-01T00:00:00Z' },
-    })
-    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true))
+    const fetchMock = mockFetchDevice({ truck: { ...keyedTruck } })
     const user = userEvent.setup()
     renderFleet()
 
     await user.click(await screen.findByText('ARG-001'))
     await user.click(screen.getByRole('button', { name: 'Revoke' }))
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false)
+    await user.click(screen.getByRole('button', { name: 'Revoke key' }))
     expect(await screen.findByText('No credentials issued')).toBeInTheDocument()
   })
 
   it('guardian sees the key status but no credential buttons', async () => {
     seedSession('guardian')
-    mockFetchDevice({
-      truck: { ...truckRow, has_device_key: true, device_key_issued_at: '2026-01-01T00:00:00Z' },
-    })
+    mockFetchDevice({ truck: { ...keyedTruck } })
     const user = userEvent.setup()
     renderFleet()
 
@@ -292,10 +343,36 @@ describe('Fleet device credentials', () => {
     expect(screen.queryByRole('button', { name: 'Revoke' })).not.toBeInTheDocument()
   })
 
+  it('asks to save the truck first when the form has unsaved changes', async () => {
+    seedSession('root_admin')
+    const fetchMock = mockFetchDevice({ truck: { ...truckRow, alert_phone: null } })
+    const user = userEvent.setup()
+    renderFleet()
+
+    await user.click(await screen.findByText('ARG-001'))
+    expect(screen.queryByTestId('device-unsaved')).not.toBeInTheDocument()
+    await user.type(screen.getByLabelText('SMS alert phone (optional)'), '+523312345678')
+    expect(screen.getByRole('button', { name: 'Generate device credentials' })).toBeDisabled()
+    expect(screen.getByTestId('device-unsaved')).toHaveTextContent(
+      'Save the truck first, then rotate the key',
+    )
+    expect(rotateCalls(fetchMock)).toHaveLength(0)
+
+    // Saving closes the form; reopening it, the key can be issued with the saved phone.
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(screen.queryByText('Edit truck')).not.toBeInTheDocument())
+    await user.click(screen.getByText('ARG-001'))
+    expect(screen.queryByTestId('device-unsaved')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Generate device credentials' }))
+    expect(await screen.findByTestId('device-env')).toHaveTextContent(
+      'ARGUS_ALERT_PHONE=+523312345678',
+    )
+  })
+
   describe('downloaded argus-device.env', () => {
     const { createObjectURL, revokeObjectURL } = URL
     let blobs: Blob[]
-    let downloads: string[]
+    let downloads: { name: string; attached: boolean }[]
 
     beforeEach(() => {
       blobs = []
@@ -309,7 +386,7 @@ describe('Fleet device credentials', () => {
       vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
         this: HTMLAnchorElement,
       ) {
-        downloads.push(this.download)
+        downloads.push({ name: this.download, attached: this.isConnected })
       })
     })
 
@@ -319,72 +396,132 @@ describe('Fleet device credentials', () => {
       vi.restoreAllMocks()
     })
 
-    async function downloadEnv(truck: Truck): Promise<string> {
+    async function issueFor(truck: Truck, rotateExtra?: Record<string, unknown>) {
       seedSession('root_admin')
-      mockFetchDevice({ truck })
+      const fetchMock = mockFetchDevice({ truck, rotateExtra })
       const user = userEvent.setup()
       renderFleet()
 
       await user.click(await screen.findByText(truck.plate_number))
       await user.click(screen.getByRole('button', { name: 'Generate device credentials' }))
-      await user.click(await screen.findByRole('button', { name: /Download argus-device.env/ }))
-      expect(downloads).toEqual(['argus-device.env'])
-      expect(blobs).toHaveLength(1)
-      return blobs[0].text()
+      await screen.findByTestId('device-env')
+      return { user, fetchMock }
     }
 
-    it('carries the plate and the truck phone', async () => {
-      const text = await downloadEnv({ ...truckRow, alert_phone: '+523312345678' })
-      const lines = text.split('\n')
-      expect(lines).toContain('ARGUS_TRUCK_ID=t-1')
-      expect(lines).toContain('ARGUS_DEVICE_API_KEY=plain-key-123')
-      expect(lines.slice(-3)).toEqual([
+    async function downloadEnv(
+      truck: Truck,
+      rotateExtra?: Record<string, unknown>,
+    ): Promise<string> {
+      const { user } = await issueFor(truck, rotateExtra)
+      await user.click(screen.getByRole('button', { name: /Download argus-device.env/ }))
+      expect(downloads.map((d) => d.name)).toEqual(['argus-device.env', 'argus-device.env'])
+      expect(blobs).toHaveLength(2)
+      return blobs[1].text()
+    }
+
+    it('starts the download as soon as the key is issued', async () => {
+      await issueFor({ ...truckRow })
+      expect(downloads).toEqual([{ name: 'argus-device.env', attached: true }])
+      expect(blobs[0].type).toBe('application/octet-stream')
+      expect(await blobs[0].text()).toContain('ARGUS_DEVICE_API_KEY=plain-key-123')
+      // The anchor is attached only while clicked; the URL is freed later, not in the same tick.
+      expect(document.querySelectorAll('a[download]')).toHaveLength(0)
+      expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+    })
+
+    it('keeps the file after the truck form is saved, until dismissed', async () => {
+      const { user } = await issueFor({ ...truckRow })
+      await user.click(screen.getByRole('button', { name: 'Save changes' }))
+      await waitFor(() => expect(screen.queryByText('Edit truck')).not.toBeInTheDocument())
+
+      expect(screen.getByTestId('device-env')).toHaveTextContent(
+        'ARGUS_DEVICE_API_KEY=plain-key-123',
+      )
+      await user.click(screen.getByRole('button', { name: /Download argus-device.env/ }))
+      expect(downloads).toHaveLength(2)
+      expect(await blobs[1].text()).toContain('ARGUS_DEVICE_API_KEY=plain-key-123')
+
+      // Reopening the truck's form and cancelling it doesn't lose it either.
+      await user.click(screen.getByText('ARG-001'))
+      await user.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(screen.getByTestId('device-env')).toBeInTheDocument()
+
+      await user.click(screen.getByRole('button', { name: 'I saved the file — close' }))
+      expect(screen.queryByTestId('device-env')).not.toBeInTheDocument()
+    })
+
+    it("uses the route guardian's phone from the rotate answer", async () => {
+      const text = await downloadEnv(
+        { ...truckRow, alert_phone: '+520000000001' },
+        {
+          alert_phone: '+523312345678',
+          alert_phone_source: 'route_guardian',
+          id_route: 'r-9',
+          guardian_name: 'Ana López',
+        },
+      )
+      expect(text.split('\n').slice(-5)).toEqual([
         'ARGUS_TRUCK_PLATE=ARG-001',
+        '# SMS alert phone: guardian Ana López of route r-9',
         'ARGUS_ALERT_PHONE=+523312345678',
+        'ARGUS_ALERT_PHONE_LABEL=guardian Ana López of route r-9',
         '',
       ])
       expect(text).toBe(screen.getByTestId('device-env').textContent)
       expect(screen.getByTestId('alert-phone-note')).toHaveTextContent(
-        'Critical alerts are texted to +523312345678.',
+        "Critical alerts are texted to guardian Ana López (+523312345678) of this truck's current route.",
       )
       expect(screen.getByTestId('alert-phone-note')).toHaveTextContent(
-        'if you change it later, generate new credentials',
+        'save that change first, then rotate the key',
       )
     })
 
-    it('comments the phone out when the truck has none', async () => {
-      const text = await downloadEnv({ ...truckRow, alert_phone: null })
+    it("uses the truck's fallback phone from the rotate answer", async () => {
+      const text = await downloadEnv(
+        { ...truckRow, alert_phone: null },
+        {
+          alert_phone: '+523312345678',
+          alert_phone_source: 'truck',
+          id_route: null,
+          guardian_name: null,
+        },
+      )
+      expect(text.split('\n').slice(-5)).toEqual([
+        'ARGUS_TRUCK_PLATE=ARG-001',
+        "# SMS alert phone: the truck's fallback phone",
+        'ARGUS_ALERT_PHONE=+523312345678',
+        'ARGUS_ALERT_PHONE_LABEL=truck fallback phone',
+        '',
+      ])
+      expect(screen.getByTestId('alert-phone-note')).toHaveTextContent(
+        "Critical alerts are texted to the truck's fallback phone (+523312345678).",
+      )
+    })
+
+    it('comments the phone out when the rotate answer has none', async () => {
+      const text = await downloadEnv(
+        { ...truckRow, alert_phone: '+520000000001' },
+        { alert_phone: null, alert_phone_source: null, id_route: null, guardian_name: null },
+      )
       expect(text.split('\n').slice(-3)).toEqual([
         'ARGUS_TRUCK_PLATE=ARG-001',
         '# ARGUS_ALERT_PHONE=  (no SMS alert phone set for this truck)',
         '',
       ])
       expect(screen.getByTestId('alert-phone-note')).toHaveTextContent(
-        'No SMS alert phone is set',
+        "No SMS phone: assign a guardian to the truck's route or set the truck's alert phone.",
       )
     })
 
-    it('warns that a phone typed but not saved is not in the file', async () => {
-      seedSession('root_admin')
-      mockFetchDevice({ truck: { ...truckRow, alert_phone: null } })
-      const user = userEvent.setup()
-      renderFleet()
-
-      await user.click(await screen.findByText('ARG-001'))
-      await user.type(screen.getByLabelText('SMS alert phone (optional)'), '+523312345678')
-      await user.click(screen.getByRole('button', { name: 'Generate device credentials' }))
-
-      const env = await screen.findByTestId('device-env')
-      expect(env.textContent).toContain(
-        '# ARGUS_ALERT_PHONE=  (no SMS alert phone set for this truck)',
-      )
-      expect(env.textContent).not.toContain('ARGUS_ALERT_PHONE=+523312345678')
-      expect(screen.getByTestId('alert-phone-unsaved')).toHaveTextContent("isn't saved")
-    })
-
-    it('shows no unsaved warning when the form matches the saved phone', async () => {
-      await downloadEnv({ ...truckRow, alert_phone: '+523312345678' })
-      expect(screen.queryByTestId('alert-phone-unsaved')).not.toBeInTheDocument()
+    it("falls back to the truck's phone when the backend predates G5", async () => {
+      const text = await downloadEnv({ ...truckRow, alert_phone: '+523312345678' })
+      expect(text.split('\n').slice(-5)).toEqual([
+        'ARGUS_TRUCK_PLATE=ARG-001',
+        "# SMS alert phone: the truck's fallback phone",
+        'ARGUS_ALERT_PHONE=+523312345678',
+        'ARGUS_ALERT_PHONE_LABEL=truck fallback phone',
+        '',
+      ])
     })
   })
 })

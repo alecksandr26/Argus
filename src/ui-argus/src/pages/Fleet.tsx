@@ -5,12 +5,15 @@ import RecordTable, { type Column } from '../components/RecordTable'
 import StatusPill from '../components/StatusPill'
 import Icon from '../components/Icon'
 import DeviceCredentials from '../components/DeviceCredentials'
+import IssuedCredentialsPanel from '../components/IssuedCredentialsPanel'
+import VersionWarning from '../components/VersionWarning'
 import { useAuth } from '../context/AuthContext'
 import { createTruck, listTrucks, updateTruck } from '../api/trucks'
 import { ApiError } from '../api/client'
 import { relativeTime } from '../utils/format'
 import { truckStatus } from '../utils/status'
 import { ALERT_PHONE_EXAMPLE, alertPhoneError } from '../utils/phone'
+import type { IssuedCredentials } from '../utils/deviceEnv'
 import type { Truck, TruckStatus } from '../types'
 
 /**
@@ -19,6 +22,8 @@ import type { Truck, TruckStatus } from '../types'
  * `guardian` still sees this screen (INTEGRATION.md), just in a read-only view: the panel
  * opens for browsing but its inputs are disabled and there's no Save button. An existing truck's
  * panel also carries `DeviceCredentials` — issuing the edge-device key its Raspberry Pi needs.
+ * A key just issued is held here (`issued`), not in that panel, and shown above the list until
+ * the user dismisses it, so the truck form's Save/Cancel can't lose the only copy.
  */
 
 const STATUS_OPTIONS: TruckStatus[] = [
@@ -77,6 +82,7 @@ export default function Fleet() {
   const [mode, setMode] = useState<'edit' | 'create' | null>(null)
   const [saving, setSaving] = useState(false)
   const [phoneError, setPhoneError] = useState<string | null>(null)
+  const [issued, setIssued] = useState<IssuedCredentials | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -130,6 +136,10 @@ export default function Fleet() {
 
   function replaceTruck(updated: Truck) {
     setList((prev) => prev.map((t) => (t.id_truck === updated.id_truck ? updated : t)))
+  }
+
+  function onRevoked(t: Truck) {
+    setIssued((prev) => (prev?.truckId === t.id_truck ? null : prev))
   }
 
   function closePanel() {
@@ -271,9 +281,21 @@ export default function Fleet() {
           }
         />
 
+        <VersionWarning />
+
         {error && (
           <div role="alert" style={{ color: 'var(--danger, #e5484d)', fontSize: 13 }}>
             {error}
+          </div>
+        )}
+
+        {issued && (
+          <div style={{ flexShrink: 0, maxHeight: '55%', overflowY: 'auto' }}>
+            <IssuedCredentialsPanel
+              key={issued.at.getTime()}
+              issued={issued}
+              onDismiss={() => setIssued(null)}
+            />
           </div>
         )}
 
@@ -295,6 +317,9 @@ export default function Fleet() {
           truck={list.find((t) => t.id_truck === draft.id_truck) ?? null}
           token={token}
           onTruckChange={replaceTruck}
+          hasIssued={!!draft.id_truck && issued?.truckId === draft.id_truck}
+          onIssued={setIssued}
+          onRevoked={onRevoked}
           saving={saving}
           phoneError={phoneError}
           onChange={changeDraft}
@@ -313,6 +338,9 @@ function EditPanel({
   truck,
   token,
   onTruckChange,
+  hasIssued,
+  onIssued,
+  onRevoked,
   saving,
   phoneError,
   onChange,
@@ -326,6 +354,9 @@ function EditPanel({
   truck: Truck | null
   token: string
   onTruckChange: (t: Truck) => void
+  hasIssued: boolean
+  onIssued: (issued: IssuedCredentials) => void
+  onRevoked: (t: Truck) => void
   saving: boolean
   phoneError: string | null
   onChange: (d: Draft) => void
@@ -333,6 +364,7 @@ function EditPanel({
   onSave: () => void
 }) {
   const set = (patch: Partial<Draft>) => onChange({ ...draft, ...patch })
+  const dirty = truck !== null && JSON.stringify(toDraft(truck)) !== JSON.stringify(draft)
 
   return (
     <div
@@ -491,7 +523,10 @@ function EditPanel({
           truck={truck}
           token={token}
           canWrite={!readOnly}
-          draftAlertPhone={draft.alert_phone}
+          dirty={dirty}
+          hasIssued={hasIssued}
+          onIssued={onIssued}
+          onRevoked={onRevoked}
           onTruckChange={onTruckChange}
         />
       )}

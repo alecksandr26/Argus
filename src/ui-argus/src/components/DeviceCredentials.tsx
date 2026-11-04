@@ -1,77 +1,79 @@
 import { useState } from 'react'
-import { ApiError, API_BASE_URL } from '../api/client'
-import { getTruck, revokeDeviceKey, rotateDeviceKey } from '../api/trucks'
+import { ApiError } from '../api/client'
+import { getTruck, revokeDeviceKey } from '../api/trucks'
 import { relativeTime } from '../utils/format'
-import {
-  DEVICE_ENV_FILENAME,
-  buildDeviceEnv,
-  isLoopbackUrl,
-  normalizeBackendUrl,
-} from '../utils/deviceEnv'
+import { issueDeviceCredentials, type IssuedCredentials } from '../utils/deviceEnv'
+import InlineConfirm from './InlineConfirm'
 import type { Truck } from '../types'
 
 /**
  * Fleet's "Device credentials" block: issues, rotates and revokes the truck's edge-device key
- * (`POST /api/trucks/:id/rotate-key`, `DELETE /api/trucks/:id/device-key`). A fresh key is shown
- * exactly once, packaged as `argus-device.env` for the truck's Raspberry Pi — the backend keeps
- * only a hash, so closing the panel without saving it means rotating again. The file also carries
- * the truck's plate and SMS alert phone as saved at that moment.
+ * (`POST /api/trucks/:id/rotate-key`, `DELETE /api/trucks/:id/device-key`).
+ *
+ * - A fresh key is handed to `onIssued` and its `argus-device.env` download starts at once. The
+ *   key itself is NOT kept here: this block unmounts whenever the truck form closes (Save,
+ *   Cancel, picking another truck), and the backend keeps only a hash, so Fleet holds it and
+ *   shows `IssuedCredentialsPanel` until the user dismisses it. (Keeping it here lost the file
+ *   on Save before; see ui-argus CLAUDE.md.)
+ * - Rotate and Revoke confirm in place (`InlineConfirm`), not with `window.confirm`, which a
+ *   browser may suppress (it then returns false and the rotate silently never happens).
+ * - With unsaved changes in the truck form (`dirty`), issuing is disabled with a "save the truck
+ *   first" hint: the file would otherwise carry the saved values, not the typed ones.
  */
 export default function DeviceCredentials({
   truck,
   token,
   canWrite,
-  draftAlertPhone,
+  dirty = false,
+  hasIssued = false,
+  onIssued,
+  onRevoked,
   onTruckChange,
 }: {
   truck: Truck
   token: string
   canWrite: boolean
-  /** The phone currently typed in the edit form; the file only ever carries the saved one. */
-  draftAlertPhone?: string
+  /** The truck form has unsaved changes. */
+  dirty?: boolean
+  /** A key issued for this truck is still on screen (Fleet's box above the list). */
+  hasIssued?: boolean
+  onIssued: (issued: IssuedCredentials) => void
+  onRevoked?: (t: Truck) => void
   onTruckChange: (t: Truck) => void
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [issued, setIssued] = useState<{ key: string; at: Date } | null>(null)
-  const [backendUrl, setBackendUrl] = useState(normalizeBackendUrl(API_BASE_URL))
-  const [copied, setCopied] = useState(false)
+  const [confirming, setConfirming] = useState<'rotate' | 'revoke' | null>(null)
 
   async function issue() {
-    if (
-      truck.has_device_key &&
-      !window.confirm(
-        `Rotate ${truck.plate_number}'s device key? The device currently installed stops ` +
-          'working until the new argus-device.env is on its Raspberry Pi.',
-      )
-    )
-      return
     setBusy(true)
     setError(null)
     try {
-      const { device_api_key } = await rotateDeviceKey(truck.id_truck, token)
-      setIssued({ key: device_api_key, at: new Date() })
-      setCopied(false)
-      onTruckChange(await getTruck(truck.id_truck, token))
+      onIssued(await issueDeviceCredentials(truck, token))
+      setConfirming(null)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to issue device credentials')
+      setBusy(false)
+      return
+    }
+    // The key is safe with Fleet already; a failed status refresh mustn't look like a failed issue.
+    try {
+      onTruckChange(await getTruck(truck.id_truck, token))
+    } catch {
+      // The status line just stays stale until the next load.
     } finally {
       setBusy(false)
     }
   }
 
   async function revoke() {
-    if (
-      !window.confirm(
-        `Revoke ${truck.plate_number}'s device key? Its device is rejected immediately.`,
-      )
-    )
-      return
     setBusy(true)
     setError(null)
     try {
-      onTruckChange(await revokeDeviceKey(truck.id_truck, token))
-      setIssued(null)
+      const updated = await revokeDeviceKey(truck.id_truck, token)
+      onTruckChange(updated)
+      onRevoked?.(updated)
+      setConfirming(null)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to revoke device credentials')
     } finally {
@@ -79,35 +81,9 @@ export default function DeviceCredentials({
     }
   }
 
-  const envText = issued
-    ? buildDeviceEnv({
-        truckId: truck.id_truck,
-        plate: truck.plate_number,
-        deviceApiKey: issued.key,
-        backendUrl,
-        alertPhone: truck.alert_phone,
-        issuedAt: issued.at,
-      })
-    : ''
-  const phoneUnsaved =
-    draftAlertPhone !== undefined && draftAlertPhone.trim() !== (truck.alert_phone ?? '').trim()
-
-  function download() {
-    const url = URL.createObjectURL(new Blob([envText], { type: 'text/plain' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = DEVICE_ENV_FILENAME
-    a.click()
-    URL.revokeObjectURL(url)
-  }
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(envText)
-      setCopied(true)
-    } catch {
-      setError('Copy failed — select the text and copy it manually')
-    }
+  function startIssue() {
+    if (truck.has_device_key) setConfirming('rotate')
+    else void issue()
   }
 
   return (
@@ -135,97 +111,55 @@ export default function DeviceCredentials({
         </div>
       )}
 
-      {canWrite && (
+      {canWrite && confirming === 'rotate' && (
+        <InlineConfirm
+          message={`Rotate ${truck.plate_number}'s key? This disconnects the installed device until the new argus-device.env is on its Raspberry Pi.`}
+          confirmLabel="Rotate key"
+          busy={busy}
+          onConfirm={() => void issue()}
+          onCancel={() => setConfirming(null)}
+        />
+      )}
+      {canWrite && confirming === 'revoke' && (
+        <InlineConfirm
+          message={`Revoke ${truck.plate_number}'s key? Its device is rejected immediately.`}
+          confirmLabel="Revoke key"
+          danger
+          busy={busy}
+          onConfirm={() => void revoke()}
+          onCancel={() => setConfirming(null)}
+        />
+      )}
+
+      {canWrite && confirming === null && (
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn--block" onClick={issue} disabled={busy}>
+          <button className="btn btn--block" onClick={startIssue} disabled={busy || dirty}>
             {truck.has_device_key ? 'Rotate key' : 'Generate device credentials'}
           </button>
           {truck.has_device_key && (
-            <button className="btn btn--danger" onClick={revoke} disabled={busy}>
+            <button
+              className="btn btn--danger"
+              onClick={() => setConfirming('revoke')}
+              disabled={busy}
+            >
               Revoke
             </button>
           )}
         </div>
       )}
 
-      {issued && (
-        <div
-          role="region"
-          aria-label="New device credentials"
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 8,
-            padding: 12,
-            borderRadius: 8,
-            border: '1px solid var(--border-soft)',
-          }}
-        >
-          <span style={{ fontSize: 12, fontWeight: 600 }}>
-            Shown once — save it now
-          </span>
-          <span style={{ fontSize: 11.5, color: 'var(--text-soft)' }}>
-            Put <span className="mono">{DEVICE_ENV_FILENAME}</span> next to cv-argus's
-            docker-compose.yml on this truck's Raspberry Pi, then restart the container. The
-            ESP32 picks the key up from the Pi over Bluetooth.
-          </span>
-          <span data-testid="alert-phone-note" style={{ fontSize: 11.5, color: 'var(--text-soft)' }}>
-            {truck.alert_phone ? (
-              <>
-                Critical alerts are texted to <span className="mono">{truck.alert_phone}</span>.
-              </>
-            ) : (
-              'No SMS alert phone is set, so critical alerts send no SMS.'
-            )}{' '}
-            The file carries the phone as it is now: if you change it later, generate new
-            credentials, or edit the <span className="mono">ARGUS_ALERT_PHONE</span> line on the
-            Pi and restart the container.
-          </span>
-          {phoneUnsaved && (
-            <span
-              data-testid="alert-phone-unsaved"
-              style={{ fontSize: 11.5, color: 'var(--warn, #f5a524)' }}
-            >
-              The SMS alert phone in the form above isn't saved, so this file doesn't carry it.
-              Save the truck, then rotate the key to get a file with it.
-            </span>
-          )}
-          <label className="field">
-            <span className="field__label">Backend URL the truck uses</span>
-            <input
-              className="input mono"
-              value={backendUrl}
-              onChange={(e) => setBackendUrl(e.target.value)}
-            />
-          </label>
-          {isLoopbackUrl(backendUrl) && (
-            <span style={{ fontSize: 11.5, color: 'var(--warn, #f5a524)' }}>
-              This address only works on this computer. Use an address the truck can reach
-              (LAN IP or the public HTTPS URL).
-            </span>
-          )}
-          <pre
-            className="mono"
-            data-testid="device-env"
-            style={{
-              margin: 0,
-              fontSize: 10.5,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-all',
-              userSelect: 'all',
-            }}
-          >
-            {envText}
-          </pre>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn btn--accent btn--block" onClick={download}>
-              Download {DEVICE_ENV_FILENAME}
-            </button>
-            <button className="btn" onClick={copy}>
-              {copied ? 'Copied' : 'Copy'}
-            </button>
-          </div>
-        </div>
+      {canWrite && dirty && (
+        <span data-testid="device-unsaved" style={{ fontSize: 11.5, color: 'var(--warn, #f5a524)' }}>
+          The truck has unsaved changes. Save the truck first, then rotate the key, so the file
+          carries what you typed.
+        </span>
+      )}
+
+      {hasIssued && (
+        <span data-testid="device-issued-hint" style={{ fontSize: 11.5, color: 'var(--text-soft)' }}>
+          New credentials were issued: <span className="mono">argus-device.env</span> is above the
+          truck list until you close it.
+        </span>
       )}
     </div>
   )
